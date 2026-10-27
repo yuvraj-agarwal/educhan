@@ -1488,7 +1488,9 @@ function dropBadgeOption(form) {
 // another page or heard it was switched off or had run out, whether the form
 // was idle or its badged post was on its way, or by a press that found the page
 // holding a badge other than the one the box was drawn for (badgeOffered), or
-// drawn again by a redraw that offers another badge or none (restoreDraft).
+// drawn again by a redraw that offers another badge or none (restoreDraft), or
+// because the server refused it on the form's own post while the form was off
+// the screen, where the refusal says nothing (submit).
 // Said nothing, the form's next press would post without the badge, under the
 // ID the reader's other posts in the thread without one share, which is what a
 // badged post's own ID is there to keep apart. So that press is refused, once,
@@ -1529,8 +1531,9 @@ function noteBadgeOffered() {
 // startNothing: when the badge went with the browser forgotten in another tab,
 // which starts nothing here, or as /verify is drawn over the form
 // (loadVerification), or a redraw puts a held form back (restoreDraft), since
-// drawing a page starts nothing. A form noted then starts it at the press the
-// note refuses (submit).
+// drawing a page starts nothing, or as the form's own badged post is refused
+// while the form is off the screen, where nobody is writing in it (submit). A
+// form noted then starts it at the press the note refuses (submit).
 function withdrawBadgeOption(form, offered, startNothing) {
   const box = field(form, "badge");
   const ticked = Boolean(box && box.checked);
@@ -1548,24 +1551,54 @@ function withdrawBadgeOption(form, offered, startNothing) {
 const BADGE_GONE = "Your badge is no longer available in this browser — verify again to post with it.";
 
 // badgeWithdrawnNotice is what the press of a form in badgeWithdrawn is told:
-// that the badge has gone, and what pressing again does. A reply then goes out
-// under the same ID as the reader's posts in the thread without a badge while
-// storage holds the poster key it held when the badge went, the key that ID is
-// made from: a forget in another tab that this one hears of only as the badge
-// going, in a browser without BroadcastChannel, takes the key away too, and a
-// new thread has no posts yet to share an ID with. A badge another tab stored
-// since is not offered on a form drawn before it, and on one drawn since it is
-// not ticked: ticking it is the reader's choice, and takes the note off.
+// that the badge has gone, and what pressing again does (pressedWithoutBadge).
+// A badge another tab stored since is not offered on a form drawn before it,
+// and on one drawn since it is not ticked: ticking it is the reader's choice,
+// and takes the note off.
 function badgeWithdrawnNotice(form, { key }) {
   const gone = !state.verification.badge
     ? BADGE_GONE
     : field(form, "badge")
       ? "The badge you ticked for this post has gone from this browser, and the one this form now offers is not ticked."
       : "The badge this form offered has gone from this browser, and the form offers no other.";
+  return `${gone} ${pressedWithoutBadge(form, key)}`;
+}
+
+// pressedWithoutBadge says what the next press of a form that has lost its
+// badge does: it posts without one. A reply then goes out under the same ID as
+// the reader's posts in the thread without a badge while storage holds key, the
+// poster key it held when the badge went, the key that ID is made from: a
+// forget in another tab that this one hears of only as the badge going, in a
+// browser without BroadcastChannel, takes the key away too, and a new thread
+// has no posts yet to share an ID with.
+function pressedWithoutBadge(form, key) {
   const sameID = form.dataset.kind === "reply" && key !== "" && key === storageGet(POSTER_KEY_STORAGE_KEY);
   return sameID
-    ? `${gone} Pressing again posts this without a badge, under the same ID as the posts you make in this thread without one.`
-    : `${gone} Pressing again posts this without a badge.`;
+    ? "Pressing again posts this without a badge, under the same ID as the posts you make in this thread without one."
+    : "Pressing again posts this without a badge.";
+}
+
+// What a posting form on screen says when the server refuses its badged post
+// as expired or revoked while storage holds another badge, verified since in
+// another tab of this browser.
+const BADGE_REPLACED = "The badge this post carried was replaced by one verified since in this browser, so nothing was posted.";
+
+// badgeReplacedNotice is that form's notice, in place of the server's, which
+// says to verify again: that would cost another emailed code, and replace the
+// badge the browser already holds. It is the form's one refusal for the badge
+// that went, so it says what pressing again does (pressedWithoutBadge), and how
+// to post with the new badge: the form drawn again offers it, not ticked, as
+// for any badge stored since (restoreDraft), by Update on a thread and on the
+// board's Index for a new thread. A post release left with nothing in it, its
+// image taken off, has nothing to press again for, and the notice then says
+// only what went (imageTakenOff says the rest).
+function badgeReplacedNotice(form, { hasText, imageOff }) {
+  if (!hasText && imageOff !== "") {
+    return BADGE_REPLACED;
+  }
+  const press = pressedWithoutBadge(form, storageGet(POSTER_KEY_STORAGE_KEY) || "");
+  const redraw = form.dataset.kind === "reply" ? "press Update" : "open this board's Index again";
+  return `${BADGE_REPLACED} ${press} To post it with the new badge, ${redraw}, then tick the badge.`;
 }
 
 /* File field behaviour ------------------------------------------------------ */
@@ -3585,7 +3618,9 @@ function restoreDraft(draft) {
     // Otherwise it is read for its values, and as of the newest forget it has
     // had: one answered while away missed any forget since, so its Name, the
     // one forgotten, is not restored, nor its badge (below), while a Name
-    // typed after a forget it had on screen is.
+    // typed after a forget it had on screen is. A ticked badge the server
+    // refused while it was away is read from the note the refusal left
+    // (submit), so the new form is noted as for any badge gone (below).
     answered = heldForms.has(held) ? null : held;
     draft = { key: draft.key, ...formDraft(held), forgets };
   }
@@ -4836,9 +4871,22 @@ el.main.addEventListener("submit", async (event) => {
     // form offered the one refused, so its option goes either way. Its box was
     // ticked, so the post it goes on to is one the box no longer skips the
     // puzzle for: that starts now, as for the reader's own untick
-    // (captchaBadgeToggled), on a form still on screen with some of the post
-    // in it.
+    // (captchaBadgeToggled), on a form still on screen with some of the post in
+    // it. A form still on screen is told by the refusal's notice (below). One
+    // off the screen, while a post link's lookup loads say, is told nothing
+    // here, so it is noted as for any ticked badge that goes from under a form
+    // (withdrawBadgeOption, starting nothing): the redraw that draws its page
+    // again reads the note with its values (formDraft) and notes the form it
+    // draws (restoreDraft), whose next press is refused once, rather than
+    // posting without the badge unsaid. When storage holds another badge, which
+    // the page keeps, a form on screen is told so in its own words
+    // (badgeReplacedNotice), not the server's, and that notice is its one
+    // refusal for the badge: a note left on it while the post was on its way,
+    // by another tab's change or a redraw that put it back
+    // (followCredentialStorage, restoreDraft), goes, so the next press posts
+    // without a badge, as the notice says.
     const reason = err.payload && err.payload.credential;
+    let replaced = false;
     if (held && (reason === "expired" || reason === "revoked")) {
       if (forgets === browserForgets && storedCredential() === held.token) {
         const pageBadge = state.verification.badge;
@@ -4865,9 +4913,18 @@ el.main.addEventListener("submit", async (event) => {
           renderVerify(state.route, panel);
         }
       }
-      dropBadgeOption(form);
-      if (shown && captchaFormNeedsIt(form) && captchaFormHasWriting(form)) {
-        prepareCaptcha();
+      const kept = storedCredential();
+      replaced = forgets === browserForgets && kept !== "" && kept !== held.token;
+      if (shown) {
+        dropBadgeOption(form);
+        if (replaced) {
+          badgeWithdrawn.delete(form);
+        }
+        if (captchaFormNeedsIt(form) && captchaFormHasWriting(form)) {
+          prepareCaptcha();
+        }
+      } else {
+        withdrawBadgeOption(form, held, true);
       }
     }
     // The site takes no images, which this page was drawn without knowing:
@@ -4883,7 +4940,8 @@ el.main.addEventListener("submit", async (event) => {
     // for it only as above, for the badge the refusal forgot: its posting
     // forms lose the option, and /verify showing that badge's panel is drawn
     // again, saying why the badge went. What the refusal said about the badge
-    // and the server is kept, above.
+    // and the server is kept, above, and so is a note on the form, for the
+    // redraw that reads it.
     if (!shown) {
       return;
     }
@@ -4939,7 +4997,9 @@ el.main.addEventListener("submit", async (event) => {
     // Worded for the image release took off, or for none, and kept with the
     // form: a redraw still loading that then takes the image off words it
     // again, as it would have read had the redraw come first (restoreDraft).
-    const notice = (off) => imageTakenOff(errorMessage(err, { hasText, imageOff: off }), off, { hasText, isThread, closed });
+    const said = (off) =>
+      replaced ? badgeReplacedNotice(form, { hasText, imageOff: off }) : errorMessage(err, { hasText, imageOff: off });
+    const notice = (off) => imageTakenOff(said(off), off, { hasText, isThread, closed });
     refusalNotices.set(form, notice);
     showNotice(notice(imageOff));
   }

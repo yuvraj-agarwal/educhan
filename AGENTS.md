@@ -456,14 +456,16 @@ before the test changes.
   `render`), with the thread its controls read and the open image left as they are until
   a new page is drawn, so a refusal answered meanwhile updates the page on screen, and
   puts the held form itself into the new page in place of the one drawn there, its
-  `<details>` opened (`heldForms`, `captureDraft`, `restoreDraft`); a form answered by
-  then is read for its values like any draft, emptied after a success. A draft, held or
-  not, is keyed by the page on screen (`drawnFor` in `captureDraft`), never by a render
-  begun since that has not drawn yet, so the second of a double click neither carries
-  the form into the page it goes to nor keeps the page on screen under that page's
-  address. A redraw that fails to load leaves the kept page on screen, held form and
-  all, with the address bar, `renderedPath`, `state.route` and `state.thread` put back
-  as that page was drawn for them (`drawnFor`, noted by the render that drew it, however
+  `<details>` opened (`heldForms`, `captureDraft`, `restoreDraft`); a form answered
+  by then is read for its values like any draft, emptied after a success, and one
+  whose ticked badge the server refused while it was away is noted (`badgeWithdrawn`),
+  so its next press is refused once. A draft, held or not, is keyed by the page
+  on screen (`drawnFor` in `captureDraft`), never by a render begun since that has
+  not drawn yet, so the second of a double click neither carries the form into the
+  page it goes to nor keeps the page on screen under that page's address. A redraw
+  that fails to load leaves the kept page on screen, held form and all, with the
+  address bar, `renderedPath`, `state.route` and `state.thread` put back as that
+  page was drawn for them (`drawnFor`, noted by the render that drew it, however
   many redraws of it have failed since) and the error in a notice. The address bar goes
   back (`history.replaceState`) by replacing the history entry the reader is on when
   the redraw fails, so after a link, with nothing pressed while the redraw loads, the
@@ -662,7 +664,16 @@ before the test changes.
   shares an ID with none made before. A badged post refused as expired or revoked
   forgets the credential it sent only while storage still holds it, so a badge verified
   in another tab meanwhile stays, and its form, still on screen with something written
-  or attached, starts the puzzle the post it goes on to needs.
+  or attached, starts the puzzle the post it goes on to needs. The refusal's notice
+  tells a form on screen; one off the screen, while a post link's lookup loads say, is
+  noted, starting nothing, so the form the redraw draws in its place refuses its next
+  press once. When storage holds another badge, verified in another tab meanwhile, the
+  form on screen is told so in the page's own words rather than the server's "verify
+  again" (`badgeReplacedNotice`): its badge was replaced by one verified since in this
+  browser, so nothing was posted; pressing again posts without a badge; and Update, or
+  the board's Index for a new thread, draws the form again offering the new one,
+  unticked. That notice is its one refusal for the badge, so a note left on it while the
+  post was on its way goes.
 - The poster key lives in `localStorage` under `educhan:poster-key`: 16 random bytes as
   22 characters of unpadded base64url, made by `posterKey()` on the first post rather
   than the first visit. `submit` sends it in `X-Educhan-Poster-Key` on thread-create and

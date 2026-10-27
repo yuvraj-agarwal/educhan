@@ -548,11 +548,11 @@ func TestCaptchaAnswerStaysInMemory(t *testing.T) {
 // unticking the badge on a form whose tick stopped a puzzle or that has
 // something written or attached, the page taking a ticked badge out of a form
 // with something written or attached (its badge changed in another tab or in
-// this one, or refused as expired or revoked on a form still on screen, never
-// by Forget this browser, nor as /verify is drawn over the form), the press
-// refused once for that, of a form with something written or attached, and a
-// post or code request refused after the server spent its answer, which the
-// reader, still on its form, is about to send again.
+// this one, or refused as expired or revoked on a form still on screen, not on
+// one off it, never by Forget this browser, nor as /verify is drawn over the
+// form), the press refused once for that, of a form with something written or
+// attached, and a post or code request refused after the server spent its
+// answer, which the reader, still on its form, is about to send again.
 func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -602,7 +602,8 @@ func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 		!strings.Contains(toggled, `if (captchaFormNeedsIt(form) && (stopped || captchaFormHasWriting(form))) { prepareCaptcha(); }`) ||
 		!strings.Contains(attached, `if (captchaFormNeedsIt(form) && image && image.files && image.files.length) { prepareCaptcha(); }`) ||
 		!strings.Contains(withdrawn, `dropBadgeOption(form); if (ticked && !startNothing && captchaFormNeedsIt(form) && captchaFormHasWriting(form)) { prepareCaptcha(); } }`) ||
-		!strings.Contains(submitted, `dropBadgeOption(form); if (shown && captchaFormNeedsIt(form) && captchaFormHasWriting(form)) { prepareCaptcha(); } }`) ||
+		!strings.Contains(submitted, `if (shown) { dropBadgeOption(form); if (replaced) { badgeWithdrawn.delete(form); } `+
+			`if (captchaFormNeedsIt(form) && captchaFormHasWriting(form)) { prepareCaptcha(); } } else { withdrawBadgeOption(form, held, true); } }`) ||
 		!strings.Contains(submitted, `showNotice(badgeWithdrawnNotice(form, withdrawn)); `+
 			`if (captchaFormNeedsIt(form) && captchaFormHasWriting(form)) { prepareCaptcha(); } return; }`) {
 		t.Errorf("prepareCaptcha() is called %d times in app.js; want seven: from the focusin listener in a box to write "+
@@ -1286,7 +1287,7 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 		`if (!shown) { return; } const box = field(form, "body"); const hasText = Boolean(box && box.value.trim()); if (err.notSent) { `+
 			"showNotice(imageTakenOff(FORGOTTEN_BEFORE_SENDING, imageOff, { hasText, isThread })); return; }",
 		"showNotice(errorMessage(err, { hasText, imageOff }));",
-		"imageTakenOff(errorMessage(err, { hasText, imageOff: off }), off, { hasText, isThread, closed });",
+		"errorMessage(err, { hasText, imageOff: off }); const notice = (off) => imageTakenOff(said(off), off, { hasText, isThread, closed });",
 	)
 	if strings.Count(submit, "storageSet(") != 1 || strings.Count(submit, "badgeLost") != 1 || strings.Count(submit, "forgetCredential(") != 1 {
 		t.Error("the submit handler keeps something, or drops a badge, without checking it against browserForgets")
@@ -1558,7 +1559,8 @@ func TestForgettingTheBadgeReachesEveryTab(t *testing.T) {
 
 // A ticked badge taken away, by another tab forgetting, refusing or replacing
 // it, by this tab replacing it or refusing it for a post from another page, or
-// by a press finding the page holds another badge or none
+// for the form's own post while the form is off the screen, or by a press
+// finding the page holds another badge or none
 // (TestAFormSendsOnlyTheBadgeItWasDrawnFor), is not quietly turned into a post
 // without it: the form is noted (badgeWithdrawn) with the badge that went,
 // whether it was idle or its badged post was on its way, and its next press is
@@ -1575,14 +1577,20 @@ func TestForgettingTheBadgeReachesEveryTab(t *testing.T) {
 // another, is noted instead, so a badge verified in another tab meanwhile never
 // goes out unticked by the reader. And a badged post refused as expired or
 // revoked forgets that credential only if storage still holds it: one another
-// tab stored meanwhile is not the one refused.
+// tab stored meanwhile is not the one refused, and a form on screen is told
+// that its badge was replaced by one verified since in this browser, not the
+// server's "verify again", which would cost another code and replace the badge
+// the browser holds. That notice is the form's one refusal for the badge, so a
+// note left on it while the post was on its way goes, and it says what the
+// next press does and how to post with the new badge.
 func TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
 	if !strings.Contains(code, "\nconst badgeWithdrawn = new WeakMap();\n") ||
-		strings.Count(code, "badgeWithdrawn.set(") != 2 || strings.Count(code, "badgeWithdrawn.delete(") != 4 {
+		strings.Count(code, "badgeWithdrawn.set(") != 2 || strings.Count(code, "badgeWithdrawn.delete(") != 5 {
 		t.Error("badgeWithdrawn is no longer a WeakMap noted only by withdrawBadgeOption and restoreDraft, and " +
-			"forgotten only by the press it refuses, a post that goes, the badge box changed and a forget")
+			"forgotten only by the press it refuses, a post that goes, a refusal that says its badge was replaced, " +
+			"the badge box changed and a forget")
 	}
 	// The puzzle it then starts is TestCaptchaIsAskedForOnlyWhenSomeoneWrites'.
 	withdraw := squash(withoutComments(jsFunction(t, script, "withdrawBadgeOption")))
@@ -1619,25 +1627,26 @@ func TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress(t *testing.T) {
 		"form.reset(); badgeWithdrawn.delete(form);",
 		"} catch (err) {",
 	)
-	if strings.Count(submit, "badgeWithdrawn.") != 4 {
-		t.Error("the submit handler reads or forgets badgeWithdrawn somewhere besides the press it refuses and a post that goes")
+	if strings.Count(submit, "badgeWithdrawn.") != 5 {
+		t.Error("the submit handler reads or forgets badgeWithdrawn somewhere besides the press it refuses, a post that goes " +
+			"and a refusal that says its badge was replaced")
 	}
 	if got := jsString(t, script, "BADGE_GONE"); got != "Your badge is no longer available in this browser — verify again to post with it." {
 		t.Errorf("BADGE_GONE = %s, want the wording a press with the badge ticked and none held has always had", got)
 	}
 	notice := squash(withoutComments(jsFunction(t, script, "badgeWithdrawnNotice")))
-	for _, want := range []string{
-		`const sameID = form.dataset.kind === "reply" && key !== "" && key === storageGet(POSTER_KEY_STORAGE_KEY);`,
-		"return sameID ? `${gone} Pressing again posts this without a badge, under the same ID as the posts you make in this thread without one.`" +
-			" : `${gone} Pressing again posts this without a badge.`;",
-		`const gone = !state.verification.badge ? BADGE_GONE : field(form, "badge") ? "The badge you ticked for this post has gone ` +
-			`from this browser, and the one this form now offers is not ticked." : "The badge this form offered has gone from this ` +
-			`browser, and the form offers no other.";`,
-	} {
-		if !strings.Contains(notice, want) {
-			t.Errorf("badgeWithdrawnNotice no longer says what the next press does, naming the ID only while the key is the one "+
-				"the reader's posts in the thread had: missing %s", want)
-		}
+	if notice != `function badgeWithdrawnNotice(form, { key }) { `+
+		`const gone = !state.verification.badge ? BADGE_GONE : field(form, "badge") ? "The badge you ticked for this post has gone `+
+		`from this browser, and the one this form now offers is not ticked." : "The badge this form offered has gone from this `+
+		"browser, and the form offers no other.\"; return `${gone} ${pressedWithoutBadge(form, key)}`; }" {
+		t.Errorf("badgeWithdrawnNotice no longer says the badge has gone, as the page now stands, and what the next press does: %s", notice)
+	}
+	if press := squash(withoutComments(jsFunction(t, script, "pressedWithoutBadge"))); press != "function pressedWithoutBadge(form, key) { "+
+		`const sameID = form.dataset.kind === "reply" && key !== "" && key === storageGet(POSTER_KEY_STORAGE_KEY); `+
+		`return sameID ? "Pressing again posts this without a badge, under the same ID as the posts you make in this thread without one." `+
+		`: "Pressing again posts this without a badge."; }` || strings.Count(code, "pressedWithoutBadge(") != 3 {
+		t.Errorf("pressedWithoutBadge no longer says what the next press does, naming the ID only for a reply while the key is "+
+			"the one the reader's posts in the thread had, or is called from somewhere besides the two badge notices: %s", press)
 	}
 
 	draft := squash(withoutComments(jsFunction(t, script, "formDraft")))
@@ -1656,6 +1665,17 @@ func TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress(t *testing.T) {
 			"noting the new form otherwise, unless the draft was read before a forget")
 	}
 
+	// A badged post refused as expired or revoked forgets the credential it
+	// sent only while storage holds it. A form on screen is told by the
+	// refusal's notice. One off the screen, which the refusal tells nothing
+	// (TestARequestGoesOnlyFromAFormOnScreen), is noted, starting nothing, so
+	// the form a redraw draws in its place refuses its next press once: without
+	// the note, that press posts the reply without its badge, unsaid, under the
+	// ID the reader's other posts there without one share. A form on screen
+	// whose badge storage has replaced since the press is told so in place of
+	// the server's wording, which says to verify again, and a note left on it
+	// while the post was on its way, by another tab's change or a redraw that
+	// put it back, goes, so its next press posts as that notice says.
 	refused := submit[max(strings.Index(submit, "} catch (err) {"), 0):]
 	if !strings.Contains(refused, `if (held && (reason === "expired" || reason === "revoked")) { `+
 		"if (forgets === browserForgets && storedCredential() === held.token) { const pageBadge = state.verification.badge; "+
@@ -1663,11 +1683,47 @@ func TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress(t *testing.T) {
 		!strings.Contains(refused, `: "That badge was replaced by a newer verification."; `+
 			`if (pageBadge) { for (const posting of el.main.querySelectorAll("form[data-kind]")) { `+
 			`if (posting !== form) { withdrawBadgeOption(posting, pageBadge, false); } } } `) ||
-		!strings.Contains(refused, `} dropBadgeOption(form); `+
-			`if (shown && captchaFormNeedsIt(form) && captchaFormHasWriting(form)) { prepareCaptcha(); } }`) {
+		!strings.Contains(refused, `} const kept = storedCredential(); `+
+			`replaced = forgets === browserForgets && kept !== "" && kept !== held.token; `+
+			`if (shown) { dropBadgeOption(form); if (replaced) { badgeWithdrawn.delete(form); } `+
+			`if (captchaFormNeedsIt(form) && captchaFormHasWriting(form)) { prepareCaptcha(); } } `+
+			`else { withdrawBadgeOption(form, held, true); } }`) {
 		t.Error("a badged post refused as expired or revoked forgets a credential other than the one it sent, " +
 			"or no longer takes the option out of its form, or out of a form on the page the reader went to, " +
-			"or no longer starts the puzzle the post it goes on to needs")
+			"or no longer starts the puzzle the post it goes on to needs on a form on screen, or no longer notes a form " +
+			"off the screen, starting nothing, or no longer drops a note from a form on screen told its badge was replaced")
+	}
+	inOrder(t, "the submit handler", refused,
+		"const imageOff = release(shown);",
+		`const reason = err.payload && err.payload.credential; let replaced = false; if (held && (reason === "expired" || reason === "revoked")) {`,
+		`replaced = forgets === browserForgets && kept !== "" && kept !== held.token;`,
+		"if (!shown) { return; }",
+		"const said = (off) => replaced ? badgeReplacedNotice(form, { hasText, imageOff: off }) : errorMessage(err, { hasText, imageOff: off });",
+	)
+	if strings.Count(submit, "replaced = ") != 2 || strings.Count(code, "badgeReplacedNotice(") != 2 {
+		t.Error("the submit handler decides a badge was replaced somewhere this test does not read, or badgeReplacedNotice is " +
+			"called from somewhere besides it")
+	}
+	replacedNotice := squash(withoutComments(jsFunction(t, script, "badgeReplacedNotice")))
+	if replacedNotice != "function badgeReplacedNotice(form, { hasText, imageOff }) { "+
+		`if (!hasText && imageOff !== "") { return BADGE_REPLACED; } `+
+		`const press = pressedWithoutBadge(form, storageGet(POSTER_KEY_STORAGE_KEY) || ""); `+
+		`const redraw = form.dataset.kind === "reply" ? "press Update" : "open this board's Index again"; `+
+		"return `${BADGE_REPLACED} ${press} To post it with the new badge, ${redraw}, then tick the badge.`; }" {
+		t.Errorf("badgeReplacedNotice no longer says what the next press does, with the poster key storage holds now, "+
+			"and how to have the form offer the new badge, or says it of a post left with nothing: %s", replacedNotice)
+	}
+	if got := jsString(t, script, "BADGE_REPLACED"); !strings.Contains(got, "replaced by one verified since in this browser") ||
+		!strings.Contains(got, "nothing was posted") || strings.Contains(got, "verify again") {
+		t.Errorf("BADGE_REPLACED = %s, want it to say the badge was replaced by one verified since in this browser and "+
+			"nothing was posted, and not to verify again", got)
+	}
+	// Update draws a thread's reply form again, and the board's Index link its
+	// new-thread form, each carrying the draft, which the new badge's box is
+	// drawn unticked for.
+	if !strings.Contains(code, `<button class="link" data-action="refresh" type="button">Update</button>`) ||
+		!strings.Contains(code, `{ href: boardPath(board.slug), label: "Index", key: "index" },`) {
+		t.Error("the thread's Update button or the board's Index link, which badgeReplacedNotice names, is gone or renamed")
 	}
 }
 
@@ -1751,13 +1807,13 @@ func TestAFormSendsOnlyTheBadgeItWasDrawnFor(t *testing.T) {
 	// longer holds.
 	refused := submit[max(strings.Index(submit, "} catch (err) {"), 0):]
 	if !strings.Contains(refused, `if (posting !== form) { withdrawBadgeOption(posting, pageBadge, false); } } } `+
-		panelRedrawn+" } dropBadgeOption(form);") {
+		panelRedrawn+" } const kept = storedCredential();") {
 		t.Error("a badged post refused as expired or revoked, its credential forgotten, no longer draws /verify again " +
 			"where it shows that badge's panel")
 	}
 	if strings.Count(code, "state.verification.badge = ") != 4 || strings.Count(code, "state.verification = ") != 1 ||
 		strings.Count(code, "readBadge()") != 4 || strings.Count(code, "forgetCredential();") != 7 ||
-		strings.Count(code, "withdrawBadgeOption(") != 7 {
+		strings.Count(code, "withdrawBadgeOption(") != 8 {
 		t.Error("the page's badge changes somewhere this test does not read, or withdrawBadgeOption is called from " +
 			"somewhere it does not, which may leave a form on screen offering a badge the page no longer holds")
 	}
@@ -2202,7 +2258,8 @@ func TestCaptchaRefusalSaysWhatTheFormStillHolds(t *testing.T) {
 		"if (limitReached || uploadsOff) { showNotice(errorMessage(err, { hasText, imageOff })); return; }",
 		`const closed = err.status === 404 || (err.status === 403 && (err.message === "thread is archived" || `+
 			`err.message === "thread is locked")); `+
-			"const notice = (off) => imageTakenOff(errorMessage(err, { hasText, imageOff: off }), off, { hasText, isThread, closed }); "+
+			"const said = (off) => replaced ? badgeReplacedNotice(form, { hasText, imageOff: off }) : errorMessage(err, { hasText, imageOff: off }); "+
+			"const notice = (off) => imageTakenOff(said(off), off, { hasText, isThread, closed }); "+
 			"refusalNotices.set(form, notice); showNotice(notice(imageOff)); } });",
 	)
 	code := withoutComments(script)
