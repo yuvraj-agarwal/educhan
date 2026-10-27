@@ -3276,23 +3276,22 @@ func TestJoinActsMatchesTheActsOneByOne(t *testing.T) {
 // under the race detector, and a timer's noise cannot fail or pass it.
 //
 // The first bound is per byte of the post, at full length: the most any of
-// these bodies costs is about 142 steps a byte (a method question with words
-// after the pills, which the question's patterns read 60 characters on from
-// both the count and the pills), which is also the most of the 17,800 bodies
-// built to be slow that the README's timings were taken on, about 12% under
-// the bound, and the next most here about 136. A step is not a
-// fixed time — across these bodies a millisecond is anything from about
-// 22,000 steps to about 125,000, and the body that costs the most steps is
-// not the slowest — so the bound holds the work linear and caps it, and the
-// time is the README's to state, from timing the bodies ("Content rules": no
-// more than about 16 ms of one 2.1 GHz core). The steps are the same with Go
+// these bodies costs is about 148 steps a byte ("stacked method questions"),
+// which is also the most of the 29,397 bodies built to be slow that the
+// counts were last checked on, about 8% under the bound; the next most here
+// are handles glued to an opening bracket, about 128 (about 198 before
+// firstHandle turned them down before their checks), and a pill question run
+// into such a handle, about 117. A step is not a fixed time — across these
+// bodies a millisecond is anything from about 22,000 steps to about 125,000,
+// and the body that costs the most steps is not the slowest — so the bound
+// holds the work linear and caps it, and the time is the README's to state,
+// from timing the bodies ("Content rules"). The steps are the same with Go
 // 1.22, 1.24 and 1.25, since the programs are Go's own compiler's output for
 // the same patterns. A body that costs much more than the rest has to be
 // looked at, and the rule behind it planned or rewritten, before the bound is
-// raised. The second is that eight
-// times the text costs at most ten times as much: linear work costs eight
-// times, a fixed part a little less, and anything quadratic would cost
-// sixty-four.
+// raised. The second is that eight times the text costs at most ten times as
+// much: linear work costs eight times, a fixed part a little less, and
+// anything quadratic would cost sixty-four.
 //
 // What is not counted is single passes: the scanners that make the views,
 // and the number scanner's own pass over the digits (the cues it looks for in
@@ -3496,6 +3495,16 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"spaced guns":        rep("🔫 "),
 		"pills and a handle": rep("howmany@pills_(snap "),
 		"pills run on":       rep("howmany@pills/how'many pills_(snap pills_(snap "),
+		// Handles glued to an opening bracket and pointed at an app, which
+		// every handle rule finds, in both views, and turns down by the
+		// bracket.
+		"handles to brackets": rep("howmany(snap @s_(snap @9s_(snap @9_(snap @9_(snap @9_(snap @9_(snap pills(snap "),
+		"handle to a bracket": rep("@s_(ig "),
+		// Method questions one after another, each read on past the next,
+		// and then an app's name with a bracketed letter in it, read for an
+		// ask or a handle on either side: the most, a byte, of the bodies
+		// the counts were last checked on.
+		"stacked method questions": rep("how many to od how many to od how many to od i[n]sta "),
 		// The newer asks, each read with the words round it: an app made a
 		// verb after a lead, everyone's numbers with the post round them
 		// read for a group, a group set up on an app, talking privately or

@@ -7794,6 +7794,41 @@ func (f *scannedField) first(r rule, check matchCheck) (int, int, bool) {
 	return from, to, found
 }
 
+// firstHandle is first for a rule that ends at a handle (handleRules, and
+// the mail rules written like them), whose groups are an "@", the handle and
+// a Discord discriminator. A handle glued to an opening bracket is a call in
+// code ("ig = ig_client(token)"), which the byte after it tells, so it is
+// turned down there, counted as the match read, before check, which is
+// counted as reading a clause each side: in a post made of such calls ("@s_(ig
+// " over and over, TestFilterCostIsBounded) every rule and view finds every
+// one, and each would otherwise be charged a clause it never reads.
+func (f *scannedField) firstHandle(r rule, check matchCheck) (int, int, bool) {
+	from, to, found := 0, 0, false
+	for _, vs := range f.views(r) {
+		vs.re.each(vs.v, func(m []int) bool {
+			if m[1] <= m[0] {
+				return true
+			}
+			if gluedToBracket(vs.v, m) {
+				vs.v.work += m[1] - m[0]
+				return true
+			}
+			if !vs.v.checked(check, m) {
+				return true
+			}
+			if a, b := vs.v.span(m[0], m[1]); !found || a < from {
+				from, to, found = a, b, true
+			}
+			return false
+		})
+	}
+	return from, to, found
+}
+
+// gluedToBracket reports a handle rule's handle with an opening bracket
+// straight after it.
+func gluedToBracket(v *view, m []int) bool { return strings.HasPrefix(v.text[m[5]:], "(") }
+
 // anyMatch reports whether any of rules matches in either view.
 func (f *scannedField) anyMatch(rules []rule, check matchCheck) bool {
 	for _, r := range rules {
@@ -12941,7 +12976,7 @@ func (f *scannedField) firstBlock() (blockFinding, bool) {
 		consider(from, to, true, kindEmail)
 	}
 	for _, r := range []rule{myMailRule, mailColonHandle} {
-		from, to, ok = f.first(r, f.handleCheck)
+		from, to, ok = f.firstHandle(r, f.handleCheck)
 		consider(from, to, ok, kindEmail)
 	}
 
@@ -12995,7 +13030,7 @@ func (f *scannedField) firstBlock() (blockFinding, bool) {
 		case appLabelHandle:
 			check = f.labelHandleCheck
 		}
-		from, to, ok = f.first(r, check)
+		from, to, ok = f.firstHandle(r, check)
 		consider(from, to, ok, kindHandle)
 	}
 
@@ -13198,7 +13233,7 @@ func (f *scannedField) upperInSource(a, b int) bool {
 func (f *scannedField) handleCheck(v *view, m []int) bool {
 	at := m[2] >= 0 && m[3] > m[2]
 	discriminator := m[6] >= 0 && m[7] > m[6]
-	if strings.HasPrefix(v.text[m[5]:], "(") {
+	if gluedToBracket(v, m) {
 		return false
 	}
 	a, b := v.span(m[4], m[5])

@@ -716,26 +716,31 @@ cost down:
   places tried, the characters read, the machines' steps, and each check a match is put
   to, `checkWork`), so it passes or fails alike on any machine and under `-race`. The
   bodies built to be slow may cost at most `workPerByte` (160) steps per byte of the
-  post (the most, of its bodies, is a pill question run into a handle pointed at an app,
-  "howmany@pills_(snap " over and over, about 135, so the bound is about 19% above it,
-  and the next, the same with more pills, about 126; the method questions of the 17,800
-  the timings below were taken on, whose most was then about 142, now come to about 86
-  at most; the steps are the same with Go 1.22, 1.24 and 1.25), and eight times the text
-  at most ten times the steps. Its bodies include what made searching quadratic before:
+  post (the most, of its bodies, is a method question asked three times and then an
+  app's name with a tag in it, "how many to od how many to od how many to od i[n]sta "
+  over and over, about 148, so the bound is about 8% above it, and that is also the most
+  of the 29,397 bodies built to be slow the counts were last checked on; the next are
+  handles glued to an opening bracket and pointed at an app, "handles to brackets",
+  about 128, and a pill question run into such a handle, "howmany@pills_(snap ", about
+  117; the steps are the same with Go 1.22, 1.24 and 1.25), and eight times the text at
+  most ten times the steps. Its bodies include what made searching quadratic before:
   spaces between the places a run can end ("addresses far apart", "arrows far apart",
   read once now, since `nextRun` steps over what no run is made of and `runOf` keeps
   every run it measured), weapon emoji, which all stand at one reading position (a run
-  of them is one hint, and `menace` pairs hints by binary search and counts it), and a
-  pill question whose medicine ends no word. A pattern whose `~` runs straight
-  into a stretch of any characters, `~[^.?!\n]{0,60}?`, keeps a copy of the stretch for
-  every space of a run before it, which cost the pill questions up to about 300 steps a
-  byte; `window` starts the stretch at a letter or a digit, matches the same text, and
-  keeps one. A step is not a fixed time: `checkWork` charges a check 128 bytes, and the
-  checks that read wider fixed windows (its comment lists them) are not charged the
-  rest, so across those bodies a millisecond is about 22,000 to 125,000 steps, and the
-  README's timing is measured, not derived from the bound. A new rule that trips it is
-  planned or rewritten, not given a bigger bound; add the body that tripped it to the
-  table.
+  of them is one hint, and `menace` pairs hints by binary search and counts it), a pill
+  question whose medicine ends no word, and handles glued to an opening bracket, which
+  every handle rule finds in both views and turns down by the bracket: `first` charged
+  each the clause each side its check is counted as reading, up to about 198 steps a
+  byte, and `firstHandle` turns one down before its check, charged the match it read. A
+  pattern whose `~` runs straight into a stretch of any characters, `~[^.?!\n]{0,60}?`,
+  keeps a copy of the stretch for every space of a run before it, which cost the pill
+  questions up to about 300 steps a byte; `window` starts the stretch at a letter or a
+  digit, matches the same text, and keeps one. A step is not a fixed time: `checkWork`
+  charges a check 128 bytes, and the checks that read wider fixed windows (its comment
+  lists them) are not charged the rest, so across those bodies a millisecond is about
+  22,000 to 125,000 steps, and the README's timing is measured, not derived from the
+  bound. A new rule that trips it is planned or rewritten, not given a bigger bound; add
+  the body that tripped it to the table.
 - `TestFilterSearchesMatchTheirRegexps` and `FuzzFilterSearches` hold every search to
   what Go's regexp finds with the same pattern, groups included, on every view, and
   `TestFilterSearchesAreAllPlanned` fails if a pattern cannot be planned and would run
