@@ -10,15 +10,15 @@
 -- one through.
 --
 -- A row holds a hash of the challenge's signature, a value the server made at
--- random, and the challenge's expiry rounded up to the next UTC midnight, as a
--- verification credential's is (0004), so the only date a row stores is the
--- day. Nothing about who asked for the challenge, solved it or used it, and no
--- reference to the post it let through. Each insert deletes a batch of the rows
--- past their expiry, and the daily sweep (educhan -sweep) the rest, so a row is
--- gone a day or so after its puzzle was solved. Until then the row's xmin and
--- ctid lie beside those of the post or code request it let through, written
--- just after it, which pairs the two for whoever reads the database and dates
--- the row by the post; that says only that the post carried an answer.
+-- random, and the challenge's expiry rounded up to the next UTC midnight, so
+-- the only date a row stores is the day. Nothing about who asked for the
+-- challenge, solved it or used it, and no reference to the post it let through.
+-- Each insert deletes a batch of the rows past their expiry, and the daily
+-- sweep (educhan -sweep) the rest, so a row is gone a day or so after its
+-- puzzle was solved. Until then the row's xmin and ctid lie beside those of the
+-- post or code request it let through, written just after it, which pairs the
+-- two for whoever reads the database and dates the row by the post; that says
+-- only that the post carried an answer.
 CREATE TABLE IF NOT EXISTS captcha_spent (
     signature_hash BYTEA PRIMARY KEY,
     expires_at     TIMESTAMPTZ NOT NULL

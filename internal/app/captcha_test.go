@@ -615,6 +615,27 @@ func TestTheCaptchaNumbersTheDocsQuote(t *testing.T) {
 	}
 }
 
+// A spent answer's row dates it only to the day: its expiry is the next UTC
+// midnight after the challenge's, in whatever zone the challenge's was read,
+// and a challenge running out at midnight is kept until the midnight after.
+func TestSpentCaptchaExpiry(t *testing.T) {
+	kolkata := time.FixedZone("IST", 5*3600+1800)
+	for _, tc := range []struct{ expires, want time.Time }{
+		{time.Date(2026, 10, 15, 14, 21, 33, 500, time.UTC), time.Date(2026, 10, 16, 0, 0, 0, 0, time.UTC)},
+		{time.Date(2026, 10, 15, 23, 59, 59, 0, time.UTC), time.Date(2026, 10, 16, 0, 0, 0, 0, time.UTC)},
+		{time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC), time.Date(2026, 10, 16, 0, 0, 0, 0, time.UTC)},
+		{time.Date(2026, 10, 16, 2, 0, 0, 0, kolkata), time.Date(2026, 10, 16, 0, 0, 0, 0, time.UTC)},
+	} {
+		got := spentCaptchaExpiry(tc.expires)
+		if !got.Equal(tc.want) || got.Location() != time.UTC {
+			t.Errorf("spentCaptchaExpiry(%s) = %s, want %s", tc.expires, got, tc.want)
+		}
+		if !got.After(tc.expires) {
+			t.Errorf("spentCaptchaExpiry(%s) = %s, which does not outlast the challenge", tc.expires, got)
+		}
+	}
+}
+
 // sortedKeys lists a map's keys in order.
 func sortedKeys[V any](m map[string]V) []string {
 	keys := make([]string, 0, len(m))

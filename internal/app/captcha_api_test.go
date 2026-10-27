@@ -936,7 +936,7 @@ func (h *harness) holdSpend(answer string) (pid uint32, release func()) {
 		h.t.Fatalf("backend pid: %v", err)
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
-		ticket.key, nextDayBoundary(ticket.expires)); err != nil {
+		ticket.key, spentCaptchaExpiry(ticket.expires)); err != nil {
 		h.t.Fatalf("spend the answer: %v", err)
 	}
 	return pid, func() {

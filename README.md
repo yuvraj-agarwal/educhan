@@ -895,16 +895,16 @@ moving between networks, so the harder puzzles slow a script that asks from one
 address, not one that fetches from many. Spent challenges are kept in
 `captcha_spent`, shared by every instance so they agree on what was used, as a
 hash of the challenge's signature and its expiry rounded up to the next UTC
-midnight, as a credential's is, so the only date a row stores is the day. Each
-spend deletes a batch of the rows past their day, and the daily
-[sweep](#the-archive-sweeper) the rest, so a row is gone a day or so after its
-puzzle was solved. Nothing stored in the table names the post or code request an
-answer let through, or who solved it. Where a row sits is another matter: until
-it is deleted, its place in the table and the transaction that wrote it, which
-Postgres keeps with every row, lie beside the post's or the code request's, so
-whoever reads the database files can pair the two and date the row by the post.
-That shows only that the post carried an answer, which every post without a
-badge does while the captcha is on.
+midnight, so the only date a row stores is the day. Each spend deletes a batch
+of the rows past their day, and the daily [sweep](#the-archive-sweeper) the
+rest, so a row is gone a day or so after its puzzle was solved. Nothing stored
+in the table names the post or code request an answer let through, or who solved
+it. Where a row sits is another matter: until it is deleted, its place in the
+table and the transaction that wrote it, which Postgres keeps with every row,
+lie beside the post's or the code request's, so whoever reads the database files
+can pair the two and date the row by the post. That shows only that the post
+carried an answer, which every post without a badge does while the captcha is
+on.
 
 Proof of work slows a script down; it does not tell a person from one. It
 makes each post cost the poster's processor a moment and a bulk poster's a

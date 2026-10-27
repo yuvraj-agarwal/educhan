@@ -1471,6 +1471,14 @@ const (
 	captchaPruneBatch = 64
 )
 
+// spentCaptchaExpiry is the expiry a spent answer's row stores: the challenge's
+// own, rounded up to the next UTC midnight, so it dates the row to the day and
+// still outlasts the challenge.
+func spentCaptchaExpiry(expires time.Time) time.Time {
+	utc := expires.UTC()
+	return time.Date(utc.Year(), utc.Month(), utc.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, 1)
+}
+
 // CaptchaSpent reports whether a captcha challenge has been used. It is the
 // read that turns a replayed answer away before flood control, so a replay is
 // told "used" at once, even while a cooldown runs, rather than told to wait for
@@ -1490,14 +1498,14 @@ func (s *Store) CaptchaSpent(ctx context.Context, key []byte) (bool, error) {
 // already was. The insert and the uniqueness check are one statement, so of two
 // requests racing with the same answer exactly one gets true.
 //
-// The row's expiry is the challenge's rounded up to the next UTC midnight, as a
-// credential's is (nextDayBoundary), so the only date a row stores is the day,
-// and the table holds a day or two of answers. The row's xmin and ctid are
-// another matter: they lie beside those of the post or code request written
-// just after it, so whoever reads the database can pair the two and date the
-// row by the post, which says only that the post carried an answer. Each spend
-// first deletes a batch of the rows past their expiry, and the daily sweep the
-// rest (PruneSpentCaptchas). The cut-off is by the server's clock, the one that
+// The row's expiry is the challenge's rounded up to the next UTC midnight
+// (spentCaptchaExpiry), so the only date a row stores is the day, and the table
+// holds a day or two of answers. The row's xmin and ctid are another matter:
+// they lie beside those of the post or code request written just after it, so
+// whoever reads the database can pair the two and date the row by the post,
+// which says only that the post carried an answer. Each spend first deletes a
+// batch of the rows past their expiry, and the daily sweep the rest
+// (PruneSpentCaptchas). The cut-off is by the server's clock, the one that
 // decided the challenge was still good. SKIP LOCKED leaves rows another spend
 // is already deleting to it, so posts arriving together never queue behind each
 // other's pruning.
@@ -1511,7 +1519,7 @@ func (s *Store) SpendCaptcha(ctx context.Context, key []byte, expires, now time.
 	}
 	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)
-		ON CONFLICT (signature_hash) DO NOTHING`, key, nextDayBoundary(expires))
+		ON CONFLICT (signature_hash) DO NOTHING`, key, spentCaptchaExpiry(expires))
 	if err != nil {
 		return false, fmt.Errorf("spend captcha: %w", err)
 	}
