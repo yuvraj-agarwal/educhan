@@ -23,8 +23,9 @@ type PassConfig struct {
 	// every Pass, since no stored code hash matches any more, and orphans the
 	// payment records a refund or a reissue would look for.
 	Secret string
-	// StripeSecretKey is the restricted or secret API key checkout sessions are
-	// created with.
+	// StripeSecretKey is the restricted or secret API key that creates
+	// checkout sessions and reads the Price, for the Pass page and before a
+	// checkout. A restricted key needs Checkout Sessions write and Prices read.
 	StripeSecretKey string
 	// StripeWebhookSecret is the signing secret of the webhook endpoint
 	// pointed at /api/pass/stripe-webhook ("whsec_…").

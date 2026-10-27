@@ -738,22 +738,25 @@ any tax". A Price that says neither (`unspecified`, or nothing at all on an
 older Price) would leave it to a default in the Stripe account that the page
 cannot know, so while Stripe Tax is on it is not sold: `GET /api/pass` leaves
 the price out, checkout answers `503` ("the Pass can't be bought right now"),
-and the log says what to fix. The same holds, while Stripe Tax is on, for any
-other Price the Pass can't be sold at, one archived, recurring or without a
-fixed amount, and for a key or Price ID Stripe refuses (one mistyped, say, or a
-test Price with a live key). Asking again mends none of these. Nor is the Pass
-sold while Stripe is out of reach or failing, since the Price might be such a
-one: checkout answers `502` ("try again in a moment") until Stripe answers.
-Neither refusal starts a cooldown. A failed read and a refused Price are each
-kept a minute before Stripe is asked again, and a Price the Pass is sold at is
-kept an hour (`TestPassPriceIsKeptForItsTime`). Stripe never changes a Price's
-amount or currency, so a new price takes a new Price, a new
-`EDUCHAN_STRIPE_PRICE_ID` and a restart. A Price that says neither can be given
-a tax behavior once, but Stripe never changes one that says `inclusive` or
-`exclusive`, so changing that takes a new Price too. With the setting off,
-checkout tells Stripe to collect no tax (`automatic_tax[enabled]=false`), which
-an account set to collect it by default would otherwise do, and the page says
-nothing about tax.
+and the log says what to fix. The same holds, with Stripe Tax on or off, for
+any other Price the Pass can't be sold at, one archived, recurring or without a
+fixed amount (one whose buyer chooses what to pay, say), and when Stripe
+refuses the request for the Price (a key or Price ID it does not take, say, as
+for a test Price with a live key). Asking again mends none of these. Nor is the
+Pass sold while Stripe is out of reach or failing, with Stripe Tax on or off,
+since the Price might be such a one: checkout answers `502` ("try again in a
+moment") until Stripe answers. Neither refusal starts a cooldown. The webhook
+does not check what was paid, since the session sells one of the Price checkout
+read and lets the buyer change nothing: no promotion codes, discounts or
+quantity to choose. A failed read and a refused Price are each kept a minute
+before Stripe is asked again, and a Price the Pass is sold at is kept an hour
+(`TestPassPriceIsKeptForItsTime`). Stripe never changes a Price's amount or
+currency, so a new price takes a new Price, a new `EDUCHAN_STRIPE_PRICE_ID` and
+a restart. A Price that says neither can be given a tax behavior once, but
+Stripe never changes one that says `inclusive` or `exclusive`, so changing that
+takes a new Price too. With the setting off, checkout tells Stripe to collect
+no tax (`automatic_tax[enabled]=false`), which an account set to collect it by
+default would otherwise do, and the page says nothing about tax.
 
 ## Posting identity
 
@@ -1188,7 +1191,7 @@ the build needs, and the rest of the walkthrough.
 | `EDUCHAN_VERIFY_COOLDOWN` | `60` (seconds) | Minimum interval between code requests, per client and per address |
 | `EDUCHAN_VERIFY_DOMAINS` | embedded list | Path to an allowlist file replacing the built-in one |
 | `EDUCHAN_PASS_SECRET` | empty | Keys the hashes the educhan Pass stores of its codes and of Stripe's payment and session ids (a claim cookie and a reissue code are random, and stored as plain SHA-256), and signs the name a checkout's answer gives its order. **Unset switches the Pass off**, and every other Pass setting below is then refused at startup; at least 32 bytes (`openssl rand -hex 32` makes 64). Rotating it cancels every Pass and orphans every payment record |
-| `EDUCHAN_STRIPE_SECRET_KEY` | empty | Stripe API key checkouts are created with. Required with `EDUCHAN_PASS_SECRET` |
+| `EDUCHAN_STRIPE_SECRET_KEY` | empty | Stripe API key that creates checkouts and reads the Price, for `GET /api/pass` and before a checkout; a restricted key (`rk_…`) needs Checkout Sessions write and Prices read. Required with `EDUCHAN_PASS_SECRET` |
 | `EDUCHAN_STRIPE_WEBHOOK_SECRET` | empty | Signing secret (`whsec_…`) of the Stripe webhook endpoint at `/api/pass/stripe-webhook`. Required with `EDUCHAN_PASS_SECRET` |
 | `EDUCHAN_STRIPE_PRICE_ID` | empty | The one-time Price (`price_…`) a Pass sells for. Required with `EDUCHAN_PASS_SECRET` |
 | `EDUCHAN_STRIPE_AUTOMATIC_TAX` | off | Have Stripe Tax collect sales tax, VAT or GST at checkout. Switch Stripe Tax on in the account first, and give the Price a tax behavior: `inclusive` takes the tax out of its amount, and the Pass page says "tax included"; `exclusive` adds it at checkout, and the page says "plus any tax". A Price with neither is not sold while this is on (see [Tax](#educhan-pass)). Off, checkout tells Stripe to collect no tax, even where the account collects it by default, and the page says nothing about tax |
@@ -1351,8 +1354,8 @@ that overwrites the header with just the peer address are each a single hop.
 | `GET` | `/api/verify` | Whether verification is configured — `{"enabled"}`. It does not read your credential |
 | `POST` | `/api/verify/request` | Email a code — `{"email","adult"}`; `"adult"` must be `true` |
 | `POST` | `/api/verify/confirm` | Exchange a code for a credential — `{"code"}`; returns `{"credential","label","expires_at"}` |
-| `GET` | `/api/pass` | Whether the Pass is on sale — `{"enabled","days","hourly_posts","price":{"amount","currency"},"tax","paused","claim"}`, or `{"enabled":false}` without it. `"tax"` is there only beside the price and with `EDUCHAN_STRIPE_AUTOMATIC_TAX` on: `"included"` when the Price has the tax in its amount (`tax_behavior` `inclusive`), `"added"` when Stripe adds it at checkout (`exclusive`); `price` is left out when Stripe can't be asked for the Price, refuses the key or the Price ID, or answers with a Price that is archived, recurring, without a fixed amount, or, with Stripe Tax on, neither `inclusive` nor `exclusive`, until Stripe is asked again a minute later, and while sales are paused; `"paused":true` only while they are; and `"claim":true` only when a claim cookie the browser sends has something under it to collect |
-| `POST` | `/api/pass/checkout` | Start a purchase — `{"adult","renew"}`; `"adult"` must be `true`, `"renew"` is an existing code to extend. Returns `{"url","order"}`, a page on `checkout.stripe.com` and the order's name, a hash of the claim that collects nothing, signed with `EDUCHAN_PASS_SECRET`, and sets a new claim cookie with only this order under it; `400` without `"adult": true`; `403 {"pass":"invalid"}` when the code to renew is not a Pass code, is unknown or is past its month of grace, before any cooldown starts; `403 {"error":"the Pass is not on sale right now"}` while sales are paused; `503 {"error":"the Pass can't be bought right now"}` while Stripe Tax is on and the Price is archived, recurring, without a fixed amount, or neither `inclusive` nor `exclusive`, or Stripe refuses the key or the Price ID, and `502` while Stripe Tax is on and Stripe is out of reach or failing when asked for the Price, each before any cooldown starts or anything is opened in Stripe; `429` with `Retry-After` inside `EDUCHAN_PASS_COOLDOWN`; `502` when Stripe fails to open the session, after the cooldown has started, so asking again at once gets `429`; `409 {"pass":"invalid"}` when the Pass to renew was refunded, lapsed or given another code by a reissue meanwhile |
+| `GET` | `/api/pass` | Whether the Pass is on sale — `{"enabled","days","hourly_posts","price":{"amount","currency"},"tax","paused","claim"}`, or `{"enabled":false}` without it. `"tax"` is there only beside the price and with `EDUCHAN_STRIPE_AUTOMATIC_TAX` on: `"included"` when the Price has the tax in its amount (`tax_behavior` `inclusive`), `"added"` when Stripe adds it at checkout (`exclusive`); `price` is left out when Stripe can't be asked for the Price, refuses the request for the Price (a key or Price ID it does not take, say), or answers with a Price that is archived, recurring, without a fixed amount, or, with Stripe Tax on, neither `inclusive` nor `exclusive`, until Stripe is asked again a minute later, and while sales are paused; `"paused":true` only while they are; and `"claim":true` only when a claim cookie the browser sends has something under it to collect |
+| `POST` | `/api/pass/checkout` | Start a purchase — `{"adult","renew"}`; `"adult"` must be `true`, `"renew"` is an existing code to extend. Returns `{"url","order"}`, a page on `checkout.stripe.com` and the order's name, a hash of the claim that collects nothing, signed with `EDUCHAN_PASS_SECRET`, and sets a new claim cookie with only this order under it; `400` without `"adult": true`; `403 {"pass":"invalid"}` when the code to renew is not a Pass code, is unknown or is past its month of grace, before any cooldown starts; `403 {"error":"the Pass is not on sale right now"}` while sales are paused; `503 {"error":"the Pass can't be bought right now"}` when the Price is archived, recurring or without a fixed amount, or, with Stripe Tax on, neither `inclusive` nor `exclusive`, or when Stripe refuses the request for the Price (a key or Price ID it does not take, say), and `502` while Stripe is out of reach or failing when asked for the Price, with Stripe Tax on or off, each before any cooldown starts or anything is opened in Stripe; `429` with `Retry-After` inside `EDUCHAN_PASS_COOLDOWN`; `502` when Stripe fails to open the session, after the cooldown has started, so asking again at once gets `429`; `409 {"pass":"invalid"}` when the Pass to renew was refunded, lapsed or given another code by a reissue meanwhile |
 | `POST` | `/api/pass/claim` | Collect the order under the claim cookie once it is paid, one order an answer under each claim cookie the browser sends — `{"nonce"}`, 16 random bytes in base64url that the page draws for each collection and sends with every claim until an answer says nothing more is waiting (`"claim":false`); the code is derived from the cookie and the nonce together. Answers `{"status":"issued","pass","expires_at","claim"}` when a Pass was made, and the same code again when asked again with the same cookie and nonce; else `{"status":"renewed","expires_at","claim"}`, else `202 {"status":"pending","claim":true}` while the order waits for Stripe; `400` when nothing is left, which is also the answer to a renewal's claim asked again, since a renewal hands over no code. `"claim"` says whether anything still waits. With `{"reissue":"…","nonce"}`, a reissue code (`REISSUE-…`, in either case, with or without the word and the dashes), it redeems the reissue code instead, answering the same way, with the same Pass code when asked again with the same nonce, or `403 {"pass":"invalid"}` for one used, run out or cancelled, a renewal's asked again included, or `409` for one whose right moved, while its Pass is being renewed, which leaves it unspent. With `{"forget":true}` it drops what is under every claim cookie the browser sends and clears the one the server set — `{"status":"forgotten","claim":false}`; with `{"forget":true,"order"}`, the name a checkout's answer gave its order, it drops what is under that checkout's claim alone, reading no cookie and clearing none — `{"status":"forgotten"}` — and answers `400` for a name not shaped as one or not signed by the server, `200` for one with nothing under it, and `400` for an `"order"` without `"forget"` |
 | `POST` | `/api/pass/activate` | Check a code — `{"pass"}`; returns `{"pass","expires_at"}`. A code that has run out is refused with `403 {"pass":"expired","code","expires_at"}` until it is pruned a month on, and an unknown one with `403 {"pass":"invalid"}`. One check per address every 2 seconds, `429` otherwise |
 | `POST` | `/api/pass/stripe-webhook` | Stripe's signed events: `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `checkout.session.expired`, `charge.refunded`, `charge.dispute.created` |

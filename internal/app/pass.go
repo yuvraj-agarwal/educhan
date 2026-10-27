@@ -468,14 +468,13 @@ func (a *App) handlePassStatus(w http.ResponseWriter, r *http.Request) {
 	} else if price, err := a.passPrice(r.Context()); err == nil {
 		// The price is shown when Stripe could be asked for it and answered
 		// with a Price the Pass can be sold at (errPassPriceRefused). Without
-		// it the page still offers the Pass, and with Stripe Tax off checkout
-		// still sells it: Stripe's own page always shows the price before
-		// anyone pays. With Stripe Tax on, the Price says whether the tax is in
-		// it or added to it, and the page says which (passTaxWords); one that
-		// says neither is not shown, and checkout refuses it, as it refuses
-		// every Price it can't sell and a key or Price ID Stripe refuses
-		// (passPriceUnsold), and any checkout while Stripe is out of reach or
-		// failing.
+		// it the page still offers the Pass, but checkout sells nothing, with
+		// Stripe Tax on or off: it refuses every Price it can't sell and a
+		// request for the Price Stripe refuses (passPriceUnsold), and any
+		// checkout while Stripe is out of reach or failing. With Stripe Tax on,
+		// the Price says whether the tax is in it or added to it, and the page
+		// says which (passTaxWords); one that says neither is a Price the Pass
+		// can't be sold at.
 		out["price"] = price
 		if a.cfg.Pass.StripeAutomaticTax {
 			out["tax"] = passTaxWords[price.TaxBehavior]
@@ -515,15 +514,15 @@ func (a *App) passPrice(ctx context.Context) (passPrice, error) {
 	return s.price, s.priceErr
 }
 
-// passPriceUnsold is checkout's refusal while Stripe Tax is on and Stripe
-// answered with a Price the Pass can't be sold at, or refused the key or the
-// Price ID (errPassPriceRefused). It is the owner's to fix, and trying again
-// will not, so it does not say to: the log says what to fix.
+// passPriceUnsold is checkout's refusal, with Stripe Tax on or off, when
+// Stripe answered with a Price the Pass can't be sold at, or refused the
+// request for the Price (errPassPriceRefused). It is the owner's to fix, and
+// trying again will not, so it does not say to: the log says what to fix.
 const passPriceUnsold = "the Pass can't be bought right now"
 
 // passStripeUnreachable answers a checkout Stripe could not be asked about:
-// the session could not be opened or, with Stripe Tax on, Stripe was out of
-// reach or failing when asked for the Price.
+// Stripe was out of reach or failing when asked for the Price, or the session
+// could not be opened.
 const passStripeUnreachable = "could not reach the payment page, try again in a moment"
 
 // passAdultRequired refuses a checkout that does not say its buyer is 18 or
@@ -560,26 +559,26 @@ func (a *App) handlePassCheckout(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, passAdultRequired)
 		return
 	}
-	// While Stripe Tax is on, the Pass is sold only at a Price read from
-	// Stripe and found to say whether tax is in it, since the page could not
-	// otherwise say what the buyer pays. A Price the Pass can't be sold at,
-	// for that or for being archived, recurring or without a fixed amount, and
-	// a key or Price ID Stripe refuses, are refused as the fault in the setup
-	// that they are (503), and every checkout while Stripe is out of reach or
-	// failing as just that (502). passPrice keeps either a minute, and logged
-	// why as it read the Price, so a refusal logs nothing more. Nothing is
-	// opened in Stripe, and no cooldown starts for a fault that is not the
-	// buyer's.
-	if a.cfg.Pass.StripeAutomaticTax {
-		_, err := a.passPrice(r.Context())
-		switch {
-		case errors.Is(err, errPassPriceRefused):
-			writeError(w, http.StatusServiceUnavailable, passPriceUnsold)
-			return
-		case err != nil:
-			writeError(w, http.StatusBadGateway, passStripeUnreachable)
-			return
-		}
+	// The Pass is sold only at a Price read from Stripe and found to be one it
+	// can be sold at, with Stripe Tax on or off: one-time, not archived, with
+	// a fixed amount, so not one whose buyer chooses what to pay, and, while
+	// Stripe Tax is on, saying whether tax is in it, since the page could not
+	// otherwise say what the buyer pays. The session sells one of it and
+	// nothing the buyer can change (createCheckout), so the webhook need not
+	// check what was paid. A Price the Pass can't be sold at, and a request
+	// for the Price Stripe refuses (a key or Price ID it does not take, say),
+	// are refused as the fault in the setup that they are (503), and every
+	// checkout while Stripe is out of reach or failing as just that (502).
+	// passPrice keeps either a minute, and logged why as it read the Price, so
+	// a refusal logs nothing more. Nothing is opened in Stripe, and no
+	// cooldown starts for a fault that is not the buyer's.
+	switch _, err := a.passPrice(r.Context()); {
+	case errors.Is(err, errPassPriceRefused):
+		writeError(w, http.StatusServiceUnavailable, passPriceUnsold)
+		return
+	case err != nil:
+		writeError(w, http.StatusBadGateway, passStripeUnreachable)
+		return
 	}
 
 	now := time.Now()
