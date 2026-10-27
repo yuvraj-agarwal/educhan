@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -191,7 +192,12 @@ func TestSweepModeFailsWithoutADatabase(t *testing.T) {
 }
 
 // A server that cannot listen stops there, and says why in its log, once.
+// plan9 announces an address rather than binding it, so its error names no
+// bind, and the test skips there. CI, which fails on a skip, runs on Linux.
 func TestServingFailsWhenTheAddressIsTaken(t *testing.T) {
+	if runtime.GOOS == "plan9" {
+		t.Skip("matches the bind that fails on a taken address, and plan9 announces an address rather than binding it, so its error names no bind")
+	}
 	sweepEnv(t)
 	taken, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -208,7 +214,8 @@ func TestServingFailsWhenTheAddressIsTaken(t *testing.T) {
 		t.Fatal("a server whose address was taken reported success")
 	}
 	// The address and the call that failed, which Unix and Windows both
-	// write, not the error's own text, which each words its own way.
+	// write (plan9, skipped above, writes announce), not the error's own
+	// text, which each words its own way.
 	wantOneFatalLine(t, logs.String(), taken.Addr().String()+": bind: ")
 }
 
