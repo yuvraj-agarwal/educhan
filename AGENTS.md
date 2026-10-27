@@ -406,7 +406,8 @@ before the test changes.
   notice name it through `uploadLimitText` — never a board, since no board has a limit of
   its own.
 - **The captcha** (`/* Captcha */` in `app.js`, server side in `captcha.go`). `loadSite`
-  reads `captcha` from `GET /api/site` into `state.site.captcha`. The puzzle starts only
+  reads `captcha` from `GET /api/site` into `state.site.captcha`, and a form's note
+  on the check is drawn by its button only while that is on. The puzzle starts only
   on something done in or to a form that needs it, never on render: focus moving into a
   box to write in, however it gets there (the `focusin` listener; a quote and the
   `/verify` buttons put the focus there too; the badge box is not one), unticking the
@@ -428,17 +429,20 @@ before the test changes.
   (`CAPTCHA_UNAVAILABLE` otherwise); a `429` from `/api/captcha` says too many checks
   were started from the reader's network, with its wait (`captchaBusy`), never a post's
   or a code request's cooldown. Every copy is terminated when the puzzle ends, a throw
-  while starting them included. The answer is kept in the `captcha` object in memory
-  only, never in storage or a draft, and read only by `captchaAnswer`, `takeCaptcha`,
-  `keepCaptcha` and `solveCaptcha`. `sendWithCaptcha` sends a post or a code request,
-  solving first when needed, and only from a form still on screen (`formOnScreen`: in
-  the document, and on the page it was pressed on, by `routeKey` for a posting form,
-  which a redraw of its page carries, and by the render that drew it for a `/verify`
-  form, which none does) in a browser not forgotten since the press. Each request takes
-  its answer out of the page as it is handed over (`takeCaptcha`), so a second press
-  while one is on its way solves a fresh puzzle, and puts it back (`keepCaptcha`: only
-  into an empty place, only while good) only when it left it unspent, or brought no
-  response, which may have spent it: the next request is then refused as used and solves
+  while starting them included. A copy that runs out of time answers `null`, and the
+  puzzle is said to have taken too long (`CAPTCHA_TOO_SLOW`) only when every copy did,
+  failed (`CAPTCHA_FAILED`) otherwise. The answer is kept in the `captcha` object
+  in memory only, never in storage or a draft, and read only by `captchaAnswer`,
+  `takeCaptcha`, `keepCaptcha` and `solveCaptcha`. `sendWithCaptcha` sends a post
+  or a code request, solving first when needed, and only from a form still on
+  screen (`formOnScreen`: in the document, and on the page it was pressed on,
+  by `routeKey` for a posting form, which a redraw of its page carries, and by
+  the render that drew it for a `/verify` form, which none does) in a browser
+  not forgotten since the press. Each request takes its answer out of the page
+  as it is handed over (`takeCaptcha`), so a second press while one is on its
+  way solves a fresh puzzle, and puts it back (`keepCaptcha`: only into an empty
+  place, only while good) only when it left it unspent, or brought no response,
+  which may have spent it: the next request is then refused as used and solves
   a fresh one. One whose form has left the screen is dropped unsent with its answer put
   back, and, sent or not, is not navigated from and says nothing on the page the reader
   went to; a post that did go still empties and releases its form, wherever it is. From
@@ -452,16 +456,16 @@ before the test changes.
   never the index page) keeps the page, dimmed, in place of the skeleton (`keepPage` in
   `render`), with the thread its controls read and the open image left as they are until
   a new page is drawn, so a refusal answered meanwhile updates the page on screen, and
-  puts the held form itself into the new page in place of the one drawn there
-  (`heldForms`, `captureDraft`, `restoreDraft`); a form answered by then is read for its
-  values like any draft, emptied after a success. A draft, held or not, is keyed by the
-  page on screen (`drawnFor` in `captureDraft`), never by a render begun since that has
-  not drawn yet, so the second of a double click neither carries the form into the page
-  it goes to nor keeps the page on screen under that page's address. A redraw that
-  fails to load leaves the kept page on screen, held form and all, with the address
-  bar, `renderedPath`, `state.route` and `state.thread` put back as that page
-  was drawn for them (`drawnFor`, noted by the render that drew it, however many
-  redraws of it have failed since) and the error in a notice. The address bar goes
+  puts the held form itself into the new page in place of the one drawn there, its
+  `<details>` opened (`heldForms`, `captureDraft`, `restoreDraft`); a form answered by
+  then is read for its values like any draft, emptied after a success. A draft, held or
+  not, is keyed by the page on screen (`drawnFor` in `captureDraft`), never by a render
+  begun since that has not drawn yet, so the second of a double click neither carries
+  the form into the page it goes to nor keeps the page on screen under that page's
+  address. A redraw that fails to load leaves the kept page on screen, held form and
+  all, with the address bar, `renderedPath`, `state.route` and `state.thread` put back
+  as that page was drawn for them (`drawnFor`, noted by the render that drew it, however
+  many redraws of it have failed since) and the error in a notice. The address bar goes
   back by replacing the history entry the redraw was for (`history.replaceState`),
   so after a link the history holds the kept page twice and the first Back stays
   on it (`popstate` finds `renderedPath` and only moves to the fragment), and
@@ -492,8 +496,10 @@ before the test changes.
   box after `release` (`errorMessage`'s `hasText` and `imageOff`), so a post left with
   nothing is told to write something instead, unless the thread takes no posts at all.
   A request that succeeds keeps the answer it took; a refusal carrying `"captcha"`
-  drops it and, while the form is on screen, sends once more with a fresh one, and
-  `"required"` also turns `state.site.captcha` on for a page drawn without knowing.
+  drops it and, while the form is on screen, sends once more with a fresh one, whose
+  refusal says nothing was posted, or for a code request that no code was sent, and
+  `"required"` also turns `state.site.captcha` on for a page drawn without knowing, as a
+  `404` from `GET /api/captcha` turns it off, the request then going without an answer.
   Any other refusal, or no response at all, puts the answer back, unless it carries
   `Educhan-Captcha: spent` (`CAPTCHA_SPENT_HEADER`, set by `spendCaptcha`, a `429` from
   the second flood-control check included), which drops it and starts the next puzzle
@@ -503,7 +509,8 @@ before the test changes.
   `TestCaptchaAnswerStaysInMemory`, `TestCaptchaIsAskedForOnlyWhenSomeoneWrites`,
   `TestCaptchaIsSkippedOnlyByABadgedPost`, `TestClientAndServerAgreeOnTheCaptcha` (which
   also holds `CAPTCHA_TIMEOUT_MS` to the two minutes, the hardest base puzzle at 4 ms an
-  attempt to half of it, and `CAPTCHA_MAX_WORKERS` to the four copies the README names),
+  attempt to half of it, `CAPTCHA_MAX_WORKERS` to the four copies the README names,
+  counting interleaved, and a `404` from `/api/captcha` to turning the captcha off),
   `TestCaptchaWorkersAreAlwaysStopped`, `TestARequestGoesOnlyFromAFormOnScreen`,
   `TestAPendingFormIsHeld`, `TestAHeldFormSurvivesARedrawOfItsPage`,
   `TestCaptchaRefusalSaysWhatTheFormStillHolds`, `TestTheCaptchaFAQSaysWhatThePageDoes`,

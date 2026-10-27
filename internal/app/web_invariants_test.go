@@ -763,6 +763,13 @@ func TestClientAndServerAgreeOnTheCaptcha(t *testing.T) {
 	if !strings.Contains(withoutComments(jsFunction(t, script, "runCaptchaWorkers")), `counterMode: "uint32",`) {
 		t.Error(`runCaptchaWorkers no longer asks the worker for counterMode "uint32", the one captchaKey matches`)
 	}
+	// The copies' counters interleave: copy i counts from i in steps of their
+	// number, so between them they try each counter once. Copies counting
+	// from one start, or in steps of one, would all try the same counters.
+	if !strings.Contains(squash(withoutComments(jsFunction(t, script, "runCaptchaWorkers"))),
+		`counterMode: "uint32", counterStart: i, counterStep: count,`) {
+		t.Error("runCaptchaWorkers no longer has copy i count from i in steps of the number of copies")
+	}
 
 	// A worker gives up at CAPTCHA_TIMEOUT_MS, which has to leave a slow phone
 	// time for the hardest puzzle the server gives at the base work. The work
@@ -819,6 +826,14 @@ func TestClientAndServerAgreeOnTheCaptcha(t *testing.T) {
 	if !strings.Contains(squash(send), `if (reason === "`+captchaMissing+`") { state.site.captcha = true; }`) {
 		t.Errorf("a %q refusal no longer turns the captcha on for a page drawn without knowing", captchaMissing)
 	}
+	// And the other way: with the captcha off, GET /api/captcha answers 404
+	// (TestCaptchaIsOffWithoutASecret), so a page drawn while it was on learns
+	// there that it is off, turns it off, and sends the request without an
+	// answer. Any other failure to get one fails the request.
+	if !strings.Contains(squash(send), "} catch (err) { if (err.status !== 404) { throw err; } state.site.captcha = false; } finally {") ||
+		strings.Count(code, "state.site.captcha = false;") != 1 {
+		t.Error("a 404 from /api/captcha no longer turns the captcha off and sends the request without an answer")
+	}
 	// A refusal of the answer drops it and sends once more, once: a loop here
 	// would hammer /api/captcha. Which outcomes put the answer back is
 	// TestEachCaptchaAnswerGoesOnOneRequest's.
@@ -843,7 +858,8 @@ func TestClientAndServerAgreeOnTheCaptcha(t *testing.T) {
 // ends, however it ends: at the first answer, when the last copy gives up,
 // when the puzzle is stopped (the badge ticked), and when starting the copies
 // throws part way. A copy left running would hold a reader's processor for up
-// to CAPTCHA_TIMEOUT_MS for nothing.
+// to CAPTCHA_TIMEOUT_MS for nothing. And a puzzle the copies gave up on is said
+// to have taken too long only when every one of them ran out of time.
 func TestCaptchaWorkersAreAlwaysStopped(t *testing.T) {
 	run := squash(withoutComments(jsFunction(t, appScript(t), "runCaptchaWorkers")))
 	for _, want := range []string{
@@ -859,6 +875,19 @@ func TestCaptchaWorkersAreAlwaysStopped(t *testing.T) {
 	} {
 		if !strings.Contains(run, want) {
 			t.Errorf("runCaptchaWorkers no longer stops every copy of the worker: missing %s", want)
+		}
+	}
+	// How it ended is told apart: a copy answers null when it ran out of
+	// time, so the puzzle took too long (CAPTCHA_TOO_SLOW) when every copy
+	// did, and failed (CAPTCHA_FAILED) when any copy could not work at all.
+	for _, want := range []string{
+		"const giveUp = (outOfTime) => { left -= 1; if (outOfTime) timedOut += 1; " +
+			"if (left === 0) finish(reject, timedOut === count ? new Error(CAPTCHA_TOO_SLOW) : failed()); };",
+		"} else { giveUp(solution === null); } };",
+		"worker.onerror = (event) => { event.preventDefault(); giveUp(false); };",
+	} {
+		if !strings.Contains(run, want) {
+			t.Errorf("runCaptchaWorkers no longer tells a puzzle that took too long from one that failed: missing %s", want)
 		}
 	}
 	// Nothing settles the puzzle but finish, except a stop that came before
@@ -1140,7 +1169,8 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 	// check, drawn in its own element, says what a form drawn without the
 	// option says. The submit handler drops the option the same way when the
 	// server refuses the badge as expired or revoked. Focus on the box goes to
-	// the form's button rather than with the box.
+	// the form's button rather than with the box. The note is drawn only while
+	// the captcha is on: a site without it has no check for a press to wait on.
 	drop := squash(withoutComments(jsFunction(t, script, "dropBadgeOption")))
 	inOrder(t, "dropBadgeOption", drop,
 		`const box = field(form, "badge"); const option = box && box.closest("label");`,
@@ -1149,9 +1179,11 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 		`if (focused) { form.querySelector('button[type="submit"]')?.focus({ preventScroll: true }); } }`,
 	)
 	form := squash(withoutComments(jsFunction(t, script, "formHTML")))
-	if !strings.Contains(form, "check = ` <span data-check-hint>${held ? CHECK_HINT_WITH_BADGE : CHECK_HINT}</span>`;") ||
-		strings.Contains(form, "anti-spam") {
-		t.Error("formHTML no longer draws the note on the anti-spam check in the element dropBadgeOption rewords, from the two constants")
+	if !strings.Contains(form, `let check = ""; if (state.site.captcha) { `+
+		"check = ` <span data-check-hint>${held ? CHECK_HINT_WITH_BADGE : CHECK_HINT}</span>`; }") ||
+		strings.Count(form, "check = ") != 2 || strings.Contains(form, "anti-spam") {
+		t.Error("formHTML no longer draws the note on the anti-spam check, only while the captcha is on, in the element " +
+			"dropBadgeOption rewords, from the two constants")
 	}
 	hint, badgeHint := jsString(t, script, "CHECK_HINT"), jsString(t, script, "CHECK_HINT_WITH_BADGE")
 	if strings.Contains(hint, "badge") || !strings.Contains(badgeHint, "badge") || !strings.HasSuffix(badgeHint, hint[1:]) {
@@ -1829,13 +1861,17 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 	if strings.Count(capture, "routeKey(") != 1 || strings.Count(capture, "key") != 4 {
 		t.Error("captureDraft keys a draft by something besides the page on screen")
 	}
+	// The held form goes into the new page's <details>, which another page of
+	// the index draws closed, so that is opened: a form on its way is never
+	// folded away out of sight.
 	restore := squash(withoutComments(jsFunction(t, script, "restoreDraft")))
 	inOrder(t, "restoreDraft", restore,
 		"if (!draft || draft.key !== routeKey(state.route)) { return; }",
 		`const form = el.main.querySelector("form[data-kind]");`,
 		"if (draft.held) { const held = draft.held; if ( heldForms.has(held) && form && "+
 			"form.dataset.kind === held.dataset.kind && form.dataset.thread === held.dataset.thread ) { "+
-			`if (held.querySelector("[data-file-field]")) { redrawnPickers.set(held, pickerRefusal(form)); } form.replaceWith(held);`,
+			`if (held.querySelector("[data-file-field]")) { redrawnPickers.set(held, pickerRefusal(form)); } form.replaceWith(held); `+
+			`const details = held.closest("details"); if (details) details.open = true;`,
 		"return; } answered = heldForms.has(held) ? null : held; draft = { key: draft.key, ...formDraft(held) }; }",
 		"if (!form) { keepUnsentDraft(draft); return; }",
 	)
@@ -2043,6 +2079,13 @@ func TestCaptchaRefusalSaysWhatTheFormStillHolds(t *testing.T) {
 		t.Errorf("errorMessage no longer tells a post left with nothing from one that kept its text or its image: %.200s", message)
 	}
 	branch := jsBraced(t, message, "if (err.status === 403 && err.payload && err.payload.captcha) {")
+	// A code request refused so says no code was sent, never that nothing
+	// was posted: a reader asking for a code posted nothing.
+	forCode := regexp.MustCompile(`^if \(err\.status === 403 && err\.payload && err\.payload\.captcha\) \{ ` +
+		`if \(action === "code"\) \{ return "([^"]*)"; \}`).FindStringSubmatch(branch)
+	if forCode == nil || !strings.Contains(forCode[1], "no code was sent") || strings.Contains(forCode[1], "post") {
+		t.Errorf("errorMessage no longer tells a code request the captcha refused that no code was sent: %s", branch)
+	}
 	m := regexp.MustCompile(`if \(nothingLeft\) \{ return "([^"]*)"; \} return hasText \? "([^"]*)" : "([^"]*)";`).FindStringSubmatch(branch)
 	if m == nil {
 		t.Fatalf("errorMessage no longer words a post the captcha refused by what its form still holds: %s", branch)
