@@ -68,10 +68,17 @@ type Store struct {
 	// (cancelGrace), which a test shortens to see PostgreSQL not answer one.
 	cancelGrace time.Duration
 	// How long after the rewrite RewriteCredentials reads the verification
-	// tables a last time (statsHandOver). The test harness sets it to zero, as
-	// only TestSweepLeavesNoScanTimeFromBeforeIt is about it, and every other
-	// sweep would wait it out for nothing.
+	// tables a last time (statsHandOver). The app package's test harness sets
+	// it to zero, as only TestSweepLeavesNoScanTimeFromBeforeIt there is about
+	// it, and every other sweep would wait it out for nothing; cmd/server's
+	// tests sweep from an App built by New, as the Job does, and wait it out.
 	statsHandOver time.Duration
+	// vacuumed, which tests set, is called with the table of each VACUUM FULL
+	// after which vacuumFull finds the table in a new file. Every schema in
+	// the database shares pg_statistic, so another process's sweep — the
+	// cmd/server tests', run alongside the app package's — moves its file
+	// too, and only the sweep can say which runs on it were its own.
+	vacuumed func(table string)
 }
 
 // NewStore wraps an existing pool.
@@ -1829,6 +1836,9 @@ func (s *Store) vacuumFull(ctx context.Context, conn *pgx.Conn, notices *noticeL
 	after, err := relationFile(ctx, conn, table)
 	if err != nil {
 		return 0, err
+	}
+	if after != before && s.vacuumed != nil {
+		s.vacuumed(table)
 	}
 	if after == before {
 		switch {

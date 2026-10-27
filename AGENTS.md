@@ -883,8 +883,10 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     holds the server's next request on a lock until the statistics have the first
     read, since a connection hands nothing over while a statement of its runs, and
     fails if the confirmation's counts were in by then; it sweeps from an `App` of its
-    own, as the Job does, and waits the 65 seconds out; the harness sets the wait to
-    zero for every other test). Then `VACUUM (FULL, SKIP_LOCKED, SKIP_DATABASE_STATS)` on each table,
+    own, as the Job does, and waits the 65 seconds out). The app package's harness sets
+    the wait to zero for every other test there; `cmd/server`'s `-sweep` tests build
+    their `App` with `New`, as the Job does, and wait the full 65 seconds per sweep,
+    three sweeps in all. Then `VACUUM (FULL, SKIP_LOCKED, SKIP_DATABASE_STATS)` on each table,
     outside the transaction, writes both tables to new files without the dead versions
     — or the deleted pending rows, with their email hash and an expiry to the
     microsecond — and drops the old files, which are not wiped (the README's
@@ -928,7 +930,10 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     given up, and the sweep ran it again or failed. So the runs leave that step out
     (`SKIP_DATABASE_STATS`; autovacuum takes it on its own), and `vacuumFull` counts a
     run that times out as given up only while the table is still in its old file
-    (`TestVacuumDoesNotWaitForTheDatabasesRow`). None of these does anything about the
+    (`TestVacuumDoesNotWaitForTheDatabasesRow`, which counts its sweep's runs on
+    `pg_statistic` as the sweep saw them, through `Store.vacuumed`: every schema in the
+    database shares the catalog, and another process's sweep moves its file too, as
+    `cmd/server`'s tests, run alongside, do). None of these does anything about the
     run: once `VACUUM FULL` has a table and its locks it holds it against reads as well
     as writes until it has written it out (between about half a second and two and a
     half seconds at 220,000 credentials on development machines), every badged post and

@@ -2573,7 +2573,12 @@ func (h *harness) holdOpen(statement string) pgx.Tx {
 // open, with one run on each table. In the second case pg_statistic's run
 // takes the step, standing in for any wait that ends a run after it has
 // committed: the sweep tells such a run by its table's new file, and counts it
-// as the run it was.
+// as the run it was. The verification tables are the test's own, and their
+// files say how many times the sweep moved them; pg_statistic is every
+// schema's in the database, and another process's sweep moves it too — the
+// cmd/server tests' sweeps, run alongside this package's, wait a minute and
+// more each — so the runs on it are counted as the sweep saw them (vacuumed),
+// and its file only has to have moved at least as often.
 func TestVacuumDoesNotWaitForTheDatabasesRow(t *testing.T) {
 	for _, statistics := range []struct{ name, command string }{
 		{"skipped", vacuumCommand},
@@ -2583,6 +2588,13 @@ func TestVacuumDoesNotWaitForTheDatabasesRow(t *testing.T) {
 			h := testServer(t, nil)
 			h.app.store.statisticsVacuumCommand = statistics.command
 			h.app.store.vacuumPatience = 5 * time.Second
+			var mu sync.Mutex
+			ran := map[string]int{}
+			h.app.store.vacuumed = func(table string) {
+				mu.Lock()
+				defer mu.Unlock()
+				ran[table]++
+			}
 			ctx := context.Background()
 			h.exec(`INSERT INTO verification_credentials (email_hash, credential_id_hash, label, expires_at)
 				VALUES ('\x01', '\x02', 'Altered College', date_trunc('day', now()) + interval '181 days')`)
@@ -2635,8 +2647,19 @@ func TestVacuumDoesNotWaitForTheDatabasesRow(t *testing.T) {
 				t.Errorf("a sweep that ran while a transaction held the database's row returned %v, "+
 					"want it to finish", sweep.err)
 			}
+			mu.Lock()
+			own := ran[statisticsCatalog]
+			mu.Unlock()
 			for _, table := range vacuumed {
-				if n := watch.runs(table); n != 1 {
+				n := watch.runs(table)
+				if table == "pg_statistic" {
+					if n < own {
+						t.Errorf("the sweep says it moved pg_statistic to a new file %d times, but the file "+
+							"moved %d times", own, n)
+					}
+					n = own
+				}
+				if n != 1 {
 					t.Errorf("the sweep ran VACUUM FULL on %s %d times, want once: every run holds every "+
 						"request on the table up", table, n)
 				}
