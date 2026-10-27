@@ -1353,8 +1353,9 @@ func TestForgettingTheBrowserReachesEveryTab(t *testing.T) {
 func TestForgettingTheBadgeReachesEveryTab(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
-	forget := squash(jsBraced(t, code, `if (event.target.closest('[data-action="forget-verification"]')) {`))
-	if !strings.Contains(forget, "event.preventDefault(); forgetCredential();") ||
+	forget := squash(jsBraced(t, code, `if (forget) {`))
+	if !strings.Contains(code, `const forget = event.target.closest('[data-action="forget-verification"]');`) ||
+		!strings.Contains(forget, "event.preventDefault(); forgetCredential();") ||
 		!strings.Contains(squash(withoutComments(jsFunction(t, script, "forgetCredential"))), "localStorage.removeItem(CREDENTIAL_STORAGE_KEY);") {
 		t.Error("Forget this credential no longer takes the credential out of storage, which is what the other tabs hear")
 	}
@@ -1418,13 +1419,18 @@ func TestForgettingTheBadgeReachesEveryTab(t *testing.T) {
 	// on screen once the server has answered: an address step the reader moved
 	// to meanwhile, by Verify another address or Use a different address,
 	// which change no route, is left as it is, as is /verify drawn again by a
-	// forget, with its notice. The forgets' own redraws and render pass
-	// nothing.
+	// forget, with its notice. Forget this credential's own redraw passes the
+	// button pressed, so an address step the reader moved to from its panel
+	// meanwhile is left too. Forget this browser's, pressed here or heard from
+	// another tab, passes nothing, as render does, and draws whatever /verify
+	// then shows, so that its notice is said. Both are pinned with the other
+	// calls of renderVerify too (TestAHeldFormSurvivesARedrawOfItsPage).
 	if render := squash(withoutComments(jsFunction(t, script, "renderVerify"))); !strings.HasPrefix(render,
 		"async function renderVerify(route, over) { await loadVerification(); if (overtaken(route) || (over && !over.isConnected)) { return false; } ") {
 		t.Errorf("renderVerify no longer draws nothing when what a redraw found on screen has left it while it asked the server: %s", render)
 	}
-	if strings.Count(code, "renderVerify(state.route, ") != 4 || strings.Count(code, "await renderVerify(route, form);") != 1 ||
+	if strings.Count(code, "renderVerify(state.route, ") != 5 || strings.Count(code, "await renderVerify(route, form);") != 1 ||
+		!strings.Contains(forget, `if (state.route.view === "verify") { renderVerify(state.route, forget); }`) ||
 		strings.Count(squash(code), panelRedrawn) != 2 {
 		t.Error("a redraw of /verify that is not a render no longer passes what it found on screen, or one passes it " +
 			"that should not")
@@ -1941,7 +1947,7 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 		`if (state.route.view === "verify" && ageStatus() === "ok" && step) { `
 	if squashed := squash(code); strings.Count(code, "renderVerify(") != 10 || strings.Count(code, "await renderVerify(route);") != 1 ||
 		strings.Count(squashed, codeStep+spent+" }") != 1 || strings.Count(squashed, verifyOvertaken+overtakenDrawn+" }") != 1 ||
-		strings.Count(squashed, `if (state.route.view === "verify") { renderVerify(state.route); }`) != 1 ||
+		strings.Count(squashed, `if (state.route.view === "verify") { renderVerify(state.route, forget); }`) != 1 ||
 		strings.Count(squashed, `if (state.route.view === "verify") { `+forgot+" }") != 1 ||
 		strings.Count(squashed, `if (state.route.view === "verify" && ageStatus() === "ok") { `+forgot+" }") != 1 ||
 		strings.Count(squashed, panelRedrawn) != 2 ||

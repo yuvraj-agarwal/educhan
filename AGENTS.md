@@ -586,10 +586,13 @@ before the test changes.
   (`dropBadgeOption`, which moves focus on the box to the form's button) and draws
   `/verify` again only if it shows the badge panel, then and once the page has asked the
   server: a redraw that is not a render passes `renderVerify` what it found on screen
-  that called for it (`over`), and draws nothing if that has gone meanwhile. The address
-  step is left as it is, as is one the reader moves to (Verify another address, Use a
-  different address) while a redraw asks the server, and so is a code step unless the
-  badge read in is one newly verified there: the browser has one verification in
+  that called for it (`over`), or for Forget this credential's own redraw the button
+  pressed, and draws nothing if that has gone meanwhile; only Forget this browser's,
+  pressed here or heard from another tab, passes nothing, and draws whatever `/verify`
+  then shows, an address step being filled in included, so that its notice is said. The
+  address step is left as it is, as is one the reader moves to (Verify another address,
+  Use a different address) while a redraw asks the server, and so is a code step unless
+  the badge read in is one newly verified there: the browser has one verification in
   progress, held by its cookie, so that badge spent or replaced the code a step asks for
   when no confirmation of it is on its way, and the step goes, drawn again as the panel
   with a notice if it is on screen, then and once the page has asked the server

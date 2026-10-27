@@ -2502,10 +2502,13 @@ function verifyViewHTML() {
 // renderVerify draws /verify for route, the render or the press that asked for
 // it, unless a newer render has begun while it asked the server: then, like the
 // other views, it draws nothing and says nothing (overtaken). A redraw that is
-// not a render passes over, what it found on screen that called for it, and
-// draws nothing either if that has left the screen while it asked: the reader
-// has moved on within /verify meanwhile, to an address step they may be filling
-// in, say, or a forget has drawn the page again. It returns whether it drew.
+// not a render passes over, what it found on screen that called for it, or for
+// Forget this credential the button pressed, and draws nothing either if that
+// has left the screen while it asked: the reader has moved on within /verify
+// meanwhile, to an address step they may be filling in, say, or a forget has
+// drawn the page again. Forget this browser's redraw, pressed here or heard
+// from another tab, passes nothing: it draws whatever /verify then shows, so
+// that its notice is said. It returns whether it drew.
 async function renderVerify(route, over) {
   await loadVerification();
   if (overtaken(route) || (over && !over.isConnected)) {
@@ -3823,13 +3826,20 @@ document.addEventListener("click", (event) => {
   // tabs see it go from storage and stop offering it (followCredentialStorage).
   // Either forget draws /verify again only while it is the page being drawn:
   // pressed on a page the reader has just left, it leaves the screen to the
-  // page they went to.
-  if (event.target.closest('[data-action="forget-verification"]')) {
+  // page they went to. Forget this credential draws it only if the panel it
+  // was pressed on is still on screen once the page has asked the server
+  // (renderVerify): an address step the reader moved to meanwhile, by Verify
+  // another address, already shows no badge, and is left as it is. Forget
+  // this browser draws whatever /verify then shows, an address step being
+  // filled in included, as it does when heard from another tab
+  // (forgottenElsewhere), so that its notice is said.
+  const forget = event.target.closest('[data-action="forget-verification"]');
+  if (forget) {
     event.preventDefault();
     forgetCredential();
     verifyStep = { step: "email", label: "" };
     if (state.route.view === "verify") {
-      renderVerify(state.route);
+      renderVerify(state.route, forget);
     }
     return;
   }
@@ -4805,9 +4815,11 @@ el.main.addEventListener("submit", async (event) => {
       state.site.uploads = false;
     }
     // A form that has left the screen, with or without its post sent, is said
-    // nothing about on the page the reader went to, and that page is not
-    // changed for it. What the refusal said about the badge and the server is
-    // kept, above.
+    // nothing about on the page the reader went to, and that page is changed
+    // for it only as above, for the badge the refusal forgot: its posting
+    // forms lose the option, and /verify showing that badge's panel is drawn
+    // again, saying why the badge went. What the refusal said about the badge
+    // and the server is kept, above.
     if (!shown) {
       return;
     }
