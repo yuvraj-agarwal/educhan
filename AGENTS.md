@@ -674,10 +674,11 @@ before the test changes.
   someone else's), the form on screen is told so in the page's own words rather than the
   server's "verify again" (`badgeReplacedNotice`): its badge was replaced by one
   verified since in this browser, so nothing was posted, and, unless release left the
-  post with nothing in it (the notice then says only what went), pressing again posts
-  without a badge, and Update, or the board's Index for a new thread, draws the form
-  again offering the new one, unticked. That notice is its one refusal for the badge, so
-  a note left on it while the post was on its way goes.
+  post with nothing in it (the form is then told only what went and why, and, by
+  `imageTakenOff`, to write something instead), pressing again posts without a badge,
+  and Update, or the board's Index for a new thread, draws the form again offering the
+  new one, unticked. That notice is its one refusal for the badge, so a note left on it
+  while the post was on its way goes.
 - The poster key lives in `localStorage` under `educhan:poster-key`: 16 random bytes as
   22 characters of unpadded base64url, made by `posterKey()` on the first post rather
   than the first visit. `submit` sends it in `X-Educhan-Poster-Key` on thread-create and
