@@ -604,7 +604,8 @@ curl -fsS "https://api.stripe.com/v1/prices/${PRICE_ID}" -u "${STRIPE_KEY}:" >/d
   { echo "The restricted key can't read the new Price: paste it whole, from the same mode (test or live) as the secret key, with Prices: Read."; exit 1; }
 SESSION_JSON=$(curl -sS --fail-with-body https://api.stripe.com/v1/checkout/sessions -u "${STRIPE_KEY}:" \
   -d mode=payment -d "line_items[0][price]=${PRICE_ID}" -d "line_items[0][quantity]=1" \
-  -d submit_type=pay -d success_url="${PUBLIC_URL}/pass?paid" -d cancel_url="${PUBLIC_URL}/pass?cancelled") ||
+  -d submit_type=pay -d "automatic_tax[enabled]=false" \
+  -d success_url="${PUBLIC_URL}/pass?paid" -d cancel_url="${PUBLIC_URL}/pass?cancelled") ||
   { echo "$SESSION_JSON"; echo "Stripe would not start a checkout with the restricted key; its answer is above. The key needs Checkout Sessions: Write."; exit 1; }
 curl -fsS -X POST "https://api.stripe.com/v1/checkout/sessions/$(field id <<<"$SESSION_JSON")/expire" \
   -u "${STRIPE_KEY}:" >/dev/null
@@ -661,13 +662,21 @@ URL ends in `/api/pass/stripe-webhook`, since the server can't verify its
 deliveries, and archive every other "educhan Pass" Product.
 
 `curl -s "${PUBLIC_URL}/api/pass"` should then answer `"enabled":true` with the
-price. The Price is tax-inclusive, so every buyer pays USD 20.00. To have Stripe
-Tax collect sales tax, VAT or GST, switch Stripe Tax on in the account and add
-`EDUCHAN_STRIPE_AUTOMATIC_TAX=1` to the env vars: Stripe then takes any tax out
-of the USD 20.00 rather than adding it. A Price made without `tax_behavior` can
-still be given it once, but one made tax-exclusive can't be changed: make a new
-Price the way the block does, with `tax_behavior=inclusive`, set its id with
-`gcloud run services update educhan --region "$REGION" --update-env-vars
+price and no `"tax"`: with `EDUCHAN_STRIPE_AUTOMATIC_TAX` unset, the server
+tells Stripe to collect no tax (`automatic_tax[enabled]=false`), even if the
+account collects it by default, so every buyer pays USD 20.00 and the Pass page
+says nothing about tax. To have Stripe Tax collect sales tax, VAT or GST, switch
+Stripe Tax on in the account and add `EDUCHAN_STRIPE_AUTOMATIC_TAX=1` to the env
+vars: Stripe then takes any tax out of the USD 20.00 rather than adding it, and
+asks each buyer for a billing address to work it out; `/api/pass` then answers
+`"tax":"included"` beside the price, and the Pass page says "tax included".
+While it is on, a Price that says neither `inclusive` nor `exclusive`, such as
+one made without `tax_behavior`, is not sold: `/api/pass` leaves the price out,
+checkout answers `503`, and the service's log says what to fix. Such a Price can
+still be given `tax_behavior=inclusive` once, but one made tax-exclusive, which
+the page shows as "plus any tax", can't be changed: make a new Price the way the
+block does, with `tax_behavior=inclusive`, set its id with `gcloud run services
+update educhan --region "$REGION" --update-env-vars
 EDUCHAN_STRIPE_PRICE_ID=price_…`, and only then archive the old one, since an
 archived Price can't be sold. Three more settings have working defaults and need
 no change: `EDUCHAN_PASS_DAYS`, `EDUCHAN_PASS_HOURLY_POSTS` and
@@ -899,7 +908,7 @@ ones whose value differs between a development machine and Cloud Run:
 | `EDUCHAN_PASS_SECRET` | unset unless testing the Pass | from Secret Manager, once the Pass is on sale | Unset switches the Pass off, and any other Pass setting given without it refuses to start. Set together with the four below (section 2.10). Never on the sweeper Job, nor is any Pass setting (section 2.9) |
 | `EDUCHAN_STRIPE_SECRET_KEY` / `_WEBHOOK_SECRET` | unset | from Secret Manager | The restricted API key and the webhook endpoint's `whsec_…` signing secret |
 | `EDUCHAN_STRIPE_PRICE_ID` / `EDUCHAN_PUBLIC_URL` | unset | the `price_…` id / the `https://` origin readers use | Plain env; the public URL is where Stripe sends a buyer back, a bare origin (any path refuses to start), and the only one a checkout can be collected on (section 2.10) |
-| `EDUCHAN_STRIPE_AUTOMATIC_TAX` | unset | unset, or `1` with Stripe Tax on | Stripe works out the tax at checkout and takes it out of the tax-inclusive Price, so every buyer still pays its amount (section 2.10) |
+| `EDUCHAN_STRIPE_AUTOMATIC_TAX` | unset | unset, or `1` with Stripe Tax on | Stripe works out the tax at checkout, from the billing address it then asks for, and takes it out of the tax-inclusive Price, so every buyer still pays its amount and the Pass page says "tax included". A Price without `tax_behavior` is not sold while it is on: `/api/pass` shows no price and checkout answers `503`. Unset, checkout tells Stripe to collect no tax, whatever the account's default (section 2.10) |
 | `EDUCHAN_PASS_DAYS` | `365` (default) | `365` (default) | How long a Pass lasts, from `1` to `36500`. Each order keeps the term it was sold with, so a change applies only to checkouts started after it |
 | `EDUCHAN_PASS_HOURLY_POSTS` | `30` (default) | `30` (default) | Posts in one clock hour that skip the captcha; at least `1` |
 | `EDUCHAN_PASS_COOLDOWN` | `30` (default) | `30` (default) | Seconds between checkouts from one client; not negative |

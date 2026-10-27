@@ -90,7 +90,9 @@ spec:
             #   value: price_...
             # - name: EDUCHAN_PUBLIC_URL
             #   value: https://YOUR-ADDRESS
-            # Only with Stripe Tax switched on in the Stripe account:
+            # Only with Stripe Tax switched on in the Stripe account, and the Price
+            # made with tax_behavior=inclusive (one without it is not sold while
+            # this is on):
             # - name: EDUCHAN_STRIPE_AUTOMATIC_TAX
             #   value: "1"
             # To stop selling and keep what was sold working, add this one
