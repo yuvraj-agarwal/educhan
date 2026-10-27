@@ -84,8 +84,9 @@ const (
 	// passPriceTTL is how long the price read from Stripe is kept before it is
 	// read again. Stripe never changes a Price's amount or currency, so a new
 	// price is a new Price, set in EDUCHAN_STRIPE_PRICE_ID, and a restart. What
-	// the hourly read picks up is the Price archived or brought back, or given
-	// a tax behavior where it had none, which Stripe allows once.
+	// a read picks up is the Price archived, within the hour, or, after a
+	// refusal (kept a minute), brought back or given a tax behavior where it
+	// had none, which Stripe allows once.
 	passPriceTTL = time.Hour
 )
 
@@ -472,8 +473,9 @@ func (a *App) handlePassStatus(w http.ResponseWriter, r *http.Request) {
 		// anyone pays. With Stripe Tax on, the Price says whether the tax is in
 		// it or added to it, and the page says which (passTaxWords); one that
 		// says neither is not shown, and checkout refuses it, as it refuses
-		// every Price it can't sell (passPriceUnsold) and any checkout while
-		// the Price can't be read.
+		// every Price it can't sell and a key or Price ID Stripe refuses
+		// (passPriceUnsold), and any checkout while Stripe is out of reach or
+		// failing.
 		out["price"] = price
 		if a.cfg.Pass.StripeAutomaticTax {
 			out["tax"] = passTaxWords[price.TaxBehavior]
@@ -514,14 +516,14 @@ func (a *App) passPrice(ctx context.Context) (passPrice, error) {
 }
 
 // passPriceUnsold is checkout's refusal while Stripe Tax is on and Stripe
-// answered with a Price the Pass can't be sold at (errPassPriceRefused). It is
-// the owner's to fix, and trying again will not, so it does not say to: the
-// log says what to fix.
+// answered with a Price the Pass can't be sold at, or refused the key or the
+// Price ID (errPassPriceRefused). It is the owner's to fix, and trying again
+// will not, so it does not say to: the log says what to fix.
 const passPriceUnsold = "the Pass can't be bought right now"
 
 // passStripeUnreachable answers a checkout Stripe could not be asked about:
-// the session could not be opened or, with Stripe Tax on, the Price could not
-// be read.
+// the session could not be opened or, with Stripe Tax on, Stripe was out of
+// reach or failing when asked for the Price.
 const passStripeUnreachable = "could not reach the payment page, try again in a moment"
 
 // passAdultRequired refuses a checkout that does not say its buyer is 18 or
@@ -561,12 +563,13 @@ func (a *App) handlePassCheckout(w http.ResponseWriter, r *http.Request) {
 	// While Stripe Tax is on, the Pass is sold only at a Price read from
 	// Stripe and found to say whether tax is in it, since the page could not
 	// otherwise say what the buyer pays. A Price the Pass can't be sold at,
-	// for that or for being archived, recurring or without a fixed amount, is
-	// refused as the fault in the setup that it is (503), and every checkout
-	// while the Price can't be read as Stripe out of reach (502). passPrice
-	// keeps either a minute, and logged why as it read the Price, so a refusal
-	// logs nothing more. Nothing is opened in Stripe, and no cooldown starts
-	// for a fault that is not the buyer's.
+	// for that or for being archived, recurring or without a fixed amount, and
+	// a key or Price ID Stripe refuses, are refused as the fault in the setup
+	// that they are (503), and every checkout while Stripe is out of reach or
+	// failing as just that (502). passPrice keeps either a minute, and logged
+	// why as it read the Price, so a refusal logs nothing more. Nothing is
+	// opened in Stripe, and no cooldown starts for a fault that is not the
+	// buyer's.
 	if a.cfg.Pass.StripeAutomaticTax {
 		_, err := a.passPrice(r.Context())
 		switch {

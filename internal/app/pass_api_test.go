@@ -46,7 +46,12 @@ type fakeStripe struct {
 	price    map[string]any
 	// priceReads counts the times the price was asked for.
 	priceReads int
-	fail       bool
+	// priceStatus, when set, is the error status the price is read with, and
+	// priceMessage Stripe's message for it, as for a Price ID or key Stripe
+	// refuses or a read that fails.
+	priceStatus  int
+	priceMessage string
+	fail         bool
 	// sessionURL, when set, is the page a new session is said to be on.
 	sessionURL string
 	// opening, when set, runs while a session is being created, with the
@@ -98,6 +103,15 @@ func (f *fakeStripe) serve(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "url": page})
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/prices/"+testPriceID:
 		f.priceReads++
+		if f.priceStatus != 0 {
+			kind := "invalid_request_error"
+			if f.priceStatus >= 500 {
+				kind = "api_error"
+			}
+			w.WriteHeader(f.priceStatus)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"type": kind, "message": f.priceMessage}})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(f.price)
 	default:
 		w.WriteHeader(http.StatusNotFound)
@@ -353,11 +367,14 @@ func TestPassStatus(t *testing.T) {
 }
 
 // TestPassStatusSurvivesStripeTrouble holds GET /api/pass to offering the Pass
-// without its price when Stripe can't be asked for it, or answers with a Price
-// the Pass can't be sold at: archived, recurring or without a fixed amount.
+// without its price when Stripe can't be asked for it, refuses the key or the
+// Price ID, or answers with a Price the Pass can't be sold at: archived,
+// recurring or without a fixed amount.
 func TestPassStatusSurvivesStripeTrouble(t *testing.T) {
 	for what, trouble := range map[string]func(f *fakeStripe){
 		"Stripe down":       func(f *fakeStripe) { f.fail = true },
+		"no such Price":     func(f *fakeStripe) { f.priceStatus = http.StatusNotFound },
+		"key refused":       func(f *fakeStripe) { f.priceStatus = http.StatusUnauthorized },
 		"archived":          func(f *fakeStripe) { f.price["active"] = false },
 		"recurring":         func(f *fakeStripe) { f.price["type"] = "recurring" },
 		"without an amount": func(f *fakeStripe) { f.price["unit_amount"] = nil },
@@ -547,23 +564,32 @@ func TestPassTaxFollowsThePrice(t *testing.T) {
 
 // TestPassRefusesAPriceItCannotSell holds a Price that Stripe answers with but
 // the Pass can't be sold at, archived, recurring, without a fixed amount or,
-// with Stripe Tax on, silent on tax, to the fault in the setup that it is.
-// With Stripe Tax on, checkout refuses it with 503 and words of its own,
-// never the 502 that says to try again in a moment, which is for a Price that
-// could not be read; it opens nothing in Stripe and starts no cooldown, and
+// with Stripe Tax on, silent on tax, and a key or Price ID Stripe refuses (a
+// 400, 401, 403 or 404), to the fault in the setup that it is. With Stripe Tax
+// on, checkout refuses it with 503 and words of its own, never the 502 that
+// says to try again in a moment, which is for Stripe out of reach or failing
+// (a 5xx, or a 429); it opens nothing in Stripe and starts no cooldown, and
 // the log says what is wrong once, where the Price is read. The refusal is
 // kept a minute, as a failed read is, so the Price fixed sells once that has
 // run out.
 func TestPassRefusesAPriceItCannotSell(t *testing.T) {
+	refused := func(status int, message string) func(f *fakeStripe) {
+		return func(f *fakeStripe) { f.priceStatus, f.priceMessage = status, message }
+	}
+	const byStripe = "Stripe refused the key or the Price ID: stripe GET /v1/prices/" + testPriceID + ": status "
 	for _, tc := range []struct {
 		name   string
-		set    func(price map[string]any)
+		set    func(f *fakeStripe)
 		reason string
 	}{
-		{"archived", func(price map[string]any) { price["active"] = false }, "it is archived"},
-		{"recurring", func(price map[string]any) { price["type"] = "recurring" }, `it must be one-time, not "recurring"`},
-		{"without an amount", func(price map[string]any) { price["unit_amount"] = nil }, "it has no fixed amount"},
-		{"silent on tax", func(price map[string]any) { price["tax_behavior"] = "unspecified" }, "with EDUCHAN_STRIPE_AUTOMATIC_TAX on"},
+		{"archived", func(f *fakeStripe) { f.price["active"] = false }, "it is archived"},
+		{"recurring", func(f *fakeStripe) { f.price["type"] = "recurring" }, `it must be one-time, not "recurring"`},
+		{"without an amount", func(f *fakeStripe) { f.price["unit_amount"] = nil }, "it has no fixed amount"},
+		{"silent on tax", func(f *fakeStripe) { f.price["tax_behavior"] = "unspecified" }, "with EDUCHAN_STRIPE_AUTOMATIC_TAX on"},
+		{"no such Price", refused(http.StatusNotFound, "No such price: '"+testPriceID+"'"), byStripe + "404: invalid_request_error: No such price"},
+		{"key refused", refused(http.StatusUnauthorized, "Invalid API Key provided: sk_test_***key"), byStripe + "401: invalid_request_error: Invalid API Key"},
+		{"key not allowed", refused(http.StatusForbidden, "The provided key does not have the required permissions"), byStripe + "403: invalid_request_error: The provided key"},
+		{"request refused", refused(http.StatusBadRequest, "Invalid Stripe API version"), byStripe + "400: invalid_request_error: Invalid Stripe API version"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var logs syncBuffer
@@ -573,7 +599,7 @@ func TestPassRefusesAPriceItCannotSell(t *testing.T) {
 			}, &logs)
 			p.stripe.mu.Lock()
 			p.stripe.price["tax_behavior"] = "inclusive"
-			tc.set(p.stripe.price)
+			tc.set(p.stripe)
 			p.stripe.mu.Unlock()
 			var status passResponse
 			if p.get("/api/pass", &status); !status.Enabled || status.Price != nil {
@@ -613,6 +639,7 @@ func TestPassRefusesAPriceItCannotSell(t *testing.T) {
 			maps.Copy(p.stripe.price, map[string]any{
 				"active": true, "type": "one_time", "unit_amount": 2000, "currency": "usd", "tax_behavior": "inclusive",
 			})
+			p.stripe.priceStatus = 0
 			p.stripe.mu.Unlock()
 			p.app.pass.priceMu.Lock()
 			p.app.pass.priceFetchedAt = time.Now().Add(-61 * time.Second)
@@ -620,6 +647,32 @@ func TestPassRefusesAPriceItCannotSell(t *testing.T) {
 			var out passResponse
 			if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusOK || p.stripe.sessionCount() != 1 {
 				t.Fatalf("checkout once the Price is fixed: status %d (%s)", code, out.Error)
+			}
+		})
+	}
+
+	// Stripe failing, or asking for fewer requests, refuses nothing: it is a
+	// read that failed, which asking again a minute later can mend.
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusServiceUnavailable} {
+		t.Run(fmt.Sprintf("status %d", status), func(t *testing.T) {
+			var logs syncBuffer
+			p := passServerLogging(t, func(cfg *Config) {
+				cfg.Pass.StripeAutomaticTax = true
+				cfg.Pass.CheckoutCooldown = time.Hour
+			}, &logs)
+			p.stripe.mu.Lock()
+			p.stripe.price["tax_behavior"] = "inclusive"
+			p.stripe.priceStatus, p.stripe.priceMessage = status, "try later"
+			p.stripe.mu.Unlock()
+			var out passResponse
+			if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusBadGateway ||
+				out.Error != passStripeUnreachable || p.stripe.sessionCount() != 0 {
+				t.Fatalf("checkout: status %d (%s), %d Stripe sessions; want 502 %q and none",
+					code, out.Error, p.stripe.sessionCount(), passStripeUnreachable)
+			}
+			if n := strings.Count(logs.String(), `"msg":"could not read the Pass price from Stripe"`); n != 1 ||
+				strings.Contains(logs.String(), "needs fixing") {
+				t.Fatalf("%d log lines for one failed read of the Price, want 1 and no refusal:\n%s", n, logs.String())
 			}
 		})
 	}
@@ -3473,8 +3526,9 @@ func TestPassForgetByOrderDropsThatClaimAlone(t *testing.T) {
 // of a code or a Stripe id, the name a checkout's answer gives its order, and
 // the key a Pass's hourly budget is counted under to EDUCHAN_PASS_SECRET. The
 // same deployment started with another secret finds none of them, as the
-// README says of rotating it: a code bought before is no Pass, its payment is
-// not one to reissue, a paid report of a checkout opened before matches no
+// README says of rotating it (every Pass cancelled, every payment record
+// orphaned): a code bought before is no Pass and its payment is not one to
+// reissue, and with them a paid report of a checkout opened before matches no
 // order, and an order's name is not the server's. A hash keyed with anything
 // but the secret would let whoever holds a copy of the tables check a code
 // against them or make an order's name; the server that bought them still

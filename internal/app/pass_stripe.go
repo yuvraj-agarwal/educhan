@@ -143,11 +143,13 @@ var passTaxWords = map[string]string{"inclusive": "included", "exclusive": "adde
 // errPassPriceRefused is price's refusal of the Price Stripe answered with, as
 // against a read that failed: one archived, recurring or without a fixed
 // amount, or, while Stripe Tax is on, one that does not say whether its amount
-// includes tax (errPassPriceTax). Asking again changes none of these until the
-// owner fixes the Price or EDUCHAN_STRIPE_PRICE_ID, so checkout refuses it as
-// a fault in the setup (passPriceUnsold), not as Stripe out of reach.
-// passPrice logs each refusal as it reads the Price, at most once a minute
-// while it lasts, and nothing else does, so it says what to fix.
+// includes tax (errPassPriceTax). Stripe refusing the key or the Price ID (a
+// 400, 401, 403 or 404) is refused the same way. Asking again changes none of
+// these until the owner fixes the Price, EDUCHAN_STRIPE_PRICE_ID or the key,
+// so, while Stripe Tax is on, checkout refuses it as a fault in the setup
+// (passPriceUnsold), not as Stripe out of reach. passPrice logs each refusal
+// as it reads the Price, at most once a minute while it lasts, and nothing
+// else does, so it says what to fix.
 var errPassPriceRefused = errors.New("stripe: the Pass price can't be sold")
 
 // errPassPriceTax is price's refusal, while Stripe Tax is on, of a Price that
@@ -160,7 +162,11 @@ var errPassPriceTax = fmt.Errorf("%w: with EDUCHAN_STRIPE_AUTOMATIC_TAX on, it m
 // Pass is bought by hand for each term, as 4chan's is, and never renews
 // itself, and so are an archived one, one without a fixed amount and, while
 // Stripe Tax is on, one that does not say whether tax is in its amount
-// (errPassPriceRefused).
+// (errPassPriceRefused). So is a read Stripe refuses for the key or the Price
+// ID it was asked with: a Price ID it does not know, one from the other mode
+// (test or live) than the key's, or a key it does not take or that may not
+// read Prices. Stripe out of reach, failing (a 5xx) or asking for fewer
+// requests (429) is a read that failed.
 func (c *stripeClient) price(ctx context.Context) (passPrice, error) {
 	var p struct {
 		Active      bool   `json:"active"`
@@ -170,6 +176,13 @@ func (c *stripeClient) price(ctx context.Context) (passPrice, error) {
 		TaxBehavior string `json:"tax_behavior"`
 	}
 	if err := c.call(ctx, http.MethodGet, "/v1/prices/"+url.PathEscape(c.priceID), nil, &p); err != nil {
+		var refused *stripeStatusError
+		if errors.As(err, &refused) {
+			switch refused.status {
+			case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
+				return passPrice{}, fmt.Errorf("%w: Stripe refused the key or the Price ID: %w", errPassPriceRefused, err)
+			}
+		}
 		return passPrice{}, err
 	}
 	switch {
@@ -183,6 +196,19 @@ func (c *stripeClient) price(ctx context.Context) (passPrice, error) {
 		return passPrice{}, errPassPriceTax
 	}
 	return passPrice{Amount: *p.UnitAmount, Currency: strings.ToLower(p.Currency), TaxBehavior: p.TaxBehavior}, nil
+}
+
+// stripeStatusError is an API request Stripe answered with an error status,
+// with Stripe's type and message for it, so price can tell Stripe refusing the
+// request from Stripe failing.
+type stripeStatusError struct {
+	method, path  string
+	status        int
+	kind, message string
+}
+
+func (e *stripeStatusError) Error() string {
+	return fmt.Sprintf("stripe %s %s: status %d: %s: %s", e.method, e.path, e.status, e.kind, e.message)
 }
 
 // call makes one API request. Errors carry Stripe's message and type but
@@ -225,7 +251,7 @@ func (c *stripeClient) call(ctx context.Context, method, path string, form url.V
 			} `json:"error"`
 		}
 		_ = json.Unmarshal(raw, &e)
-		return fmt.Errorf("stripe %s %s: status %d: %s: %s", method, path, res.StatusCode, e.Error.Type, e.Error.Message)
+		return &stripeStatusError{method: method, path: path, status: res.StatusCode, kind: e.Error.Type, message: e.Error.Message}
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
 		return fmt.Errorf("stripe %s %s: decode: %w", method, path, err)
