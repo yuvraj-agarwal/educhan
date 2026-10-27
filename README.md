@@ -467,10 +467,10 @@ cost of moving a conversation off educhan; it does not prevent it, and nothing
 about it makes educhan safe for anyone.
 
 What it does with posts like the ones it is written for is pinned by a corpus:
-3,201 made-up posts in `internal/app/testdata/filter_corpus`, in twelve files,
+3,539 made-up posts in `internal/app/testdata/filter_corpus`, in twelve files,
 three for each kind of post: `academic.jsonl`, `academic_2.jsonl` and
-`academic_3.jsonl` (725 posts), the same three for `life` (821, student life),
-for `contact` (788, contact details) and for `risk` (867, risky posts), each
+`academic_3.jsonl` (770 posts), the same three for `life` (927, student life),
+for `contact` (875, contact details) and for `risk` (967, risky posts), each
 labelled with what the filter should do. Every address, username and profile in
 them says "madeup" or is at a reserved domain, so none is a real person's
 (`TestFilterCorpusDetailsAreMadeUp`); a number meant to be blocked is ordinary
@@ -481,7 +481,7 @@ assigned, so it is no one's.
 wrong, except those marked as known misses, each with a note saying why the
 miss is accepted, and logs how many ordinary posts were stopped and how much of
 each kind was caught (`go test -run TestFilterCorpus -v ./internal/app`).
-**The rules were fitted to all 3,201 posts.** They were first written against
+**The rules were fitted to all 3,539 posts.** They were first written against
 the files without `_2` or `_3`; the `_2` files were written apart from them and
 then used to rewrite the threat, self-harm and grooming rules (which first held
 55 of their 135 risky posts) and then the contact and support rules (which
@@ -493,7 +493,7 @@ posts, blocked 146 of their 183 contact details, showed support for 24 of their
 41 crisis posts and held 85 of their 172 risky posts. They were then used to
 put those wrong stops right and to widen every kind of rule, cause by cause,
 and three posts whose numbers the filter passes on purpose (two drama numbers
-and a voided SSN) were given ordinary digits. The last 316 were written to pin
+and a voided SSN) were given ordinary digits. The last 654 were written to pin
 what a review of the rules found they missed or stopped wrongly, each beside
 the change that put it right, so they were fitted too. So the rates the test
 logs — no ordinary post stopped, and all but three contact details, all but one
@@ -518,16 +518,23 @@ its thread's `held_at`. Nothing else the filter matched is kept. A moderator's
 approval is logged with the board, thread and post number, as every
 moderation action is.
 It runs in-process, sends nothing anywhere, and takes time linear in the
-length of the post: on one core of an Intel Xeon at 2.1 GHz, about 0.5 ms for
-an ordinary 500-character post, about 4.5 ms for an ordinary post of the
-maximum length, and no more than about 16 ms for the slowest of the 17,800
-posts built to be slow and the seven added since. The ordinary posts are the corpus's published ones
-(below) run together and cut into 411 pieces of 500 characters and 25 of
-8,000, and the figures are the median piece's (3.6 to 5.2 ms across the long
-pieces); one sentence repeated to the maximum length takes about 2.6 to 3 ms,
-since the same words over and over give the rules less to read. Each was
-measured one post at a time with `GOMAXPROCS=1` under `taskset`, as the
-process's CPU time, the best of several runs, on a shared four-core machine;
+length of the post. On one core of a shared Intel Xeon at 2.8 GHz, with the
+machine's load at about 4 to 6, an ordinary 500-character post took about
+1.3 ms, an ordinary post of the maximum length about 8 ms, and the slowest of
+the 29,397 posts built to be slow, and of the 151 that
+`TestFilterCostIsBounded` runs, about 30 to 33 ms; one sentence repeated to the maximum length took
+about 4.7 to 4.9 ms, since the same words over and over give the rules less
+to read. That sentence is the yardstick: the ordinary posts take about a
+quarter of its time and 1.7 times it, and the slowest 6.5 to 7 times it, and
+all of them move with it (on an Intel Xeon at 2.1 GHz, earlier, it took 2.6
+to 3 ms). The ordinary posts are the corpus's published ones (below) run
+together and cut into 445 pieces of 500 characters and 27 of 8,000, and the
+figures are the median piece's (0.8 to 2.1 ms and 6.1 to 10.7 ms across the
+pieces). The slowest built posts are a weapon emoji and a mark or a letter
+over and over, each read as a hint of a threat, a weapon named over and over
+beside a day, and a method question asked three times before an app's name.
+Each was measured one post at a time with `GOMAXPROCS=1` under `taskset`, as
+the process's CPU time, the slower verdict's best of 11 to 15 runs;
 `go test -run - -bench CheckContent ./internal/app` times both kinds of
 maximum-length post. Each server prepares the
 rules once, as it starts: about 3.5 seconds of one core, with the heap reaching

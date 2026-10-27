@@ -3281,21 +3281,22 @@ func TestJoinActsMatchesTheActsOneByOne(t *testing.T) {
 // counts were last checked on, about 8% under the bound; the next most here
 // are handles glued to an opening bracket, about 128 (about 198 before
 // firstHandle turned them down before their checks), and a pill question run
-// into such a handle, about 117. A step is not a fixed time — across these
-// bodies a millisecond is anything from about 22,000 steps to about 125,000,
-// and the body that costs the most steps is not the slowest — so the bound
-// holds the work linear and caps it, and the time is the README's to state,
-// from timing the bodies ("Content rules"). The steps are the same with Go
-// 1.22, 1.24 and 1.25, since the programs are Go's own compiler's output for
-// the same patterns. A body that costs much more than the rest has to be
-// looked at, and the rule behind it planned or rewritten, before the bound is
-// raised. The second is per character, so that a post of four-byte
-// characters is not given four times the steps a character an ASCII one is:
-// the most a character is about 193 steps (Snapchat's ghost over and over,
-// each read for an ask or a handle round it), about 20% under workPerChar.
-// The third is that eight times the text costs at most ten times as much:
-// linear work costs eight times, a fixed part a little less, and anything
-// quadratic would cost sixty-four.
+// into such a handle, about 117. A step is not a fixed time — across those
+// of these bodies that take more than a few milliseconds a millisecond is
+// anything from about 18,000 steps to about 91,000, and the body that costs
+// the most steps is not the slowest — so the bound holds the work linear and
+// caps it, and the time is the README's to state, from timing the bodies
+// ("Content rules"). The steps are the same with Go 1.22, 1.24 and 1.25,
+// since the programs are Go's own compiler's output for the same patterns. A
+// body that costs much more than the rest has to be looked at, and the rule
+// behind it planned or rewritten, before the bound is raised. The second is
+// per character, so that a post of four-byte characters is not given four
+// times the steps a character an ASCII one is: the most a character is about
+// 193 steps (Snapchat's ghost over and over, each read for an ask or a
+// handle round it), about 20% under workPerChar. The third is that eight
+// times the text costs at most ten times as much: linear work costs eight
+// times, a fixed part a little less, and anything quadratic would cost
+// sixty-four.
 //
 // What is not counted is single passes: the scanners that make the views,
 // and the number scanner's own pass over the digits (the cues it looks for in
