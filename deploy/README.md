@@ -222,15 +222,16 @@ connections; section 3 covers how the pool size and `maxScale` add up.
 in Cloud SQL, and none of the commands here set it. Switched on, it records when
 each transaction committed, and `pg_xact_commit_timestamp(xmin)` turns that into
 the time any row was last written, to well under a second. A verification
-credential issued while it was on could then be dated to that moment rather than
-to its day, one that runs from 05:00 UTC to 05:00 UTC (below), until the next
-sweep rewrites it; and so could each committed transaction id missing from the
-posts' sequence, for as long as PostgreSQL keeps its commit time, which turns
-the gap a code request or confirmation leaves among the posts' ids from the
-minutes between two posts into the moment of the write. The root README's
-[Transaction ids, and the nightly rewrite](../README.md#transaction-ids-and-the-nightly-rewrite)
-has the rest. Never add it to `--database-flags`; this shows the instance's
-flags, and should print nothing about it:
+credential issued while it was on could then be dated to that moment, not just
+placed between the two posts its own transaction id falls between, until the
+next sweep rewrites it and gives it the sweep's id; and so could each committed
+transaction id missing from the posts' sequence, for as long as PostgreSQL keeps
+its commit time, which turns the gap a code request or confirmation leaves among
+the posts' ids from the minutes between two posts into the moment of the write.
+The root README's [Transaction ids, and the nightly
+rewrite](../README.md#transaction-ids-and-the-nightly-rewrite) has the rest.
+Never add it to `--database-flags`; this shows the instance's flags, and should
+print nothing about it:
 
 ```bash
 gcloud sql instances describe educhan-db --format='value(settings.databaseFlags)'
@@ -572,13 +573,16 @@ An error saying `VACUUM FULL left pg_catalog.pg_statistic in its old file` is
 the role: it names the query that says whether the role has the owner's
 privileges, and the root README's [archive
 sweeper](../README.md#the-archive-sweeper) says what the role needs. Any other
-is most likely the media settings or the store (below). An error in the Job's
-own settings comes before the image starts logging JSON, so it is printed as
-plain text at the end of the line. If it prints nothing, the execution ended
-without a word from the image, killed for want of memory, say, or before it
-started: `gcloud run jobs executions describe NAME --region "$REGION"`, with the
-failed execution's name from `gcloud run jobs executions list --job
-educhan-sweep --region "$REGION"`, says how.
+is most likely the media settings or the store (below). A stray argument, or a
+setting the image refuses as soon as it reads it (a bad `EDUCHAN_LOG_FORMAT` or
+`EDUCHAN_MEDIA_BACKEND`, say), is reported before the image starts logging JSON,
+so it is printed as plain text at the end of the line; a `DATABASE_URL`, Cloud
+SQL instance or bucket that does not work is reported as JSON, like any other
+error. If it prints nothing, the execution ended without a word from the image,
+killed for want of memory, say, or before it started: `gcloud run jobs
+executions describe NAME --region "$REGION"`, with the failed execution's name
+from `gcloud run jobs executions list --job educhan-sweep --region "$REGION"`,
+says how.
 
 Once verification is on, start the sweep by hand only after that night's
 scheduled run has finished and no later than 04:00 UTC, which leaves it and its
