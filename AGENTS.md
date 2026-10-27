@@ -646,27 +646,28 @@ needs a browser check before the test changes.
   which comes after `pageshow`, finds it already waited on. An answer to a code check or a
   post acts only on the Pass it was about, if this browser still holds it
   (`passStillHeld`), so a Pass removed or replaced meanwhile, here or in another tab, is
-  not written back. A notice a press on the Pass page raises goes through
-  `showPassNotice`, which brings it into view when it is out of view, as on a phone,
-  where the forms sit far below it: a turn later, so focus goes where the press gives it
-  first and stays there, only as far as it must (`block: "nearest"`), not smoothly, and
-  clear of the sticky header (`.notice`'s `scroll-margin-top`); what the page says on its
-  own, `forgetPassOrder`'s notice and every other page's notices go through `showNotice`,
-  which moves nothing. Whatever a Pass answer stores, it draws, focuses or announces only
-  while the reader is on the Pass page (`passPageShown`, the one test of the route in the
-  Pass section), so an answer that arrives after they left draws nothing over the page
-  they went to. When `GET /api/pass` fails, a Pass held here is still drawn, with Show and
-  Remove and no Renew, above the code box and the error, and the page is asked for again
-  (`refreshFailedPass`) once educhan answers a code typed in or checked there, so the
-  error does not stay under the answer. Another tab's Remove or Forget reaches this one by
-  the `storage` event (`followPassStorage`), which drops a code just handed over that the
-  browser no longer holds and draws the Pass page again. A page brought back from the
-  back-forward cache is drawn again through `render` (the `pageshow` listener), so the age
-  screen still comes first. A post whose Pass was no good is a `201` like any other,
-  carrying `"pass": "invalid"` or `"expired"`: the page forgets the first, marks the
-  second run out without a date, and says the post was sent. A code typed in after it ran
-  out is kept with the date the server gives. While sales are paused the page says
-  `PASS_PAUSED` where Buy and Renew were; `PASS_NOT_ON_SALE` is the server's
+  not written back. A notice a press on the Pass page raises, what Check now finds
+  included (the first claim of the drawing it asks for, `passAsked`), goes through
+  `showPassNotice`, which brings it into view when it is out of view, as on a phone, where
+  the forms sit far below it: a turn later, so focus goes where the press gives it first
+  and stays there, only as far as it must (`block: "nearest"`), not smoothly, and clear of
+  the sticky header (`.notice`'s `scroll-margin-top`); what the page says on its own,
+  later claims' news included, `forgetPassOrder`'s notice and every other page's notices
+  go through `showNotice`, which moves nothing. Whatever a Pass answer stores, it draws,
+  focuses or announces only while the reader is on the Pass page (`passPageShown`, the one
+  test of the route in the Pass section), so an answer that arrives after they left draws
+  nothing over the page they went to. When `GET /api/pass` fails, a Pass held here is
+  still drawn, with Show and Remove and no Renew, above the code box and the error, and
+  the page is asked for again (`refreshFailedPass`) once educhan answers a code typed in
+  or checked there, so the error does not stay under the answer. Another tab's Remove or
+  Forget reaches this one by the `storage` event (`followPassStorage`), which drops a code
+  just handed over that the browser no longer holds and draws the Pass page again. A page
+  brought back from the back-forward cache is drawn again through `render` (the `pageshow`
+  listener), so the age screen still comes first. A post whose Pass was no good is a `201`
+  like any other, carrying `"pass": "invalid"` or `"expired"`: the page forgets the first,
+  marks the second run out without a date, and says the post was sent. A code typed in
+  after it ran out is kept with the date the server gives. While sales are paused the page
+  says `PASS_PAUSED` where Buy and Renew were; `PASS_NOT_ON_SALE` is the server's
   `passNotOnSale` word for word (`TestPassPageWhileSalesArePaused`), and
   `PASS_REISSUE_SPENT` its `passReissueSpent`. A browser that keeps no cookies or storage
   is not sent to Stripe (`passCanBeKept`). The header's Pass link (`data-pass-link`) stays

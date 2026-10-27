@@ -543,7 +543,7 @@ func TestPassPageStoresAClaimedPassBeforeAnythingElse(t *testing.T) {
 			}
 		}
 	}
-	if !strings.Contains(withoutComments(jsFunction(t, script, "showClaimed")), "function showClaimed(claim, news, notice = \"\") {\n  if (!passPageShown()) {\n    return;\n  }") {
+	if !strings.Contains(withoutComments(jsFunction(t, script, "showClaimed")), "function showClaimed(claim, news, notice = \"\", asked = false) {\n  if (!passPageShown()) {\n    return;\n  }") {
 		t.Error("showClaimed draws the Pass page over whatever the reader moved on to")
 	}
 }
@@ -555,7 +555,7 @@ func TestPassPageStoresAClaimedPassBeforeAnythingElse(t *testing.T) {
 func TestPassPageCollectsAPendingPurchase(t *testing.T) {
 	script := appScript(t)
 	render := withoutComments(jsFunction(t, script, "renderPass"))
-	call := regexp.MustCompile(`if \(([^{]*)\) \{\s*collectPass\(visit\);`).FindStringSubmatch(render)
+	call := regexp.MustCompile(`if \(([^{]*)\) \{\s*collectPass\(visit, asked\);`).FindStringSubmatch(render)
 	if call == nil || !strings.Contains(call[1], "info.claim || passNoncePending(PASS_NONCE_STORAGE_KEY)") || strings.Contains(call[1], "back") || strings.Contains(call[1], "paid") {
 		t.Errorf("renderPass no longer collects whenever the server says there is a purchase to collect, "+
 			"or a claim's answer may have been lost: %q", call)
@@ -1163,7 +1163,7 @@ func TestPassAnswersDrawOnlyOnThePassPage(t *testing.T) {
 	// Check now moves focus only if its own drawing happened, which renderPass
 	// says; the claim's answer is shown through showClaimed, which asks first.
 	if !strings.Contains(bodies["Check now"], "renderPass().then((drawn) => {\n      if (drawn) {\n        passFocus(") ||
-		!strings.Contains(bodies["renderPass"], "collectPass(visit);\n  }\n  return true;\n}") {
+		!strings.Contains(bodies["renderPass"], "collectPass(visit, asked);\n  }\n  return true;\n}") {
 		t.Error("Check now moves focus once its drawing was overtaken, or the reader left the page")
 	}
 }
@@ -1173,9 +1173,11 @@ func TestPassAnswersDrawOnlyOnThePassPage(t *testing.T) {
 // the page, and a refusal said there unseen looks like nothing happened. It
 // goes straight there, not smoothly, only as far as it must (block
 // "nearest"), and only once the press has given focus where it gives it, which
-// it leaves there. Every notice the Pass page's presses raise goes this way;
-// what the page says on its own and every other page's notices stay where
-// showNotice puts them, which moves nothing.
+// it leaves there. Every notice the Pass page's presses raise goes this way,
+// Check now's included: what the first claim of the drawing it asks for comes
+// to answers it. What the page says on its own, later claims' news included,
+// and every other page's notices stay where showNotice puts them, which moves
+// nothing.
 func TestPassNoticesFromAPressAreBroughtIntoView(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -1225,13 +1227,32 @@ func TestPassNoticesFromAPressAreBroughtIntoView(t *testing.T) {
 		}
 		said += strings.Count(body, "showPassNotice(")
 	}
-	// Nowhere else: not what the Pass page says on its own (showClaimed, back
-	// from Stripe), not forgetPassOrder, said on whatever page the tab is on,
-	// and not another page's.
+	// Check now marks the drawing it asks for (passAsked), which renderPass
+	// takes before anything else can, and hands to its collection; only the
+	// first claim's answer, the press's, is said in view (showClaimed), and
+	// later polls' news is not.
+	checkNow := block(`if (event.target.closest('[data-action="collect-pass"]')) {`)
+	render := withoutComments(jsFunction(t, script, "renderPass"))
+	collect := withoutComments(jsFunction(t, script, "collectPass"))
+	claimed := withoutComments(jsFunction(t, script, "showClaimed"))
+	if !strings.Contains(checkNow, "event.preventDefault();\n    passAsked = true;\n    renderPass().then(") ||
+		!strings.Contains(render, "{\n  const visit = ++passVisit;\n  const asked = passAsked;\n  passAsked = false;\n") ||
+		strings.Count(code, "passAsked = ") != 3 || // and its declaration
+		!strings.Contains(render, "collectPass(visit, asked);") ||
+		!strings.HasPrefix(collect, "async function collectPass(visit, asked = false) {") ||
+		strings.Count(collect, ", asked);") != 2 ||
+		!strings.Contains(collect, "\n    }\n    asked = false;\n    await new Promise((resolve) => setTimeout(resolve, wait));") ||
+		!strings.Contains(claimed, "  if (notice && asked) {\n    showPassNotice(notice);\n  } else if (notice) {\n    showNotice(notice);\n  }\n}") {
+		t.Error("what Check now's first claim comes to is not said in view, or a later poll's news is")
+	}
+	said += strings.Count(claimed, "showPassNotice(")
+	// Nowhere else: not what the Pass page says on its own (back from Stripe),
+	// not forgetPassOrder, said on whatever page the tab is on, and not
+	// another page's.
 	if n := strings.Count(code, "showPassNotice("); n != said+1 {
 		t.Errorf("showPassNotice( appears %d times; want its definition and the Pass page's presses' %d", n, said)
 	}
-	for _, name := range []string{"showClaimed", "renderPass", "forgetPassOrder"} {
+	for _, name := range []string{"renderPass", "forgetPassOrder"} {
 		if strings.Contains(withoutComments(jsFunction(t, script, name)), "showPassNotice(") {
 			t.Errorf("%s moves the page to a notice no press raised", name)
 		}

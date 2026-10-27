@@ -2263,6 +2263,13 @@ let passLost = "";
 // replaced it, or once this browser stops collecting (forgetPassClaim).
 let passVisit = 0;
 
+// passAsked is set by Check now for the drawing it asks for, which takes it
+// (renderPass), so that what that drawing's first claim comes to, a renewal
+// or the Pass held checked after a lost answer, is said in view as the press's
+// answer (showClaimed, showPassNotice). What a later claim brings is the
+// page's own news, said where showNotice puts it.
+let passAsked = false;
+
 // passForgets counts the times this browser has stopped collecting
 // (forgetPassClaim), here or in another tab (followPassForget). A claim whose
 // answer arrives after that is dropped without being stored or drawn: whoever
@@ -2561,7 +2568,9 @@ function forgetPassOrder(order, pressed) {
 // or Forget this browser, that is the same button again. After Remove the Pass,
 // which leaves no Pass and so no Remove to press, it is Stop collecting it
 // here, which the Pass page offers while a claim is collected, and which keeps
-// the poster key, the name and any badge, as Remove did.
+// the poster key, the name and any badge, as Remove did. The checkout was
+// never followed to Stripe, so the Pass page, which collects as soon as it is
+// opened, finds nothing paid under it.
 const PASS_ORDER_KEPT = {
   stop:
     "educhan couldn't be reached to drop the checkout that was still opening when Stop collecting it here was pressed, so this browser may still be collecting it. Open the Pass page when you're back online and press Stop collecting it here again.",
@@ -3455,8 +3464,9 @@ function passFocus(...selectors) {
 // and it moves nothing else: focus stays where the press put it, a notice in
 // view stays where it is, and the page goes straight there, not smoothly
 // (.notice's scroll-margin-top in app.css takes it to its top, where the
-// notice sits). What the page says on its own (a collection's news, say) and
-// every other page's notices stay where showNotice puts them.
+// notice sits). Check now's answer is said this way too (showClaimed). What
+// the page says on its own (a collection's later news, say) and every other
+// page's notices stay where showNotice puts them.
 function showPassNotice(message) {
   showNotice(message);
   setTimeout(() => {
@@ -3484,6 +3494,8 @@ function refocus(button) {
 // keeping a keyboard where it was.
 async function renderPass(...selectors) {
   const visit = ++passVisit;
+  const asked = passAsked;
+  passAsked = false;
   const query = new URLSearchParams(window.location.search);
   const back = query.has("paid") ? "paid" : query.has("cancelled") ? "cancelled" : "";
   // Back from Stripe. The address is tidied first, so a reload or a shared
@@ -3524,7 +3536,7 @@ async function renderPass(...selectors) {
     // meanwhile. A nonce left from a claim whose answer never arrived is
     // asked for again even with nothing left under the claim, since that
     // claim may have handed over a code.
-    collectPass(visit);
+    collectPass(visit, asked);
   }
   return true;
 }
@@ -3710,8 +3722,9 @@ function redrawPass(info, ...selectors) {
 // passAfterLostAnswer gave), or the end of the collecting. It draws from what
 // the page on screen was drawn from, so an answer to a request an earlier
 // drawing sent is shown too. An answer that changes nothing only clears the
-// note left by an attempt that failed.
-function showClaimed(claim, news, notice = "") {
+// note left by an attempt that failed. A notice that answers Check now
+// (asked) is said in view (showPassNotice).
+function showClaimed(claim, news, notice = "", asked = false) {
   if (!passPageShown()) {
     return;
   }
@@ -3727,7 +3740,9 @@ function showClaimed(claim, news, notice = "") {
   if (news === "issued" || unseen) {
     focusPassPanel("pass-issued");
   }
-  if (notice) {
+  if (notice && asked) {
+    showPassNotice(notice);
+  } else if (notice) {
     showNotice(notice);
   }
 }
@@ -3744,8 +3759,10 @@ function showClaimed(claim, news, notice = "") {
 // stopped collecting since it was asked (passForgets). A claim refused when
 // asked again with a nonce kept from an earlier one may have renewed the
 // Pass held in an answer that never arrived, so that Pass is checked
-// (passAfterLostAnswer).
-async function collectPass(visit) {
+// (passAfterLostAnswer). The first claim of a drawing Check now asked for
+// (asked) answers that press, and what it comes to is said in view; later
+// ones are the page's own news (showClaimed).
+async function collectPass(visit, asked = false) {
   let wait = PASS_CLAIM_FIRST_WAIT_MS;
   for (;;) {
     if (passForgetting) {
@@ -3780,7 +3797,7 @@ async function collectPass(visit) {
         return;
       }
       if (visit === passVisit || news) {
-        showClaimed(res.claim === true, news, notice);
+        showClaimed(res.claim === true, news, notice, asked);
       }
       if (res.claim !== true) {
         return;
@@ -3795,7 +3812,7 @@ async function collectPass(visit) {
         return;
       }
       if (visit === passVisit || notice) {
-        showClaimed(false, notice ? "checked" : "", notice);
+        showClaimed(false, notice ? "checked" : "", notice, asked);
       }
       return;
     } else {
@@ -3806,6 +3823,7 @@ async function collectPass(visit) {
         note.textContent = `${passErrorText(failed)} This page will ask again shortly.`;
       }
     }
+    asked = false;
     await new Promise((resolve) => setTimeout(resolve, wait));
     wait = Math.min(Math.round(wait * 1.5), PASS_CLAIM_LONGEST_WAIT_MS);
   }
@@ -5468,7 +5486,10 @@ document.addEventListener("click", (event) => {
   // box and what the page said about a Pass that went before, and the
   // clipboard is emptied while the click allows it if this tab copied the
   // code. What is still being collected here is dropped too, which only the
-  // server can do.
+  // server can do. If educhan can't be reached for that, the notice points to
+  // Forget this browser, not to Stop collecting it here as PASS_ORDER_KEPT
+  // does: what is left may be paid for, and the Pass page collects it as soon
+  // as it is opened, before Stop can be pressed.
   if (event.target.closest('[data-action="forget-pass"]')) {
     event.preventDefault();
     forgetPass();
@@ -5574,11 +5595,13 @@ document.addEventListener("click", (event) => {
     return;
   }
 
-  // Asking now draws the page again, which starts collecting afresh. Focus
+  // Asking now draws the page again, which starts collecting afresh, and what
+  // that drawing's first claim comes to is said in view (passAsked). Focus
   // moves only if this drawing happened: not once the reader has left the
   // page, or a newer drawing has taken its place.
   if (event.target.closest('[data-action="collect-pass"]')) {
     event.preventDefault();
+    passAsked = true;
     renderPass().then((drawn) => {
       if (drawn) {
         passFocus('[data-action="collect-pass"]', "#pass-issued", "#pass-held", "form[data-pass] input");
