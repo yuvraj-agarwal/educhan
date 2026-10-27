@@ -89,6 +89,10 @@ func runSweep(application *app.App) error {
 func serve(cfg app.Config, application *app.App, log *slog.Logger) error {
 	// Only a server has a use for these; the sweeper runs without them.
 	application.WarnServingSettings()
+	// ReadHeaderTimeout and WriteTimeout together are the longest a request
+	// waits for its answer. app.js gives a Verify request up only after that
+	// (VERIFY_TIMEOUT_MS), and TestVerifyAnswersBelongToTheStepTheyWereSentFrom
+	// reads both here to hold it to them.
 	srv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           application.Routes(),

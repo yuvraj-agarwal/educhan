@@ -109,6 +109,12 @@ const el = {
 // when attempting to fetch resource") and says nothing a reader can use.
 const UNREACHABLE = "Couldn't reach educhan. Check your connection and try again.";
 
+function unreachableError() {
+  const err = new Error(UNREACHABLE);
+  err.unreachable = true;
+  return err;
+}
+
 // The server's own words for the two refusals of a post's image that the form
 // recovers from by taking the image off. web_invariants_test.go checks them
 // against what the server answers.
@@ -132,12 +138,19 @@ async function api(path, options = {}) {
   try {
     res = await fetch(path, init);
   } catch {
-    // No answer at all: offline, a dropped connection, a blocked request.
-    const err = new Error(UNREACHABLE);
-    err.unreachable = true;
-    throw err;
+    // No answer at all: offline, a dropped connection, a blocked request, or
+    // one given up when its signal fired (verifyDeadline).
+    throw unreachableError();
   }
-  const payload = res.status === 204 ? null : await res.json().catch(() => null);
+  // A request given up while its answer was still coming in has had no answer
+  // either, however much of it came: its body ends unread.
+  const payload =
+    res.status === 204
+      ? null
+      : await res.json().catch(() => {
+          if (init.signal && init.signal.aborted) throw unreachableError();
+          return null;
+        });
   if (!res.ok) {
     const err = new Error((payload && payload.error) || `${res.status} ${res.statusText}`);
     err.status = res.status;
@@ -1876,7 +1889,32 @@ let verifyBusy = null;
 // Forget this browser drew could land before one still out from the step it
 // replaced, and the code box then on screen refused its own right code,
 // spending its attempts, while the server checked it against the other address.
+// So the wait has to end, and every request it can wait on is given up once
+// its time is out (verifyDeadline). Without that, one request whose answer
+// never came, over a connection gone silent, held every later one from any
+// step until a reload, the fresh step Forget this browser draws included,
+// while the page said only that it was sending.
 let verifyRequest = Promise.resolve();
+
+// VERIFY_TIMEOUT_MS is how long a Verify request is given before the page gives
+// it up and says it couldn't reach educhan (UNREACHABLE). It is longer than the
+// server takes to answer or give up — ten seconds to read a request's headers
+// and thirty to write its answer, in cmd/server/main.go — so a request given up
+// is one whose answer was not coming. Giving it up cancels it: an answer that
+// comes after is not taken, the pending-code cookie with it, so the request
+// that goes next still sets the cookie the browser keeps.
+const VERIFY_TIMEOUT_MS = 45000;
+
+// verifyDeadline is the signal a Verify request is sent with, which fires once
+// VERIFY_TIMEOUT_MS has passed. It is a controller and a timer rather than
+// AbortSignal.timeout, which Safari has only since 16: the page opens on
+// iPhones whose last update is iOS 15 (the age screen's <dialog> needs 15.4),
+// and there that call would throw before Send code went out.
+function verifyDeadline() {
+  const deadline = new AbortController();
+  setTimeout(() => deadline.abort(), VERIFY_TIMEOUT_MS);
+  return deadline.signal;
+}
 
 // The step the Verify page was last drawn for, and the first element of that
 // drawing (drawVerifyStep). Anything drawn into the page since — the loading
@@ -2069,8 +2107,10 @@ async function loadVerification() {
   let enabled = false;
   try {
     // The only thing worth asking the server: whether the feature exists here.
-    // What this browser holds is a local question with a local answer.
-    enabled = !!(await api("/api/verify")).enabled;
+    // What this browser holds is a local question with a local answer. An
+    // issued badge is drawn after this request, while the next Verify request
+    // waits, so it is given up in time like the others (verifyDeadline).
+    enabled = !!(await api("/api/verify", { signal: verifyDeadline() })).enabled;
   } catch {
     // Verification is an extra; the board works without knowing about it.
     enabled = false;
@@ -3957,7 +3997,10 @@ el.main.addEventListener("submit", async (event) => {
 // (verifyRequest), so their answers set the pending-code cookie in the order
 // they were asked for and the newest one's is the cookie the browser keeps; if
 // the reader moves the page to yet another step while it waits, it is never
-// sent.
+// sent. That wait ends, because every request is given up once its time is out
+// (verifyDeadline), and one given up is refused as unreachable on its own step
+// and dropped on any other: one whose answer never came once held every later
+// request, from any step, until a reload.
 //
 // What an answer draws is brought into view clear of the sticky header — the
 // code box with the sentence above it, the badge now held
@@ -3998,6 +4041,7 @@ async function submitVerification(form) {
     if (requesting) {
       const sent = await api("/api/verify/request", {
         method: "POST",
+        signal: verifyDeadline(),
         // adult is true here, because an unticked box stopped above.
         body: JSON.stringify({ email: String(data.get("email") || ""), adult: adult.checked }),
       });
@@ -4014,6 +4058,7 @@ async function submitVerification(form) {
     // than set as a cookie, so nothing sends it until a post asks for a badge.
     const issued = await api("/api/verify/confirm", {
       method: "POST",
+      signal: verifyDeadline(),
       body: JSON.stringify({ code: String(data.get("code") || "") }),
     });
     if (verifyStep !== sentFrom) return;

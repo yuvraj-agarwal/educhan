@@ -5,6 +5,8 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/cookiejar"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -618,7 +620,7 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 		"async function loadVerification() {",
 		"let enabled = false;",
 		"try {",
-		`enabled = !!(await api("/api/verify")).enabled;`,
+		`enabled = !!(await api("/api/verify", { signal: verifyDeadline() })).enabled;`,
 		"} catch {",
 		"enabled = false;",
 		"}",
@@ -1349,6 +1351,166 @@ func TestVerifyAnswersBelongToTheStepTheyWereSentFrom(t *testing.T) {
 		strings.Contains(forget, "${wait}") {
 		t.Error("Forget this browser waits on a Verify request; it has to win over one")
 	}
+
+	holdVerifyRequestsToADeadline(t, script)
+}
+
+// holdVerifyRequestsToADeadline holds the wait for the Verify request before
+// to an end. A Send code or a Verify whose answer never came — a connection
+// gone silent — held every later request at await earlier, from whichever
+// step, the fresh one Forget this browser draws included, which read Sending…
+// with its buttons off until the reader reloaded. So every Verify request is
+// given up once VERIFY_TIMEOUT_MS has passed: verifyDeadline's signal goes
+// with it, and api() turns that signal firing, before the answer or while it
+// is coming in, into the unreachable refusal, which lets the next request go.
+// What submitVerification waits on once it has taken its turn is the request
+// before, its own request, and renderVerify, which waits only on
+// loadVerification, which waits only on its own request; each of those three
+// requests carries the deadline. And the deadline is longer than the server
+// takes to answer or give up, so a request given up is one whose answer was
+// not coming: given up sooner, a badge the server was issuing would be lost.
+func holdVerifyRequestsToADeadline(t *testing.T, script string) {
+	t.Helper()
+	code := withoutComments(script)
+	awaited := regexp.MustCompile(`\bawait\s+([\w$.]+)`)
+	for _, f := range []struct {
+		name string
+		want []string
+	}{
+		{"submitVerification", []string{"earlier", "api", "api", "renderVerify"}},
+		{"renderVerify", []string{"loadVerification"}},
+		{"loadVerification", []string{"api"}},
+	} {
+		var got []string
+		for _, m := range awaited.FindAllStringSubmatch(withoutComments(jsFunction(t, script, f.name)), -1) {
+			got = append(got, m[1])
+		}
+		if !slices.Equal(got, f.want) {
+			t.Errorf("%s waits on %q; want %q, each bounded, or a Verify request can wait on it for ever", f.name, got, f.want)
+		}
+	}
+
+	var paths []string
+	for _, call := range jsCalls(t, code, "api") {
+		path, ok := strings.CutPrefix(call, `api("/api/verify`)
+		if !ok {
+			if strings.Contains(call, "/api/verify") {
+				t.Errorf("a request to /api/verify is not spelled as this test reads them: %s", call)
+			}
+			continue
+		}
+		path, _, _ = strings.Cut(path, `"`)
+		paths = append(paths, "/api/verify"+path)
+		if !strings.Contains(call, "signal: verifyDeadline(),") && !strings.Contains(call, "{ signal: verifyDeadline() }") {
+			t.Errorf("the request to /api/verify%s is not given up in time (no signal: verifyDeadline()):\n%s", path, call)
+		}
+	}
+	if want := []string{"/api/verify", "/api/verify/request", "/api/verify/confirm"}; !slices.Equal(paths, want) {
+		t.Errorf("app.js makes Verify requests to %q; this test knows %q", paths, want)
+	}
+	if n := len(regexp.MustCompile(`[^\w$.]fetch\(`).FindAllString(code, -1)); n != 1 {
+		t.Errorf("app.js calls fetch %d times; want once, in api(), which every Verify request goes through", n)
+	}
+
+	if got, want := jsLines(jsFunction(t, script, "verifyDeadline")), []string{
+		"function verifyDeadline() {",
+		"const deadline = new AbortController();",
+		"setTimeout(() => deadline.abort(), VERIFY_TIMEOUT_MS);",
+		"return deadline.signal;",
+		"}",
+	}; !slices.Equal(got, want) {
+		t.Errorf("verifyDeadline runs\n\t%s\nwant a signal that fires once VERIFY_TIMEOUT_MS has passed:\n\t%s",
+			strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
+	}
+	if got, want := jsLines(jsFunction(t, script, "unreachableError")), []string{
+		"function unreachableError() {",
+		"const err = new Error(UNREACHABLE);",
+		"err.unreachable = true;",
+		"return err;",
+		"}",
+	}; !slices.Equal(got, want) {
+		t.Errorf("unreachableError runs\n\t%s\nwant the refusal a request with no answer is said as:\n\t%s",
+			strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
+	}
+	api := jsLines(jsFunction(t, script, "api"))
+	holdLines(t, "api() when fetch fails", api, "res = await fetch(path, init);", "}", []string{
+		"} catch {",
+		"throw unreachableError();",
+	})
+	holdLines(t, "api() when the answer's body cannot be read", api, ": await res.json().catch(() => {", "});", []string{
+		"if (init.signal && init.signal.aborted) throw unreachableError();",
+		"return null;",
+	})
+
+	m := regexp.MustCompile(`(?m)^const VERIFY_TIMEOUT_MS = (\d+);$`).FindStringSubmatch(script)
+	if m == nil {
+		t.Fatal("app.js has no number constant VERIFY_TIMEOUT_MS; this test reads it")
+	}
+	deadline, err := strconv.Atoi(m[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverSrc, err := os.ReadFile(filepath.Join("..", "..", "cmd", "server", "main.go"))
+	if err != nil {
+		t.Fatalf("reading the server's timeouts: %v", err)
+	}
+	seconds := func(name string) int {
+		m := regexp.MustCompile(`\n\t\t` + name + `:\s+(\d+) \* time\.Second,\n`).FindSubmatch(serverSrc)
+		if m == nil {
+			t.Fatalf("cmd/server/main.go does not set %s as a number of seconds; this test reads it", name)
+		}
+		n, _ := strconv.Atoi(string(m[1]))
+		return n
+	}
+	// A request's headers are read within ReadHeaderTimeout, and its answer
+	// is written within WriteTimeout of that or not at all.
+	server := (seconds("ReadHeaderTimeout") + seconds("WriteTimeout")) * 1000
+	if deadline <= server {
+		t.Errorf("VERIFY_TIMEOUT_MS is %d; the server can still be answering until %d ms, and a badge it issues "+
+			"after the page has given up is one nobody holds", deadline, server)
+	}
+	// And not much longer: after Forget this browser, the step it draws waits
+	// this long on a request whose answer is not coming.
+	if deadline > server+30000 {
+		t.Errorf("VERIFY_TIMEOUT_MS is %d, more than half a minute past the %d ms the server can take; a reader "+
+			"waits that long behind a request whose answer is not coming", deadline, server)
+	}
+}
+
+// jsCalls returns each call of the top-level function name in code, from its
+// name to the parenthesis that closes it. A method call (x.name()) is not one.
+// Quoted strings are skipped over, so a parenthesis in one does not count.
+func jsCalls(t *testing.T, code, name string) []string {
+	t.Helper()
+	var calls []string
+	for _, at := range regexp.MustCompile(`(?:^|[^\w$.])`+regexp.QuoteMeta(name)+`\(`).FindAllStringIndex(code, -1) {
+		start := at[1] - len(name) - 1
+		depth, end := 0, -1
+		for i := at[1] - 1; i < len(code) && end < 0; i++ {
+			switch c := code[i]; c {
+			case '"', '\'', '`':
+				for i++; i < len(code) && code[i] != c; i++ {
+					if code[i] == '\\' {
+						i++
+					}
+				}
+			case '(':
+				depth++
+			case ')':
+				if depth--; depth == 0 {
+					end = i + 1
+				}
+			}
+		}
+		if end < 0 {
+			t.Fatalf("a call of %s in app.js does not close: %.80s", name, code[start:])
+		}
+		calls = append(calls, code[start:end])
+	}
+	if len(calls) == 0 {
+		t.Fatalf("app.js never calls %s; this test reads its calls", name)
+	}
+	return calls
 }
 
 // On a phone the notice at the top of the page is a screen above the Verify
