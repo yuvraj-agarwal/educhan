@@ -618,7 +618,7 @@ func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 	// that hears the badge go from storage first, which no browser rules
 	// out: the credential is emptied before it is removed, and an emptied
 	// credential takes the badge out of a form without starting the puzzle.
-	if forget := withoutComments(jsFunction(t, script, "forgetOnThisPage")); strings.Contains(forget, "prepareCaptcha") ||
+	if forget := withoutComments(jsFunction(t, script, "forgetOnThisPage") + jsFunction(t, script, "forgetForm")); strings.Contains(forget, "prepareCaptcha") ||
 		strings.Contains(forget, "withdrawBadgeOption") {
 		t.Error("forgetOnThisPage starts a puzzle for the forms it takes the badge out of")
 	}
@@ -1138,11 +1138,13 @@ func TestEachCaptchaAnswerGoesOnOneRequest(t *testing.T) {
 // send, which on a form still on screen only the forget causes, and the submit
 // handler answers that mark before it words any other error. A redraw on its
 // way puts back no Name its draft read before the press, and a form left on
-// screen loses the option to post with the badge and says what a form without
-// it says about the anti-spam check, rather than offering a badge that has
-// gone, and without a word at its next press, which would tell whoever
-// presses it that the browser held one: a note that another tab took a ticked
-// badge away goes too (badgeWithdrawn). Each request and each draft notes
+// screen loses its Name and the option to post with the badge and says what a
+// form without it says about the anti-spam check, rather than offering a badge
+// that has gone, and without a word at its next press, which would tell
+// whoever presses it that the browser held one: a note that another tab took a
+// ticked badge away goes too (badgeWithdrawn). So does a held form a redraw
+// has taken off the screen, as it is put back, and one answered while away
+// has its Name read as of when it went. Each request and each draft notes
 // browserForgets, and only forgetOnThisPage moves it, for a press in this tab
 // or one heard from another (TestForgettingTheBrowserReachesEveryTab).
 func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
@@ -1161,10 +1163,33 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 	page := squash(withoutComments(jsFunction(t, script, "forgetOnThisPage")))
 	if !strings.Contains(page, `{ browserForgets += 1; state.verification.badge = null; badgeLost = ""; `+
 		`verifyStep = { step: "email", label: "" }; pagePosterKey = ""; storedHere.clear(); `+
-		`for (const form of el.main.querySelectorAll("form[data-kind]")) { const name = field(form, "name"); `+
-		`if (name) { name.defaultValue = ""; name.value = ""; } badgeWithdrawn.delete(form); dropBadgeOption(form); } }`) {
+		`for (const form of el.main.querySelectorAll("form[data-kind]")) { forgetForm(form); } }`) {
 		t.Error("forgetOnThisPage no longer drops everything the page holds that the forget covers")
 	}
+	if forget := squash(withoutComments(jsFunction(t, script, "forgetForm"))); forget != `function forgetForm(form) { `+
+		`const name = field(form, "name"); if (name) { name.defaultValue = ""; name.value = ""; } `+
+		`badgeWithdrawn.delete(form); dropBadgeOption(form); }` {
+		t.Errorf("forgetForm no longer empties a form's Name and takes out its badge option and any note on it: %s", forget)
+	}
+	// A held form a redraw has taken off the screen, while a post link's
+	// lookup draws its skeleton say, is out of the forget's reach, so the
+	// draft carries browserForgets as it was, and the form is forgotten as it
+	// is put back if a forget has come since. One answered while away is read
+	// as of then, so its Name, read after the forget, is not restored. Without
+	// this the thread the lookup resolves to draws the forgotten Name again,
+	// tripcode secret and all, and the next press posts under it and stores it.
+	if strings.Count(code, "forgetForm(") != 3 {
+		t.Error("forgetForm is called from somewhere besides forgetOnThisPage and restoreDraft")
+	}
+	if capture := squash(withoutComments(jsFunction(t, script, "captureDraft"))); !strings.Contains(capture,
+		"if (heldForms.has(form)) { return { key, held: form, forgets: browserForgets }; }") {
+		t.Error("captureDraft no longer notes browserForgets beside a held form it carries")
+	}
+	inOrder(t, "restoreDraft", squash(withoutComments(jsFunction(t, script, "restoreDraft"))),
+		"if (draft.forgets !== browserForgets) { forgetForm(held); }",
+		"form.replaceWith(held);",
+		"answered = heldForms.has(held) ? null : held; draft = { key: draft.key, ...formDraft(held), forgets: draft.forgets }; }",
+	)
 	// The option goes with its hint, and the form's note on the anti-spam
 	// check, drawn in its own element, says what a form drawn without the
 	// option says. The submit handler drops the option the same way when the
@@ -1191,7 +1216,7 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 	}
 	if n := strings.Count(code, "dropBadgeOption(form);"); n != 3 || !strings.Contains(submitHandler(t, script), "dropBadgeOption(form);") ||
 		!strings.Contains(withoutComments(jsFunction(t, script, "withdrawBadgeOption")), "dropBadgeOption(form);") ||
-		!strings.Contains(withoutComments(jsFunction(t, script, "forgetOnThisPage")), "dropBadgeOption(form);") ||
+		!strings.Contains(withoutComments(jsFunction(t, script, "forgetForm")), "dropBadgeOption(form);") ||
 		strings.Count(code, "withdrawBadgeOption(form, offered, forgotten);") != 1 ||
 		!strings.Contains(withoutComments(jsFunction(t, script, "followCredentialStorage")), "withdrawBadgeOption(form, offered, forgotten);") ||
 		strings.Count(code, "#f-badge-hint") != 1 {
@@ -1361,7 +1386,8 @@ func TestForgettingTheBrowserReachesEveryTab(t *testing.T) {
 // from any of them sends only what the browser still holds. A tab whose badge
 // has gone takes the option out of every posting form on screen, which would
 // offer a badge the browser no longer holds, noting a form that had it ticked
-// (withdrawBadgeOption), and draws /verify again if it shows the badge panel,
+// (withdrawBadgeOption), and out of a held form a redraw has taken off the
+// screen as it puts it back, and draws /verify again if it shows the badge panel,
 // and still does once the page has asked the server, and only then: its address
 // step, which a reader may be filling in, is left as it is, as is one the
 // reader moves to while the page asks, and so is a code step unless the badge
@@ -1402,6 +1428,18 @@ func TestForgettingTheBadgeReachesEveryTab(t *testing.T) {
 		t.Errorf("a tab no longer reads the badge again when another changes it, or no longer drops the option to post "+
 			"with one that has gone, or draws /verify again in some other case: %s", follow)
 	}
+	// A held form a redraw has taken off the screen, while a post link's
+	// lookup draws its skeleton say, misses the change, so as it is put back
+	// it loses the option if the page's badge is no longer the one its box was
+	// drawn for, noted as another tab's change notes it, but starting no
+	// puzzle, since drawing a page never does. Without this the thread the
+	// lookup resolves to offers the badge that has gone.
+	inOrder(t, "restoreDraft", squash(withoutComments(jsFunction(t, script, "restoreDraft"))),
+		"const pageBadge = state.verification.badge; const drawnWith = badgeOffered.get(held);",
+		`} else if (field(held, "badge") && !(pageBadge && drawnWith === pageBadge.token)) { `+
+			"withdrawBadgeOption(held, { token: drawnWith }, true); }",
+		"form.replaceWith(held);",
+	)
 	if strings.Count(code, `addEventListener("storage",`) != 1 ||
 		!strings.Contains(code, "\nwindow.addEventListener(\"storage\", followCredentialStorage);\n") ||
 		strings.Count(code, "followCredentialStorage") != 2 {
@@ -1539,7 +1577,7 @@ func TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress(t *testing.T) {
 	if !strings.Contains(withoutComments(jsFunction(t, script, "followCredentialStorage")), "withdrawBadgeOption(form, offered, forgotten);") {
 		t.Error("followCredentialStorage no longer notes a form whose ticked badge it takes away")
 	}
-	if forget := withoutComments(jsFunction(t, script, "forgetOnThisPage")); strings.Contains(forget, "withdrawBadgeOption") ||
+	if forget := withoutComments(jsFunction(t, script, "forgetOnThisPage") + jsFunction(t, script, "forgetForm")); strings.Contains(forget, "withdrawBadgeOption") ||
 		!strings.Contains(forget, "badgeWithdrawn.delete(form);") {
 		t.Error("forgetOnThisPage notes a form whose badge it takes away, or leaves a note another tab's change made")
 	}
@@ -1634,8 +1672,9 @@ func TestAFormSendsOnlyTheBadgeItWasDrawnFor(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
 	if !strings.Contains(code, "\nconst badgeOffered = new WeakMap();\n") || strings.Count(code, "badgeOffered.set(") != 1 ||
-		strings.Count(code, "badgeOffered.get(") != 3 || strings.Count(code, "badgeOffered") != 5 {
-		t.Error("badgeOffered is no longer a WeakMap noted only by noteBadgeOffered and read only by formDraft and a press")
+		strings.Count(code, "badgeOffered.get(") != 4 || strings.Count(code, "badgeOffered") != 6 {
+		t.Error("badgeOffered is no longer a WeakMap noted only by noteBadgeOffered and read only by formDraft, a press " +
+			"and a redraw putting a held form back")
 	}
 	if note := squash(withoutComments(jsFunction(t, script, "noteBadgeOffered"))); note != `function noteBadgeOffered() { `+
 		`const held = state.verification.badge; for (const form of el.main.querySelectorAll("form[data-kind]")) { `+
@@ -1698,7 +1737,7 @@ func TestAFormSendsOnlyTheBadgeItWasDrawnFor(t *testing.T) {
 	}
 	if strings.Count(code, "state.verification.badge = ") != 4 || strings.Count(code, "state.verification = ") != 1 ||
 		strings.Count(code, "readBadge()") != 4 || strings.Count(code, "forgetCredential();") != 7 ||
-		strings.Count(code, "withdrawBadgeOption(") != 6 {
+		strings.Count(code, "withdrawBadgeOption(") != 7 {
 		t.Error("the page's badge changes somewhere this test does not read, or withdrawBadgeOption is called from " +
 			"somewhere it does not, which may leave a form on screen offering a badge the page no longer holds")
 	}
@@ -1855,7 +1894,7 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 		"const key = routeKey(drawnFor.route || state.route);",
 		`const form = el.main.querySelector("form[data-kind]");`,
 		"return unsent ? { key, open: true, body: unsent.value } : null;",
-		"if (heldForms.has(form)) { return { key, held: form }; }",
+		"if (heldForms.has(form)) { return { key, held: form, forgets: browserForgets }; }",
 		"return { key, ...formDraft(form) };",
 	)
 	if strings.Count(capture, "routeKey(") != 1 || strings.Count(capture, "key") != 4 {
@@ -1870,9 +1909,9 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 		`const form = el.main.querySelector("form[data-kind]");`,
 		"if (draft.held) { const held = draft.held; if ( heldForms.has(held) && form && "+
 			"form.dataset.kind === held.dataset.kind && form.dataset.thread === held.dataset.thread ) { "+
-			`if (held.querySelector("[data-file-field]")) { redrawnPickers.set(held, pickerRefusal(form)); } form.replaceWith(held); `+
-			`const details = held.closest("details"); if (details) details.open = true;`,
-		"return; } answered = heldForms.has(held) ? null : held; draft = { key: draft.key, ...formDraft(held) }; }",
+			`if (held.querySelector("[data-file-field]")) { redrawnPickers.set(held, pickerRefusal(form)); } `,
+		`form.replaceWith(held); const details = held.closest("details"); if (details) details.open = true;`,
+		"return; } answered = heldForms.has(held) ? null : held; draft = { key: draft.key, ...formDraft(held), forgets: draft.forgets }; }",
 		"if (!form) { keepUnsentDraft(draft); return; }",
 	)
 	if refusal := squash(withoutComments(jsFunction(t, script, "pickerRefusal"))); refusal != "function pickerRefusal(form) { "+
@@ -2147,7 +2186,7 @@ func TestCaptchaRefusalSaysWhatTheFormStillHolds(t *testing.T) {
 	restore := squash(withoutComments(jsFunction(t, script, "restoreDraft")))
 	inOrder(t, "restoreDraft", restore,
 		"let answered = null;",
-		"answered = heldForms.has(held) ? null : held; draft = { key: draft.key, ...formDraft(held) }; }",
+		"answered = heldForms.has(held) ? null : held; draft = { key: draft.key, ...formDraft(held), forgets: draft.forgets }; }",
 		`const fileField = form.querySelector("[data-file-field]"); const refusal = answered && draft.file ? pickerRefusal(form) : ""; `+
 			`if (refusal) { const said = el.notice.hidden ? "" : el.notice.querySelector(".notice-text").textContent; `+
 			"const notice = refusalNotices.get(answered); "+

@@ -1528,8 +1528,9 @@ function noteBadgeOffered() {
 // after the one the note refuses usually finds it solved; but not with
 // startNothing: when the badge went with the browser forgotten in another tab,
 // which starts nothing here, or as /verify is drawn over the form
-// (loadVerification), since drawing a page starts nothing. A form noted then
-// starts it at the press the note refuses (submit).
+// (loadVerification), or a redraw puts a held form back (restoreDraft), since
+// drawing a page starts nothing. A form noted then starts it at the press the
+// note refuses (submit).
 function withdrawBadgeOption(form, offered, startNothing) {
   const box = field(form, "badge");
   const ticked = Boolean(box && box.checked);
@@ -2112,14 +2113,10 @@ function forgetBrowser() {
 // (browserForgets), a redraw's draft included (restoreDraft); drops the badge
 // read from storage, the poster key the page keeps for itself, what it noted
 // it stored, and the code step and the note about a lost badge, which would
-// greet the next person with the last one's institution; and, in every posting
-// form on screen, empties the Name, drawn with the forgotten name, which would
-// post under its tripcode, and takes out the option to post with the badge,
-// which names the institution as well. Nothing is said at a form's next press,
-// though the badge was ticked or the form noted after another tab took a badge
-// away (badgeWithdrawn): that would tell whoever presses it that this browser
-// held a badge, and with the poster key gone too the post has an ID of its
-// own, shared with none of the posts made before the forget.
+// greet the next person with the last one's institution; and forgets every
+// posting form on screen (forgetForm). A held form a redraw has taken off the
+// screen, while a post link's lookup draws its skeleton say, is forgotten as
+// the redraw puts it back (restoreDraft).
 function forgetOnThisPage() {
   browserForgets += 1;
   state.verification.badge = null;
@@ -2128,14 +2125,26 @@ function forgetOnThisPage() {
   pagePosterKey = "";
   storedHere.clear();
   for (const form of el.main.querySelectorAll("form[data-kind]")) {
-    const name = field(form, "name");
-    if (name) {
-      name.defaultValue = "";
-      name.value = "";
-    }
-    badgeWithdrawn.delete(form);
-    dropBadgeOption(form);
+    forgetForm(form);
   }
+}
+
+// forgetForm is what forgetting the browser does to a posting form: it empties
+// the Name, drawn with the forgotten name, which would post under its tripcode,
+// and takes out the option to post with the badge, which names the institution
+// as well. Nothing is said at the form's next press, though the badge was
+// ticked or the form noted after another tab took a badge away
+// (badgeWithdrawn): that would tell whoever presses it that this browser held
+// a badge, and with the poster key gone too the post has an ID of its own,
+// shared with none of the posts made before the forget.
+function forgetForm(form) {
+  const name = field(form, "name");
+  if (name) {
+    name.defaultValue = "";
+    name.value = "";
+  }
+  badgeWithdrawn.delete(form);
+  dropBadgeOption(form);
 }
 
 // forgottenElsewhere is a tab's answer to Forget this browser pressed in
@@ -2194,16 +2203,18 @@ function openForgetChannel() {
 // still holds; the next form or /verify page this tab draws shows it. If that
 // is not the one this tab offered, every posting form on screen loses the
 // option, which named the badge that has gone, and one that had it ticked says
-// so at its next press (withdrawBadgeOption); and /verify, when it shows the
-// badge panel, is drawn again, if the panel is still on screen once the page
-// has asked the server (renderVerify). /verify showing the address step is left
-// as it is, whatever badge it was drawn over, as is one the reader moves to
-// while the panel is drawn again, so a reader filling it in, or waiting on a
-// code request, loses nothing. So is a code step, unless the badge read in is
-// one newly verified there (codeSpentElsewhere). An emptied credential is the
-// browser forgotten in another tab (forgetBrowser): the options go as for any
-// badge gone, before or after its message on FORGET_CHANNEL is heard here, but
-// start no puzzle, since a forget starts nothing.
+// so at its next press (withdrawBadgeOption), as does a held form a redraw has
+// taken off the screen, once it is put back (restoreDraft); and /verify, when
+// it shows the badge panel, is drawn again, if the panel is still on screen
+// once the page has asked the server (renderVerify). /verify showing the
+// address step is left as it is, whatever badge it was drawn over, as is one
+// the reader moves to while the panel is drawn again, so a reader filling it
+// in, or waiting on a code request, loses nothing. So is a code step, unless
+// the badge read in is one newly verified there (codeSpentElsewhere). An
+// emptied credential is the browser forgotten in another tab (forgetBrowser):
+// the options go as for any badge gone, before or after its message on
+// FORGET_CHANNEL is heard here, but start no puzzle, since a forget starts
+// nothing.
 function followCredentialStorage(event) {
   if (event.key !== CREDENTIAL_STORAGE_KEY && event.key !== null) {
     return;
@@ -3450,8 +3461,10 @@ function field(form, name) {
 // A form whose post is on its way (holdForm) is carried as itself: restoreDraft
 // puts it, still held, in the new page, so the post on its way is what that
 // page shows, and is read for its values only if its post has been answered by
-// then (emptied after a success, released after a refusal). A draft is keyed
-// by the page on screen, which the render that drew it noted (drawnFor), not by
+// then (emptied after a success, released after a refusal). It is carried
+// with browserForgets as it was, so that a forget the form misses while the
+// redraw has it off the screen reaches it as it goes back. A draft is keyed by
+// the page on screen, which the render that drew it noted (drawnFor), not by
 // the newest render begun: one begun before the last has drawn, the second of a
 // double click say, would carry this page's form, held or not, into the form of
 // the page it goes to.
@@ -3464,7 +3477,7 @@ function captureDraft() {
     return unsent ? { key, open: true, body: unsent.value } : null;
   }
   if (heldForms.has(form)) {
-    return { key, held: form };
+    return { key, held: form, forgets: browserForgets };
   }
   return { key, ...formDraft(form) };
 }
@@ -3527,13 +3540,38 @@ function restoreDraft(draft) {
       if (held.querySelector("[data-file-field]")) {
         redrawnPickers.set(held, pickerRefusal(form));
       }
+      // A forget and a change of the badge reach the forms on screen
+      // (forgetOnThisPage, followCredentialStorage), and this one may have
+      // been off it, while a post link's lookup drew its skeleton say, so what
+      // either would have done to it there is done now. A forget since it was
+      // carried off, which the draft tells by browserForgets (captureDraft),
+      // forgets it (forgetForm). A badge other than the one its box was drawn
+      // for (badgeOffered) takes the option out, as another tab's change does,
+      // noting a ticked box, but starts no puzzle, since drawing a page never
+      // does. That costs one number on the draft, the badge being kept with
+      // the form already. Keeping the forms off the screen where every forget
+      // and change of badge could reach them would cost more: the list would
+      // have to keep a form answered while away, too, until its page is drawn
+      // (below).
+      const pageBadge = state.verification.badge;
+      const drawnWith = badgeOffered.get(held);
+      if (draft.forgets !== browserForgets) {
+        forgetForm(held);
+      } else if (field(held, "badge") && !(pageBadge && drawnWith === pageBadge.token)) {
+        withdrawBadgeOption(held, { token: drawnWith }, true);
+      }
       form.replaceWith(held);
       const details = held.closest("details");
       if (details) details.open = true;
       return;
     }
+    // Otherwise it is read for its values, and as of when it was carried off:
+    // one answered while away missed any forget since, so its Name, the one
+    // forgotten, is not restored, nor its badge (below). A Name typed into it
+    // after a forget it was on screen for is not restored either, which
+    // forgets more than it needs to, never less.
     answered = heldForms.has(held) ? null : held;
-    draft = { key: draft.key, ...formDraft(held) };
+    draft = { key: draft.key, ...formDraft(held), forgets: draft.forgets };
   }
   if (!form) {
     keepUnsentDraft(draft);

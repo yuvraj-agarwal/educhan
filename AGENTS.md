@@ -650,10 +650,14 @@ before the test changes.
   which starts no puzzle, as drawing a page never does), and a badged post refused as
   expired or revoked, for a form on the page the reader went to meanwhile, and for
   `/verify` there, drawn again where it shows that badge's panel, as another tab's is,
-  so it says why the badge went (`TestAFormSendsOnlyTheBadgeItWasDrawnFor`). Forget this
-  browser takes the option out without a word and drops the note: a word would tell
-  whoever presses next that the browser held a badge, and with the poster key gone the
-  post shares an ID with none made before. A badged post refused as expired or revoked
+  so it says why the badge went (`TestAFormSendsOnlyTheBadgeItWasDrawnFor`). A held
+  form a redraw has taken off the screen, while a post link's lookup draws its skeleton
+  say, misses each of these, so `restoreDraft`, putting it back, takes its option out
+  if the page no longer holds the badge its box was drawn for, noting a ticked box but
+  starting no puzzle (`TestForgettingTheBadgeReachesEveryTab`). Forget this browser
+  takes the option out without a word and drops the note: a word would tell whoever
+  presses next that the browser held a badge, and with the poster key gone the post
+  shares an ID with none made before. A badged post refused as expired or revoked
   forgets the credential it sent only while storage still holds it, so a badge verified
   in another tab meanwhile stays, and its form, still on screen with something written
   or attached, starts the puzzle the post it goes on to needs.
@@ -691,11 +695,16 @@ before the test changes.
   key the page holds, the code step, the note, and the Name and the badge option of every
   posting form on screen, whose note on the anti-spam check then says what a form without
   the option says: `dropBadgeOption`, without a word at its next press, which would say
-  the browser held a badge) and draws `/verify` again if it is showing. The message is
-  one constant that says nothing about anyone. The pressing tab clears storage before it
-  posts the message, emptying the credential before it removes it: a tab that hears
-  storage first, which no browser rules out, takes the badge option out of its forms as
-  for any badge gone but starts no puzzle for them (`followCredentialStorage`), since a
+  the browser held a badge) and draws `/verify` again if it is showing. A held form a
+  redraw has taken off the screen, while a post link's lookup draws its skeleton say,
+  is out of its reach: its draft carries `browserForgets` as it was (`captureDraft`),
+  and `restoreDraft`, putting it back, forgets it as those on screen are forgotten
+  (`forgetForm`) if a forget has come since, and reads one answered while away as of
+  then, so its Name, the one forgotten, is not restored. The message is one constant
+  that says nothing about anyone. The pressing tab clears storage before it posts
+  the message, emptying the credential before it removes it: a tab that hears storage
+  first, which no browser rules out, takes the badge option out of its forms as for
+  any badge gone but starts no puzzle for them (`followCredentialStorage`), since a
   forget sends nothing. Because storage is cleared first, another tab can store the
   credential, the poster key or the name again, for a post or a confirmation it handles
   before it hears; each tab notes what it stores of those three (`storedHere`), and on
