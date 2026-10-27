@@ -261,7 +261,14 @@ end-to-end checks live in `pass_api_test.go` against a fake Stripe (`fakeStripe`
 than in curl, and they cover `EDUCHAN_PASS_SALES=paused` beside the default `open`
 (`TestPassSalesPaused`). Paused, checkout answers `403 the Pass is not on sale right now`
 and `GET /api/pass` says `"paused": true`; every other Pass endpoint and the webhook go
-on as usual. A real checkout uses Stripe's test mode: test keys, a test Price, and
+on as usual. With `EDUCHAN_STRIPE_AUTOMATIC_TAX` on, the Price's own `tax_behavior`
+decides what the page says of tax: `GET /api/pass` adds `"tax": "included"` for an
+`inclusive` Price and `"added"` for an `exclusive` one (the page's "tax included" and
+"plus any tax"), and a Price with neither is not sold: the status leaves the price
+out and checkout answers `503` (`TestPassTaxFollowsThePrice`). Checkout always sends
+Stripe `automatic_tax[enabled]`, `false` with the setting off, so an account that
+collects tax by default adds none the page did not show. A real checkout uses Stripe's
+test mode: test keys, a test Price (one with a tax behavior, for Stripe Tax), and
 `stripe listen --forward-to localhost:8080/api/pass/stripe-webhook` for the webhook,
 with `EDUCHAN_PUBLIC_URL=http://localhost:8080`. A lost Pass is reissued, behind
 `EDUCHAN_MOD_KEY`, with `curl -X POST localhost:8080/api/pass/reissue -H 'X-Mod-Key: …'

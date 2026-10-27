@@ -2944,9 +2944,17 @@ function passTermText(days) {
 function passIntroHTML(info) {
   const term = info.enabled ? passTermText(info.days) : "a set time";
   const price = info.enabled ? passPriceText(info.price) : "";
-  const tax = info.automatic_tax ? " plus any tax" : "";
+  // With Stripe Tax on, the server says whether the tax is in the price or
+  // added to it at checkout, where it can come to nothing for some buyers.
+  // Without it no tax is collected, and the server says nothing of tax.
+  const priced =
+    info.tax === "included"
+      ? `${price} for ${term}, tax included`
+      : info.tax === "added"
+        ? `${price} plus any tax for ${term}`
+        : `${price} for ${term}`;
   const cost = price
-    ? `<p class="verify-note"><strong>${esc(price + tax)} for ${esc(term)}</strong>, paid once. It
+    ? `<p class="verify-note"><strong>${esc(priced)}</strong>, paid once. It
       doesn't renew by itself.</p>`
     : "";
   const budget = info.enabled ? plural(info.hourly_posts, "post", "posts") : "a set number of posts";

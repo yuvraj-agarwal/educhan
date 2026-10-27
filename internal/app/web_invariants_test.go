@@ -1317,9 +1317,23 @@ func TestPassPageDetails(t *testing.T) {
 			t.Error("the FAQ no longer lists every request whose address flood control holds")
 		}
 	})
-	t.Run("the price says when tax is added", func(t *testing.T) {
-		if !strings.Contains(withoutComments(jsFunction(t, script, "passIntroHTML")), `info.automatic_tax ? " plus any tax" : ""`) {
-			t.Error("the price leaves out that Stripe adds tax")
+	t.Run("the price says whether tax is in it, in the server's words", func(t *testing.T) {
+		// GET /api/pass says "included" for a Price with the tax in it and
+		// "added" for one Stripe adds it to at checkout, where it can come to
+		// nothing, and says nothing of tax without Stripe Tax.
+		intro := words(withoutComments(jsFunction(t, script, "passIntroHTML")))
+		if !strings.Contains(intro, "const priced = info.tax === \"included\" ? `${price} for ${term}, tax included` "+
+			": info.tax === \"added\" ? `${price} plus any tax for ${term}` : `${price} for ${term}`;") ||
+			!strings.Contains(intro, "<strong>${esc(priced)}</strong>, paid once.") {
+			t.Error("the price no longer says whether tax is in it, or says so without the server's word")
+		}
+		for behavior, word := range passTaxWords {
+			if !strings.Contains(intro, `info.tax === "`+word+`"`) {
+				t.Errorf("the page does not know the server's word %q for a Price whose tax behavior is %s", word, behavior)
+			}
+		}
+		if strings.Contains(script, "automatic_tax") {
+			t.Error("app.js still reads automatic_tax, which the server no longer sends")
 		}
 	})
 }

@@ -433,24 +433,21 @@ func passRequest(w http.ResponseWriter, r *http.Request) bool {
 const passNotOnSale = "the Pass is not on sale right now"
 
 // handlePassStatus tells the Pass page whether the Pass is on sale or paused,
-// for how long one lasts, how many posts an hour it skips the captcha for,
-// its price and whether tax is added to it. Like /api/verify it looks up
-// nothing about the caller's Pass: a browser knows its own Pass and when it
-// runs out. The one thing it reads off the request is the claim cookie, which
-// the page cannot see (it is HttpOnly), so the page knows there is a purchase
-// to collect. The claim is looked up for that and nothing else: a cookie with
-// nothing under it any more is no purchase to collect. Every claim cookie the
-// request carries is looked under (passClaimTokens).
+// for how long one lasts, how many posts an hour it skips the captcha for, its
+// price and, with Stripe Tax on, whether tax is in the price or added to it at
+// checkout. Like /api/verify it looks up nothing about the caller's Pass: a
+// browser knows its own Pass and when it runs out. The one thing it reads off
+// the request is the claim cookie, which the page cannot see (it is HttpOnly),
+// so the page knows there is a purchase to collect. The claim is looked up for
+// that and nothing else: a cookie with nothing under it any more is no
+// purchase to collect. Every claim cookie the request carries is looked under
+// (passClaimTokens).
 func (a *App) handlePassStatus(w http.ResponseWriter, r *http.Request) {
 	if !a.passEnabled() {
 		writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
 		return
 	}
 	out := map[string]any{"enabled": true, "days": a.cfg.Pass.Days, "hourly_posts": a.cfg.Pass.HourlyPosts}
-	// With Stripe Tax on, the price shown is before tax, and the page says so.
-	if a.cfg.Pass.StripeAutomaticTax {
-		out["automatic_tax"] = true
-	}
 	if claims := passClaimTokens(r); len(claims) > 0 {
 		waiting, err := a.store.passClaimWaiting(r.Context(), claimHashes(claims), time.Now())
 		if err != nil {
@@ -467,8 +464,14 @@ func (a *App) handlePassStatus(w http.ResponseWriter, r *http.Request) {
 	} else if price, err := a.passPrice(r.Context()); err == nil {
 		// The price is shown when Stripe could be asked for it. Without it the
 		// page still sells: Stripe's own page always shows the price before
-		// anyone pays.
+		// anyone pays. With Stripe Tax on, the Price says whether the tax is
+		// in it or added to it, and the page says which (passTaxWords); one
+		// that says neither is not shown, and checkout refuses it
+		// (passPriceTaxUnset).
 		out["price"] = price
+		if a.cfg.Pass.StripeAutomaticTax {
+			out["tax"] = passTaxWords[price.TaxBehavior]
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -499,6 +502,12 @@ func (a *App) passPrice(ctx context.Context) (passPrice, error) {
 	}
 	return s.price, s.priceErr
 }
+
+// passPriceTaxUnset is checkout's refusal while Stripe Tax is on and the
+// Pass's Price does not say whether tax is in its amount (errPassPriceTax).
+// It is the owner's to fix, so it says what is wrong to whoever tries to buy
+// first, and the log says how to fix it.
+const passPriceTaxUnset = "the Pass can't be bought right now: its price in Stripe doesn't say whether tax is included"
 
 // passAdultRequired refuses a checkout that does not say its buyer is 18 or
 // over, in the badge's words, because it is the same rule.
@@ -533,6 +542,17 @@ func (a *App) handlePassCheckout(w http.ResponseWriter, r *http.Request) {
 	if !req.Adult {
 		writeError(w, http.StatusBadRequest, passAdultRequired)
 		return
+	}
+	// A Price that does not say whether tax is in it is not sold while Stripe
+	// Tax is on, since the page could not say what the buyer pays. Nothing is
+	// opened in Stripe, and no cooldown starts for a fault that is not the
+	// buyer's.
+	if a.cfg.Pass.StripeAutomaticTax {
+		if _, err := a.passPrice(r.Context()); errors.Is(err, errPassPriceTax) {
+			a.log.Error("refused a Pass checkout: EDUCHAN_STRIPE_AUTOMATIC_TAX is on and the Stripe Price's tax behavior is neither inclusive nor exclusive; set one on the Price, or make a new Price with one and set EDUCHAN_STRIPE_PRICE_ID to it")
+			writeError(w, http.StatusServiceUnavailable, passPriceTaxUnset)
+			return
+		}
 	}
 
 	now := time.Now()

@@ -34,7 +34,10 @@ type PassConfig struct {
 	// deploy.
 	StripePriceID string
 	// StripeAutomaticTax asks Stripe Tax to work out and collect sales tax,
-	// VAT or GST. It needs Stripe Tax switched on in the Stripe account first.
+	// VAT or GST. It needs Stripe Tax switched on in the Stripe account first,
+	// and a Price that says whether its amount includes the tax (inclusive)
+	// or has it added (exclusive); one that says neither is not sold. Off,
+	// checkout tells Stripe to collect no tax.
 	StripeAutomaticTax bool
 	// PublicURL is the site's own origin, which Stripe sends the buyer back to
 	// after paying ("https://educhan.example"). It is configured rather than

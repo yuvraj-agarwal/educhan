@@ -85,7 +85,9 @@ type checkoutSession struct {
 //
 // No customer object is created (Stripe's default for one-off payments), and
 // no metadata is attached: Stripe learns that somebody bought a Pass, which it
-// has to, and nothing about who they are on educhan.
+// has to, and nothing about who they are on educhan. With Stripe Tax on,
+// Stripe's page also asks for the buyer's billing address to work the tax
+// out, and keeps it with the rest of the payment.
 func (c *stripeClient) createCheckout(ctx context.Context, successURL, cancelURL string) (checkoutSession, error) {
 	form := url.Values{
 		"mode":                    {"payment"},
@@ -94,9 +96,9 @@ func (c *stripeClient) createCheckout(ctx context.Context, successURL, cancelURL
 		"success_url":             {successURL},
 		"cancel_url":              {cancelURL},
 		"submit_type":             {"pay"},
-	}
-	if c.tax {
-		form.Set("automatic_tax[enabled]", "true")
+		// Sent either way, so an account set to collect tax by default never
+		// adds tax that the Pass page did not show.
+		"automatic_tax[enabled]": {strconv.FormatBool(c.tax)},
 	}
 	var s checkoutSession
 	if err := c.call(ctx, http.MethodPost, "/v1/checkout/sessions", form, &s); err != nil {
@@ -123,20 +125,38 @@ func isStripeCheckoutURL(raw string) bool {
 
 // passPrice is what the Pass page shows before anyone clicks: the amount in
 // the currency's smallest unit, as Stripe keeps it, and the currency code.
+// TaxBehavior is the Price's own word on tax, which GET /api/pass passes on
+// as passTaxWords has it.
 type passPrice struct {
-	Amount   int64  `json:"amount"`
-	Currency string `json:"currency"`
+	Amount      int64  `json:"amount"`
+	Currency    string `json:"currency"`
+	TaxBehavior string `json:"-"`
 }
+
+// passTaxWords is what GET /api/pass says of tax while Stripe Tax is on, by
+// the Price's tax_behavior: "included" when the amount has the tax in it
+// already, and "added" when Stripe adds it at checkout, which can come to
+// nothing for some buyers. With Stripe Tax off no tax is collected, and
+// nothing is said of it.
+var passTaxWords = map[string]string{"inclusive": "included", "exclusive": "added"}
+
+// errPassPriceTax is price's refusal, while Stripe Tax is on, of a Price that
+// does not say whether its amount includes tax. Stripe would settle that by a
+// default in the account that the Pass page cannot know, so the page could
+// show a price the buyer does not pay.
+var errPassPriceTax = errors.New("stripe: with EDUCHAN_STRIPE_AUTOMATIC_TAX on, the Pass price must have a tax behavior, inclusive or exclusive")
 
 // price reads the Pass's Price. A recurring Price is refused, because the
 // Pass is bought by hand for each term, as 4chan's is, and never renews
-// itself.
+// itself. So, while Stripe Tax is on, is a Price that does not say whether tax
+// is in its amount (errPassPriceTax).
 func (c *stripeClient) price(ctx context.Context) (passPrice, error) {
 	var p struct {
-		Active     bool   `json:"active"`
-		Type       string `json:"type"`
-		UnitAmount *int64 `json:"unit_amount"`
-		Currency   string `json:"currency"`
+		Active      bool   `json:"active"`
+		Type        string `json:"type"`
+		UnitAmount  *int64 `json:"unit_amount"`
+		Currency    string `json:"currency"`
+		TaxBehavior string `json:"tax_behavior"`
 	}
 	if err := c.call(ctx, http.MethodGet, "/v1/prices/"+url.PathEscape(c.priceID), nil, &p); err != nil {
 		return passPrice{}, err
@@ -148,8 +168,10 @@ func (c *stripeClient) price(ctx context.Context) (passPrice, error) {
 		return passPrice{}, fmt.Errorf("stripe: the Pass price must be one-time, not %q", p.Type)
 	case p.UnitAmount == nil || *p.UnitAmount <= 0 || p.Currency == "":
 		return passPrice{}, errors.New("stripe: the Pass price has no fixed amount")
+	case c.tax && passTaxWords[p.TaxBehavior] == "":
+		return passPrice{}, errPassPriceTax
 	}
-	return passPrice{Amount: *p.UnitAmount, Currency: strings.ToLower(p.Currency)}, nil
+	return passPrice{Amount: *p.UnitAmount, Currency: strings.ToLower(p.Currency), TaxBehavior: p.TaxBehavior}, nil
 }
 
 // call makes one API request. Errors carry Stripe's message and type but

@@ -179,21 +179,21 @@ func passServerLogging(t *testing.T, tune func(*Config), logs io.Writer) *passHa
 }
 
 type passResponse struct {
-	Enabled      bool       `json:"enabled"`
-	Days         int        `json:"days"`
-	HourlyPosts  int        `json:"hourly_posts"`
-	Price        *passPrice `json:"price"`
-	AutomaticTax bool       `json:"automatic_tax"`
-	Paused       bool       `json:"paused"`
-	URL          string     `json:"url"`
-	Order        string     `json:"order"`
-	Status       string     `json:"status"`
-	Pass         string     `json:"pass"`
-	ExpiresAt    time.Time  `json:"expires_at"`
-	Claim        bool       `json:"claim"`
-	Code         string     `json:"code"`
-	Error        string     `json:"error"`
-	RetryAfter   int        `json:"retry_after"`
+	Enabled     bool       `json:"enabled"`
+	Days        int        `json:"days"`
+	HourlyPosts int        `json:"hourly_posts"`
+	Price       *passPrice `json:"price"`
+	Tax         string     `json:"tax"`
+	Paused      bool       `json:"paused"`
+	URL         string     `json:"url"`
+	Order       string     `json:"order"`
+	Status      string     `json:"status"`
+	Pass        string     `json:"pass"`
+	ExpiresAt   time.Time  `json:"expires_at"`
+	Claim       bool       `json:"claim"`
+	Code        string     `json:"code"`
+	Error       string     `json:"error"`
+	RetryAfter  int        `json:"retry_after"`
 }
 
 // refusalState reads the machine-readable refusal, which shares the "pass" key
@@ -342,19 +342,12 @@ func TestPassStatus(t *testing.T) {
 		t.Fatal("the Pass is on sale with no configuration")
 	}
 
+	// Stripe Tax is off, so nothing is said of tax (TestPassTaxFollowsThePrice).
 	p := passServer(t, nil)
 	p.get("/api/pass", &out)
 	if !out.Enabled || out.Days != 365 || out.HourlyPosts != 30 || out.Price == nil || out.Price.Amount != 2000 ||
-		out.Price.Currency != "usd" || out.AutomaticTax || out.Claim {
+		out.Price.Currency != "usd" || out.Tax != "" || out.Claim {
 		t.Fatalf("status: %+v", out)
-	}
-
-	// With Stripe Tax on, the page is told the price is before tax.
-	taxed := passServer(t, func(cfg *Config) { cfg.Pass.StripeAutomaticTax = true })
-	var withTax passResponse
-	taxed.get("/api/pass", &withTax)
-	if !withTax.AutomaticTax {
-		t.Fatalf("status with Stripe Tax on: %+v", withTax)
 	}
 }
 
@@ -367,6 +360,114 @@ func TestPassStatusSurvivesStripeTrouble(t *testing.T) {
 	p.get("/api/pass", &out)
 	if !out.Enabled || out.Price != nil {
 		t.Fatalf("a recurring price must be refused but the page still offered: %+v", out)
+	}
+}
+
+// TestPassTaxFollowsThePrice holds what GET /api/pass says of tax to the
+// Price's own tax behavior, and checkout to telling Stripe whether to collect
+// tax either way, so an account that collects it by default adds none the page
+// did not show. With Stripe Tax on, an inclusive Price has the tax "included"
+// and an exclusive one has it "added" at checkout. A Price that says neither,
+// or was made before Prices said, is not sold, since Stripe would settle it by
+// a default in the account that the page cannot know: the status leaves the
+// price out, and checkout refuses before Stripe opens anything or a cooldown
+// starts, with an answer and a log line of its own that say what to fix and
+// nothing of the buyer. Given a behavior, the Price sells. With Stripe Tax
+// off, no tax is collected and nothing is said of it, whatever the Price says.
+func TestPassTaxFollowsThePrice(t *testing.T) {
+	// absent is a Price without the field; nil is one where Stripe has it null.
+	type absent struct{}
+	for _, tc := range []struct {
+		name     string
+		tax      bool
+		behavior any
+		word     string
+	}{
+		{"Stripe Tax off, inclusive", false, "inclusive", ""},
+		{"Stripe Tax off, exclusive", false, "exclusive", ""},
+		{"Stripe Tax off, unspecified", false, "unspecified", ""},
+		{"Stripe Tax off, null", false, nil, ""},
+		{"Stripe Tax on, inclusive", true, "inclusive", "included"},
+		{"Stripe Tax on, exclusive", true, "exclusive", "added"},
+		{"Stripe Tax on, unspecified", true, "unspecified", ""},
+		{"Stripe Tax on, null", true, nil, ""},
+		{"Stripe Tax on, absent", true, absent{}, ""},
+	} {
+		sold := !tc.tax || tc.word != ""
+		t.Run(tc.name, func(t *testing.T) {
+			var logs syncBuffer
+			p := passServerLogging(t, func(cfg *Config) {
+				cfg.Pass.StripeAutomaticTax = tc.tax
+				cfg.Pass.CheckoutCooldown = time.Hour
+			}, &logs)
+			p.stripe.mu.Lock()
+			if _, ok := tc.behavior.(absent); ok {
+				delete(p.stripe.price, "tax_behavior")
+			} else {
+				p.stripe.price["tax_behavior"] = tc.behavior
+			}
+			p.stripe.mu.Unlock()
+
+			var status map[string]any
+			p.get("/api/pass", &status)
+			_, priced := status["price"]
+			tax, said := status["tax"]
+			if priced != sold || said != (tc.word != "") || said && tax != tc.word {
+				t.Fatalf("GET /api/pass: %v; want the price %t and the tax %q", status, sold, tc.word)
+			}
+
+			var out passResponse
+			code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out)
+			if sold {
+				if code != http.StatusOK {
+					t.Fatalf("checkout: status %d (%s)", code, out.Error)
+				}
+				if got, want := p.stripe.sessions[0].Get("automatic_tax[enabled]"), strconv.FormatBool(tc.tax); got != want {
+					t.Fatalf("Stripe got automatic_tax[enabled]=%q, want %q", got, want)
+				}
+				return
+			}
+			if code != http.StatusServiceUnavailable || out.Error != passPriceTaxUnset || p.stripe.sessionCount() != 0 {
+				t.Fatalf("checkout of a Price that does not say whether tax is in it: status %d (%s), %d Stripe sessions; want 503 and none",
+					code, out.Error, p.stripe.sessionCount())
+			}
+			var refusals int
+			for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+				var record map[string]any
+				if err := json.Unmarshal([]byte(line), &record); err != nil {
+					t.Fatalf("a log line is not JSON: %q", line)
+				}
+				msg, _ := record["msg"].(string)
+				if !strings.HasPrefix(msg, "refused a Pass checkout: ") {
+					continue
+				}
+				refusals++
+				if len(record) != 3 || !strings.Contains(msg, "EDUCHAN_STRIPE_AUTOMATIC_TAX") ||
+					!strings.Contains(msg, "inclusive nor exclusive") || !strings.Contains(msg, "EDUCHAN_STRIPE_PRICE_ID") {
+					t.Errorf("the refusal's log line does not say what to fix, or carries more than its words: %s", line)
+				}
+			}
+			if refusals != 1 {
+				t.Fatalf("%d refusal lines in the log, want 1:\n%s", refusals, logs.String())
+			}
+
+			// Given a behavior, the Price sells once the cached refusal runs
+			// out, and the refused checkout started no cooldown.
+			p.stripe.mu.Lock()
+			p.stripe.price["tax_behavior"] = "inclusive"
+			p.stripe.mu.Unlock()
+			p.app.pass.priceMu.Lock()
+			p.app.pass.priceFetchedAt = time.Time{}
+			p.app.pass.priceMu.Unlock()
+			p.get("/api/pass", &status)
+			if status["tax"] != "included" || status["price"] == nil {
+				t.Fatalf("GET /api/pass once the Price is inclusive: %v", status)
+			}
+			if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusOK ||
+				p.stripe.sessions[0].Get("automatic_tax[enabled]") != "true" {
+				t.Fatalf("checkout once the Price is inclusive: status %d (%s)", code, out.Error)
+			}
+		})
 	}
 }
 
@@ -394,16 +495,19 @@ func TestPassPurchase(t *testing.T) {
 		"line_items[0][quantity]": "1",
 		"success_url":             testPublicURL + "/pass?paid",
 		"cancel_url":              testPublicURL + "/pass?cancelled",
+		// Stripe Tax is off, and Stripe is told so, since an account can
+		// collect tax by default (TestPassTaxFollowsThePrice).
+		"automatic_tax[enabled]": "false",
 	} {
 		if got := form.Get(key); got != want {
 			t.Errorf("Stripe got %s=%q, want %q", key, got, want)
 		}
 	}
 	// Stripe learns that a Pass was bought and nothing about who on educhan
-	// bought it.
+	// bought it, and is asked for nothing about tax but whether to collect it.
 	for key := range form {
 		if strings.HasPrefix(key, "metadata") || strings.HasPrefix(key, "client_reference_id") ||
-			strings.HasPrefix(key, "customer") || strings.HasPrefix(key, "automatic_tax") {
+			strings.HasPrefix(key, "customer") || strings.HasPrefix(key, "automatic_tax") && key != "automatic_tax[enabled]" {
 			t.Errorf("Stripe was sent %s", key)
 		}
 	}
