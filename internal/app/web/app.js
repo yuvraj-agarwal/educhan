@@ -2136,7 +2136,8 @@ function forgetOnThisPage() {
 // ticked or the form noted after another tab took a badge away
 // (badgeWithdrawn): that would tell whoever presses it that this browser held
 // a badge, and with the poster key gone too the post has an ID of its own,
-// shared with none of the posts made before the forget.
+// shared with none of the posts made before the forget. It notes the forget it
+// did (forgottenAt).
 function forgetForm(form) {
   const name = field(form, "name");
   if (name) {
@@ -2145,7 +2146,15 @@ function forgetForm(form) {
   }
   badgeWithdrawn.delete(form);
   dropBadgeOption(form);
+  forgottenAt.set(form, browserForgets);
 }
+
+// The forget that last reached each posting form, by form, as browserForgets
+// counted it (forgetForm). A held form a redraw carries across is forgotten as
+// it is put back only for a forget it missed while off the screen, not again
+// for one it had on screen: the Name it shows then was typed after that
+// forget, and a post pressed since may be going out under it (restoreDraft).
+const forgottenAt = new WeakMap();
 
 // forgottenElsewhere is a tab's answer to Forget this browser pressed in
 // another: what this tab wrote back to storage since that tab cleared it goes
@@ -3524,10 +3533,14 @@ function restoreDraft(draft) {
   // notice on screen (below).
   let answered = null;
   if (draft.held) {
+    const held = draft.held;
+    // The newest forget the form has had: the last before the redraw carried
+    // it (captureDraft), or one since that reached it on screen, its page kept
+    // there while the redraw loads say (forgottenAt).
+    const forgets = Math.max(draft.forgets, forgottenAt.get(held) ?? 0);
     // Still held, its post still on its way: the form itself takes the place
     // of the one just drawn for the same thread, or the same board's new
     // thread, so the post is answered there.
-    const held = draft.held;
     if (
       heldForms.has(held) &&
       form &&
@@ -3546,19 +3559,20 @@ function restoreDraft(draft) {
       // A forget and a change of the badge reach the forms on screen
       // (forgetOnThisPage, followCredentialStorage), and this one may have
       // been off it, while a post link's lookup drew its skeleton say, so what
-      // either would have done to it there is done now. A forget since it was
-      // carried off, which the draft tells by browserForgets (captureDraft),
-      // forgets it (forgetForm). A badge other than the one its box was drawn
+      // either would have done to it there is done now. A forget it has not
+      // had (forgets) forgets it (forgetForm); one it had on screen is not
+      // done again, so a Name typed since, which a post pressed since may be
+      // going out under, stays. A badge other than the one its box was drawn
       // for (badgeOffered) takes the option out, as another tab's change does,
       // noting a ticked box, but starts no puzzle, since drawing a page never
-      // does. That costs one number on the draft, the badge being kept with
-      // the form already. Keeping the forms off the screen where every forget
-      // and change of badge could reach them would cost more: the list would
-      // have to keep a form answered while away, too, until its page is drawn
-      // (below).
+      // does. That costs one number on the draft and one per form forgotten,
+      // the badge being kept with the form already. Keeping the forms off the
+      // screen where every forget and change of badge could reach them would
+      // cost more: the list would have to keep a form answered while away,
+      // too, until its page is drawn (below).
       const pageBadge = state.verification.badge;
       const drawnWith = badgeOffered.get(held);
-      if (draft.forgets !== browserForgets) {
+      if (forgets !== browserForgets) {
         forgetForm(held);
       } else if (field(held, "badge") && !(pageBadge && drawnWith === pageBadge.token)) {
         withdrawBadgeOption(held, { token: drawnWith }, true);
@@ -3568,13 +3582,12 @@ function restoreDraft(draft) {
       if (details) details.open = true;
       return;
     }
-    // Otherwise it is read for its values, and as of when it was carried off:
-    // one answered while away missed any forget since, so its Name, the one
-    // forgotten, is not restored, nor its badge (below). A Name typed into it
-    // after a forget it was on screen for is not restored either, which
-    // forgets more than it needs to, never less.
+    // Otherwise it is read for its values, and as of the newest forget it has
+    // had: one answered while away missed any forget since, so its Name, the
+    // one forgotten, is not restored, nor its badge (below), while a Name
+    // typed after a forget it had on screen is.
     answered = heldForms.has(held) ? null : held;
-    draft = { key: draft.key, ...formDraft(held), forgets: draft.forgets };
+    draft = { key: draft.key, ...formDraft(held), forgets };
   }
   if (!form) {
     keepUnsentDraft(draft);

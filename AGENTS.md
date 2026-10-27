@@ -698,11 +698,14 @@ before the test changes.
   posting form on screen, whose note on the anti-spam check then says what a form without
   the option says: `dropBadgeOption`, without a word at its next press, which would say
   the browser held a badge) and draws `/verify` again if it is showing. A held form a
-  redraw has taken off the screen, while a post link's lookup draws its skeleton say,
-  is out of its reach: its draft carries `browserForgets` as it was (`captureDraft`),
-  and `restoreDraft`, putting it back, forgets it as those on screen are forgotten
-  (`forgetForm`) if a forget has come since, and reads one answered while away as of
-  then, so its Name, the one forgotten, is not restored. The message is one constant
+  redraw has taken off the screen, while a post link's lookup draws its skeleton say, is
+  out of its reach: its draft carries `browserForgets` as it was (`captureDraft`), and
+  `restoreDraft`, putting it back, forgets it as those on screen are forgotten
+  (`forgetForm`) if a forget it missed has come since, and reads one answered while away
+  as of the newest forget it had, so its Name, the one forgotten, is not restored. A
+  forget that reached it on screen, its page kept while Update loads say, is not done
+  again (`forgottenAt`, which `forgetForm` notes), so a Name typed after it, which a post
+  pressed since may be going out under, is left as it is. The message is one constant
   that says nothing about anyone. The pressing tab clears storage before it posts
   the message, emptying the credential before it removes it: a tab that hears storage
   first, which no browser rules out, takes the badge option out of its forms as for

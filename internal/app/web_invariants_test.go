@@ -1143,8 +1143,9 @@ func TestEachCaptchaAnswerGoesOnOneRequest(t *testing.T) {
 // that has gone, and without a word at its next press, which would tell
 // whoever presses it that the browser held one: a note that another tab took a
 // ticked badge away goes too (badgeWithdrawn). So does a held form a redraw
-// has taken off the screen, as it is put back, and one answered while away
-// has its Name read as of when it went. Each request and each draft notes
+// has taken off the screen, as it is put back, for a forget it missed there
+// but not again for one it had on screen, and one answered while away has its
+// Name read as of the newest forget it had. Each request and each draft notes
 // browserForgets, and only forgetOnThisPage moves it, for a press in this tab
 // or one heard from another (TestForgettingTheBrowserReachesEveryTab).
 func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
@@ -1168,27 +1169,37 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 	}
 	if forget := squash(withoutComments(jsFunction(t, script, "forgetForm"))); forget != `function forgetForm(form) { `+
 		`const name = field(form, "name"); if (name) { name.defaultValue = ""; name.value = ""; } `+
-		`badgeWithdrawn.delete(form); dropBadgeOption(form); }` {
-		t.Errorf("forgetForm no longer empties a form's Name and takes out its badge option and any note on it: %s", forget)
+		`badgeWithdrawn.delete(form); dropBadgeOption(form); forgottenAt.set(form, browserForgets); }` {
+		t.Errorf("forgetForm no longer empties a form's Name and takes out its badge option and any note on it, "+
+			"noting the forget it did: %s", forget)
 	}
 	// A held form a redraw has taken off the screen, while a post link's
 	// lookup draws its skeleton say, is out of the forget's reach, so the
 	// draft carries browserForgets as it was, and the form is forgotten as it
-	// is put back if a forget has come since. One answered while away is read
-	// as of then, so its Name, read after the forget, is not restored. Without
-	// this the thread the lookup resolves to draws the forgotten Name again,
-	// tripcode secret and all, and the next press posts under it and stores it.
+	// is put back if a forget has come since that did not reach it on screen
+	// (forgottenAt). One answered while away is read as of the newest forget
+	// it had, so its Name, read after a forget it missed, is not restored.
+	// Without this the thread the lookup resolves to draws the forgotten Name
+	// again, tripcode secret and all, and the next press posts under it and
+	// stores it. Without forgottenAt, a form the redraw left on screen, its
+	// page kept while Update loads say, would lose a Name typed after a forget
+	// it had there, and a post pressed since would go out under a Name the
+	// form no longer shows.
 	if strings.Count(code, "forgetForm(") != 3 {
 		t.Error("forgetForm is called from somewhere besides forgetOnThisPage and restoreDraft")
+	}
+	if !strings.Contains(code, "\nconst forgottenAt = new WeakMap();\n") || strings.Count(code, "forgottenAt") != 3 {
+		t.Error("forgottenAt is no longer a WeakMap noted only by forgetForm and read only by restoreDraft")
 	}
 	if capture := squash(withoutComments(jsFunction(t, script, "captureDraft"))); !strings.Contains(capture,
 		"if (heldForms.has(form)) { return { key, held: form, forgets: browserForgets }; }") {
 		t.Error("captureDraft no longer notes browserForgets beside a held form it carries")
 	}
 	inOrder(t, "restoreDraft", squash(withoutComments(jsFunction(t, script, "restoreDraft"))),
-		"if (draft.forgets !== browserForgets) { forgetForm(held); }",
+		"if (draft.held) { const held = draft.held; const forgets = Math.max(draft.forgets, forgottenAt.get(held) ?? 0);",
+		"if (forgets !== browserForgets) { forgetForm(held); }",
 		"form.replaceWith(held);",
-		"answered = heldForms.has(held) ? null : held; draft = { key: draft.key, ...formDraft(held), forgets: draft.forgets }; }",
+		"answered = heldForms.has(held) ? null : held; draft = { key: draft.key, ...formDraft(held), forgets }; }",
 	)
 	// The option goes with its hint, and the form's note on the anti-spam
 	// check, drawn in its own element, says what a form drawn without the
@@ -1916,11 +1927,12 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 	inOrder(t, "restoreDraft", restore,
 		"if (!draft || draft.key !== routeKey(state.route)) { return; }",
 		`const form = el.main.querySelector("form[data-kind]");`,
-		"if (draft.held) { const held = draft.held; if ( heldForms.has(held) && form && "+
+		"if (draft.held) { const held = draft.held; const forgets = Math.max(draft.forgets, forgottenAt.get(held) ?? 0); "+
+			"if ( heldForms.has(held) && form && "+
 			"form.dataset.kind === held.dataset.kind && form.dataset.thread === held.dataset.thread ) { "+
 			`if (held.querySelector("[data-file-field]")) { redrawnPickers.set(held, pickerRefusal(form)); } `,
 		`form.replaceWith(held); const details = held.closest("details"); if (details) details.open = true;`,
-		"return; } answered = heldForms.has(held) ? null : held; draft = { key: draft.key, ...formDraft(held), forgets: draft.forgets }; }",
+		"return; } answered = heldForms.has(held) ? null : held; draft = { key: draft.key, ...formDraft(held), forgets }; }",
 		"if (!form) { keepUnsentDraft(draft); return; }",
 	)
 	if refusal := squash(withoutComments(jsFunction(t, script, "pickerRefusal"))); refusal != "function pickerRefusal(form) { "+
@@ -2207,7 +2219,7 @@ func TestCaptchaRefusalSaysWhatTheFormStillHolds(t *testing.T) {
 	restore := squash(withoutComments(jsFunction(t, script, "restoreDraft")))
 	inOrder(t, "restoreDraft", restore,
 		"let answered = null;",
-		"answered = heldForms.has(held) ? null : held; draft = { key: draft.key, ...formDraft(held), forgets: draft.forgets }; }",
+		"answered = heldForms.has(held) ? null : held; draft = { key: draft.key, ...formDraft(held), forgets }; }",
 		`const fileField = form.querySelector("[data-file-field]"); const refusal = answered && draft.file ? pickerRefusal(form) : ""; `+
 			`if (refusal) { const said = el.notice.hidden ? "" : el.notice.querySelector(".notice-text").textContent; `+
 			"const notice = refusalNotices.get(answered); "+
