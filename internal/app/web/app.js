@@ -3252,13 +3252,15 @@ function endLoading() {
 // nothing, and its finish would show a newer render still loading, a kept page
 // say, as loaded. The latest is counted rather than asked of overtaken: a kept
 // page whose redraw fails puts back the route it was drawn for, which
-// overtakes that redraw too.
+// overtakes that redraw too. A skeleton drawn leaves the page it replaces
+// (leavePage).
 function beginLoading({ skeleton = true } = {}) {
   const begun = rendersBegun;
   el.main.setAttribute("aria-busy", "true");
   loadingTimer = setTimeout(() => {
     if (skeleton && begun === rendersBegun) {
       el.main.innerHTML = '<div class="skeleton"><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div></div>';
+      leavePage();
     }
   }, 250);
   return () => {
@@ -3286,6 +3288,15 @@ function overtaken(route) {
   return state.route !== route;
 }
 
+// leavePage forgets what the page on screen gave its controls to read, its
+// thread and the image open on it, as render draws the skeleton, the age
+// screen or an error in its place. A page drawn in its place sets both for
+// itself (render).
+function leavePage() {
+  state.thread = null;
+  expandedLink = null;
+}
+
 // The draft defaults to whatever is on screen now; a render that hands over to
 // another passes its own along, because by then the screen may be a skeleton.
 async function render({ draft = captureDraft() } = {}) {
@@ -3305,16 +3316,14 @@ async function render({ draft = captureDraft() } = {}) {
   // loading ends (beginLoading).
   rendersBegun += 1;
   endLoading();
-  // A redraw of the page a post is on its way from keeps the page on screen
-  // (below), and with it what the page's controls read, its thread and the
-  // image open on it, until a new page is drawn over it: a refusal answered
-  // meanwhile updates the page it is shown on.
+  // What the page on screen gives its controls to read, its thread and the
+  // image open on it, stays as it is while this render loads, whatever it
+  // loads (a post link's lookup, say, and the thread it goes on to), until
+  // something is drawn in the page's place (leavePage, and below): a refusal
+  // answered meanwhile updates the page it is shown on, and Escape closes the
+  // image open there. A redraw of the page a post is on its way from keeps the
+  // page on screen (below).
   const keepPage = Boolean(draft && draft.held && draft.key === routeKey(route));
-  if (!keepPage) {
-    state.thread = null;
-    // Whatever was expanded belongs to the view being replaced.
-    expandedLink = null;
-  }
   renderNav(route);
   clearNotice();
   hideQuotePreview();
@@ -3324,6 +3333,7 @@ async function render({ draft = captureDraft() } = {}) {
   const age = ageStatus();
   const ungated = UNGATED_VIEWS.has(route.view);
   if (age !== "ok" && !ungated) {
+    leavePage();
     renderAgeGate(age);
     return;
   }
@@ -3434,7 +3444,7 @@ async function render({ draft = captureDraft() } = {}) {
       showNotice(said ? `${said} ${message}` : message);
       return;
     }
-    expandedLink = null;
+    leavePage();
     el.main.innerHTML = emptyStateHTML(message, board);
     announce(notFound ? "Not found" : "Could not load this page");
     return;
@@ -3457,9 +3467,13 @@ async function render({ draft = captureDraft() } = {}) {
   }
   // A render overtaken while it loaded drew nothing, and leaves the screen to
   // the newer one. Otherwise the page is this render's now, with no image open
-  // on it yet.
+  // on it yet, and a thread for its controls to read only if it is a thread's,
+  // which renderThread noted as it drew it.
   if (overtaken(route)) {
     return;
+  }
+  if (route.view !== "thread") {
+    state.thread = null;
   }
   drawnFor = { path: renderedPath, route, thread: state.thread };
   expandedLink = null;

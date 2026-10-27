@@ -456,8 +456,9 @@ before the test changes.
   board's index, which has the same `routeKey`: the view, the board and the thread,
   never the index page) keeps the page, dimmed, in place of the skeleton (`keepPage` in
   `render`), with the thread its controls read and the open image left as they are until
-  a new page is drawn, so a refusal answered meanwhile updates the page on screen, and
-  puts the held form itself into the new page in place of the one drawn there, its
+  something is drawn in its place (`leavePage`), as every render leaves them, a post
+  link's lookup included, so a refusal answered meanwhile updates the page on screen,
+  and puts the held form itself into the new page in place of the one drawn there, its
   `<details>` opened (`heldForms`, `captureDraft`, `restoreDraft`); a form answered by
   then is read for its values like any draft, emptied after a success, and one whose
   ticked badge the server refused as expired or revoked while it was away is noted

@@ -2025,9 +2025,11 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 	if n := strings.Count(withoutComments(script), "unblockFileField("); n != 2 {
 		t.Errorf("unblockFileField is called %d times in app.js; want once, in release", n-1)
 	}
-	// A kept page keeps its thread and its open image until a new page is
-	// drawn over it, so a refusal answered while the redraw loads updates the
-	// page on screen. A render a newer one has overtaken draws nothing, loaded
+	// A page keeps its thread and its open image until something is drawn in
+	// its place, the skeleton, the age screen, an error or a new page, whatever
+	// loads meanwhile, so a refusal answered while a redraw loads updates the
+	// page on screen, after a post link's lookup too, and Escape closes the
+	// image open there. A render a newer one has overtaken draws nothing, loaded
 	// or not, and one that draws notes what the page was drawn for (drawnFor),
 	// which a kept page whose redraw will not load gets back, with the error
 	// as a notice, never in place of the page: after two redraws that fail, the
@@ -2047,9 +2049,8 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 		"const requested = window.location.pathname + window.location.search; renderedPath = requested; "+
 			"const route = parseRoute(); state.route = route; "+
 			"rendersBegun += 1; endLoading(); "+
-			"const keepPage = Boolean(draft && draft.held && draft.key === routeKey(route)); "+
-			"if (!keepPage) { state.thread = null; expandedLink = null; }",
-		"renderAgeGate(age); return; }",
+			"const keepPage = Boolean(draft && draft.held && draft.key === routeKey(route)); renderNav(route);",
+		"leavePage(); renderAgeGate(age); return; }",
 		"const finish = beginLoading({ skeleton: !keepPage });",
 		"await loadSite();",
 		"if (overtaken(route)) { return; } renderNav(route);",
@@ -2059,13 +2060,27 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 			"state.route = drawnFor.route; "+
 			`state.thread = drawnFor.thread; const said = el.notice.hidden ? "" : el.notice.querySelector(".notice-text").textContent; `+
 			"showNotice(said ? `${said} ${message}` : message); return; }",
-		"expandedLink = null; el.main.innerHTML = emptyStateHTML(message, board);",
+		"leavePage(); el.main.innerHTML = emptyStateHTML(message, board);",
 		"} finally {",
 		"if (!overtaken(route) && window.location.pathname + window.location.search === requested) { "+
 			`window.history.replaceState(null, "", resolved); await render({ draft }); } return; }`,
-		"if (overtaken(route)) { return; } drawnFor = { path: renderedPath, route, thread: state.thread }; "+
+		"if (overtaken(route)) { return; } "+
+			`if (route.view !== "thread") { state.thread = null; } drawnFor = { path: renderedPath, route, thread: state.thread }; `+
 			"expandedLink = null; enhancePosts(el.main); restoreDraft(draft);",
 	)
+	// Nothing else forgets the page's thread or its open image: leavePage, at
+	// the skeleton, the age screen and an error, and the page drawn in its
+	// place, which sets both for itself, renderThread noting its thread.
+	if leave := squash(withoutComments(jsFunction(t, script, "leavePage"))); leave !=
+		"function leavePage() { state.thread = null; expandedLink = null; }" {
+		t.Errorf("leavePage no longer forgets the page's thread and its open image: %s", leave)
+	}
+	if code := withoutComments(script); strings.Count(code, "leavePage()") != 4 || strings.Count(render, "leavePage();") != 2 ||
+		strings.Count(code, "state.thread = ") != 4 || strings.Count(render, "state.thread = ") != 2 ||
+		strings.Count(code, "expandedLink = ") != 5 || strings.Count(render, "expandedLink = ") != 1 {
+		t.Error("a page's thread or open image is forgotten, or set, somewhere besides leavePage, the page render " +
+			"draws, a kept page's failed redraw, renderThread and the image's own expand and collapse")
+	}
 	// The address bar put back is half of what keeps the page. The other half
 	// is popstate, which Back and a jump within the page fire: it draws nothing
 	// when the address, less its fragment, is the one the page was drawn for
@@ -2083,8 +2098,8 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 		t.Errorf("requested appears %d times in render; want it taken, less the fragment, noted as renderedPath "+
 			"and compared once", n)
 	}
-	if n := strings.Count(render, "keepPage"); n != 4 {
-		t.Errorf("keepPage appears %d times in render; want its declaration, the resets, the skeleton and the failed load", n)
+	if n := strings.Count(render, "keepPage"); n != 3 {
+		t.Errorf("keepPage appears %d times in render; want its declaration, the skeleton and the failed load", n)
 	}
 	if over := squash(withoutComments(jsFunction(t, script, "overtaken"))); over !=
 		"function overtaken(route) { return state.route !== route; }" {
@@ -2138,7 +2153,7 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 	inOrder(t, "beginLoading", loading,
 		`function beginLoading({ skeleton = true } = {}) { const begun = rendersBegun; el.main.setAttribute("aria-busy", "true"); `+
 			"loadingTimer = setTimeout(() => { if (skeleton && begun === rendersBegun) { el.main.innerHTML =",
-		"}, 250); return () => { if (begun === rendersBegun) { endLoading(); } }; }",
+		"</div>'; leavePage(); } }, 250); return () => { if (begun === rendersBegun) { endLoading(); } }; }",
 	)
 	if strings.Count(loading, "el.main.innerHTML") != 1 {
 		t.Error("beginLoading draws something besides its skeleton")
