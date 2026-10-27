@@ -3,6 +3,8 @@ package media
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"image"
@@ -93,6 +95,22 @@ func testStoreContract(t *testing.T, factory newStore) {
 		got := mustRead(t, store, key)
 		if string(got) != "second" {
 			t.Errorf("object = %q, want the second write", got)
+		}
+	})
+
+	// A write whose context has ended is not made: Save relies on it to
+	// store nothing once a post's deadline has passed, on every backend.
+	t.Run("put with an ended context writes nothing", func(t *testing.T) {
+		store := factory(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		key := "originals/general/2026/08/late.png"
+
+		if err := store.Put(ctx, key, "image/png", strings.NewReader("late")); !errors.Is(err, context.Canceled) {
+			t.Errorf("Put error = %v, want context.Canceled", err)
+		}
+		if _, _, err := store.Get(context.Background(), key); !errors.Is(err, ErrNotFound) {
+			t.Errorf("Get(%q) error = %v, want nothing written", key, err)
 		}
 	})
 
@@ -189,9 +207,20 @@ func testStoreContract(t *testing.T, factory newStore) {
 		}
 		stored, _ := io.ReadAll(rc)
 		rc.Close()
-		if !bytes.Equal(stored, original) {
-			t.Error("stored original differs from the uploaded bytes")
+		// What is stored is the upload rewritten without its metadata, the
+		// same on every backend: the bytes Save hashed, and the same pixels.
+		if sum := sha256.Sum256(stored); hex.EncodeToString(sum[:]) != img.Checksum || int64(len(stored)) != img.Size {
+			t.Error("stored original is not the file Save described")
 		}
+		want, _, err := image.Decode(bytes.NewReader(original))
+		if err != nil {
+			t.Fatalf("decode upload: %v", err)
+		}
+		got, _, err := image.Decode(bytes.NewReader(stored))
+		if err != nil {
+			t.Fatalf("decode stored original: %v", err)
+		}
+		requireSamePixels(t, want, got)
 		if obj.ContentType != img.ContentType {
 			t.Errorf("stored content type = %q, want %q", obj.ContentType, img.ContentType)
 		}
@@ -208,6 +237,27 @@ func testStoreContract(t *testing.T, factory newStore) {
 		if cfg.Width != img.ThumbWidth || cfg.Height != img.ThumbHeight {
 			t.Errorf("stored thumbnail is %dx%d, want %dx%d",
 				cfg.Width, cfg.Height, img.ThumbWidth, img.ThumbHeight)
+		}
+	})
+
+	// Metadata is stripped before Put, so no backend ever holds the upload as
+	// it came: the photo's EXIF, GPS position and comments are absent from
+	// the object itself, not just from what a handler serves.
+	t.Run("save stores no metadata", func(t *testing.T) {
+		store := factory(t)
+		ctx := context.Background()
+		upload := cameraJPEG(t, 64, 32)
+		needles := []string{"Exif", needleGPS, needleDatum, needleCamera, needleXMP, needleComment}
+		requireCarries(t, upload, needles...)
+
+		img, err := Save(ctx, store, "general", upload, time.Now())
+		if err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+		requireFree(t, mustRead(t, store, OriginalKey(img.Path)), needles...)
+		requireFree(t, mustRead(t, store, ThumbKey(img.ThumbPath)), needles...)
+		if img.Width != 64 || img.Height != 32 {
+			t.Errorf("dimensions = %dx%d, want the upright 64x32", img.Width, img.Height)
 		}
 	})
 
@@ -244,6 +294,31 @@ func testStoreContract(t *testing.T, factory newStore) {
 		}
 		if _, _, err := store.Get(ctx, failing.original); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("Get(%q) error = %v, want the original to have been cleaned up", failing.original, err)
+		}
+	})
+
+	// A context that ends during the thumbnail's write ends the save, and the
+	// original written before it is removed all the same: the removal does
+	// not run on the context that has just run out. stallThumbStore ends the
+	// context from inside that write, once the original is surely stored, so
+	// the save is cut off at exactly that point on every run — there is no
+	// wall-clock deadline that slow processing or a slow original write could
+	// outrun, which once made this flake.
+	t.Run("a save cut off while writing the thumbnail removes what it already wrote", func(t *testing.T) {
+		store := factory(t)
+		png := encodePNG(t, 400, 400) // built before the context, not timed against it
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		stalling := &stallThumbStore{Store: store, cutOff: cancel}
+		if _, err := Save(ctx, stalling, "general", png, time.Now()); !errors.Is(err, context.Canceled) {
+			t.Fatalf("Save error = %v, want context.Canceled", err)
+		}
+		if stalling.original == "" {
+			t.Fatal("the original was never written, so the test proves nothing")
+		}
+		if _, _, err := store.Get(context.Background(), stalling.original); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("Get(%q) error = %v, want the original to have been cleaned up", stalling.original, err)
 		}
 	})
 
@@ -424,5 +499,30 @@ func (f *failThumbStore) Put(ctx context.Context, key, contentType string, r io.
 		return err
 	}
 	f.original = key
+	return nil
+}
+
+// stallThumbStore writes originals to the real backend and, when the
+// thumbnail's write begins, ends the save's context through cutOff and then
+// blocks on it — standing in for a context that runs out during that write,
+// deterministically and the moment the original is safely stored.
+type stallThumbStore struct {
+	Store
+	cutOff   context.CancelFunc
+	original string
+}
+
+func (s *stallThumbStore) Put(ctx context.Context, key, contentType string, r io.Reader) error {
+	if strings.HasPrefix(key, ThumbPrefix+"/") {
+		if s.cutOff != nil {
+			s.cutOff()
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	if err := s.Store.Put(ctx, key, contentType, r); err != nil {
+		return err
+	}
+	s.original = key
 	return nil
 }

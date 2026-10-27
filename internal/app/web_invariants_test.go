@@ -515,6 +515,57 @@ func TestEveryVerifyStateOffersToForgetTheBrowser(t *testing.T) {
 	}
 }
 
+// A post's form is cleared, its file with it, only once the answer is the post
+// it made. An answer with a success status and no post in it — the empty 200
+// net/http sends for a handler that wrote nothing — was taken for one: the form
+// was reset and only then did reading the post's place from it fail, so the
+// draft was gone and the post had not been made. The check comes between the
+// request and the reset, and it asks for the fields a made post is answered
+// with, which are checked against what the server answers.
+func TestThePostFormIsClearedOnlyForAPostMade(t *testing.T) {
+	script := appScript(t)
+	submit := withoutComments(submitHandler(t, script))
+	request := strings.Index(submit, "const created = await api(path,")
+	check := strings.Index(submit, "if (!isCreatedPost(created)) {")
+	reset := strings.Index(submit, "form.reset();")
+	if request < 0 || check < 0 || reset < 0 || strings.Count(submit, "form.reset();") != 1 {
+		t.Fatalf("the submit handler no longer sends the post, checks its answer with isCreatedPost and resets the form once")
+	}
+	if !(request < check && check < reset) || !strings.Contains(submit[check:reset], "throw err;") {
+		t.Error("the submit handler does not refuse an answer that is not a made post before it resets the form")
+	}
+	if strings.Contains(submit[request:check], "form") {
+		t.Error("the submit handler touches the form between the request and the check of its answer")
+	}
+
+	isCreated := withoutComments(jsFunction(t, script, "isCreatedPost"))
+	fields := map[string]string{
+		"board":     `typeof answer.board === "string"`,
+		"no":        "Number.isInteger(answer.no)",
+		"thread_no": "Number.isInteger(answer.thread_no)",
+	}
+	for field, test := range fields {
+		if !strings.Contains(isCreated, test) {
+			t.Errorf("isCreatedPost no longer asks for %s (%s)", field, test)
+		}
+	}
+
+	h := testServer(t, nil)
+	h.addBoard("words")
+	var answer map[string]any
+	if status := h.post("/api/boards/words/threads", map[string]any{"body": "made"}, &answer); status != http.StatusCreated {
+		t.Fatalf("create a thread: status %d (%v)", status, answer)
+	}
+	if board, ok := answer["board"].(string); !ok || board == "" {
+		t.Errorf("a made post is answered with board %v, want its board's slug", answer["board"])
+	}
+	for _, field := range []string{"no", "thread_no"} {
+		if n, ok := answer[field].(float64); !ok || n != float64(int64(n)) || n <= 0 {
+			t.Errorf("a made post is answered with %s %v, want a whole number", field, answer[field])
+		}
+	}
+}
+
 // A code that has been sent is what the Verify page is for until the code is
 // confirmed or given up, whether or not the browser already holds a badge: a
 // badge is replaced only once the new one is confirmed. So verifyViewHTML
@@ -2483,17 +2534,17 @@ func holdVerifyRequestsToADeadline(t *testing.T, script string) {
 	if err != nil {
 		t.Fatalf("reading the server's timeouts: %v", err)
 	}
-	seconds := func(name string) int {
-		m := regexp.MustCompile(`\n\t\t` + name + `:\s+(\d+) \* time\.Second,\n`).FindSubmatch(serverSrc)
-		if m == nil {
-			t.Fatalf("cmd/server/main.go does not set %s as a number of seconds; this test reads it", name)
+	// The server's timeouts are this package's constants, which is what makes
+	// reading them here the same as reading the server's.
+	for _, name := range []string{"ReadHeaderTimeout", "WriteTimeout"} {
+		if !regexp.MustCompile(`\n\t\t` + name + `:\s+app\.` + name + `,\n`).Match(serverSrc) {
+			t.Fatalf("cmd/server/main.go does not set its http.Server's %s to app.%s; this test reads app.%s",
+				name, name, name)
 		}
-		n, _ := strconv.Atoi(string(m[1]))
-		return n
 	}
 	// A request's headers are read within ReadHeaderTimeout, and its answer
 	// is written within WriteTimeout of that or not at all.
-	server := (seconds("ReadHeaderTimeout") + seconds("WriteTimeout")) * 1000
+	server := int((ReadHeaderTimeout + WriteTimeout).Milliseconds())
 	if deadline <= server {
 		t.Errorf("VERIFY_TIMEOUT_MS is %d; the server can still be answering until %d ms, and a badge it issues "+
 			"after the page has given up is one nobody holds", deadline, server)

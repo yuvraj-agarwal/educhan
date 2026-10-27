@@ -2237,12 +2237,12 @@ func insertAttachment(ctx context.Context, tx pgx.Tx, postID int64, in *newAttac
 		    post_id, original_name, original_path, thumb_path, content_type, thumb_content_type,
 		    byte_size, width, height, thumb_width, thumb_height, checksum, spoiler
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-		postID, in.OriginalName, img.Path, img.ThumbPath, img.ContentType, img.ThumbContentType,
+		postID, in.Name, img.Path, img.ThumbPath, img.ContentType, img.ThumbContentType,
 		img.Size, img.Width, img.Height, img.ThumbWidth, img.ThumbHeight, img.Checksum, in.Spoiler); err != nil {
 		return nil, fmt.Errorf("insert attachment: %w", err)
 	}
 	return &Attachment{
-		Name:        in.OriginalName,
+		Name:        in.Name,
 		URL:         originalURL(img.Path),
 		ThumbURL:    thumbURL(img.ThumbPath),
 		ContentType: img.ContentType,

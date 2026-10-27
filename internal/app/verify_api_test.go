@@ -970,12 +970,12 @@ func TestEveryTableHasItsColumnsPinned(t *testing.T) {
 		},
 		"attachments": {
 			"byte_size",          // shown on the post
-			"checksum",           // SHA-256 of the file's bytes, not of anything about the poster
+			"checksum",           // SHA-256 of the stored file, rewritten without metadata; nothing about the poster
 			"content_type",       // of the original
 			"created_at",         // when the file was stored, as the post was
 			"height",             // of the original
 			"id",                 // internal primary key
-			"original_name",      // the filename the poster gave, shown on the post like its body
+			"original_name",      // "image" and the stored format's extension (attachmentName); never the poster's filename
 			"original_path",      // storage path: board, month, random name
 			"post_id",            // the post it belongs to
 			"spoiler",            // the poster asked for it hidden

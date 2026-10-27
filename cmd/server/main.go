@@ -104,14 +104,15 @@ func serve(cfg app.Config, application *app.App, log *slog.Logger) error {
 	// ReadHeaderTimeout and WriteTimeout together are the longest a request
 	// waits for its answer. app.js gives a Verify request up only after that
 	// (VERIFY_TIMEOUT_MS), and TestVerifyAnswersBelongToTheStepTheyWereSentFrom
-	// reads both here to hold it to them.
+	// holds it to app.ReadHeaderTimeout and app.WriteTimeout and checks that this
+	// server uses them.
 	srv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           application.Routes(),
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       2 * time.Minute,
+		ReadHeaderTimeout: app.ReadHeaderTimeout,
+		ReadTimeout:       app.ReadTimeout,
+		WriteTimeout:      app.WriteTimeout,
+		IdleTimeout:       app.IdleTimeout,
 	}
 
 	serverErr := make(chan error, 1)

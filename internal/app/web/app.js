@@ -111,6 +111,12 @@ const el = {
 // when attempting to fetch resource") and says nothing a reader can use.
 const UNREACHABLE = "Couldn't reach educhan. Check your connection and try again.";
 
+// What a poster is told when the answer to their post is not the post it made
+// (isCreatedPost): it may or may not have been made, so they are asked to look
+// before they send it again.
+const UNCONFIRMED_POST =
+  "educhan's answer didn't confirm your post, so it may not have gone through. Check whether it appeared before posting again: what you wrote is still in the box.";
+
 function unreachableError() {
   const err = new Error(UNREACHABLE);
   err.unreachable = true;
@@ -174,6 +180,9 @@ function errorMessage(err, { hasText = true, action = "post", kept = true } = {}
   if (err.unreachable) {
     return kept ? `${UNREACHABLE} What you wrote is still in the box.` : UNREACHABLE;
   }
+  if (err.unconfirmed) {
+    return UNCONFIRMED_POST;
+  }
   if (err.status === 413) {
     return imageTooLargeMessage();
   }
@@ -186,6 +195,19 @@ function errorMessage(err, { hasText = true, action = "post", kept = true } = {}
     return action === "code"
       ? `Codes can't be requested that often. Wait ${wait}, then request a code again.`
       : `Flood control: wait ${wait} and post again.`;
+  }
+  // Too many images arriving at once for the server to take this one in time.
+  // Nothing was posted and no flood-control wait was started, so the same
+  // post, image and all, can go again once the wait is over.
+  if (err.status === 503 && err.payload && err.payload.retry_after) {
+    const wait = plural(err.payload.retry_after, "second", "seconds");
+    return `Too many images are being posted right now, so yours wasn't. Wait ${wait} and post again: your post is still in the form.`;
+  }
+  // The image did not finish arriving in the time the server gives a body,
+  // counted from when it had room to read it: the connection, not the server.
+  // Nothing was posted and no flood-control wait was started.
+  if (err.status === 408) {
+    return "Your image took too long to upload, so nothing was posted. Check your connection or try a smaller image, then post again: your post is still in the form.";
   }
   // The form stays on screen after a refusal, so these say what happened and
   // leave the half-written post where it is.
@@ -1201,9 +1223,9 @@ function attachmentHTML(att, { expandable = false } = {}) {
     return `<div class="post-file">${caption}${link}</div>`;
   }
   // A spoilered image is a neutral tile until someone asks for it. The
-  // filename waits behind it with the thumbnail — a name can give away as much
-  // as a picture — and the lazy thumbnail is not fetched while it is hidden.
-  // Once shown it is an ordinary attachment and expands like one.
+  // caption waits behind it with the thumbnail, and the lazy thumbnail is not
+  // fetched while it is hidden. Once shown it is an ordinary attachment and
+  // expands like one.
   return `
     <div class="post-file spoiler">
       <button class="spoiler-tile" type="button" data-action="reveal-spoiler">Spoiler image, click to show</button>
@@ -1906,7 +1928,7 @@ let verifyRequest = Promise.resolve();
 // with what the server said last (loadVerification), so a badge just issued is
 // still drawn and offered. It is longer than the server takes to answer or give
 // up — ten seconds to read a request's headers and thirty to write its answer,
-// in cmd/server/main.go — so a request given up is one whose answer was not
+// in internal/app/app.go — so a request given up is one whose answer was not
 // coming. Giving it up cancels it: an answer that comes after is not taken, the
 // pending-code cookie with it, so the request that goes next still sets the
 // cookie the browser keeps.
@@ -2720,8 +2742,10 @@ const FAQ_SECTIONS = [
         work out that it's you. So:</p>
       <ul>
         <li>Don't post your name, your school, or photos of yourself or anyone else.</li>
-        <li>Remember that photos can carry hidden details, such as where they were taken, and
-          educhan doesn't remove them yet.</li>
+        <li>A photo can show more than you meant it to. educhan removes the hidden details a
+          photo file carries, such as where and when it was taken and on what phone, before
+          it keeps the photo, and doesn't keep the file's name. But it can't remove what's in
+          the picture: a face, a uniform, a street sign or the view from a window.</li>
         <li>A tripcode links every post that carries it, and a badge shows which university
           or college you're at.</li>
         <li>Your internet provider, the network you're on (a school's, say) and anyone who can
@@ -3945,6 +3969,20 @@ function posterKey() {
 
 /* Submitting --------------------------------------------------------------- */
 
+// isCreatedPost reports whether a posting request's answer is the post it made:
+// where it lives, which the page goes to next. Anything else, though it came
+// with a success status, is not taken for one.
+function isCreatedPost(answer) {
+  return (
+    answer !== null &&
+    typeof answer === "object" &&
+    typeof answer.board === "string" &&
+    answer.board !== "" &&
+    Number.isInteger(answer.no) &&
+    Number.isInteger(answer.thread_no)
+  );
+}
+
 el.main.addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.target;
@@ -4010,6 +4048,14 @@ el.main.addEventListener("submit", async (event) => {
   clearNotice();
   try {
     const created = await api(path, { method: "POST", body: requestBody, headers });
+    // A post that was made is answered with where it lives. An answer without
+    // that — an empty one above all — does not say the post was made, so
+    // nothing below runs for it: the form keeps the draft and its file.
+    if (!isCreatedPost(created)) {
+      const err = new Error(UNCONFIRMED_POST);
+      err.unconfirmed = true;
+      throw err;
+    }
     // The remembered name is the one for unbadged posts; a badged post's name
     // is never offered on the next form, where the badge starts unticked.
     if (!held) {
