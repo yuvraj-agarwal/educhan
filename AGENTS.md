@@ -413,19 +413,21 @@ before the test changes.
   `/verify` buttons put the focus there too; the badge box is not one), unticking the
   badge on a form whose tick stopped a puzzle or that already has something written or
   attached (`captchaBadgeToggled`, `captchaFormHasWriting`), the page taking a ticked
-  badge out of a form with something written or attached (`withdrawBadgeOption`, for
-  the badge changed in another tab or in this one, and a refusal of the badge as
-  expired or revoked on a form still on screen; never Forget this browser, which sends
-  nothing, nor `/verify` loading over the form), the press that is then refused once to
-  say so, on a form with something written or attached (`submit`), an image picked or
-  dropped on it (`captchaImageAttached`; not one a re-render puts back), a refusal that
-  spent the answer while its form is on screen, and a press with no good answer held.
-  Ticking the badge stops it unless a request is waiting for it (`stopCaptcha`, which
-  says whether it stopped one). It runs ALTCHA's vendored worker in up to
-  `CAPTCHA_MAX_WORKERS` copies with interleaved counters (side by side where the browser
-  allows; Chromium runs their Web Crypto on one thread), and only in a secure context
-  (`CAPTCHA_INSECURE` otherwise) with `Worker` and `crypto.subtle` (`CAPTCHA_FAILED`
-  otherwise), failing before any fetch, and only on a response shaped like a challenge
+  badge out of a form on screen with something written or attached
+  (`withdrawBadgeOption`, for the badge changed in another tab or in this one, and a
+  refusal of the badge as expired or revoked; never Forget this browser, which sends
+  nothing, nor `/verify` loading over the form; a form off the screen then, while a post
+  link's lookup loads say, is only noted, or the form a redraw draws in its place is),
+  the press that is then refused once to say so, on a form with something written or
+  attached (`submit`), an image picked or dropped on it and attached
+  (`captchaImageAttached`; not one a re-render puts back), a refusal that spent the
+  answer while its form is on screen, and a press with no good answer held. Ticking the
+  badge stops it unless a request is waiting for it (`stopCaptcha`, which says whether
+  it stopped one). It runs ALTCHA's vendored worker in up to `CAPTCHA_MAX_WORKERS`
+  copies with interleaved counters (side by side where the browser allows; Chromium runs
+  their Web Crypto on one thread), and only in a secure context (`CAPTCHA_INSECURE`
+  otherwise) with `Worker` and `crypto.subtle` (`CAPTCHA_FAILED` otherwise), failing
+  before any fetch, and only on a response shaped like a challenge
   (`CAPTCHA_UNAVAILABLE` otherwise); a `429` from `/api/captcha` says too many checks
   were started from the reader's network, with its wait (`captchaBusy`), never a post's
   or a code request's cooldown. Every copy is terminated when the puzzle ends, a throw
@@ -631,10 +633,10 @@ before the test changes.
   answered, the cookie its answer sets holding the browser's verification from then on
   (`followCredentialStorage`, by the `storage` event,
   `TestForgettingTheBadgeReachesEveryTab`). A form that had the badge ticked, idle or
-  with its badged post on its way, refuses its next press once, saying the badge has
-  gone and that pressing again posts without it, under the same ID as the reader's
-  unbadged posts in a reply's thread while the poster key is the one it had
-  (`withdrawBadgeOption`, `badgeWithdrawn`,
+  with its badged post on its way (unless that post goes through, the badge with it),
+  refuses its next press once, saying the badge has gone and that pressing again posts
+  without it, under the same ID as the reader's unbadged posts in a reply's thread while
+  the poster key is the one it had (`withdrawBadgeOption`, `badgeWithdrawn`,
   `TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress`): said nothing, the post would go
   out tied to those posts, which the badge's own ID is there to keep apart. With
   something written or attached, that form also starts the puzzle the post then needs,
@@ -671,10 +673,11 @@ before the test changes.
   the browser was not forgotten since the press (a badge stored after a forget is
   someone else's), the form on screen is told so in the page's own words rather than the
   server's "verify again" (`badgeReplacedNotice`): its badge was replaced by one
-  verified since in this browser, so nothing was posted; pressing again posts without a
-  badge; and Update, or the board's Index for a new thread, draws the form again
-  offering the new one, unticked. That notice is its one refusal for the badge, so a
-  note left on it while the post was on its way goes.
+  verified since in this browser, so nothing was posted, and, unless release left the
+  post with nothing in it (the notice then says only what went), pressing again posts
+  without a badge, and Update, or the board's Index for a new thread, draws the form
+  again offering the new one, unticked. That notice is its one refusal for the badge, so
+  a note left on it while the post was on its way goes.
 - The poster key lives in `localStorage` under `educhan:poster-key`: 16 random bytes as
   22 characters of unpadded base64url, made by `posterKey()` on the first post rather
   than the first visit. `submit` sends it in `X-Educhan-Poster-Key` on thread-create and

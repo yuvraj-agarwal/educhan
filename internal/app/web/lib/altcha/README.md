@@ -26,14 +26,16 @@ starts, in a form that needs the captcha, and never when a page is drawn: when f
 moves into a box to write in, however it gets there (a click or tap, Tab, quoting a
 post, or "Verify another address" or "Use a different address" on `/verify`); when the
 badge is unticked on a form whose tick stopped a puzzle, or that already has something
-written or attached; when the page takes a ticked badge out of a form with something
-written or attached, the badge gone or replaced in another tab or in this one, or
-refused as expired or revoked (never for Forget this browser, nor as `/verify` is drawn
-over the form), and on the press then refused once to say so; when an image is picked or
-dropped on it; after a refusal that spent the answer, while its form is on screen; and
-on a press with no good answer held and none being solved. It stops every copy once one
-has found the answer or all have given up, when ticking the badge stops the puzzle, and
-when starting the copies fails part way.
+written or attached; when the page takes a ticked badge out of a form on screen with
+something written or attached, the badge gone or replaced in another tab or in this one,
+or refused as expired or revoked (never for Forget this browser, nor as `/verify` is
+drawn over the form; a form off the screen then, while a post link's lookup loads say,
+is only noted, or the form a redraw draws in its place is), and on the press then
+refused once to say so; when an image picked or dropped on it is attached; after a
+refusal that spent the answer, while its form is on screen; and on a press with no good
+answer held and none being solved. It stops every copy once one has found the answer or
+all have given up, when ticking the badge stops the puzzle, and when starting the copies
+fails part way.
 
 The CSP needs no change for the worker: `worker-src` falls back to `default-src 'self'`.
 

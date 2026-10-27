@@ -159,8 +159,9 @@ actions, and says what forgetting costs — the server cannot show the credentia
 again, so it means verifying from the start. Pressed in one educhan tab, it
 takes the badge out of every other tab open in the browser too: each sees it go
 from storage, and any posting form it shows loses the option to post with it;
-one that had it ticked says so when next pressed, rather than posting without
-it, and the press after that posts without it. Beside it, in every state of the
+one that had it ticked, unless its badged post was on its way and goes through,
+the badge with it, says so when next pressed, rather than posting without it,
+and the press after that posts without it. Beside it, in every state of the
 page, **Forget this browser** removes the badge together with the poster key and
 the remembered name (see below), which are what would otherwise let the next
 person at a shared computer post under the same IDs and tripcode. A verification
@@ -788,16 +789,18 @@ script from anywhere else runs on the page, and no cookie is set.
    however it gets there (a click or tap, Tab, quoting a post), the page asks
    `GET /api/captcha` for a challenge, unless it already holds a good answer or
    is solving one. Attaching an image, unticking the badge or the page taking a
-   ticked one off a form with something in it (the badge gone or replaced, in
-   another tab or in this one, or refused as expired or revoked; Forget this
-   browser and `/verify` loading over the form start nothing), the press then
-   refused once to say so, a refusal that spent the answer and a press with no
-   answer ready can start one too (the full list heads `/* Captcha */` in
-   `app.js`); drawing a page never does. A challenge is a random salt and nonce,
-   a PBKDF2-SHA-256 cost, the first half of a key, an expiry half an hour away,
-   and the server's HMAC over all of it. The server made the key by choosing a
-   counter at random, from one to just under twice the work, and deriving PBKDF2
-   over the nonce with that counter appended.
+   ticked one off a form on screen with something in it (the badge gone or
+   replaced, in another tab or in this one, or refused as expired or revoked;
+   Forget this browser and `/verify` loading over the form start nothing, and a
+   form off the screen then, while a post link's lookup loads say, is only
+   noted, or the form a redraw draws in its place is), the press then refused
+   once to say so, a refusal that spent the answer while its form is on screen,
+   and a press with no answer ready can start one too (the full list heads
+   `/* Captcha */` in `app.js`); drawing a page never does. A challenge is a
+   random salt and nonce, a PBKDF2-SHA-256 cost, the first half of a key, an
+   expiry half an hour away, and the server's HMAC over all of it. The server
+   made the key by choosing a counter at random, from one to just under twice
+   the work, and deriving PBKDF2 over the nonce with that counter appended.
 2. ALTCHA's worker, vendored at `web/lib/altcha/pbkdf2.js`, runs in up to four
    copies and tries counters until a key starts with that half. That is about
    1500 attempts on average at the default work and never more than 3000, done
@@ -848,16 +851,18 @@ was forgotten before the post went through, so nothing was posted."). A `used`
 answer was spent by an earlier request, which, like others from the same
 address, may have started cooldowns, so the resend can meet one of them; the
 page then says how long to wait and keeps the fresh answer for the next press.
-Every response to a request whose answer was spent carries
-`Educhan-Captcha: spent`, a refusal written after the spend included: a cooldown
-another request started meanwhile (one from the same address or, for a code
-request, one for the same email address from anywhere), an image whose pixels
-fail to decode, or a thread that filled up meanwhile. The page keeps its answer
-through any other refusal without that header (the captcha's own refusals carry
-none, and drop it), so the next press goes straight out, and starts the next
-puzzle as soon as one with it arrives, while its form is on screen. A request
-that brought no response at all puts its answer back too, which may have been
-spent, so the next press can be told it was used and solve a fresh one.
+Every response written after a request's answer is spent carries
+`Educhan-Captcha: spent`, whatever its status, a refusal included, such as one
+for a cooldown another request started meanwhile (one from the same address or,
+for a code request, one for the same email address from anywhere), an image
+whose pixels fail to decode, a thread that filled up or was archived, locked or
+deleted meanwhile, or, for a code request, a code that could not be sent. The
+page keeps its answer through any other refusal without that header (the
+captcha's own refusals carry none, and drop it), so the next press goes straight
+out, and starts the next puzzle as soon as one with it arrives, while its form
+is on screen. A request that brought no response at all puts its answer back
+too, which may have been spent, so the next press can be told it was used and
+solve a fresh one.
 
 While a post or a code request waits for its puzzle and its answer, its form
 is held: its boxes and buttons are switched off, and look it, so what is sent

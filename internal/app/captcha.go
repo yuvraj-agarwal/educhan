@@ -557,12 +557,14 @@ func (a *App) checkCaptcha(w http.ResponseWriter, r *http.Request, payload strin
 	return &ticket, true
 }
 
-// captchaSpentHeader is set, to "spent", on every response to a request whose
-// answer has been spent, a refusal written later included: a cooldown another
-// request started meanwhile (one from the same client address, or, for a code
-// request, one for the same email address from anywhere), an image that
-// cannot be read, or a thread that filled up while the post was on its way.
-// The client keeps its answer through any other refusal without it (the
+// captchaSpentHeader is set, to "spent", by spendCaptcha before anything is
+// written, so every response written after a request's answer is spent carries
+// it, whatever its status, a refusal included, such as one for a cooldown
+// another request started meanwhile (one from the same client address, or, for
+// a code request, one for the same email address from anywhere), an image that
+// cannot be read, a thread that filled up or was archived, locked or deleted
+// while the post was on its way, a code that could not be sent, or a server
+// error. The client keeps its answer through any other refusal without it (the
 // captcha's own refusals carry none, and drop it) and solves the next one as
 // soon as a refusal with it arrives.
 const captchaSpentHeader = "Educhan-Captcha"

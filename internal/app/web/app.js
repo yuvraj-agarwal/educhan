@@ -1490,14 +1490,17 @@ function dropBadgeOption(form) {
 // holding a badge other than the one the box was drawn for (badgeOffered), or
 // drawn again by a redraw that offers another badge or none (restoreDraft), or
 // because the server refused it on the form's own post while the form was off
-// the screen, where the refusal says nothing (submit).
-// Said nothing, the form's next press would post without the badge, under the
-// ID the reader's other posts in the thread without one share, which is what a
-// badged post's own ID is there to keep apart. So that press is refused, once,
-// saying so (submit), and the one after it posts. Each is kept with the badge
-// that went, by its token, and the poster key storage held then, for the notice
-// to name that ID only while the key is the same (badgeWithdrawnNotice). It
-// lives with the form, and a draft carries it across a re-render (formDraft,
+// the screen, where the refusal says nothing (submit). Said nothing, the form's
+// next press would post without the badge, under the ID the reader's other
+// posts in the thread without one share, which is what a badged post's own ID
+// is there to keep apart. So that press is refused, once, saying so (submit),
+// and the one after it posts. A badged post that goes through takes the note
+// with it, as does a refusal of it that tells the form, on screen, that its
+// badge was replaced, that notice being its one refusal (submit), and so does
+// the reader ticking or unticking the box. Each is kept with the badge that
+// went, by its token, and the poster key storage held then, for the notice to
+// name that ID only while the key is the same (badgeWithdrawnNotice). It lives
+// with the form, and a draft carries it across a re-render (formDraft,
 // restoreDraft). Forget this browser drops it: the key goes too, so the next
 // post has an ID of its own.
 const badgeWithdrawn = new WeakMap();
@@ -2246,19 +2249,19 @@ function openForgetChannel() {
 // reads it again, and a badged post from here sends only the badge the browser
 // still holds; the next form or /verify page this tab draws shows it. If that
 // is not the one this tab offered, every posting form on screen loses the
-// option, which named the badge that has gone, and one that had it ticked says
-// so at its next press (withdrawBadgeOption), as does a held form a redraw has
-// taken off the screen, once it is put back (restoreDraft); and /verify, when
-// it shows the badge panel, is drawn again, if the panel is still on screen
-// once the page has asked the server (renderVerify). /verify showing the
-// address step is left as it is, whatever badge it was drawn over, as is one
-// the reader moves to while the panel is drawn again, so a reader filling it
-// in, or waiting on a code request, loses nothing. So is a code step, unless
-// the badge read in is one newly verified there (codeSpentElsewhere). An
-// emptied credential is the browser forgotten in another tab (forgetBrowser):
-// the options go as for any badge gone, before or after its message on
-// FORGET_CHANNEL is heard here, but start no puzzle, since a forget starts
-// nothing.
+// option, which named the badge that has gone, and one that had it ticked is
+// noted to say so at its next press (withdrawBadgeOption, badgeWithdrawn), as
+// is a held form a redraw has taken off the screen, once it is put back
+// (restoreDraft); and /verify, when it shows the badge panel, is drawn again,
+// if the panel is still on screen once the page has asked the server
+// (renderVerify). /verify showing the address step is left as it is, whatever
+// badge it was drawn over, as is one the reader moves to while the panel is
+// drawn again, so a reader filling it in, or waiting on a code request, loses
+// nothing. So is a code step, unless the badge read in is one newly verified
+// there (codeSpentElsewhere). An emptied credential is the browser forgotten in
+// another tab (forgetBrowser): the options go as for any badge gone, before or
+// after its message on FORGET_CHANNEL is heard here, but start no puzzle, since
+// a forget starts nothing.
 function followCredentialStorage(event) {
   if (event.key !== CREDENTIAL_STORAGE_KEY && event.key !== null) {
     return;
@@ -4189,17 +4192,19 @@ function posterKey() {
 // box to write in, however it gets there (a click or tap, Tab, or the page
 // putting it there to quote a post, for "Verify another address" or "Use a
 // different address", or after a press with nothing written); an image picked
-// or dropped on it (not one a re-render puts back); unticking the badge on a
-// form whose tick stopped a puzzle, or that already has something written or
-// attached, and the page taking a ticked badge out of a form with something
-// written or attached, the badge having gone from the browser or given way to
-// another, in another tab or in this one, by anything but Forget this browser
-// or /verify being drawn over the form, or been refused as expired or revoked,
-// and the press then refused once to say so, of a form with something written
-// or attached; a refusal that spent the answer, while the form is on screen;
-// and a press with no good answer held and none being solved. By the time a
-// post is written its puzzle is usually solved. The answer is kept in memory
-// only, never in storage or a draft, and is good for one request.
+// or dropped on it and attached (not one a re-render puts back); unticking the
+// badge on a form whose tick stopped a puzzle, or that already has something
+// written or attached, and the page taking a ticked badge out of a form on
+// screen with something written or attached, the badge having gone from the
+// browser or given way to another, in another tab or in this one, by anything
+// but Forget this browser or /verify being drawn over the form, or been refused
+// as expired or revoked (a form off the screen then, while a post link's lookup
+// loads say, is only noted, or the form a redraw draws in its place is), and
+// the press then refused once to say so, of a form with something written or
+// attached; a refusal that spent the answer, while the form is on screen; and a
+// press with no good answer held and none being solved. By the time a post is
+// written its puzzle is usually solved. The answer is kept in memory only,
+// never in storage or a draft, and is good for one request.
 const CAPTCHA_WORKER_SRC = "/lib/altcha/pbkdf2.js";
 // The server sets this header, to "spent", on any response to a request whose
 // answer it has used up, a refusal included (captchaSpentHeader in captcha.go).
@@ -4511,11 +4516,11 @@ function runCaptchaWorkers(challenge, signal) {
 // answer was spent, say, or a cooldown that another request from this address
 // started between flood control's check before the spend and its check after
 // it, a 429 like the one for a cooldown found before the spend. A refusal
-// without the header, of what was written or for a cooldown found before the
-// spend, leaves the answer held: it is put back for the next press, which then
-// goes straight out. With no answer from the server at all the answer is put
-// back too; if it had been spent, the next request is refused as "used" and
-// solves a fresh one here.
+// without the header, such as one of what was written or for a cooldown found
+// before the spend, leaves the answer held: it is put back for the next press,
+// which then goes straight out. With no answer from the server at all the
+// answer is put back too; if it had been spent, the next request is refused as
+// "used" and solves a fresh one here.
 // solving(true) and solving(false) bracket the time spent on the puzzle.
 // onScreen() says whether the form the request came from is still on screen
 // (formOnScreen), and the browser not forgotten since the press. A request
@@ -4886,7 +4891,7 @@ el.main.addEventListener("submit", async (event) => {
     // server's, and that notice is its one refusal for the badge: a note left
     // on it while the post was on its way, by another tab's change or a redraw
     // that put it back (followCredentialStorage, restoreDraft), goes, so the
-    // next press posts without a badge, as the notice says.
+    // next press is not refused for the badge again.
     const reason = err.payload && err.payload.credential;
     let replaced = false;
     if (held && (reason === "expired" || reason === "revoked")) {
@@ -5103,8 +5108,8 @@ async function submitVerification(form) {
     // A posting form on screen, the reader having left /verify while this was
     // on its way, was drawn for the badge this one replaces: it loses the
     // option, which names that badge, as for a badge replaced in another tab
-    // (followCredentialStorage), and one that had it ticked says so at its
-    // next press (withdrawBadgeOption).
+    // (followCredentialStorage), and one that had it ticked is noted to say so
+    // at its next press (withdrawBadgeOption).
     const held = state.verification.badge;
     if (offered && !(held && held.token === offered.token)) {
       for (const posting of el.main.querySelectorAll("form[data-kind]")) {

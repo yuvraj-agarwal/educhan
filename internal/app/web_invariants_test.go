@@ -544,15 +544,16 @@ func TestCaptchaAnswerStaysInMemory(t *testing.T) {
 // in one place, and the only things that start a fetch before a request needs
 // it are focus moving into a box to write in, in a form that needs an answer
 // (however it gets there: a click or tap, Tab, a quote, "Use a different
-// address"), an image picked or dropped on it (not one a re-render puts back),
-// unticking the badge on a form whose tick stopped a puzzle or that has
-// something written or attached, the page taking a ticked badge out of a form
-// with something written or attached (its badge changed in another tab or in
-// this one, or refused as expired or revoked on a form still on screen, not on
-// one off it, never by Forget this browser, nor as /verify is drawn over the
-// form), the press refused once for that, of a form with something written or
-// attached, and a post or code request refused after the server spent its
-// answer, which the reader, still on its form, is about to send again.
+// address"), an image picked or dropped on it and attached (not one a re-render
+// puts back), unticking the badge on a form whose tick stopped a puzzle or that
+// has something written or attached, the page taking a ticked badge out of a
+// form still on screen with something written or attached (its badge changed in
+// another tab or in this one, or refused as expired or revoked, never by Forget
+// this browser, nor as /verify is drawn over the form; a form off the screen
+// then is only noted, or the form a redraw draws in its place is), the press
+// refused once for that, of a form with something written or attached, and a
+// post or code request refused after the server spent its answer, which the
+// reader, still on its form, is about to send again.
 func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -1582,8 +1583,9 @@ func TestForgettingTheBadgeReachesEveryTab(t *testing.T) {
 // replaced by one verified since in this browser, not the server's "verify
 // again", which would cost another code and replace the badge the browser
 // holds. That notice is the form's one refusal for the badge, so a note left on
-// it while the post was on its way goes, and it says what the next press does
-// and how to post with the new badge.
+// it while the post was on its way goes, and, unless release left the post with
+// nothing in it, it says what the next press does and how to post with the new
+// badge.
 func TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -1676,8 +1678,8 @@ func TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress(t *testing.T) {
 	// whose badge storage has replaced since the press, the browser not
 	// forgotten meanwhile, is told so in place of the server's wording, which
 	// says to verify again, and a note left on it while the post was on its
-	// way, by another tab's change or a redraw that put it back, goes, so its
-	// next press posts as that notice says.
+	// way, by another tab's change or a redraw that put it back, goes, so that
+	// notice is its one refusal for the badge.
 	refused := submit[max(strings.Index(submit, "} catch (err) {"), 0):]
 	if !strings.Contains(refused, `if (held && (reason === "expired" || reason === "revoked")) { `+
 		"if (forgets === browserForgets && storedCredential() === held.token) { const pageBadge = state.verification.badge; "+
