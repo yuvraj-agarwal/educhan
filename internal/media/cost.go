@@ -83,13 +83,15 @@ const cheapestRest int64 = 1 << 20
 
 // processingSlack is what each estimate adds for what it does not itemise:
 // decoders' tables and row buffers, compressors' windows, a PNG's gamma tables
-// (applyPNGGamma, 128 KiB at most), the thumbnail's own pixels and encoding,
-// and what a phase allocates while a collection runs. Rows as wide as the
-// picture are not in it, because a strip as wide as Inspect admits makes them
-// tens of megabytes: image/png's decoder reads through two rows of the file
-// (pngRowBytes), or two for each pass of an interlaced one, five and a half of
-// the picture's width in all (pngPassRows), and its encoder writes through six
-// of the stored picture (pngEncoderRows); each is charged to its phase.
+// (applyPNGGamma, 128 KiB at most) and what is read of its ICC profile to see
+// whether a browser uses it (pngProfileUsable: iccProfileRead, 256 KiB, and an
+// inflater), the thumbnail's own pixels and encoding, and what a phase
+// allocates while a collection runs. Rows as wide as the picture are not in it,
+// because a strip as wide as Inspect admits makes them tens of megabytes:
+// image/png's decoder reads through two rows of the file (pngRowBytes), or two
+// for each pass of an interlaced one, five and a half of the picture's width in
+// all (pngPassRows), and its encoder writes through six of the stored picture
+// (pngEncoderRows); each is charged to its phase.
 const processingSlack int64 = 4 << 20
 
 // gifFrameOverhead is what image/gif keeps for each frame of a GIF besides

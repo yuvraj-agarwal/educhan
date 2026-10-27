@@ -813,20 +813,26 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   (`TestUploadedFilenameIsNotKept`, `TestAttachmentNamesAreRewritten`,
   `TestAttachmentNamesStoredSinceTheMigrationAreRenamedOnStart`). The client shows it as
   the caption under the thumbnail.
-- Dropping the ICC profile (and a PNG's `iCCP` and `cHRM`) is deliberate: most photos
-  are sRGB, which is what a browser assumes untagged, and look the same; a wide-gamut
-  one (Display P3, Adobe RGB) shifts slightly. A profile can name a device or an editor,
-  and converting to sRGB properly needs a colour engine Go does not have. A PNG's `gAMA`
-  is the exception, because dropping it shifts far more than slightly (a picture tagged
-  1.0, linear light, showed its mid-grey of 128 at about 188) and applying it needs only
-  a curve. `pngGamma` (`gamma.go`) reads it as Chromium does — the first `gAMA` before
-  the first `IDAT`, and none beside an `sRGB` or `iCCP` chunk, at 0, or within 5% of
-  1/2.2 — and `applyPNGGamma` converts the colour samples, never alpha, to the sRGB
-  values that show the same light, at the picture's own depth, before
-  `reduceHiddenColour`. `TestPNGGammaIsShownAsBrowsersShowIt` holds a stored grey ramp
-  to within a level of what Chromium 141 drew for each tag, and has a case for each of
-  those rules; `TestPNGGammaConvertsColourOnly` covers every picture type `image/png`
-  decodes to. A change there needs the same browser comparison.
+- Dropping the ICC profile (and a PNG's `iCCP` and `cHRM`) is deliberate: most photos are
+  sRGB, which is what a browser assumes untagged, and look the same; a wide-gamut one
+  (Display P3, Adobe RGB) shifts slightly. A profile can name a device or an editor, and
+  converting to sRGB properly needs a colour engine Go does not have. A PNG's `gAMA` is
+  the exception, because dropping it shifts far more than slightly (a picture tagged 1.0,
+  linear light, showed its mid-grey of 128 at about 188) and applying it needs only a
+  curve. `pngGamma` (`gamma.go`) reads it as Chromium does: the first `gAMA` before the
+  first `IDAT`, and none at 0, within 5% of 1/2.2, or beside an `sRGB` chunk whose
+  rendering intent is 0 to 3 or a first `iCCP` chunk holding a profile Chromium uses, one
+  that inflates whole, checksum and all, to no more than 64 MiB and that skcms, Chromium's
+  colour engine, would take (`pngProfileUsable`, which reads it as `skcms_Parse` does
+  short of its lookup tables). An `sRGB` or `iCCP` chunk Chromium cannot read takes
+  nothing's place there, and the `gAMA` beside it is applied; a `cICP` chunk, which
+  Chromium reads before them all, is not read here. `applyPNGGamma` converts the colour
+  samples, never alpha, to the sRGB values that show the same light, at the picture's own
+  depth, before `reduceHiddenColour`. `TestPNGGammaIsShownAsBrowsersShowIt` holds a stored
+  grey ramp to within a level of what Chromium 141 drew for each tag, and has a case for
+  each of those rules and for a profile broken in each way the reading looks for;
+  `TestPNGGammaConvertsColourOnly` covers every picture type `image/png` decodes to. A
+  change there needs the same browser comparison.
 - **Memory.** `MaxPixels` is 25 megapixels, so that the 24-megapixel photos phones and
   cameras save are taken whole (an iPhone's are 5712×4284, 24.5 million pixels;
   `TestTwentyFourMegapixelPhotosAreAccepted`), and a GIF's frames together may not be

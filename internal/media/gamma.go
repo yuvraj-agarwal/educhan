@@ -1,9 +1,12 @@
 package media
 
 import (
+	"bytes"
+	"compress/zlib"
 	"encoding/binary"
 	"image"
 	"image/color"
+	"io"
 	"math"
 )
 
@@ -23,16 +26,29 @@ import (
 // whatever gAMA says, and an ICC profile, which it reads instead. A profile
 // is dropped here, as from a JPEG, with no conversion (sanitizeJPEG says
 // why), and so are the primaries of a cHRM chunk, which change colours but
-// not greys and are rarer still.
+// not greys and are rarer still. An sRGB chunk or a profile Chromium cannot
+// read takes nothing's place, though, and it applies the gAMA beside it, so
+// they are read as it reads them: an sRGB chunk by its rendering intent
+// (pngGamma), and a profile by whether it inflates and skcms, Chromium's
+// colour engine, would take it (pngProfileUsable). A cICP chunk, which
+// Chromium reads before all of these, is not read here, so a picture tagged
+// with one Chromium reads and with a gAMA is converted by the gAMA, where
+// Chromium shows it by the cICP.
 
 // pngGamma reads the gamma a PNG's samples are to be converted from: the
 // first gAMA chunk before the first IDAT, as Chromium reads it, when it
-// names a gamma a browser applies and no sRGB or iCCP chunk takes its place.
+// names a gamma a browser applies and nothing takes its place. An sRGB chunk
+// does when its rendering intent, its first byte, is one of the four there
+// are, whatever follows it, and an iCCP chunk when it holds a profile
+// Chromium uses (pngProfileUsable). Chromium reads every sRGB chunk until
+// one will do but only the first iCCP, so a profile that will not do keeps a
+// later one from being read.
 func pngGamma(data []byte) (gamma float64, ok bool) {
 	var (
 		value   uint32
-		tagged  bool // a gAMA chunk has been read
-		managed bool // an sRGB or iCCP chunk says what the samples are instead
+		tagged  bool   // a gAMA chunk has been read
+		srgb    bool   // an sRGB chunk says the samples are sRGB
+		profile []byte // the first iCCP chunk's data
 	)
 	i := 8 // the signature
 	for i+8 <= len(data) {
@@ -49,19 +65,190 @@ func pngGamma(data []byte) (gamma float64, ok bool) {
 			if !tagged && n == 4 {
 				tagged, value = true, binary.BigEndian.Uint32(data[i+8:i+12])
 			}
-		case "sRGB", "iCCP":
-			managed = true
+		case "sRGB":
+			if n >= 1 && data[i+8] <= 3 {
+				srgb = true
+			}
+		case "iCCP":
+			if profile == nil {
+				profile = data[i+8 : i+8+int(n)]
+			}
 		}
 		i += 12 + int(n)
 	}
-	if !tagged || managed || value == 0 {
+	if !tagged || srgb || value == 0 {
 		return 0, false
 	}
 	gamma = float64(value) / 100000
 	if math.Abs(gamma*2.2-1) <= 0.05 {
 		return 0, false
 	}
+	if profile != nil && pngProfileUsable(profile) {
+		return 0, false
+	}
 	return gamma, true
+}
+
+// maxICCProfile is about the most a PNG's ICC profile may inflate to for
+// Chromium to read it. Its PNG decoder takes a profile from a 64 MiB budget
+// that it takes its own buffers from too, and passes over a profile that
+// does not fit, as it does one that does not inflate; a picture whose
+// buffers then no longer fit beside the profile it does not show at all. The
+// cut here is at 64 MiB, so a profile within a few dozen kilobytes of it, or
+// of what the picture's buffers leave, is not judged as Chromium judges it.
+const maxICCProfile = 64 << 20
+
+// iccProfileRead is how much of a PNG's ICC profile pngProfileUsable keeps
+// to read: a profile is a few hundred bytes to a few dozen kilobytes, and
+// one larger than this is read only as far as its header.
+const iccProfileRead = 256 << 10
+
+// pngProfileUsable reports whether the data of an iCCP chunk holds a profile
+// Chromium uses, as its PNG decoder and skcms read one: a name of one to 80
+// bytes and its NUL, compression method 0, and a zlib stream that inflates
+// whole, checksum and all, to no more than maxICCProfile, holding a profile
+// iccProfileUsable takes. The stream is inflated to its end, so whatever it
+// holds past what is kept is counted and let go.
+func pngProfileUsable(chunk []byte) bool {
+	name := bytes.IndexByte(chunk[:min(len(chunk), 81)], 0)
+	if name < 1 || name+1 >= len(chunk) || chunk[name+1] != 0 {
+		return false
+	}
+	z, err := zlib.NewReader(bytes.NewReader(chunk[name+2:]))
+	if err != nil {
+		return false
+	}
+	p, k := make([]byte, iccProfileRead), 0
+	for k < len(p) && err == nil {
+		var m int
+		m, err = z.Read(p[k:])
+		k += m
+	}
+	n := int64(k)
+	if err == nil {
+		// p is full: the rest is counted, as far as the limit and a byte.
+		n, err = io.Copy(io.Discard, io.LimitReader(z, maxICCProfile-n+1))
+		n += int64(k)
+	}
+	if err != nil && err != io.EOF || n > maxICCProfile {
+		return false
+	}
+	return iccProfileUsable(p[:k], n)
+}
+
+// iccProfileUsable reports whether skcms_Parse, which is how Chromium reads
+// an ICC profile, takes the profile of n bytes that p begins: a header it
+// can read, with the signature acsp, a size no larger than the profile and
+// room for its tag table, a major version of 4 or less, a D50 illuminant and
+// an XYZ or Lab connection space; tags that each lie inside the size and are
+// four bytes or more; tone curves (kTRC for grey, or rTRC, gTRC and bTRC)
+// and colourant tags (rXYZ, gXYZ and bXYZ) of the types skcms reads,
+// wherever a profile has them, and a cicp tag of the type and size it reads,
+// if it has one; and either a tone curve for every channel and the
+// colourants, or a curve for grey in the XYZ space, or a lookup table (A2B0
+// or A2B1). The lookup tables themselves are not read, nor is a profile past
+// the header when it is longer than iccProfileRead, which p then stops at: a
+// table or a tag skcms finds malformed is taken as sound here, where
+// Chromium would pass the profile over and apply the gAMA.
+func iccProfileUsable(p []byte, n int64) bool {
+	be := binary.BigEndian
+	if len(p) < 132 {
+		return false
+	}
+	fixed := func(b []byte) float32 { return float32(int32(be.Uint32(b))) * (1.0 / 65536) }
+	size, tags := int64(be.Uint32(p[0:])), int64(be.Uint32(p[128:]))
+	if string(p[36:40]) != "acsp" || size > n || size < 132+12*tags || p[8] > 4 {
+		return false
+	}
+	for k, white := range [3]float32{0.9642, 1, 0.8249} {
+		if d := fixed(p[68+4*k:]) - white; d > 0.01 || d < -0.01 {
+			return false
+		}
+	}
+	pcs := string(p[20:24])
+	if pcs != "XYZ " && pcs != "Lab " {
+		return false
+	}
+	if size > int64(len(p)) {
+		return true
+	}
+	p = p[:size]
+	table := p[132 : 132+12*tags]
+	for e := table; len(e) > 0; e = e[12:] {
+		if off, n := int64(be.Uint32(e[4:])), int64(be.Uint32(e[8:])); n < 4 || off+n > size {
+			return false
+		}
+	}
+	tag := func(sig string) []byte {
+		for e := table; len(e) > 0; e = e[12:] {
+			if string(e[:4]) == sig {
+				off := be.Uint32(e[4:])
+				return p[off : off+be.Uint32(e[8:])]
+			}
+		}
+		return nil
+	}
+	var curves, colourants bool
+	if k := tag("kTRC"); string(p[16:20]) == "GRAY" && k != nil {
+		if !iccCurve(k) {
+			return false
+		}
+		curves, colourants = true, pcs == "XYZ "
+	} else {
+		if r, g, b := tag("rTRC"), tag("gTRC"), tag("bTRC"); r != nil && g != nil && b != nil {
+			if !iccCurve(r) || !iccCurve(g) || !iccCurve(b) {
+				return false
+			}
+			curves = true
+		}
+		if r, g, b := tag("rXYZ"), tag("gXYZ"), tag("bXYZ"); r != nil && g != nil && b != nil {
+			for _, c := range [][]byte{r, g, b} {
+				if string(c[:4]) != "XYZ " || len(c) < 20 {
+					return false
+				}
+			}
+			colourants = true
+		}
+	}
+	if c := tag("cicp"); c != nil && (string(c[:4]) != "cicp" || len(c) < 12) {
+		return false
+	}
+	return tag("A2B0") != nil || tag("A2B1") != nil || curves && colourants
+}
+
+// iccCurve reports whether skcms reads a profile's tone curve: a curv of as
+// many 16-bit entries as it says, or a para of one of the five function
+// types whose parameters make a curve it can use, with g, a, c and d not
+// negative and a·d + b not negative, d being -b/a for the types that do not
+// give it.
+func iccCurve(c []byte) bool {
+	be := binary.BigEndian
+	if len(c) < 12 {
+		return false
+	}
+	switch string(c[:4]) {
+	case "curv":
+		return int64(len(c)) >= 12+2*int64(be.Uint32(c[8:]))
+	case "para":
+		kind := be.Uint16(c[8:])
+		if kind > 4 || len(c) < 12+[...]int{4, 12, 16, 20, 28}[kind] {
+			return false
+		}
+		fixed := func(o int) float32 { return float32(int32(be.Uint32(c[o:]))) * (1.0 / 65536) }
+		g, a, b, cc, d := fixed(12), float32(1), float32(0), float32(0), float32(0)
+		switch kind {
+		case 1, 2:
+			a, b = fixed(16), fixed(20)
+			if a == 0 {
+				return false
+			}
+			d = -b / a
+		case 3, 4:
+			a, b, cc, d = fixed(16), fixed(20), fixed(24), fixed(28)
+		}
+		return g >= 0 && a >= 0 && cc >= 0 && d >= 0 && float32(a*d)+b >= 0
+	}
+	return false
 }
 
 // sRGBEncode takes linear light, from 0 to 1, to the sRGB value that shows
