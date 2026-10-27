@@ -13,10 +13,11 @@ import (
 )
 
 // The sweeper deletes archived threads once their board's archive_days have
-// passed, media included. It runs as `educhan -sweep`, a one-shot mode Cloud
-// Scheduler starts as a Cloud Run Job: Cloud Run gives a service CPU only
-// while it answers a request, so an in-process timer would fire whenever it
-// happened to, and a Job leaves no sweep endpoint to protect.
+// passed, media included, and spent captcha answers once their day has passed.
+// It runs as `educhan -sweep`, a one-shot mode Cloud Scheduler starts as a
+// Cloud Run Job: Cloud Run gives a service CPU only while it answers a request,
+// so an in-process timer would fire whenever it happened to, and a Job leaves
+// no sweep endpoint to protect.
 //
 // Rows go first, and the storage keys of their files are queued in
 // media_deletions in the same transaction; the files go after, each key
@@ -29,6 +30,31 @@ import (
 // sweepBatchSize bounds one sweep transaction: how many threads it deletes and
 // how long it holds their row locks.
 const sweepBatchSize = 100
+
+// spentPruneTimeout bounds the sweep's last step, the one DELETE of the spent
+// captcha answers past their day, which runs even on a sweep that was stopped.
+// Every spend prunes the table as it goes, so it holds a day or two of answers
+// and the DELETE, by an index, takes a fraction of a second; one that overran
+// the bound would roll back and fail the sweep, leaving the rows to the next.
+// The bound is for a stop: SIGTERM, which a Cloud Run Job gets at its task
+// timeout, is followed ten seconds later by SIGKILL. A stopped sweep finishes
+// the file in hand and then this step, logs its record of counts, and returns;
+// the process writes its error and waits on its connections' close for two
+// seconds at most (runSweep in cmd/server). So even with the database not
+// answering, the process writes its error and exits on its own inside the
+// ten, as long as no file deletion is in hand when the media store or the
+// database stops answering: the file in hand is finished whatever the stop,
+// and that waits on both.
+const spentPruneTimeout = 5 * time.Second
+
+// spentPruneBound is how long the sweep's prune may take: spentPruneTimeout,
+// unless a test has set a bound of its own.
+func (c Config) spentPruneBound() time.Duration {
+	if c.spentPruneWithin > 0 {
+		return c.spentPruneWithin
+	}
+	return spentPruneTimeout
+}
 
 // SweepReport is what a sweep did, in counts and nothing else: which boards or
 // threads went is not worth keeping in a log.
@@ -44,11 +70,25 @@ type SweepReport struct {
 	BlobsRemoved int
 	BlobFailures int
 	BlobsMissing int
+	// SpentCaptchas is how many spent captcha answers past their day the
+	// sweep deleted: the ones no later post or code request came along to
+	// prune.
+	SpentCaptchas int
 }
 
 // Sweep deletes every archived thread that has outlived its board's
-// archive_days, in batches of sweepBatchSize, and then removes the files those
-// threads had, along with any an earlier sweep could not.
+// archive_days, in batches of sweepBatchSize, then removes the files those
+// threads had, along with any an earlier sweep could not, and last deletes the
+// spent captcha answers past their day. A batch that fails leaves the files to
+// the next sweep. The spent answers go whatever failed before them, a stop
+// included: a sweep whose ctx is cancelled before its files are done stops at
+// the batch or the file it is on, or in looking up the next file, and prunes
+// them all the same, so its error is the stop, with the prune's own failure
+// beside it if the prune could not finish, and no failure the stop would have
+// caused. A stop that comes later, while the spent answers go, finds nothing
+// left to stop: the prune runs past it, and the stop adds no error of its own,
+// so the sweep ends as one that was not stopped would, failing only if its
+// pass failed.
 func (a *App) Sweep(ctx context.Context) (SweepReport, error) {
 	return a.sweep(ctx, time.Now(), sweepBatchSize)
 }
@@ -61,11 +101,12 @@ func (a *App) sweep(ctx context.Context, asOf time.Time, batch int) (SweepReport
 		return report, fmt.Errorf("sweep: the database has migrations this release does not know (%v); "+
 			"run the sweeper from the same release as the server", a.schemaAhead)
 	}
+	var archiveErr error
 	for {
 		swept, err := a.store.SweepArchived(ctx, asOf, batch)
 		if err != nil {
-			a.logSweep(report)
-			return report, fmt.Errorf("sweep archived threads: %w", err)
+			archiveErr = fmt.Errorf("sweep archived threads: %w", err)
+			break
 		}
 		report.Threads += swept.Threads
 		report.Posts += swept.Posts
@@ -77,21 +118,42 @@ func (a *App) sweep(ctx context.Context, asOf time.Time, batch int) (SweepReport
 		}
 	}
 
-	firstFailure, err := a.removeQueuedMedia(ctx, &report)
-	a.logSweep(report)
-	switch {
-	case err != nil:
-		return report, err
-	case report.BlobsMissing > 0:
-		return report, fmt.Errorf("sweep: %d of the files queued for removal are not in the media store; "+
-			"check that the sweeper has the server's media settings (EDUCHAN_MEDIA_BACKEND, "+
-			"EDUCHAN_GCS_BUCKET, EDUCHAN_GCS_PREFIX, EDUCHAN_UPLOAD_DIR); they stay queued in media_deletions",
-			report.BlobsMissing)
-	case report.BlobFailures > 0:
-		return report, fmt.Errorf("sweep: %d files could not be removed from the media store (the first: %s); "+
-			"they stay queued in media_deletions for the next sweep", report.BlobFailures, firstFailure)
+	// A batch that fails stops the files there too: every key queued so far,
+	// by the batches before it or by an earlier sweep, stays in media_deletions
+	// for the next sweep to remove.
+	var mediaErr error
+	if archiveErr == nil {
+		firstFailure, err := a.removeQueuedMedia(ctx, &report)
+		switch {
+		case err != nil:
+			mediaErr = err
+		case report.BlobsMissing > 0:
+			mediaErr = fmt.Errorf("sweep: %d of the files queued for removal are not in the media store; "+
+				"check that the sweeper has the server's media settings (EDUCHAN_MEDIA_BACKEND, "+
+				"EDUCHAN_GCS_BUCKET, EDUCHAN_GCS_PREFIX, EDUCHAN_UPLOAD_DIR); they stay queued in media_deletions",
+				report.BlobsMissing)
+		case report.BlobFailures > 0:
+			mediaErr = fmt.Errorf("sweep: %d files could not be removed from the media store (the first: %s); "+
+				"they stay queued in media_deletions for the next sweep", report.BlobFailures, firstFailure)
+		}
 	}
-	return report, nil
+
+	// Spent captcha answers go last, whatever happened to the threads and the
+	// files: they have nothing to do with either, so no failure there holds
+	// them up, and a failure here never keeps deleted threads' images up. A
+	// stop is no exception. The DELETE runs past ctx, as the file in hand
+	// does, within spentPruneTimeout: on the stopped context it would fail at
+	// once, prune nothing, and add a failure of its own to the stop's.
+	pruneCtx, cancelPrune := context.WithTimeout(context.WithoutCancel(ctx), a.cfg.spentPruneBound())
+	spent, err := a.store.PruneSpentCaptchas(pruneCtx, asOf)
+	cancelPrune()
+	var pruneErr error
+	if err != nil {
+		pruneErr = fmt.Errorf("sweep spent captchas: %w", err)
+	}
+	report.SpentCaptchas = spent
+	a.logSweep(report)
+	return report, errors.Join(archiveErr, mediaErr, pruneErr)
 }
 
 // removeQueuedMedia works through media_deletions once, removing each file and
@@ -99,15 +161,17 @@ func (a *App) sweep(ctx context.Context, asOf time.Time, batch int) (SweepReport
 // returns the first removal error, with the key taken out of it, for the
 // sweep's own error to carry.
 //
-// A cancelled sweep stops between files. The file in hand is finished, and its
-// key forgotten, whatever the context says: stopping half way would leave a
-// key whose file is gone, which every later sweep would report as missing.
+// A cancelled sweep stops between files, or in looking up the next, which has
+// no file in hand yet. The file in hand is finished, and its key forgotten,
+// whatever the context says: stopping half way would leave a key whose file is
+// gone, which every later sweep would report as missing. Either way the error
+// is the stop, as for a sweep stopped before it began.
 func (a *App) removeQueuedMedia(ctx context.Context, report *SweepReport) (string, error) {
 	work := context.WithoutCancel(ctx)
 	var firstFailure string
 	var after int64
 	for ctx.Err() == nil {
-		id, found, err := a.store.NextMediaDeletion(work, after, func(key string) bool {
+		id, found, err := a.store.NextMediaDeletion(ctx, after, func(key string) bool {
 			switch err := removeExisting(work, a.media, key); {
 			case err == nil:
 				report.BlobsRemoved++
@@ -122,10 +186,13 @@ func (a *App) removeQueuedMedia(ctx context.Context, report *SweepReport) (strin
 			}
 			return false
 		})
-		if err != nil {
+		switch {
+		case err != nil && !found && ctx.Err() != nil:
+			// The stop ended the lookup, with no file in hand.
+			return firstFailure, fmt.Errorf("sweep media: %w", ctx.Err())
+		case err != nil:
 			return firstFailure, fmt.Errorf("sweep media: %w", err)
-		}
-		if !found {
+		case !found:
 			return firstFailure, nil
 		}
 		after = id
@@ -169,5 +236,6 @@ func (a *App) logSweep(report SweepReport) {
 		"attachments", report.Attachments,
 		"blobs_removed", report.BlobsRemoved,
 		"blob_failures", report.BlobFailures,
-		"blobs_missing", report.BlobsMissing)
+		"blobs_missing", report.BlobsMissing,
+		"spent_captchas", report.SpentCaptchas)
 }

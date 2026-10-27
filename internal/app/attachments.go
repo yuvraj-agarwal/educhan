@@ -59,6 +59,9 @@ type submission struct {
 	// display preference: the thumbnail is made either way, and a submission
 	// without an image ignores it.
 	Spoiler bool
+	// Captcha is the answer to a captcha challenge: base64 JSON, checked by
+	// checkCaptcha.
+	Captcha string
 	Upload  *upload
 }
 
@@ -112,6 +115,7 @@ func (a *App) parseSubmission(w http.ResponseWriter, r *http.Request, form submi
 		Sage:    isTruthy(r.FormValue("sage")),
 		Badge:   isTruthy(r.FormValue("badge")),
 		Spoiler: isTruthy(r.FormValue("spoiler")),
+		Captcha: r.FormValue("captcha"),
 	}
 
 	file, header, err := r.FormFile(uploadFieldName)

@@ -31,9 +31,14 @@ type App struct {
 	postLimiter   *cooldownLimiter
 	uploadLimiter *cooldownLimiter
 	verifyLimiter *cooldownLimiter
-	// cooldownSweep drops the limiters' expired entries, which are client
-	// addresses: on a timer, and before a request when the timer has fallen
-	// behind. stopCooldownSweep stops the timer; Close calls it.
+	// captcha issues and checks the captcha's puzzles; nil when the captcha is
+	// off. captchaMeter counts each address's challenges, to make them harder
+	// for an address asking fast.
+	captcha      captchaVerifier
+	captchaMeter *captchaMeter
+	// cooldownSweep drops the limiters' and the meter's expired entries, which
+	// are client addresses: on a timer, and before a request when the timer has
+	// fallen behind. stopCooldownSweep stops the timer; Close calls it.
 	cooldownSweep     *cooldownSweep
 	stopCooldownSweep func()
 
@@ -43,9 +48,20 @@ type App struct {
 }
 
 // New connects to Postgres, verifies connectivity, applies pending migrations,
-// and prepares the media store.
+// and prepares the media store. ctx bounds all of it. A step that waits on
+// something ends when ctx does, but for the two answers migrate waits for
+// whatever the stop (a migration's COMMIT, and the migrations' lock given
+// back, both until migrateAnswerTimeout after ctx ends at most) and the read
+// of the domain file, which ctx does not cut short though it can wait, on a
+// slow mount say. So New looks at ctx after migrate and after the domain file,
+// and after the media store too, for one that answers just as ctx ends. A
+// stop, or a bound, that ends ctx while New runs ends New, with what it opened
+// closed and ctx's error as its own.
 func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 	if err := checkMailer(cfg); err != nil {
+		return nil, err
+	}
+	if err := checkCaptchaSecret(cfg); err != nil {
 		return nil, err
 	}
 	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
@@ -64,11 +80,18 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
 	schemaAhead, err := migrate(ctx, pool, log)
+	if err == nil {
+		err = ctx.Err()
+	}
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	blobs, err := newMediaStore(ctx, cfg)
+	if err == nil && ctx.Err() != nil {
+		closeMediaStore(blobs, log)
+		err = ctx.Err()
+	}
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("prepare media store: %w", err)
@@ -77,8 +100,12 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 	// does not load is a configuration mistake worth hearing about at startup
 	// rather than the first time somebody tries to verify.
 	domains, err := loadDomainAllowlist(cfg.VerifyDomainsFile)
+	if err == nil {
+		err = ctx.Err()
+	}
 	if err != nil {
 		pool.Close()
+		closeMediaStore(blobs, log)
 		return nil, fmt.Errorf("load verification domains: %w", err)
 	}
 
@@ -98,6 +125,8 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		postLimiter:   newCooldownLimiter(cfg.PostCooldown),
 		uploadLimiter: newCooldownLimiter(cfg.UploadCooldown),
 		verifyLimiter: newCooldownLimiter(cfg.VerifyCooldown),
+		captcha:       newCaptcha(cfg),
+		captchaMeter:  newCaptchaMeter(),
 		schemaAhead:   schemaAhead,
 	}
 	every := cfg.cooldownSweepEvery
@@ -105,7 +134,7 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		every = cooldownSweepInterval
 	}
 	a.cooldownSweep = newCooldownSweep(every,
-		a.threadLimiter, a.postLimiter, a.uploadLimiter, a.verifyLimiter)
+		a.threadLimiter, a.postLimiter, a.uploadLimiter, a.verifyLimiter, a.captchaMeter)
 	a.stopCooldownSweep = a.cooldownSweep.start()
 	return a, nil
 }
@@ -129,6 +158,40 @@ func (a *App) WarnServingSettings() {
 	case a.cfg.Sender == nil:
 		a.log.Warn("EDUCHAN_MAIL_DEV is set; verification codes are printed to stdout with their address")
 	}
+	if !a.captchaEnabled() {
+		a.log.Warn("EDUCHAN_CAPTCHA_SECRET is unset; posts and verification code requests need no captcha")
+	}
+}
+
+// minCaptchaSecretLen is the shortest EDUCHAN_CAPTCHA_SECRET accepted, in
+// bytes: what a secret is worth is in its bytes, whatever characters spell
+// them. `openssl rand -hex 32` makes one of 64.
+const minCaptchaSecretLen = 32
+
+// checkCaptchaSecret refuses a short captcha secret rather than starting with
+// it: every challenge's signature rests on the secret, and one that can be
+// guessed lets a script sign challenges of its own and skip the work.
+func checkCaptchaSecret(cfg Config) error {
+	if cfg.CaptchaSecret != "" && len(cfg.CaptchaSecret) < minCaptchaSecretLen {
+		return fmt.Errorf("EDUCHAN_CAPTCHA_SECRET must be at least %d bytes", minCaptchaSecretLen)
+	}
+	return nil
+}
+
+// newCaptcha picks the captcha's verifier: a test's own, ALTCHA's keyed by
+// EDUCHAN_CAPTCHA_SECRET, or none, which switches the captcha off.
+func newCaptcha(cfg Config) captchaVerifier {
+	switch {
+	case cfg.captcha != nil:
+		return cfg.captcha
+	case cfg.CaptchaSecret == "":
+		return nil
+	}
+	work := cfg.CaptchaWork
+	if work <= 0 {
+		work = defaultCaptchaWork
+	}
+	return newAltchaVerifier(cfg.CaptchaSecret, work)
 }
 
 // checkMailer refuses to start verification with nowhere safe to send codes.
@@ -151,11 +214,13 @@ func checkMailer(cfg Config) error {
 func newMediaStore(ctx context.Context, cfg Config) (media.Store, error) {
 	switch cfg.MediaBackend {
 	case MediaBackendGCS:
-		// The client outlives startup, so it must not hold a context that is
-		// cancelled once startup is over: cmd/server bounds app.New with a
-		// timeout, and a client whose credentials could not refresh past it
-		// would fail its first upload half a minute in.
-		return media.NewGCSStore(context.WithoutCancel(ctx), cfg.GCSBucket, cfg.GCSPrefix)
+		// ctx bounds the check that the bucket answers, as it bounds the rest
+		// of startup (New), so a sweep's stop or cmd/server's startup bound
+		// ends New there too. The client, which outlives startup, is built on
+		// a context that is not cancelled with it (NewGCSStore): one whose
+		// credentials could not refresh past the bound would fail its first
+		// upload half a minute in.
+		return media.NewGCSStore(ctx, cfg.GCSBucket, cfg.GCSPrefix)
 	case MediaBackendLocal, "":
 		// Empty means local as well, so a Config built in code — the tests do —
 		// needs no backend field to behave as it always has.
@@ -174,9 +239,14 @@ func (a *App) Close() {
 	if a.pool != nil {
 		a.pool.Close()
 	}
-	if closer, ok := a.media.(io.Closer); ok {
+	closeMediaStore(a.media, a.log)
+}
+
+// closeMediaStore closes a media store that holds a connection of its own.
+func closeMediaStore(blobs media.Store, log *slog.Logger) {
+	if closer, ok := blobs.(io.Closer); ok {
 		if err := closer.Close(); err != nil {
-			a.log.Warn("closing media store", "error", err)
+			log.Warn("closing media store", "error", err)
 		}
 	}
 }
@@ -187,6 +257,7 @@ func (a *App) Routes() http.Handler {
 
 	mux.HandleFunc("GET /healthz", a.handleHealth)
 	mux.HandleFunc("GET /api/site", a.handleSite)
+	mux.HandleFunc("GET /api/captcha", a.handleCaptcha)
 
 	mux.HandleFunc("GET /api/boards", a.handleListBoards)
 	mux.HandleFunc("GET /api/boards/{slug}", a.handleGetBoard)

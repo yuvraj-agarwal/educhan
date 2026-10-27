@@ -9,19 +9,21 @@ import (
 
 // cooldownSweepThreshold is the number of tracked keys after which recording a
 // new one sweeps expired entries first, keeping the map bounded under a burst
-// between two periodic sweeps.
+// between two periodic sweeps. Past it, record sweeps again only once the map
+// has doubled since the last sweep (cooldownLimiter.sweepAt).
 const cooldownSweepThreshold = 4096
 
 // cooldownSweepInterval is how often a cooldownSweep drops every entry whose
-// cooldown has passed. The keys are client addresses, so this is the bound on
-// how long the server remembers one while the process has CPU: an address is
-// held in memory no longer than the longest cooldown that applies to it plus
-// one minute, counted from its last action that started a cooldown, however
-// quiet the server is. A host that gives the process CPU only while it answers
-// a request, which is Cloud Run's default, holds the timer back while the
-// instance is idle; there the sweep runs before the instance answers its next
-// request, so an idle instance keeps expired entries until then or until it is
-// shut down. The address is never written anywhere else.
+// cooldown has passed. The keys are client addresses, as are the captcha
+// meter's, whose one-minute window counts as a cooldown here, so this is the
+// bound on how long the server remembers one while the process has CPU: an
+// address is held in memory no longer than the longest cooldown that applies to
+// it plus one minute, counted from its last action that started a cooldown,
+// however quiet the server is. A host that gives the process CPU only while it
+// answers a request, which is Cloud Run's default, holds the timer back while
+// the instance is idle; there the sweep runs before the instance answers its
+// next request, so an idle instance keeps expired entries until then or until
+// it is shut down. The address is never written anywhere else.
 const cooldownSweepInterval = time.Minute
 
 // cooldownLimiter enforces a minimum interval between two actions from the same
@@ -40,6 +42,12 @@ type cooldownLimiter struct {
 
 	mu   sync.Mutex
 	seen map[string]time.Time
+	// sweepAt is how many keys record lets the map hold before it sweeps: twice
+	// what the last sweep left, and never fewer than cooldownSweepThreshold. A
+	// map of live cooldowns, which a sweep cannot shrink, is then swept once
+	// each time it doubles rather than on every record, so a record costs a
+	// few map operations on average, inside admission as anywhere.
+	sweepAt int
 }
 
 func newCooldownLimiter(interval time.Duration) *cooldownLimiter {
@@ -56,9 +64,13 @@ type cooldown struct {
 	key     string
 }
 
+// admission is held by every allowAll from its check to its start, so no
+// cooldown starts anywhere between the two.
+var admission sync.Mutex
+
 // allowAll reports whether an action is permitted, applying several cooldowns
-// as one decision. When it is not, the caller is told how long to wait: the
-// longest of the outstanding waits.
+// as one decision, and starts them all when it is. When it is not, the caller
+// is told how long to wait: the longest of the outstanding waits.
 //
 // A cooldown starts on every limiter only once all of them allow the action. A
 // request one cooldown refuses must not consume another, or a reply carrying an
@@ -66,24 +78,46 @@ type cooldown struct {
 // neither of them describes. Nothing is recorded for a refused action either, so
 // a rejected caller cannot extend its own cooldown by retrying.
 //
-// The check and the record are not atomic across limiters. Two simultaneous
-// requests for the same key can therefore both be admitted, which for flood
-// control is a much better trade than the lock ordering an atomic version
-// would need between limiters that are not always applied together.
+// The check and the start are one step: allowAll holds admission across both,
+// so of simultaneous requests for one key at most one is admitted, and a
+// request is refused only by a cooldown an admitted action started. It can be
+// none: requests that share one key may each need another that an admitted
+// request took first (two image threads to one board, refused by the upload
+// cooldown an image reply elsewhere started). Holding one lock for every
+// admission, rather than each limiter's own lock in turn, needs no order
+// between limiters that are not always applied together. An admission is a few
+// map operations, and a sweep of a limiter when record finds its map at the
+// larger of sweepAt, twice what its last sweep left, and
+// cooldownSweepThreshold, so requests barely wait for it.
+//
+// A handler that spends a captcha answer checks first with longestWait, which
+// starts nothing, so a request that has to wait keeps its answer, and calls
+// allowAll only once the answer is spent, so a request refused for its answer
+// starts no cooldown.
 func allowAll(cooldowns ...cooldown) (retryAfter time.Duration, ok bool) {
+	admission.Lock()
+	defer admission.Unlock()
+
+	if wait := longestWait(cooldowns...); wait > 0 {
+		return wait, false
+	}
+	for _, c := range cooldowns {
+		c.limiter.record(c.key)
+	}
+	return 0, true
+}
+
+// longestWait is the longest of the waits the cooldowns still impose, recording
+// nothing: what allowAll would refuse with, for a caller that wants to know
+// before it does anything else with a request.
+func longestWait(cooldowns ...cooldown) time.Duration {
 	var longest time.Duration
 	for _, c := range cooldowns {
 		if wait := c.limiter.peek(c.key); wait > longest {
 			longest = wait
 		}
 	}
-	if longest > 0 {
-		return longest, false
-	}
-	for _, c := range cooldowns {
-		c.limiter.record(c.key)
-	}
-	return 0, true
+	return longest
 }
 
 // peek reports how long key must wait, recording nothing.
@@ -102,7 +136,8 @@ func (l *cooldownLimiter) peek(key string) time.Duration {
 	return max(l.interval-l.now().Sub(last), 0)
 }
 
-// record starts key's cooldown.
+// record starts key's cooldown. allowAll calls it, under admission, once
+// nothing refuses the action.
 func (l *cooldownLimiter) record(key string) {
 	if l == nil || l.interval <= 0 {
 		return
@@ -112,19 +147,21 @@ func (l *cooldownLimiter) record(key string) {
 	defer l.mu.Unlock()
 
 	now := l.now()
-	if len(l.seen) >= cooldownSweepThreshold {
+	if len(l.seen) >= max(l.sweepAt, cooldownSweepThreshold) {
 		l.sweep(now)
 	}
 	l.seen[key] = now
 }
 
-// sweep drops entries whose cooldown has elapsed. Callers must hold the mutex.
+// sweep drops entries whose cooldown has elapsed, and sets the size at which
+// record sweeps next. Callers must hold the mutex.
 func (l *cooldownLimiter) sweep(now time.Time) {
 	for key, last := range l.seen {
 		if now.Sub(last) >= l.interval {
 			delete(l.seen, key)
 		}
 	}
+	l.sweepAt = 2 * len(l.seen)
 }
 
 // sweepExpired drops every entry whose cooldown has elapsed by the limiter's
@@ -147,12 +184,18 @@ func (l *cooldownLimiter) sweepExpired() {
 // next request is the first moment the process is sure to run again.
 type cooldownSweep struct {
 	every    time.Duration
-	limiters []*cooldownLimiter
+	limiters []expiring
 	// last is when the most recent sweep began, in Unix nanoseconds.
 	last atomic.Int64
 }
 
-func newCooldownSweep(every time.Duration, limiters ...*cooldownLimiter) *cooldownSweep {
+// expiring is anything a cooldownSweep keeps short-lived: the cooldown
+// limiters, and the captcha's challenge meter.
+type expiring interface {
+	sweepExpired()
+}
+
+func newCooldownSweep(every time.Duration, limiters ...expiring) *cooldownSweep {
 	s := &cooldownSweep{every: every, limiters: limiters}
 	s.last.Store(time.Now().UnixNano())
 	return s

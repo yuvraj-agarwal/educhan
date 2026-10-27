@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -20,6 +21,18 @@ var migrationsFS embed.FS
 // migrateLockID namespaces the advisory lock held while migrations run, so
 // concurrently starting instances apply them one at a time.
 const migrateLockID = 8125437190021
+
+// migrateAnswerTimeout bounds the two answers migrate waits for on a context
+// the stop does not cancel: neither is waited on for longer than this after
+// ctx ends (a stop, or startup's bound). A migration's COMMIT, once it is
+// sent, is waited on for as long as the database takes until then, so that a
+// stop that comes as a migration commits finds out whether it was applied,
+// while a commit no stop has come to is not cut short. The release of the
+// migrations' lock, which is owed however migrate ends, is waited on for this
+// long at most from when it is sent, and no later than this after ctx ends,
+// so a stop as a migration commits waits this long at most for both. Either
+// one left unanswered fails, and its connection is closed.
+const migrateAnswerTimeout = 2 * time.Second
 
 type migration struct {
 	version int
@@ -68,7 +81,16 @@ func loadMigrations() ([]migration, error) {
 
 // migrate applies every migration that has not been recorded in
 // schema_migrations yet. Each migration runs in its own transaction, so a
-// failure leaves the database on the last successfully applied version.
+// failure leaves the database on the last successfully applied version. A stop
+// (ctx ended) cuts short what migrate waits on but for two answers, each
+// waited on until migrateAnswerTimeout after the stop at most: a migration's
+// COMMIT once sent, and the release of the migrations' lock. A migration the
+// stop lands in is rolled back, unless its COMMIT has been sent: then the
+// migration is applied and recorded first, and the stop ends migrate before
+// the next statement it would send (the next migration's BEGIN or, after the
+// last, renameReservedBoards's query). A commit left unanswered that long
+// fails as one refused would, though the database may have applied it, which
+// the next start finds.
 //
 // It returns the versions the database has that this binary does not know: a
 // database a newer release migrated, which this one is serving after a
@@ -106,9 +128,39 @@ func applyMigrations(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, 
 	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrateLockID); err != nil {
 		return nil, fmt.Errorf("acquire migration lock: %w", err)
 	}
+	// The two answers migrate waits for whatever the stop are waited on under
+	// owed, which ends migrateAnswerTimeout after ctx does and never while ctx
+	// has not: a commit no stop has come to is not cut short, and a release
+	// sent after a slow commit has what is left of that time after the stop,
+	// not that long again. owed ends with migrate as well, so neither the
+	// watch on ctx nor its timer outlives migrate.
+	owed, cancelOwed := context.WithCancel(context.WithoutCancel(ctx))
+	stopWatching := context.AfterFunc(ctx, func() {
+		timer := time.NewTimer(migrateAnswerTimeout)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			cancelOwed()
+		case <-owed.Done():
+		}
+	})
 	defer func() {
-		if _, err := conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, migrateLockID); err != nil {
+		stopWatching()
+		cancelOwed()
+	}()
+	defer func() {
+		// Given back however migrate ends, a stop included, but waited on for
+		// migrateAnswerTimeout at most, and no later than that after the stop,
+		// so a database that stops answering as it is given back holds startup
+		// no longer than that. The lock is the session's: an unlock that
+		// fails, unanswered or refused, leaves it held, so the connection is
+		// closed rather than handed back to the pool, and the lock goes with
+		// its session. Release then destroys it.
+		unlockCtx, cancel := context.WithTimeout(owed, migrateAnswerTimeout)
+		defer cancel()
+		if _, err := conn.Exec(unlockCtx, `SELECT pg_advisory_unlock($1)`, migrateLockID); err != nil {
 			log.Warn("could not release migration lock", "error", err)
+			_ = conn.Conn().Close(unlockCtx)
 		}
 	}()
 
@@ -123,9 +175,16 @@ func applyMigrations(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, 
 		if applied[m.version] {
 			continue
 		}
+		// A stop that came as the last one committed ends migrate before the
+		// next begins, with its connection still sound: pgx's Begin, given a
+		// context already ended, closes the connection, and the lock's release
+		// would fail with it.
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("begin migration %s: %w", m.name, err)
+		}
 		tx, err := conn.Begin(ctx)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("begin migration %s: %w", m.name, err)
 		}
 		if _, err := tx.Exec(ctx, m.sql); err != nil {
 			_ = tx.Rollback(ctx)
@@ -136,7 +195,9 @@ func applyMigrations(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, 
 			_ = tx.Rollback(ctx)
 			return nil, fmt.Errorf("record migration %s: %w", m.name, err)
 		}
-		if err := tx.Commit(ctx); err != nil {
+		// The commit's wait is cut short only migrateAnswerTimeout after ctx
+		// ends, whenever that is, and never while it has not.
+		if err := tx.Commit(owed); err != nil {
 			return nil, fmt.Errorf("commit migration %s: %w", m.name, err)
 		}
 		log.Info("applied migration", "version", m.version, "name", m.name)
