@@ -1210,6 +1210,15 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 		t.Error("formHTML no longer draws the note on the anti-spam check, only while the captcha is on, in the element " +
 			"dropBadgeOption rewords, from the two constants")
 	}
+	// And the markup draws it, once, in the hint of the actions row beside the
+	// button whose press may wait on the check. Left out, no form would say so,
+	// and dropBadgeOption would find no note to reword, without a word.
+	actions := form[max(strings.Index(form, `<div class="actions">`), 0):]
+	actions = actions[:max(strings.Index(actions, "</div>"), 0)]
+	if !strings.Contains(actions, `<button class="btn primary" type="submit">`) ||
+		!strings.Contains(actions, `<span class="hint">Posting is anonymous.${check}</span>`) || strings.Count(form, "${check}") != 1 {
+		t.Error("formHTML no longer draws the note on the anti-spam check, once, in the hint of the actions row beside its button")
+	}
 	hint, badgeHint := jsString(t, script, "CHECK_HINT"), jsString(t, script, "CHECK_HINT_WITH_BADGE")
 	if strings.Contains(hint, "badge") || !strings.Contains(badgeHint, "badge") || !strings.HasSuffix(badgeHint, hint[1:]) {
 		t.Errorf("CHECK_HINT should say nothing of a badge, and CHECK_HINT_WITH_BADGE add only that: %q, %q", hint, badgeHint)
@@ -1985,6 +1994,18 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 		"if (overtaken(route)) { return; } drawnFor = { path: renderedPath, route, thread: state.thread }; "+
 			"expandedLink = null; enhancePosts(el.main); restoreDraft(draft);",
 	)
+	// The address bar put back is half of what keeps the page. The other half
+	// is popstate, which Back and a jump within the page fire: it draws nothing
+	// when the address, less its fragment, is the one the page was drawn for
+	// (renderedPath), and only moves to the fragment. The first Back after a
+	// kept link, and every jump within the kept page, rely on it: a popstate
+	// that always rendered would fetch the page that failed again and draw it,
+	// or its error, over the kept page, its draft and its notice.
+	pop := squash(withoutComments(jsBlock(t, script, `window.addEventListener("popstate", () => {`, "});")))
+	if pop != `window.addEventListener("popstate", () => { if (window.location.pathname + window.location.search === renderedPath) { `+
+		"focusHash(); return; } render(); });" || strings.Count(withoutComments(script), `"popstate"`) != 1 {
+		t.Errorf("popstate no longer only moves to the fragment when the address is the one the page was drawn for: %s", pop)
+	}
 	if n := strings.Count(render, "requested"); n != 3 || strings.Contains(render, "location.href") {
 		t.Errorf("requested appears %d times in render; want it taken, less the fragment, noted as renderedPath "+
 			"and compared once", n)
