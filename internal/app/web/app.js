@@ -2365,10 +2365,12 @@ const passForgetHeard = new Map();
 // passJustIssued is the code a claim or a reissue code has just handed over,
 // as { code, expires, kept, replaced, reissued, shown }: replaced is the code
 // of a different Pass it took the place of in this browser. It is drawn on
-// every drawing of the Pass page, so no redraw, poll or Back loses a code the
-// server will not show again, until the reader leaves the page (render). One
-// this browser could not store stays until the page is closed: it is nowhere
-// else.
+// every drawing of the Pass page, so no redraw or poll loses a code the server
+// will not show again, until the reader leaves the page (render). One this
+// browser could not store goes then too, as its panel says, and when the
+// document is left, for another site say (pagehide), so a page brought back
+// from the back-forward cache does not show it to whoever uses the browser
+// next (forgetUnkeptCode); one it keeps is drawn again on such a page.
 let passJustIssued = null;
 
 // lastPassInfo is what GET /api/pass said for the drawing on screen, so a
@@ -2555,9 +2557,16 @@ function forgetPassOrder(order, pressed) {
     // and the Pass page offers to stop collecting it once it is drawn again.
     // Said on whatever page this tab is on, since the reader who pressed the
     // forget, in another tab, was told it was done: the one exception to
-    // passPageShown in the Pass section.
+    // passPageShown in the Pass section. On the Pass page it answers this
+    // tab's own Buy or Renew, pressed there, so it is brought into view
+    // (showPassNotice) like any other answer to a press there.
     if (err.status !== 403) {
-      showNotice(PASS_ORDER_KEPT[pressed] || PASS_ORDER_KEPT.browser);
+      const notice = PASS_ORDER_KEPT[pressed] || PASS_ORDER_KEPT.browser;
+      if (passPageShown()) {
+        showPassNotice(notice);
+      } else {
+        showNotice(notice);
+      }
     }
   });
 }
@@ -2888,6 +2897,21 @@ function forgetTypedCode() {
   }
 }
 
+// forgetUnkeptCode drops a code just handed over that this browser could not
+// keep, as its panel promises once the reader leaves, and takes its panel off
+// the page too: a page brought back from the back-forward cache is shown as it
+// was left until it is drawn again (the pageshow listener). A code the browser
+// keeps is left to be drawn again there.
+function forgetUnkeptCode() {
+  if (passJustIssued && !passJustIssued.kept) {
+    passJustIssued = null;
+    const panel = document.getElementById("pass-issued");
+    if (panel) {
+      panel.remove();
+    }
+  }
+}
+
 // emptyCopiedPassCode empties the clipboard after this tab put a Pass code
 // there (Copy the code), for Remove the Pass and Forget this browser. The page
 // cannot read the clipboard without asking the reader's leave, so it empties
@@ -3007,15 +3031,24 @@ function passRunOutText() {
 }
 
 // passPriceText writes Stripe's amount, kept in the currency's smallest unit,
-// in the reader's own format. Intl knows how many decimals each currency has.
+// in the reader's own format. How many decimals that unit stands for is
+// Stripe's to say, and the server sends it beside the amount (exponent): the
+// browser's own table differs, with ISK and UGX whole where Stripe keeps them
+// in hundredths, so 300000 is 3,000 ISK, not 300,000. Intl then writes the
+// amount with the currency's usual digits.
 function passPriceText(price) {
-  if (!price || !Number.isSafeInteger(price.amount) || typeof price.currency !== "string") {
+  if (
+    !price ||
+    !Number.isSafeInteger(price.amount) ||
+    typeof price.currency !== "string" ||
+    !Number.isSafeInteger(price.exponent) ||
+    price.exponent < 0
+  ) {
     return "";
   }
   try {
     const format = new Intl.NumberFormat(undefined, { style: "currency", currency: price.currency.toUpperCase() });
-    const digits = format.resolvedOptions().maximumFractionDigits;
-    return format.format(price.amount / 10 ** digits);
+    return format.format(price.amount / 10 ** price.exponent);
   } catch {
     return "";
   }
@@ -3480,11 +3513,26 @@ function showPassNotice(message) {
 
 // refocus gives focus back to a button that was disabled while it waited,
 // which dropped it to the top of the document, once it is enabled again.
-// Focus the reader has moved on meanwhile stays where they put it.
+// Focus the reader has moved on meanwhile stays where they put it. A button the
+// page was drawn again over while it waited (by another tab's forget, say) is
+// gone, so focus goes to what was drawn in its place: the same button of a form
+// of the same kind (form[data-pass]) or with the same action, else the first
+// of the Pass forms' controls, else the first panel, never the top of the
+// document.
 function refocus(button) {
-  if (button.isConnected && (!document.activeElement || document.activeElement === document.body)) {
-    button.focus();
+  if (document.activeElement && document.activeElement !== document.body) {
+    return;
   }
+  if (button.isConnected) {
+    button.focus();
+    return;
+  }
+  const form = button.closest("form[data-pass]");
+  passFocus(
+    form ? `form[data-pass="${form.dataset.pass}"] button[type="submit"]` : `[data-action="${button.dataset.action}"]`,
+    "form[data-pass] input, form[data-pass] button",
+    '.verify-panel[tabindex="-1"]'
+  );
 }
 
 // renderPass draws the Pass page from the server's answer, and resolves to
@@ -5028,15 +5076,14 @@ async function render({ draft = captureDraft() } = {}) {
   renderedPath = window.location.pathname + window.location.search;
   const route = parseRoute();
   // What the Pass page had to say goes once the reader leaves it, with what
-  // was typed in its code box and a code just handed over, unless this
-  // browser could not keep that code: it is nowhere else, so it stays until
-  // the page is closed.
+  // was typed in its code box and a code just handed over, kept or not: one
+  // this browser could not keep is nowhere else, and its panel says it won't
+  // be shown again, so the next person at a shared computer can't open the
+  // Pass page to find it.
   if (state.route.view === "pass" && route.view !== "pass") {
     passLost = "";
     forgetTypedCode();
-    if (passJustIssued && passJustIssued.kept) {
-      passJustIssued = null;
-    }
+    passJustIssued = null;
   }
   state.route = route;
   state.thread = null;
@@ -5700,14 +5747,16 @@ window.addEventListener("pageshow", (event) => {
 });
 
 // Leaving the document, for Stripe say, takes what was typed in the Pass page's
-// code box with it, as leaving the page within the site does (render), so the
-// back-forward cache does not bring it back. A checkout still on its way is
-// called off, since the reader has left it (callOffPassCheckouts), and so is a
-// press still waiting to go (passLeft, passForgetsSettled), which would
+// code box with it, and a code just handed over that this browser could not
+// keep, as leaving the page within the site does (render), so the back-forward
+// cache does not bring them back (forgetUnkeptCode). A checkout still on its
+// way is called off, since the reader has left it (callOffPassCheckouts), and
+// so is a press still waiting to go (passLeft, passForgetsSettled), which would
 // otherwise go once the page is brought back.
 window.addEventListener("pagehide", () => {
   passLeft += 1;
   forgetTypedCode();
+  forgetUnkeptCode();
   callOffPassCheckouts(false);
 });
 

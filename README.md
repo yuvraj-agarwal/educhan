@@ -1026,7 +1026,9 @@ not-found view.
   refused then, it checks the Pass it holds and says a date that moved on. A code the
   server hands over is stored before anything else and stays on screen, beside any code it
   took the place of, until the reader leaves the page; it can be shown again from the held
-  Pass's panel to write down, and a browser that will not store it is told so. A code
+  Pass's panel to write down. A browser that will not store it is told so, and that it
+  won't be shown again once the reader leaves the page: it is not drawn again for whoever
+  comes back to the page next, by a link or by the Back button from another site. A code
   typed in after it ran out, within its month of grace, is kept as run out, with its date,
   to renew. A Pass that has run out here can be checked again, in case it was renewed
   elsewhere. A renewal the page collects is checked against the Pass it holds
@@ -1095,7 +1097,8 @@ not-found view.
   an unknown Pass, keeps one that ran out to renew, and says the post was sent. A notice a
   press on the Pass page raises, a refusal say, is brought into view when it is out of
   view, as it is on a phone, where the forms sit far below the notice; focus stays where
-  the press put it.
+  the press put it, or, when another tab's forget drew the page again while the press
+  waited, goes to what was drawn in its place.
 - **Phones**: a single fluid column with the catalog at two tiles across, thumbnails that
   never overflow the viewport, and 16px form text so iOS does not zoom on focus.
 - **Accessibility**: a skip link, one visible focus ring on every control, headings and

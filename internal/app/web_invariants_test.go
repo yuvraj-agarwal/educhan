@@ -1,7 +1,9 @@
 package app
 
 import (
+	"encoding/json"
 	"io/fs"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -699,8 +701,19 @@ func TestPassCodeCanBeShownBeforeItIsRemoved(t *testing.T) {
 		!strings.Contains(code, "showPassCode(showPass);") {
 		t.Error("nothing shows the code when Show the code is pressed")
 	}
-	if !strings.Contains(withoutComments(jsFunction(t, script, "showPassCode")), `document.getElementById("pass-shown")`) {
+	show := withoutComments(jsFunction(t, script, "showPassCode"))
+	if !strings.Contains(show, `document.getElementById("pass-shown")`) {
 		t.Error("showPassCode no longer fills the panel's slot")
+	}
+	// Hidden again, the code leaves the page, not only the screen, so nothing
+	// reading the page finds it there afterwards.
+	if !strings.Contains(show, "if (!slot.hidden) {\n    slot.hidden = true;\n    slot.textContent = \"\";\n") {
+		t.Error("Hide the code leaves the code in the page")
+	}
+	// Shown, it takes focus, so a screen reader reads it out.
+	if !strings.HasSuffix(show, "  slot.hidden = false;\n  button.textContent = \"Hide the code\";\n"+
+		"  button.setAttribute(\"aria-expanded\", \"true\");\n  document.getElementById(\"pass-code\").focus();\n}") {
+		t.Error("Show the code no longer moves focus to the code it shows")
 	}
 	if !strings.Contains(words(jsFunction(t, script, "forgetBrowserHTML")), "show its code on the") {
 		t.Error("Forget this browser no longer says where the code can be seen before it is forgotten")
@@ -1010,7 +1023,7 @@ func TestPassAnswerAboutAPassThatLeftIsDropped(t *testing.T) {
 		"educhan couldn't be reached to drop the checkout that was still opening when Stop collecting it here was pressed, so this browser may still be collecting it. Open the Pass page when you're back online and press Stop collecting it here again." + "\",\n  remove:\n    \"" +
 		"educhan couldn't be reached to drop the checkout that was still opening when the Pass was removed, so this browser may still be collecting it. Open the Pass page when you're back online and press Stop collecting it here." + "\",\n  browser:\n    \"" +
 		"educhan couldn't be reached to drop the checkout that was still opening when this browser was forgotten, so the browser may still be collecting it. Press Forget this browser on the Verify page again when you're back online." + "\",\n};\n"
-	if !strings.Contains(code, kept) || !strings.Contains(order, "showNotice(PASS_ORDER_KEPT[pressed] || PASS_ORDER_KEPT.browser);") ||
+	if !strings.Contains(code, kept) || !strings.Contains(order, "const notice = PASS_ORDER_KEPT[pressed] || PASS_ORDER_KEPT.browser;") ||
 		!strings.HasPrefix(order, "function forgetPassOrder(order, pressed) {") || strings.Count(code, "PASS_ORDER_KEPT") != 3 {
 		t.Error("a checkout's claim that could not be dropped by its order's name is no longer said in words that name the forget " +
 			"pressed, and how to drop it once back online with no more than that")
@@ -1126,12 +1139,17 @@ func TestPassAnswersDrawOnlyOnThePassPage(t *testing.T) {
 	}
 	// The reader who pressed the forget in another tab was told it was done,
 	// so a claim it left that could not be dropped is said on whatever page
-	// this tab is on, and that notice is all forgetPassOrder draws.
+	// this tab is on, and that notice is all forgetPassOrder draws. On the
+	// Pass page it answers this tab's own Buy or Renew, so it is said there as
+	// every other answer to a press there is, brought into view
+	// (showPassNotice); on any other page it moves nothing (showNotice).
 	order := withoutComments(jsFunction(t, script, "forgetPassOrder"))
-	if strings.Contains(order, "passPageShown") || len(draws.FindAllString(order, -1)) != 1 ||
-		!regexp.MustCompile(`\.catch\(\(err\) => \{\s*if \(err\.status !== 403\) \{\s*showNotice\(`).MatchString(order) {
+	said := regexp.MustCompile(`\.catch\(\(err\) => \{\s*if \(err\.status !== 403\) \{\s*` +
+		`const notice = PASS_ORDER_KEPT\[pressed\] \|\| PASS_ORDER_KEPT\.browser;\s*` +
+		`if \(passPageShown\(\)\) \{\s*showPassNotice\(notice\);\s*\} else \{\s*showNotice\(notice\);\s*\}\s*\}\s*\}\);`)
+	if len(draws.FindAllString(order, -1)) != 2 || strings.Count(order, "passPageShown()") != 1 || !said.MatchString(order) {
 		t.Error("forgetPassOrder no longer says, on whatever page this tab is on, that a claim it could not drop is still collected, " +
-			"or says or draws something else")
+			"in view on the Pass page and moving nothing elsewhere, or says or draws something else")
 	}
 	// The async functions ask once, at their own level, after their last
 	// wait: a check inside one branch would leave the others drawing over
@@ -1246,16 +1264,22 @@ func TestPassNoticesFromAPressAreBroughtIntoView(t *testing.T) {
 		t.Error("what Check now's first claim comes to is not said in view, or a later poll's news is")
 	}
 	said += strings.Count(claimed, "showPassNotice(")
+	// The notice a checkout's tab gives when it could not drop that
+	// checkout's claim (forgetPassOrder) answers its own Buy or Renew when it
+	// is on the Pass page, and is said in view there, and only there; on any
+	// other page it moves nothing (pinned in TestPassAnswersDrawOnlyOnThePassPage).
+	order := withoutComments(jsFunction(t, script, "forgetPassOrder"))
+	if !strings.Contains(order, "if (passPageShown()) {\n        showPassNotice(notice);\n      } else {\n        showNotice(notice);\n      }") {
+		t.Error("forgetPassOrder's notice, raised on the Pass page by this tab's own Buy or Renew, may land out of view")
+	}
+	said += strings.Count(order, "showPassNotice(")
 	// Nowhere else: not what the Pass page says on its own (back from Stripe),
-	// not forgetPassOrder, said on whatever page the tab is on, and not
-	// another page's.
+	// and not another page's.
 	if n := strings.Count(code, "showPassNotice("); n != said+1 {
 		t.Errorf("showPassNotice( appears %d times; want its definition and the Pass page's presses' %d", n, said)
 	}
-	for _, name := range []string{"renderPass", "forgetPassOrder"} {
-		if strings.Contains(withoutComments(jsFunction(t, script, name)), "showPassNotice(") {
-			t.Errorf("%s moves the page to a notice no press raised", name)
-		}
+	if strings.Contains(withoutComments(jsFunction(t, script, "renderPass")), "showPassNotice(") {
+		t.Error("renderPass moves the page to a notice no press raised")
 	}
 }
 
@@ -1912,18 +1936,40 @@ func TestPassPageKeepsACodeJustHandedOver(t *testing.T) {
 	if strings.Contains(view, "function passViewHTML(info, ") {
 		t.Error("passViewHTML takes the code just handed over from its caller again, so a redraw loses it")
 	}
-	if n := strings.Count(withoutComments(script), "passJustIssued = null;"); n != 5 {
+	if n := strings.Count(withoutComments(script), "passJustIssued = null;"); n != 6 {
 		t.Errorf("a code just handed over is dropped in %d places; want its declaration, leaving the Pass page, "+
-			"removing the Pass, forgetting the browser, and another tab removing or replacing it", n)
+			"leaving the document with one this browser could not keep, removing the Pass, forgetting the browser, "+
+			"and another tab removing or replacing it", n)
 	}
+	// It goes once the reader leaves the Pass page, kept or not: one this
+	// browser could not keep is nowhere else, and its panel says it won't be
+	// shown again once they leave, so the next person at a shared computer
+	// must not find it by opening the Pass page.
 	render := withoutComments(jsFunction(t, script, "render"))
-	if !strings.Contains(render, `if (state.route.view === "pass" && route.view !== "pass") {`) ||
-		!strings.Contains(render, "if (passJustIssued && passJustIssued.kept) {\n      passJustIssued = null;") {
-		t.Error("render no longer drops a code just handed over only once the reader leaves the Pass page, and keeps one this browser could not store")
+	if !strings.Contains(render, "if (state.route.view === \"pass\" && route.view !== \"pass\") {\n"+
+		"    passLost = \"\";\n    forgetTypedCode();\n    passJustIssued = null;\n  }") {
+		t.Error("render no longer drops a code just handed over, kept or not, once the reader leaves the Pass page, and only then")
+	}
+	// Nor when they leave the document, for another site, and come Back to a
+	// page the back-forward cache kept: that page is shown as it was left
+	// until it is drawn again, so the code's panel goes with it. A code the
+	// browser keeps is drawn again there, as before.
+	unkept := withoutComments(jsFunction(t, script, "forgetUnkeptCode"))
+	if unkept != "function forgetUnkeptCode() {\n  if (passJustIssued && !passJustIssued.kept) {\n    passJustIssued = null;\n"+
+		"    const panel = document.getElementById(\"pass-issued\");\n    if (panel) {\n      panel.remove();\n    }\n  }\n}" {
+		t.Errorf("forgetUnkeptCode no longer drops a code this browser could not keep, panel and all, and only such a code:\n%s", unkept)
+	}
+	hide := withoutComments(jsBlock(t, script, `window.addEventListener("pagehide", () => {`, "});"))
+	if !strings.Contains(hide, "\n  forgetUnkeptCode();\n") || strings.Count(withoutComments(script), "forgetUnkeptCode()") != 2 {
+		t.Error("leaving the document no longer drops a code just handed over that this browser could not keep, " +
+			"so a page brought back from the back-forward cache shows it again")
 	}
 	issued := withoutComments(jsFunction(t, script, "passIssuedHTML"))
 	if !strings.Contains(words(issued), "educhan keeps no copy of it: this browser can show it again only until its data is cleared.") {
 		t.Error("the panel of a code just handed over no longer says the browser can show it again")
+	}
+	if !strings.Contains(words(issued), "educhan keeps no copy of it, and this browser couldn't keep it either, so it won't be shown again once you leave this page.") {
+		t.Error("the panel of a code this browser could not keep no longer says it goes once the reader leaves the page")
 	}
 }
 
@@ -2245,6 +2291,14 @@ func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 	said := regexp.MustCompile(`if \(!done\) \{\s*refocus\(stopClaim\);\s*showPassNotice\("Couldn't reach educhan, so this browser is still collecting it\.[^"]*"\);\s*return;\s*\}`)
 	if !failed.MatchString(stop) || !said.MatchString(stop) {
 		t.Error("a Stop collecting it here that could not reach educhan no longer goes on collecting, as it says")
+	}
+	// Done, the page is drawn again at once as having nothing to collect, so
+	// the collecting panel, Check now and Stop go with what they collected.
+	done := regexp.MustCompile(`refocus\(stopClaim\);\s*showPassNotice\([^)]*\);\s*return;\s*\}\s*` +
+		`drawPass\(\{ \.\.\.lastPassInfo, claim: false \}\);\s*passFocus\("form\[data-pass\] input", "#pass-held"\);\s*` +
+		`showPassNotice\(\s*"This browser has stopped collecting it\.`)
+	if !done.MatchString(stop) {
+		t.Error("a Stop collecting it here that worked no longer draws the page again with nothing left to collect")
 	}
 	for name, text := range map[string]string{
 		"Forget this browser": words(jsFunction(t, script, "forgetBrowserHTML")),
@@ -2701,9 +2755,22 @@ func TestPassPageButtonsKeepFocus(t *testing.T) {
 	}
 	// Turned away, Check it again and Stop collecting it here stay where they
 	// were, enabled again, with focus back on them.
-	if !strings.Contains(withoutComments(jsFunction(t, script, "refocus")),
-		"if (button.isConnected && (!document.activeElement || document.activeElement === document.body)) {\n    button.focus();") {
-		t.Error("refocus no longer gives focus back to a button that lost it while disabled, and only then")
+	// A button the page was drawn again over while it waited, by another
+	// tab's forget say, is gone: focus goes to what was drawn in its place,
+	// the same button of a form of the same kind or with the same action,
+	// else the first of the Pass forms' controls, else the first panel, and
+	// at the least the page (passFocus), never the top of the document.
+	if refocused := withoutComments(jsFunction(t, script, "refocus")); refocused != "function refocus(button) {\n"+
+		"  if (document.activeElement && document.activeElement !== document.body) {\n    return;\n  }\n"+
+		"  if (button.isConnected) {\n    button.focus();\n    return;\n  }\n"+
+		"  const form = button.closest(\"form[data-pass]\");\n  passFocus(\n"+
+		"    form ? `form[data-pass=\"${form.dataset.pass}\"] button[type=\"submit\"]` : `[data-action=\"${button.dataset.action}\"]`,\n"+
+		"    \"form[data-pass] input, form[data-pass] button\",\n    '.verify-panel[tabindex=\"-1\"]'\n  );\n}" {
+		t.Errorf("refocus no longer gives focus back to a button that lost it while disabled, and only then, "+
+			"or to what was drawn in its place when the page was drawn again meanwhile:\n%s", refocused)
+	}
+	if passFocused := withoutComments(jsFunction(t, script, "passFocus")); !strings.HasSuffix(passFocused, "\n  }\n  el.main.focus();\n}") {
+		t.Error("passFocus, finding none of what it was given, no longer focuses the page, so focus can stay at the top of the document")
 	}
 	if !strings.Contains(withoutComments(jsFunction(t, script, "checkHeldPass")), "button.disabled = false;\n    refocus(button);") {
 		t.Error("Check it again, turned away, leaves focus at the top of the document")
@@ -2772,6 +2839,84 @@ func TestPassPageWhileSalesArePaused(t *testing.T) {
 	}
 	if !strings.Contains(withoutComments(jsFunction(t, script, "submitPass")), "if (failed.status === 403 && failed.message === PASS_NOT_ON_SALE) {\n    drawPass({ ...lastPassInfo, paused: true });") {
 		t.Error("a checkout refused because sales were paused does not draw the page as paused")
+	}
+	// A Pass found run out while sales are paused is not offered a renewal
+	// the page no longer has: the words say sales are paused instead.
+	if got := withoutComments(jsFunction(t, script, "passRunOutText")); got != "function passRunOutText() {\n  return lastPassInfo.paused\n"+
+		"    ? `This Pass has run out. ${PASS_PAUSED}`\n    : \"This Pass has run out. You can renew it below.\";\n}" {
+		t.Errorf("passRunOutText offers to renew a Pass while sales are paused, or no longer offers it otherwise:\n%s", got)
+	}
+}
+
+// A press on the Pass page turns its button off before it waits on anything,
+// so pressing again while the first is on its way sends nothing more: not a
+// second checkout, a reissue code spent twice, or the Pass held checked twice.
+// Nothing else stops a second press, since the page's submit and Check it
+// again handlers call these straight away.
+func TestPassPressesTurnTheirButtonOffBeforeTheyWait(t *testing.T) {
+	script := appScript(t)
+	submit := withoutComments(jsFunction(t, script, "submitPass"))
+	reissue := strings.Index(submit, "if (isReissueCode(typed)) {")
+	if reissue < 0 {
+		t.Fatal("submitPass no longer hands a reissue code over in its own branch; this test reads around it")
+	}
+	reissueEnd := strings.Index(submit[reissue:], "\n    }\n") + reissue
+	for name, body := range map[string]string{
+		"a reissue code":                    submit[reissue:reissueEnd],
+		"Use this code here, Buy and Renew": submit[reissueEnd:],
+		"Check it again":                    withoutComments(jsFunction(t, script, "checkHeldPass")),
+	} {
+		wait, off := strings.Index(body, "await "), strings.Index(body, "button.disabled = true;")
+		if wait < 0 || off < 0 || off > wait {
+			t.Errorf("%s waits before turning its button off, so a second press sends again", name)
+		}
+	}
+}
+
+// The Pass's price is Stripe's amount, a whole number of the currency's
+// smallest unit, and the page divides it by ten to the power Stripe gives that
+// unit, which the server sends beside it (stripeExponent), not by the
+// browser's own count of the currency's decimals: Stripe keeps ISK and UGX in
+// hundredths, where the browser has them whole, so 300000 is 3,000 ISK, never
+// 300,000. Intl then writes the amount with the currency's usual digits.
+func TestPassPriceIsWrittenWithStripesDecimals(t *testing.T) {
+	script := appScript(t)
+	text := withoutComments(jsFunction(t, script, "passPriceText"))
+	divided := regexp.MustCompile(`\n    return format\.format\(price\.amount / 10 \*\* price\.(\w+)\);\n`).FindStringSubmatch(text)
+	if divided == nil || !strings.Contains(text, "    !Number.isSafeInteger(price."+divided[1]+") ||\n    price."+divided[1]+" < 0\n  ) {\n    return \"\";") {
+		t.Fatalf("passPriceText no longer divides Stripe's amount by ten to the exponent the server sends, or uses one it has not checked:\n%s", text)
+	}
+	if code := withoutComments(script); strings.Contains(code, "FractionDigits") || strings.Contains(code, "resolvedOptions") {
+		t.Error("the page takes a currency's decimals from the browser's own table, which is not Stripe's")
+	}
+	// What the page hands Intl, read from the price as GET /api/pass sends it,
+	// is what Stripe charges.
+	for _, c := range []struct {
+		currency string
+		amount   int64
+		charged  float64
+	}{
+		{"usd", 2000, 20},
+		{"jpy", 2000, 2000},
+		{"isk", 300000, 3000},
+		{"ugx", 7500000, 75000},
+		{"bhd", 20000, 20},
+	} {
+		sent, err := json.Marshal(passPrice{Amount: c.amount, Currency: c.currency, Exponent: stripeExponent(c.currency)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var price map[string]any
+		if err := json.Unmarshal(sent, &price); err != nil {
+			t.Fatal(err)
+		}
+		exponent, ok := price[divided[1]].(float64)
+		if !ok {
+			t.Fatalf("the page reads the price's %q, which GET /api/pass does not send: %s", divided[1], sent)
+		}
+		if shown := float64(c.amount) / math.Pow(10, exponent); shown != c.charged {
+			t.Errorf("a Pass priced at %d %s in Stripe is written as %v %s; Stripe charges %v", c.amount, c.currency, shown, c.currency, c.charged)
+		}
 	}
 }
 
