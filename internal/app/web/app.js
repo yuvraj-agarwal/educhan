@@ -1921,12 +1921,37 @@ function verifyDeadline() {
   return deadline.signal;
 }
 
-// The step the Verify page was last drawn for, and the first element of that
-// drawing (drawVerifyStep). Anything drawn into the page since — the loading
-// skeleton, or a page the reader left whose answer came in late — takes that
-// element out of it, which is how verifyStepOnScreen tells a step still on
-// screen from one that was drawn and then drawn over.
-let verifyShown = { step: null, node: null };
+// The step the Verify page was last drawn for, the first element of that
+// drawing, and when it was drawn (drawVerifyStep). Anything drawn into the
+// page since — the loading skeleton, or a page the reader left whose answer
+// came in late — takes that element out of it, which is how verifyStepOnScreen
+// tells a step still on screen from one that was drawn and then drawn over.
+// When it was drawn is how the page's click listener tells a press aimed at
+// the drawing from one aimed at what was there before it (VERIFY_SETTLE_MS).
+let verifyShown = { step: null, node: null, at: -Infinity };
+
+// VERIFY_SETTLE_MS is how long the Verify page's own buttons, each of which
+// moves the page to another step or forgets what this browser holds
+// (VERIFY_MOVES), take no press once a step has been drawn. A step is drawn in
+// place, so the button just pressed is gone from under the reader's finger,
+// and another can be drawn where it was: the second tap of a double tap, or a
+// second tap from a reader who thought the first did nothing, pressed that
+// one. On a phone, a double tap on Use a different address pressed Keep my
+// badge, drawn where it had been, and undid the reader's choice; on a wide
+// screen, a double click on Verify another address pressed Forget this
+// browser, which the shorter address step had brought up into its place, and
+// took the badge, the post key and the name. A press that soon after a drawing
+// was aimed at what was there before it — nobody reads a new step and aims at
+// one of its buttons in half a second — so it is let go, and a reader who did
+// mean it presses again.
+const VERIFY_SETTLE_MS = 500;
+const VERIFY_MOVES = [
+  '[data-action="forget-verification"]',
+  '[data-action="forget-browser"]',
+  '[data-action="verify-keep"]',
+  '[data-action="verify-again"]',
+  '[data-action="verify-restart"]',
+].join(", ");
 
 // A refusal of the request sent from a step, as its form says it: what it
 // says, the field it is about, and how (refuseVerification). It is kept with
@@ -2392,15 +2417,15 @@ function verifyViewHTML() {
 }
 
 // drawVerifyStep draws the Verify page for the step it is on, in place of
-// whatever the page shows, and notes what it drew (verifyShown). Every drawing
-// of a Verify step goes through here, so this is where why a badge went
+// whatever the page shows, and notes what it drew and when (verifyShown). Every
+// drawing of a Verify step goes through here, so this is where why a badge went
 // (badgeLost) is said once and then put away: the address step and the code
 // step say it, and a badge panel drawn instead is for a badge held since.
 // Said and put away only in renderVerify, it was lost to the code step, which
 // did not say it, and never said by Keep my badge, which draws in place.
 function drawVerifyStep() {
   el.main.innerHTML = verifyViewHTML();
-  verifyShown = { step: verifyStep, node: el.main.firstElementChild };
+  verifyShown = { step: verifyStep, node: el.main.firstElementChild, at: performance.now() };
   badgeLost = "";
 }
 
@@ -3555,6 +3580,21 @@ function isInternalLink(anchor) {
   );
 }
 
+// pressedTooSoon says whether a press is on one of the Verify page's own
+// buttons within VERIFY_SETTLE_MS of a step being drawn: aimed at what the
+// drawing replaced, and let go. The event's time is when the reader pressed,
+// which is before the drawing when the press was waiting behind it.
+function pressedTooSoon(event) {
+  return !!event.target.closest(VERIFY_MOVES) && event.timeStamp - verifyShown.at < VERIFY_SETTLE_MS;
+}
+
+// A press let go leaves the focus where the step just drawn put it. The
+// button it landed on would take it otherwise, and on a wide screen that was
+// Forget this browser, for the reader's next Enter to press.
+document.addEventListener("mousedown", (event) => {
+  if (pressedTooSoon(event)) event.preventDefault();
+});
+
 document.addEventListener("click", (event) => {
   if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey) {
     return;
@@ -3599,6 +3639,13 @@ document.addEventListener("click", (event) => {
   if (event.target.closest('[data-action="refresh"]')) {
     event.preventDefault();
     render();
+    return;
+  }
+
+  // Before any of the Verify page's own buttons is handled, a press on one
+  // of them aimed at the step before is let go (VERIFY_SETTLE_MS).
+  if (pressedTooSoon(event)) {
+    event.preventDefault();
     return;
   }
 

@@ -1378,11 +1378,11 @@ func TestVerifyStepIsDrawnForAReaderArriving(t *testing.T) {
 	if got, want := jsLines(jsFunction(t, script, "drawVerifyStep")), []string{
 		"function drawVerifyStep() {",
 		"el.main.innerHTML = verifyViewHTML();",
-		"verifyShown = { step: verifyStep, node: el.main.firstElementChild };",
+		"verifyShown = { step: verifyStep, node: el.main.firstElementChild, at: performance.now() };",
 		`badgeLost = "";`,
 		"}",
 	}; !slices.Equal(got, want) {
-		t.Errorf("drawVerifyStep runs\n\t%s\nwant it to draw the step, note the step and the drawing, and put away "+
+		t.Errorf("drawVerifyStep runs\n\t%s\nwant it to draw the step, note the step, the drawing and when, and put away "+
 			"what the step said about a badge gone:\n\t%s", strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
 	}
 	if got, want := jsLines(jsFunction(t, script, "verifyStepOnScreen")), []string{
@@ -1395,7 +1395,7 @@ func TestVerifyStepIsDrawnForAReaderArriving(t *testing.T) {
 	}
 	// Every drawing of a step goes through drawVerifyStep, so that what it
 	// notes is what is on the page.
-	if !strings.Contains(code, "\nlet verifyShown = { step: null, node: null };\n") {
+	if !strings.Contains(code, "\nlet verifyShown = { step: null, node: null, at: -Infinity };\n") {
 		t.Error("verifyShown does not start with no step drawn")
 	}
 	if n := len(regexp.MustCompile(`\bverifyShown\s*=[^=]`).FindAllString(code, -1)); n != 2 {
@@ -1500,6 +1500,142 @@ func TestVerifyStepButtonsClearTheNotice(t *testing.T) {
 			t.Errorf("the handler opening %q leaves the notice up:%s", opener, m[1])
 		}
 	}
+}
+
+// The Verify page draws each step in place, so the button just pressed is
+// gone from under the reader's finger and another can be drawn where it was,
+// for the second tap of a double tap to press: on a phone, Use a different
+// address and then Keep my badge, which undid the reader's choice; on a wide
+// screen, Verify another address and then Forget this browser, which took the
+// badge, the post key and the name. So every button the page draws, each of
+// which moves it to another step or forgets what the browser holds, lets a
+// press go for VERIFY_SETTLE_MS once a step has been drawn: drawVerifyStep,
+// which every drawing of a step goes through, notes when
+// (TestVerifyStepIsDrawnForAReaderArriving holds it whole), and the page's
+// click listener lets the press go before any of their handlers runs. CI runs
+// no browser, so the time is held to a span that covers a double tap and a
+// second tap from a reader who saw nothing change, and no more than a second,
+// which a reader who meant to press a button just drawn need not wait out.
+func TestVerifyButtonsLetGoAPressAimedAtTheStepBefore(t *testing.T) {
+	script := appScript(t)
+	code := withoutComments(script)
+
+	m := regexp.MustCompile(`(?m)^const VERIFY_SETTLE_MS = (\d+);$`).FindStringSubmatch(script)
+	if m == nil {
+		t.Fatal("app.js has no number constant VERIFY_SETTLE_MS, how long a Verify button lets a press go once a step " +
+			"is drawn")
+	}
+	if settle, _ := strconv.Atoi(m[1]); settle < 400 || settle > 1000 {
+		t.Errorf("VERIFY_SETTLE_MS is %d; want 400 to 1000: a double tap's second press came 80 to 300 ms after "+
+			"the first, and a second press from a reader who saw nothing change can come later", settle)
+	}
+
+	// The buttons it covers are every button the Verify page draws with an
+	// action: Keep my badge, Use a different address, Verify another
+	// address, Forget this credential and Forget this browser.
+	drawn := map[string]bool{}
+	for _, f := range []string{"verifyViewHTML", "forgetBrowserHTML"} {
+		for _, b := range regexp.MustCompile(`<button[^>]*\bdata-action="([\w-]+)"`).FindAllStringSubmatch(
+			withoutComments(jsFunction(t, script, f)), -1) {
+			drawn[b[1]] = true
+		}
+	}
+	moves := regexp.MustCompile(`(?s)\nconst VERIFY_MOVES = \[\n(.*?)\n\]\.join\(", "\);\n`).FindStringSubmatch(code)
+	if moves == nil {
+		t.Fatal("app.js has no VERIFY_MOVES, the list of the Verify page's buttons, as this test reads it")
+	}
+	listed := map[string]bool{}
+	for _, line := range strings.Split(moves[1], "\n") {
+		a := regexp.MustCompile(`^  '\[data-action="([\w-]+)"\]',$`).FindStringSubmatch(line)
+		if a == nil {
+			t.Errorf("VERIFY_MOVES holds %q; want one data-action selector a line", line)
+			continue
+		}
+		listed[a[1]] = true
+	}
+	for _, action := range []string{"verify-keep", "verify-restart", "verify-again", "forget-verification", "forget-browser"} {
+		if !drawn[action] {
+			t.Errorf("the Verify page no longer draws a button for %s; this test expects it to", action)
+		}
+	}
+	for action := range drawn {
+		if !listed[action] {
+			t.Errorf("the Verify page draws a button for %s that VERIFY_MOVES leaves out, so a press aimed at the "+
+				"step before can land on it", action)
+		}
+	}
+	for action := range listed {
+		if !drawn[action] {
+			t.Errorf("VERIFY_MOVES lists %s, which the Verify page does not draw", action)
+		}
+	}
+
+	// A press on one of them that soon is one pressedTooSoon says yes to, by
+	// when the reader pressed, and the page's click listener lets it go, doing
+	// nothing else, before it handles any of them. Its mousedown is let go
+	// too, so the focus stays where the step just drawn put it: the button
+	// the press landed on took it otherwise, and on a wide screen that was
+	// Forget this browser, for the reader's next Enter to press.
+	if got, want := jsLines(jsFunction(t, script, "pressedTooSoon")), []string{
+		"function pressedTooSoon(event) {",
+		"return !!event.target.closest(VERIFY_MOVES) && event.timeStamp - verifyShown.at < VERIFY_SETTLE_MS;",
+		"}",
+	}; !slices.Equal(got, want) {
+		t.Errorf("pressedTooSoon runs\n\t%s\nwant it to say whether a press is on one of the Verify page's buttons "+
+			"within VERIFY_SETTLE_MS of a step being drawn:\n\t%s", strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
+	}
+	if n := strings.Count(code, "VERIFY_MOVES"); n != 2 {
+		t.Errorf("app.js names VERIFY_MOVES %d times; want two, its declaration and pressedTooSoon's", n)
+	}
+	listener := pageClickListener(t, script)
+	const guard = "if (pressedTooSoon(event)) {"
+	holdLines(t, "the press let go", jsLines(listener), guard, "}", []string{"event.preventDefault();", "return;"})
+	at := strings.Index(listener, "\n  "+guard+"\n")
+	if at < 0 {
+		t.Fatalf("the page's click listener does not open, at its own level, %q", guard)
+	}
+	for action := range drawn {
+		if first := strings.Index(listener, `data-action="`+action+`"`); first >= 0 && first < at {
+			t.Errorf("the page's click listener handles %s before it lets a press aimed at the step before go", action)
+		}
+	}
+	const pressed = "\ndocument.addEventListener(\"mousedown\", (event) => {\n" +
+		"  if (pressedTooSoon(event)) event.preventDefault();\n" +
+		"});\n"
+	if !strings.Contains(code, pressed) {
+		t.Errorf("app.js does not let go the mousedown of a press pressedTooSoon lets go, as\n%s", pressed)
+	}
+	if n := strings.Count(code, "pressedTooSoon("); n != 3 {
+		t.Errorf("app.js names pressedTooSoon( %d times; want three: its declaration, the mousedown and the click", n)
+	}
+
+	// When a step was drawn: verifyShown says so from the first drawing on,
+	// in the clock an event's timeStamp is read in, and before any drawing
+	// no press is let go.
+	if !strings.Contains(code, "\nlet verifyShown = { step: null, node: null, at: -Infinity };\n") {
+		t.Error("verifyShown does not start with no step drawn, at no time")
+	}
+	if !strings.Contains(withoutComments(jsFunction(t, script, "drawVerifyStep")),
+		"verifyShown = { step: verifyStep, node: el.main.firstElementChild, at: performance.now() };") {
+		t.Error("drawVerifyStep does not note when it drew the step")
+	}
+}
+
+// pageClickListener is the page's own click listener, the one that handles
+// its buttons and links; the text spoiler's listener, registered before it,
+// opens the same way.
+func pageClickListener(t *testing.T, script string) string {
+	t.Helper()
+	const opener = "\ndocument.addEventListener(\"click\", (event) => {\n  if (event.defaultPrevented || event.button !== 0"
+	start := strings.Index(script, opener)
+	if start < 0 || strings.Count(script, opener) != 1 {
+		t.Fatal("app.js has no one click listener for the page's own buttons and links, as this test reads it")
+	}
+	end := strings.Index(script[start:], "\n});\n")
+	if end < 0 {
+		t.Fatal("the page's click listener does not close where this test can find it")
+	}
+	return script[start+1 : start+end+len("\n});")]
 }
 
 // verifyClickHandler returns the body of the click handler that opens with

@@ -583,7 +583,18 @@ needs a browser check before the test changes.
   (`showVerifyField`, `showHeldBadge`): `focus()` and `scrollIntoView()` take an element
   under the header for one in view, and on a phone, where the header wraps to three rows,
   a badge holder who had scrolled down got the address field, the code box and then the
-  new badge all drawn under it (`TestVerifyStepsAreShownClearOfTheHeader`).
+  new badge all drawn under it (`TestVerifyStepsAreShownClearOfTheHeader`). Being drawn
+  in place, a step takes the button just pressed from under the reader and can put
+  another where it was, so the page's own buttons — Keep my badge, Use a different
+  address, Verify another address and both Forget buttons (`VERIFY_MOVES`), each of
+  which moves the page or forgets — let a press go for `VERIFY_SETTLE_MS` after a step
+  is drawn: `drawVerifyStep` notes when, and `pressedTooSoon` decides by when the reader
+  pressed, for the click and for its mousedown, so the focus stays where the step put
+  it. Before, the second tap of a double tap on Use a different address pressed Keep my
+  badge, drawn in its place on a phone, and a double click on Verify another address
+  pressed Forget this browser, which the shorter address step brought up into its place
+  on a wide screen, and took the badge, the post key and the name
+  (`TestVerifyButtonsLetGoAPressAimedAtTheStepBefore`).
 
 ### Child safety
 
