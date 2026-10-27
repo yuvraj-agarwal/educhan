@@ -271,21 +271,26 @@ when Stripe refuses the request for the Price (a key or Price ID it does not tak
 (`TestPassRefusesAPriceItCannotSell`). Its `502` before any cooldown comes only while
 Stripe is out of reach or failing, with Stripe Tax on or off. Checkout reads the Price
 either way because the webhook does not check what was paid: the session sells one of that
-Price, in its own currency at its own amount, with no promotion codes, discounts or
-adjustable quantity and with Stripe's Adaptive Pricing off
-(`adaptive_pricing[enabled]=false`), so Stripe does not convert the price into the buyer's
-currency (`TestPassPurchase`, and `TestPassTaxFollowsThePrice` with Stripe Tax on). The
-Price is read with its currency options (`expand[]=currency_options`), which Stripe leaves
-out unless asked for, and one with an option in any currency but its own is refused, since
-Checkout would charge a buyer in that currency the option's amount under its own tax
-behavior (`TestPassSellsInThePricesOwnCurrencyAlone`). A failed read or a refused Price is
-kept a minute and a good read an hour (`TestPassPriceIsKeptForItsTime`); Stripe never
-changes a Price's own amount or currency, so a new amount takes a new Price ID and a
-restart, but currency options can be added to a Price in place, and the first read after,
-within the hour, refuses it. Checkout always sends Stripe `automatic_tax[enabled]`,
-`false` with the setting off, so an account that collects tax by default adds none the
-page did not show. A real checkout uses Stripe's test mode: test keys, a test Price in one
-currency alone (one with a tax behavior, for Stripe Tax), and for the webhook
+Price, with no promotion codes, discounts or adjustable quantity (`TestPassPurchase`, and
+`TestPassTaxFollowsThePrice` with Stripe Tax on). It sends no `adaptive_pricing`, which
+came in a later Stripe API version than the pinned `2024-06-20` and which Stripe may
+refuse under it (`checkSessionSent`). Adaptive Pricing is the Stripe account's setting:
+with it off, the buyer pays the Price's own amount in its own currency, with any tax
+Stripe adds to an exclusive Price; with it on, Stripe may show a buyer abroad the price
+converted into their own currency, at Stripe's exchange rate and with any fee Stripe adds
+for the conversion, and charge them that, so the README says to switch it off in the
+Stripe Dashboard. The Price is read with its currency options
+(`expand[]=currency_options`), which Stripe leaves out unless asked for, and one with an
+option in any currency but its own is refused, since Checkout would charge a buyer in that
+currency the option's amount under its own tax behavior
+(`TestPassSellsInThePricesOwnCurrencyAlone`). A failed read or a refused Price is kept a
+minute and a good read an hour (`TestPassPriceIsKeptForItsTime`); Stripe never changes a
+Price's own amount or currency, so a new amount takes a new Price ID and a restart, but
+currency options can be added to a Price in place, and the first read after, within the
+hour, refuses it. Checkout always sends Stripe `automatic_tax[enabled]`, `false` with the
+setting off, so an account that collects tax by default adds none the page did not show. A
+real checkout uses Stripe's test mode: test keys, a test Price in one currency alone (one
+with a tax behavior, for Stripe Tax), and for the webhook
 `stripe listen --forward-to localhost:8080/api/pass/stripe-webhook`, with
 `EDUCHAN_PUBLIC_URL=http://localhost:8080`. A lost Pass is reissued, behind
 `EDUCHAN_MOD_KEY`, with `curl -X POST localhost:8080/api/pass/reissue -H 'X-Mod-Key: …' -H

@@ -566,15 +566,16 @@ func (a *App) handlePassCheckout(w http.ResponseWriter, r *http.Request) {
 	// fixed amount, so not one whose buyer chooses what to pay, in its own
 	// currency alone, and, while Stripe Tax is on, saying whether tax is in it,
 	// since the page could not otherwise say what the buyer pays. The session
-	// sells one of it, in its own currency, and nothing the buyer can change
-	// (createCheckout), so the webhook need not check what was paid. A Price
-	// the Pass can't be sold at, and a request for the Price Stripe refuses (a
-	// key or Price ID it does not take, say), are refused as the fault in the
-	// setup that they are (503), and every checkout while Stripe is out of
-	// reach or failing as just that (502). passPrice keeps either a minute, and
-	// logged why as it read the Price, so a refusal logs nothing more. Nothing
-	// is opened in Stripe, and no cooldown starts for a fault that is not the
-	// buyer's.
+	// sells one of it, sending nothing that lets the buyer change what they
+	// pay, at its own amount in its own currency unless the Stripe account has
+	// Adaptive Pricing on (createCheckout), so the webhook need not check what
+	// was paid. A Price the Pass can't be sold at, and a request for the Price
+	// Stripe refuses (a key or Price ID it does not take, say), are refused as
+	// the fault in the setup that they are (503), and every checkout while
+	// Stripe is out of reach or failing as just that (502). passPrice keeps
+	// either a minute, and logged why as it read the Price, so a refusal logs
+	// nothing more. Nothing is opened in Stripe, and no cooldown starts for a
+	// fault that is not the buyer's.
 	switch _, err := a.passPrice(r.Context()); {
 	case errors.Is(err, errPassPriceRefused):
 		writeError(w, http.StatusServiceUnavailable, passPriceUnsold)

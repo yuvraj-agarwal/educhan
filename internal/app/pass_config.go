@@ -32,9 +32,11 @@ type PassConfig struct {
 	StripeWebhookSecret string
 	// StripePriceID is the one-time Price a Pass sells for ("price_…"). Its
 	// amount and currency are read from Stripe, which never changes them on a
-	// Price, so a new price is a new Price, set here, and a restart. It is
-	// sold in that currency alone: a Price with currency options in others is
-	// not sold.
+	// Price, so a new price is a new Price, set here, and a restart. It must be
+	// priced in that currency alone: a Price with currency options in others is
+	// not sold. Stripe's Adaptive Pricing, a setting of the Stripe account and
+	// not of the Price, may still charge a buyer abroad the price converted
+	// into their own currency (createCheckout).
 	StripePriceID string
 	// StripeAutomaticTax asks Stripe Tax to work out and collect sales tax,
 	// VAT or GST. It needs Stripe Tax switched on in the Stripe account first,

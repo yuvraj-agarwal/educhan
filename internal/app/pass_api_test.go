@@ -809,18 +809,19 @@ func TestPassRefusesAPriceItCannotSell(t *testing.T) {
 	}
 }
 
-// TestPassSellsInThePricesOwnCurrencyAlone holds checkout to charging the
-// Price's own currency at its own amount, with Stripe Tax on or off. The Price
+// TestPassSellsInThePricesOwnCurrencyAlone holds checkout to selling only a
+// Price priced in its own currency alone, with Stripe Tax on or off. The Price
 // is read with its currency options (expand[]=currency_options), which Stripe
 // leaves out unless asked for them, so one priced in other currencies too is
-// seen and refused (TestPassRefusesAPriceItCannotSell), while one whose
-// options hold only its own currency, which Stripe may list, is the Price
-// itself and sells, as one with none does. Every session turns Adaptive
-// Pricing off (checkSessionSent), so Stripe does not convert the price into
-// the buyer's currency either. Options added to the Price in place, keeping
-// its ID, are seen by the first read after the hour a good read is kept, and
-// the Price is refused from then, with Stripe Tax on or off. The refusal names
-// the other currencies in order, whatever order Stripe lists them in.
+// seen and refused (TestPassRefusesAPriceItCannotSell), while one whose options
+// hold only its own currency, which Stripe may list, is the Price itself and
+// sells, as one with none does. Whether Stripe converts the price into a
+// buyer's own currency is left to Adaptive Pricing, the Stripe account's
+// setting: no session sends adaptive_pricing (checkSessionSent). Options added
+// to the Price in place, keeping its ID, are seen by the first read after the
+// hour a good read is kept, and the Price is refused from then, with Stripe Tax
+// on or off. The refusal names the other currencies in order, whatever order
+// Stripe lists them in.
 func TestPassSellsInThePricesOwnCurrencyAlone(t *testing.T) {
 	own := map[string]any{"unit_amount": 2000, "tax_behavior": "inclusive", "custom_unit_amount": nil}
 	asked := url.Values{"expand[]": {"currency_options"}}
@@ -1012,28 +1013,29 @@ func TestPassPriceIsKeptForItsTime(t *testing.T) {
 	}
 }
 
-// checkSessionSent holds what checkout sent Stripe to open a session (form)
-// to the one Pass it sells, with automatic_tax[enabled] as Stripe Tax is set
-// (tax), and nothing else, with Stripe Tax on or off. Stripe learns that a
-// Pass was bought and nothing about who on educhan bought it (no metadata,
+// checkSessionSent holds what checkout sent Stripe to open a session (form) to
+// the one Pass it sells, with automatic_tax[enabled] as Stripe Tax is set
+// (tax), and nothing else, with Stripe Tax on or off. Stripe learns that a Pass
+// was bought and nothing about who on educhan bought it (no metadata,
 // client_reference_id or customer), and is asked for nothing about tax but
 // whether to collect it. Nor is the buyer let change what they pay: no
-// allow_promotion_codes, discounts or adjustable_quantity, and Adaptive
-// Pricing off (adaptive_pricing[enabled]=false), so Stripe does not convert
-// the price into the buyer's currency. So a paid session paid the Price that
-// checkout read, in its own currency at its own amount, and the webhook need
-// not check the amount.
+// allow_promotion_codes, discounts or adjustable_quantity. Nor is
+// adaptive_pricing sent: it came in a later API version than stripeAPIVersion,
+// under which Stripe may refuse it, and every checkout with it, so Adaptive
+// Pricing is left to the Stripe account, where the README says to switch it
+// off. So a paid session paid the Price that checkout read, at its own amount
+// in its own currency while Adaptive Pricing is off, and the webhook need not
+// check the amount.
 func checkSessionSent(t *testing.T, form url.Values, tax bool) {
 	t.Helper()
 	sent := map[string]string{
-		"mode":                      "payment",
-		"line_items[0][price]":      testPriceID,
-		"line_items[0][quantity]":   "1",
-		"success_url":               testPublicURL + "/pass?paid",
-		"cancel_url":                testPublicURL + "/pass?cancelled",
-		"submit_type":               "pay",
-		"automatic_tax[enabled]":    strconv.FormatBool(tax),
-		"adaptive_pricing[enabled]": "false",
+		"mode":                    "payment",
+		"line_items[0][price]":    testPriceID,
+		"line_items[0][quantity]": "1",
+		"success_url":             testPublicURL + "/pass?paid",
+		"cancel_url":              testPublicURL + "/pass?cancelled",
+		"submit_type":             "pay",
+		"automatic_tax[enabled]":  strconv.FormatBool(tax),
 	}
 	for key, want := range sent {
 		if got := form.Get(key); got != want {

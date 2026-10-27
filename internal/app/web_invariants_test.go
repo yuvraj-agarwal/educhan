@@ -2974,8 +2974,8 @@ func TestPassPriceIsWrittenWithStripesDecimals(t *testing.T) {
 		t.Errorf("passPriceText no longer writes a part of a unit with Stripe's decimals, or gives Intl other digits:\n%s", text)
 	}
 	// What the page hands Intl, read from the price as GET /api/pass sends it,
-	// is what Stripe charges, and a part of a unit is written with as many
-	// decimals as Stripe gives it.
+	// is what Stripe charges in the Price's own currency, and a part of a unit
+	// is written with as many decimals as Stripe gives it.
 	for _, c := range []struct {
 		currency string
 		amount   int64
