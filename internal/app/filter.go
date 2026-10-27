@@ -990,7 +990,8 @@ var (
 var (
 	yours     = words(`your`, `ur`, `yo`, `ya`, `u'?r`)
 	whatsYour = words(`what'?s`, `whats`, `wats`, `wat'?s`, `wht'?s`, `what~is`, `wuts?`, `send`, `give`, `drop`,
-		`share`, `post`, `tell`, `dm`, `gimme`, `lemme~`+words(`get`, `have`, `add`, `see`))
+		`share`, `post`, `tell`, `dm`, `gimme`, `lemme~`+words(`get`, `have`, `add`, `see`), `comment`, `leave`,
+		`write`, `type`, `put`)
 	asksTo = words(`on`, `at`, `in`, `via`, `thru`, `through`, `over`, `@`)
 	// hindiGive is "give" or "send" or "tell", in Hinglish.
 	hindiGive = words(`do`, `de`, `dedo`, `de~do`, `dena`, `bhejo`, `bhej`, `bhej~do`, `batao`, `bata`, `bta`,
@@ -1009,6 +1010,9 @@ var askRules = []rule{bothViews(`\b` + words(
 		`hit`)+`~(?:me|us)~(?:up~)?`+asksTo+`~(?:my~)?`+anyApps,
 	// "call me on whatsapp", "find me on insta": not "find me in dc"
 	words(`call`, `ring`, `follow`, `contact`, `reach`, `find`)+`~(?:me|us)~(?:up~)?`+asksTo+`~(?:my~)?`+placeApps,
+	// "reach out to me on telegram", "get in touch on whatsapp"
+	words(`reach~out`, `get~in~touch`, `keep~in~touch`, `stay~in~touch`)+`~(?:`+words(`to`, `with`)+`~(?:me|us)~)?`+
+		asksTo+`~(?:my~)?`+placeApps,
 	// "hmu on snap", "hmu snap"
 	`hmu~`+words(`on`, `at`, `in`, `via`, `over`, `@`)+`~(?:my~)?`+anyApps,
 	`hmu[ \t]+(?:my~)?`+contactApps,
@@ -1287,6 +1291,13 @@ func askCheck(v *view, m []int) bool {
 			return false
 		}
 	}
+	if ws := wordsIn(text[m[0]:m[1]]); len(ws) > 2 && leaveVerbs[ws[0]] && !mailAsked(text, m) &&
+		!numberAsks[ws[len(ws)-1]] {
+		// "comment your insta", "leave your insta below", not "leave your
+		// insta out of this".
+		next := nextWords(clauseAfter(text, m[1]), 1)
+		return len(next) == 0 || leaveTails[next[0]]
+	}
 	if is(lastWord(text[m[0]:m[1]]), "facetime") || is(lastWord(text[m[0]:m[1]]), "time") {
 		// "lets facetime later", not "can we facetime grandma".
 		return allIn(nextWords(clauseAfter(text, m[1]), 4), callTails)
@@ -1310,6 +1321,10 @@ func snapNotAsked(ws []string) bool {
 }
 
 var (
+	// leaveVerbs ask for an account written somewhere, and leaveTails may
+	// follow it: "leave your insta below", "write your snap in the replies".
+	leaveVerbs = canonSetOf(`comment leave write type put`)
+	leaveTails = canonSetOf(`below here down in pls plz please ill i'll i and so if too guys bro everyone n u`)
 	snapNotApp = canonSetOf(`too neither either out outta`)
 	snapBackTo = canonSetOf(`to into half two`)
 	// callTails may follow a call suggested: "lets facetime later", "can
@@ -1567,6 +1582,12 @@ var (
 	labelledAppHandle = bothViews(`\b` + words(`line`, `signal`, `steam`, `epic`, `kik`, `riot`) + `~` +
 		words(`id`, `username`, `user~name`, `handle`, `tag`) + `\s*(?:` + handleSeparator + `|` +
 		words(`is`, `hai`) + `\b)?\s*(@?)([\pL\pN._]{2,30})(#[\pL\pN]{3,5})?`)
+	// A Riot ID after Valorant's or League's name, which needs its tag:
+	// "valo id madeup#1234", "my valorant is madeup#1234", "riot:
+	// madeup#1234", not "val: 3/10" or "valo is in unreal".
+	riotTagHandle = bothViews(`\b` + words(`valorant`, `valo`, `val`, `riot`, `lol`, `league`) + `(?:~` +
+		words(`id`, `tag`, `username`, `ign`) + `)?\s*(?:` + handleSeparator + `|` + words(`is`, `hai`) +
+		`\b)?\s*(@?)([\pL\pN._]{2,30})(#[\pL\pN]{3,5})`)
 	// The separator before the spaces: a single character and then a run
 	// of spaces would be planned as a sentence boundary (filtersearch.go,
 	// "delimited"), found from the handle after it, and so tried at every
@@ -1576,7 +1597,7 @@ var (
 
 // handleRules are the rules above that end at the handle.
 var handleRules = []rule{appColonHandle, appAtHandle, appLabelHandle, hindiHandle, handleBeforeApp,
-	discTagHandle, labelledAppHandle, ghostHandle}
+	discTagHandle, labelledAppHandle, riotTagHandle, ghostHandle}
 
 // meetingIDRule is a call's meeting ID given without its link, which is as
 // good as the link to anyone reading: "zoom id 845 2219 6630 pass: physics",
@@ -1604,10 +1625,15 @@ const (
 // accountNumberRules are accounts written as numbers no other rule reads: a
 // Session messenger ID, 66 hexadecimal digits starting "05", which nothing
 // else is written as; and a game's friend code after its name ("steam
-// friend code 4410877305", "friend code SW-0000-0000-0000").
+// friend code 4410877305", "friend code SW-0000-0000-0000"), or its ID
+// after a game's name ("bgmi id 0000000000", "free fire uid 000000000",
+// "steam id 4410877305"): each has a friend list with chat.
 var accountNumberRules = []rule{
 	plainOnly(`\b05[0-9a-f]{64}\b`),
 	plainOnly(`\bfriend~?codes?(?:~is)?~(?:sw~?)?\d(?:~?\d){7,11}\b`),
+	plainOnly(`\b` + words(`steam`, `bgmi`, `pubg`, `free~?fire`, `ff`, `genshin`, `cod`, `codm`, `cod~mobile`,
+		`clash~of~clans`, `coc`, `brawl~stars`, `mlbb`) + `~(?:` + words(`player`, `game`, `friend`) + `~)?` +
+		words(`id`, `uid`, `code`) + `(?:~is)?~\d(?:~?\d){7,16}\b`),
 }
 
 /* Apps named in a sentence ---------------------------------------------------- */
@@ -1957,6 +1983,9 @@ func (f *scannedField) appFrame(v *view, m []int) (int, int, findingKind, bool) 
 	}
 	if a, b, ok := talksThere(text, following); ok {
 		return ask(a, b)
+	}
+	if a, ok := announcedOn(before, following); ok {
+		return ask(a, m[1])
 	}
 	return 0, 0, 0, false
 }
@@ -2492,6 +2521,59 @@ var (
 	groupAskers = canonSetOf(`someone somebody anyone anybody you u we`)
 )
 
+// announcedOn reports the poster saying they are on the app, with an
+// invitation to talk round it in the sentence: "i'm on discord if u wanna
+// chat", "im on telegram, dm me", "dm me, im on insta", not "i'm on discord
+// too much" or "i'm on insta all day and nobody wants to talk". It returns
+// where the "i'm" starts.
+func announcedOn(before, following []aWord) (int, bool) {
+	n := len(before)
+	if n < 2 || !is(before[n-1].w, "on") {
+		return 0, false
+	}
+	k := n - 2
+	if onAdverbs[before[k].w] {
+		k--
+	}
+	switch {
+	case k >= 0 && (is(before[k].w, "i'm") || is(before[k].w, "im")):
+	case k >= 1 && is(before[k].w, "am") && is(before[k-1].w, "i"):
+		k--
+	default:
+		return 0, false
+	}
+	if invitesTalk(before[:k]) || invitesTalk(following) {
+		return before[k].from, true
+	}
+	return 0, false
+}
+
+// invitesTalk reports an invitation to talk in ws: "dm me", "hmu", "if u
+// wanna chat", "anyone wanna talk".
+func invitesTalk(ws []aWord) bool {
+	asked := false
+	for i, w := range ws {
+		switch {
+		case is(w.w, "hmu"):
+			return true
+		case inviteVerbs[w.w] && i+1 < len(ws) && (is(ws[i+1].w, "me") || is(ws[i+1].w, "us")):
+			return true
+		case talkInvites[w.w] && i > 0 && talkLeads[ws[i-1].w] && asked:
+			return true
+		}
+		asked = asked || talkAskers[w.w]
+	}
+	return false
+}
+
+var (
+	onAdverbs   = canonSetOf(`also always usually mostly active available online mainly`)
+	inviteVerbs = canonSetOf(`dm pm msg message text ping add hit snap`)
+	talkInvites = canonSetOf(`chat talk vc call`)
+	talkLeads   = canonSetOf(`wanna to can lets let's`)
+	talkAskers  = canonSetOf(`if anyone anybody someone somebody u you ya who`)
+)
+
 // handleAfterApp reads a handle a few lead words after the app: "snap pe
 // aaja: madeup.0p", "follow karo insta pe: madeup_ki_kahani", "my 👻 is
 // madeup.sprinkles", "threema id MADEUP42"; one spelled with "underscore"
@@ -2502,7 +2584,7 @@ var (
 func (f *scannedField) handleAfterApp(v *view, after []aWord, m []int, mail bool) (int, bool) {
 	text := v.text
 	j := 0
-	for j < len(after) && j < 3 && leadWords[after[j].w] {
+	for j < len(after) && j < 3 && (leadWords[isContracted(after[j].w)] || contractedIs(text, after, j, m[1])) {
 		j++
 	}
 	// "=", "=>" and ">" after a mail word are code ("email = user.email",
@@ -2524,7 +2606,7 @@ func (f *scannedField) handleAfterApp(v *view, after []aWord, m []int, mail bool
 	}
 	labelled := separated
 	for _, w := range after[:j] {
-		labelled = labelled || handleLabels[w.w]
+		labelled = labelled || handleLabels[isContracted(w.w)]
 	}
 	if j < len(after) && (j > 0 || separated) {
 		h := after[j]
@@ -2568,6 +2650,31 @@ func (f *scannedField) handleAfterApp(v *view, after []aWord, m []int, mail bool
 		}
 	}
 	return 0, false
+}
+
+// isContracted is w without the "'s" of "is" on it: "handle's" is
+// "handle".
+func isContracted(w string) string {
+	if s, ok := strings.CutSuffix(w, "'s"); ok {
+		return s
+	}
+	if s, ok := strings.CutSuffix(w, "’s"); ok {
+		return s
+	}
+	return w
+}
+
+// contractedIs reports after[j] as the "'s" of "is" on the word before it
+// (or on the app, which ends at end): "my insta's @x", "ig handle's x".
+func contractedIs(text string, after []aWord, j, end int) bool {
+	if !is(after[j].w, "s") {
+		return false
+	}
+	if j > 0 {
+		end = after[j-1].to
+	}
+	gap := text[end:after[j].from]
+	return gap == "'" || gap == "’"
 }
 
 var (
@@ -2891,10 +2998,17 @@ var (
 	providerEmailRule = plainOnly(`\b([\pL\pN][\pL\pN._%+\-]{0,63})(\s?@+\s?|\s*[(\[{<]\s*@\s*[)\]}>]\s?|\s+at\s+|` +
 		atTheRate + `)` + words(`gmail`, `googlemail`, `yahoo`, `ymail`, `outlook`, `hotmail`, `icloud`, `protonmail`,
 		`proton`, `rediffmail`, `yandex`, `aol`) + `\b`)
-	spelledEmailRule = plainOnly(`\b([\pL\pN][\pL\pN._%+\-]{0,63})\s*([(\[{<]\s*(?:at|@)\s*[)\]}>]|\s+at\s+|@+|` +
-		atTheRate + `)\s*([\pL\pN][\pL\pN\-]{0,62}(?:` + spelledDot + `[\pL\pN][\pL\pN\-]{0,62})*)(` + spelledDot +
-		`)([a-z]{2,24})\b`)
+	spelledEmailRule = plainOnly(`\b([\pL\pN][\pL\pN._%+\-]{0,63})` + spelledEmailTail)
+	// A name with its dots spelled too: "madeup dot riya at gmail dot
+	// com". spelledEmailRule's match after "email me at" takes that "at"
+	// for the address's, and goes on to "riya", and so misses it.
+	spelledLocalEmailRule = plainOnly(`\b([\pL\pN][\pL\pN._%+\-]{0,63}(?:[\s_]+d[o0]t[\s_]+[\pL\pN][\pL\pN._%+\-]{0,63})+)` +
+		spelledEmailTail)
 )
+
+// spelledEmailTail is a spelled-out address from its "at" on.
+const spelledEmailTail = `\s*([(\[{<]\s*(?:at|@)\s*[)\]}>]|\s+at\s+|@+|` + atTheRate + `)\s*([\pL\pN][\pL\pN\-]{0,62}(?:` +
+	spelledDot + `[\pL\pN][\pL\pN\-]{0,62})*)(` + spelledDot + `)([a-z]{2,24})\b`
 
 const (
 	atTheRate     = `\s*at~the~rate(?:~of)?\s*|attherate`
@@ -3109,8 +3223,11 @@ func contactLink(host, path string) bool {
 		}
 		return first == "my"
 	case "meet.google.com":
-		// A meeting's code, xxx-xxxx-xxx, not "meet.google.com/new".
-		return meetCode.MatchString(first)
+		// A meeting's code, xxx-xxxx-xxx or its ten letters without the
+		// dashes, or a meeting looked up by its nickname ("/lookup/…",
+		// Classroom's links), not "meet.google.com/new" or "/landing".
+		return meetCode.MatchString(first) || meetBareCode.MatchString(first) && !meetPages[first] ||
+			first == "lookup" && len(segs) > 1
 	case "teams.microsoft.com":
 		// The old "/l/meetup-join/…" link, or the "/meet/<number>" Teams
 		// shares a meeting by now.
@@ -3142,8 +3259,10 @@ func contactLink(host, path string) bool {
 }
 
 var (
-	meetCode   = regexp.MustCompile(`^[a-z]{3}-[a-z]{4}-[a-z]{3}$`)
-	teamsJoins = setOf(`meetup-join meet chat`)
+	meetCode     = regexp.MustCompile(`^[a-z]{3}-[a-z]{4}-[a-z]{3}$`)
+	meetBareCode = regexp.MustCompile(`^[a-z]{10}$`)
+	meetPages    = setOf(`whiteboard`)
+	teamsJoins   = setOf(`meetup-join meet chat`)
 )
 
 // niRule finds UK National Insurance numbers: two prefix letters, three pairs
@@ -12023,17 +12142,21 @@ func (f *scannedField) firstBlock() (blockFinding, bool) {
 	})
 	consider(from, to, ok, kindEmail)
 	from, to, ok = f.first(providerEmailRule, func(v *view, m []int) bool {
-		return providerEmail(v.text[m[2]:m[3]], v.text[m[4]:m[5]])
+		local, at := v.text[m[2]:m[3]], v.text[m[4]:m[5]]
+		return providerEmail(local, at) || mailNamedBefore(v.text, m[2]) && plainLocalPart(local)
 	})
 	consider(from, to, ok, kindEmail)
-	from, to, ok = f.first(spelledEmailRule, func(v *view, m []int) bool {
-		text := v.text
-		local, at, domain, dot, tld := text[m[2]:m[3]], text[m[4]:m[5]], text[m[6]:m[7]], text[m[8]:m[9]], text[m[10]:m[11]]
-		plainDots := dot == "." && !spelledDotPattern.MatchString(domain)
-		return spelledEmail(local, at, spelledDomain(domain), tld, plainDots, text[m[11]:]) &&
-			!domainNamed(text, m[2], m[1], local, text[m[3]:m[6]], spelledDomain(domain))
-	})
-	consider(from, to, ok, kindEmail)
+	for _, r := range []rule{spelledEmailRule, spelledLocalEmailRule} {
+		from, to, ok = f.first(r, func(v *view, m []int) bool {
+			text := v.text
+			local, at, domain, dot, tld := spelledDomain(text[m[2]:m[3]]), text[m[4]:m[5]], text[m[6]:m[7]],
+				text[m[8]:m[9]], text[m[10]:m[11]]
+			plainDots := dot == "." && !spelledDotPattern.MatchString(domain)
+			return spelledEmail(local, at, spelledDomain(domain), tld, plainDots, text[m[11]:]) &&
+				!domainNamed(text, m[2], m[1], local, text[m[3]:m[6]], spelledDomain(domain))
+		})
+		consider(from, to, ok, kindEmail)
+	}
 	if from, to, ok := f.firstSpacedEmail(); ok {
 		from, to = f.plain.span(from, to)
 		consider(from, to, true, kindEmail)
@@ -12442,6 +12565,41 @@ func spelledEmail(local, at, domain, tld string, plainDots bool, next string) bo
 // codeShape is one to three letters and a short number: "q3", "l4", "sde2",
 // "div2", "abc300".
 var codeShape = regexp.MustCompile(`^[a-z]{1,3}\d{1,4}$`)
+
+// mailNamedBefore reports an address asked for or labelled just before i,
+// in its clause: "my email is madeupriya at gmail", "mail me madeupriya at
+// gmail", not "email the prof at gmail".
+func mailNamedBefore(text string, i int) bool {
+	ws := wordsIn(clauseBefore(text, i))
+	n := len(ws)
+	if n == 0 || !mailLeads[ws[n-1]] {
+		return false
+	}
+	for _, w := range ws[max(0, n-3):] {
+		if mailWords[w] || is(w, "e-mail") {
+			return true
+		}
+	}
+	return false
+}
+
+var mailLeads = canonSetOf(`is me us hai h id address mail email gmail`)
+
+// plainLocalPart reports a word with no marks that may still be an
+// address's name where one is asked for: "madeupriya", not "broken",
+// "down" or "email".
+func plainLocalPart(local string) bool {
+	if strings.IndexFunc(local, unicode.IsLetter) < 0 || notALocalPart[local] || mailWords[local] ||
+		notAHandle[canon(local)] {
+		return false
+	}
+	for _, suffix := range []string{"ed", "ly", "ing"} {
+		if strings.HasSuffix(local, suffix) {
+			return false
+		}
+	}
+	return true
+}
 
 // providerEmail vets a provider named with no ending, "name @ gmail" or
 // "name12 at gmail": a "@" glued to the name, brackets or "at the rate" say

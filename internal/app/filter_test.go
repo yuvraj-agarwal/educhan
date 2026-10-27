@@ -3757,6 +3757,10 @@ func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 		"c2-7":   "a Discord invite code",
 		"c2-29":  "a Session ID, random hex",
 		"c2-122": "a Steam friend code, digits",
+		// Game IDs: a Steam ID past what 32 bits hold, and IDs of all zeroes.
+		"contact-329": "a Steam ID, digits",
+		"contact-330": "a BGMI ID, zeroes",
+		"contact-331": "a Free Fire UID, zeroes",
 	}
 	// A Steam friend code is an account's 32-bit number, so one past what 32
 	// bits hold is no one's account; and one the filter does not read as a

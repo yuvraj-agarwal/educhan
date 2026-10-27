@@ -316,3 +316,39 @@
 {"id": "contact-316", "body": "jee result is out, drop your numbers and i'll add everyone to the gc", "subject": "", "name": "", "expect": "block", "why": "everyone added to a group chat (R2D-3 control)"}
 {"id": "contact-317", "body": "mock results out, drop your numbers, we'll do a group call tonight", "subject": "", "name": "", "expect": "block", "why": "a group call after a result (R2D-3 control)"}
 {"id": "contact-318", "body": "results are out, drop your numbers so we can make a group", "subject": "", "name": "", "expect": "block", "why": "a group set up after a result (R2D-3 control)"}
+{"id": "contact-319", "body": "my insta's @madeup.riya", "subject": "", "name": "", "expect": "block", "why": "an Instagram handle after \"insta's\" (F9)"}
+{"id": "contact-320", "body": "my snap's madeup_riya", "subject": "", "name": "", "expect": "block", "why": "a Snapchat handle after \"snap's\" (F9)"}
+{"id": "contact-321", "body": "my discord's madeup_riya", "subject": "", "name": "", "expect": "block", "why": "a Discord handle after \"discord's\" (F9)"}
+{"id": "contact-322", "body": "ig handle's madeup.riya", "subject": "", "name": "", "expect": "block", "why": "an Instagram handle after \"handle's\" (F9)"}
+{"id": "contact-323", "body": "my snap's streak is at 300 days", "subject": "", "name": "", "expect": "publish", "why": "a Snapchat streak (F9 control)"}
+{"id": "contact-324", "body": "my insta's algorithm is weird", "subject": "", "name": "", "expect": "publish", "why": "Instagram's algorithm (F9 control)"}
+{"id": "contact-325", "body": "my discord's down again", "subject": "", "name": "", "expect": "publish", "why": "Discord being down (F9 control)"}
+{"id": "contact-326", "body": "valo id madeup#1234", "subject": "", "name": "", "expect": "block", "why": "a Riot ID after \"valo id\" (F10)"}
+{"id": "contact-327", "body": "my valorant is madeup#1234", "subject": "", "name": "", "expect": "block", "why": "a Riot ID after \"my valorant is\" (F10)"}
+{"id": "contact-328", "body": "riot: madeup#1234", "subject": "", "name": "", "expect": "block", "why": "a Riot ID after \"riot:\" (F10)"}
+{"id": "contact-329", "body": "steam id 4410877305 add me", "subject": "", "name": "", "expect": "block", "why": "a Steam ID with an ask, past what 32 bits hold so it is no one's (F10)"}
+{"id": "contact-330", "body": "my bgmi id is 0000000000 add me", "subject": "", "name": "", "expect": "block", "why": "a BGMI ID, all zeroes so it is no one's (F10)"}
+{"id": "contact-331", "body": "free fire uid 000000000", "subject": "", "name": "", "expect": "block", "why": "a Free Fire UID, all zeroes so it is no one's (F10)"}
+{"id": "contact-332", "body": "valorant patch 7.04 nerfed the vandal", "subject": "", "name": "", "expect": "publish", "why": "a patch number (F10 control)"}
+{"id": "contact-333", "body": "riot: the new champion is broken", "subject": "", "name": "", "expect": "publish", "why": "Riot named, no account (F10 control)"}
+{"id": "contact-334", "body": "bgmi id ban wave hit my whole squad", "subject": "", "name": "", "expect": "publish", "why": "account bans talked about, no number (F10 control)"}
+{"id": "contact-335", "body": "comment your insta ill follow", "subject": "", "name": "", "expect": "block", "why": "asks readers to comment their Instagram (F11)"}
+{"id": "contact-336", "body": "leave your insta below", "subject": "", "name": "", "expect": "block", "why": "asks readers to leave their Instagram (F11)"}
+{"id": "contact-337", "body": "reach out to me on telegram", "subject": "", "name": "", "expect": "block", "why": "asks to be reached on Telegram (F11)"}
+{"id": "contact-338", "body": "get in touch on whatsapp", "subject": "", "name": "", "expect": "block", "why": "asks to get in touch on WhatsApp (F11)"}
+{"id": "contact-339", "body": "i'm on discord if u wanna chat", "subject": "", "name": "", "expect": "block", "why": "offers Discord to chat (F11)"}
+{"id": "contact-340", "body": "dm me, im on insta", "subject": "", "name": "", "expect": "block", "why": "offers Instagram for messages (F11)"}
+{"id": "contact-341", "body": "leave your insta out of this", "subject": "", "name": "", "expect": "publish", "why": "Instagram left out (F11 control)"}
+{"id": "contact-342", "body": "comment your answer below", "subject": "", "name": "", "expect": "publish", "why": "an answer asked for (F11 control)"}
+{"id": "contact-343", "body": "get in touch with the admissions office", "subject": "", "name": "", "expect": "publish", "why": "the admissions office (F11 control)"}
+{"id": "contact-344", "body": "i'm on insta 5 hours a day, how do i stop", "subject": "", "name": "", "expect": "publish", "why": "screen time (F11 control)"}
+{"id": "contact-345", "body": "email me at madeup dot riya at gmail dot com", "subject": "", "name": "", "expect": "block", "why": "a spelled address whose name has a \"dot\" (F12)"}
+{"id": "contact-346", "body": "reach me at madeup dot riya at gmail dot com", "subject": "", "name": "", "expect": "block", "why": "a spelled address whose name has a \"dot\" (F12)"}
+{"id": "contact-347", "body": "my email is madeupriya at gmail", "subject": "", "name": "", "expect": "block", "why": "a provider address with no ending (F12)"}
+{"id": "contact-348", "body": "mail me madeupriya at gmail", "subject": "", "name": "", "expect": "block", "why": "a provider address with no ending (F12)"}
+{"id": "contact-349", "body": "is your email at gmail or outlook?", "subject": "", "name": "", "expect": "publish", "why": "which provider, no address (F12 control)"}
+{"id": "contact-350", "body": "my sister works at google", "subject": "", "name": "", "expect": "publish", "why": "a workplace (F12 control)"}
+{"id": "contact-351", "body": "join https://meet.google.com/lookup/madeupclass", "subject": "", "name": "", "expect": "block", "why": "a Meet lookup link (R2D-6)"}
+{"id": "contact-352", "body": "join https://meet.google.com/qvxtrmkhpd", "subject": "", "name": "", "expect": "block", "why": "a Meet code written without hyphens (R2D-6)"}
+{"id": "contact-353", "body": "meet.google.com/new opens a new meeting", "subject": "", "name": "", "expect": "publish", "why": "Meet's own page for a new meeting, no room (R2D-6 control)"}
+{"id": "contact-354", "body": "https://meet.google.com/landing is the home page", "subject": "", "name": "", "expect": "publish", "why": "Meet's landing page (R2D-6 control)"}
