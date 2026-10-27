@@ -1323,9 +1323,15 @@ func TestPassPageDetails(t *testing.T) {
 		// nothing, and says nothing of tax without Stripe Tax.
 		intro := words(withoutComments(jsFunction(t, script, "passIntroHTML")))
 		if !strings.Contains(intro, "const priced = info.tax === \"included\" ? `${price} for ${term}, tax included` "+
-			": info.tax === \"added\" ? `${price} plus any tax for ${term}` : `${price} for ${term}`;") ||
-			!strings.Contains(intro, "<strong>${esc(priced)}</strong>, paid once.") {
+			": info.tax === \"added\" ? `${price} plus any tax for ${term}` : `${price} for ${term}`;") {
 			t.Error("the price no longer says whether tax is in it, or says so without the server's word")
+		}
+		// Without a price from the server (Stripe could not be asked, the
+		// Price says nothing of tax while Stripe Tax is on, or sales are
+		// paused) no cost is drawn at all, though priced always has words.
+		if !strings.Contains(intro, "const cost = price ? `<p class=\"verify-note\"><strong>${esc(priced)}</strong>, paid once. "+
+			"It doesn't renew by itself.</p>` : \"\";") {
+			t.Error("the cost line is not the price in the server's words, or is drawn without a price")
 		}
 		for behavior, word := range passTaxWords {
 			if !strings.Contains(intro, `info.tax === "`+word+`"`) {
@@ -1334,6 +1340,25 @@ func TestPassPageDetails(t *testing.T) {
 		}
 		if strings.Contains(script, "automatic_tax") {
 			t.Error("app.js still reads automatic_tax, which the server no longer sends")
+		}
+	})
+	t.Run("a refusal no other branch knows is said in the server's words, and its button given back", func(t *testing.T) {
+		// Checkout's 503 for a Price that says nothing of tax, and its 502
+		// while Stripe can't be asked, reach the reader only this way, so
+		// passErrorText says something else only for a server that did not
+		// answer and a cooldown's wait, and nothing is left pressed.
+		submit := words(withoutComments(jsFunction(t, script, "submitPass")))
+		if !strings.Contains(submit, "showNotice(refusedForAge ? PASS_AGE_REFUSAL : passErrorText(failed)); "+
+			"button.disabled = false; button.textContent = label; refocus(button);") {
+			t.Error("a refused checkout is not said, or leaves its button pressed")
+		}
+		text := withoutComments(jsFunction(t, script, "passErrorText"))
+		if strings.Count(text, "return ") != 3 || !strings.HasSuffix(words(text), "const said = err.message.trim(); "+
+			"const text = said.charAt(0).toUpperCase() + said.slice(1); return /[.!?]$/.test(text) ? text : `${text}.`; }") {
+			t.Error("passErrorText says something other than the server's own words for some refusals")
+		}
+		if strings.Contains(withoutComments(script), "whether tax is included") {
+			t.Error("the page has its own copy of the server's refusal of a Price that says nothing of tax")
 		}
 	})
 }
