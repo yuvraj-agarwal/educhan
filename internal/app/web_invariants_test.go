@@ -1987,11 +1987,15 @@ func TestPassPageKeepsACodeJustHandedOver(t *testing.T) {
 	// Nor when they leave the document, for another site, and come Back to a
 	// page the back-forward cache kept: that page is shown as it was left
 	// until it is drawn again, so the code's panel goes with it, kept or not.
-	// One the page has not drawn yet is drawn there.
+	// One the page has not drawn yet is drawn there. A panel on the page goes
+	// even when its code has gone already, dropped by another tab's Remove or
+	// Forget whose drawing still waits on the forget, which would otherwise
+	// leave it in the page the back-forward cache keeps.
 	shown := withoutComments(jsFunction(t, script, "forgetShownCode"))
-	if shown != "function forgetShownCode() {\n  if (passJustIssued && passJustIssued.shown) {\n    passJustIssued = null;\n"+
-		"    const panel = document.getElementById(\"pass-issued\");\n    if (panel) {\n      panel.remove();\n    }\n  }\n}" {
-		t.Errorf("forgetShownCode no longer drops a code just handed over once drawn, kept or not, panel and all, and only once drawn:\n%s", shown)
+	if shown != "function forgetShownCode() {\n  if (passJustIssued && passJustIssued.shown) {\n    passJustIssued = null;\n  }\n"+
+		"  const panel = document.getElementById(\"pass-issued\");\n  if (panel) {\n    panel.remove();\n  }\n}" {
+		t.Errorf("forgetShownCode no longer drops a code just handed over once drawn, kept or not, and only once drawn, "+
+			"and takes the panel of one off the page whether or not its code has gone already:\n%s", shown)
 	}
 	hide := withoutComments(jsBlock(t, script, `window.addEventListener("pagehide", () => {`, "});"))
 	if !strings.Contains(hide, "\n  forgetShownCode();\n") || strings.Count(withoutComments(script), "forgetShownCode()") != 3 {

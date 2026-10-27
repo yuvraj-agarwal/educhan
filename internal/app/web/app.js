@@ -2761,10 +2761,11 @@ function heedPassForget(key, mark) {
 // is there (passCodeForgets, passCodeForgetting), and empty the code box here,
 // and drop what this tab would say about a Pass found gone (passLost) and a
 // code just handed over here (passJustIssued), kept or not, which the drawing
-// once the wait is over leaves off, so neither a reissue code typed in this
-// tab nor the last holder's news or code is left for the next person at the
-// computer; Stop ("stop:") leaves a reissue code alone, and a code just handed
-// over too.
+// once the wait is over leaves off (its panel stays on the page until then, or
+// until the reader leaves the page or the document, forgetShownCode), so
+// neither a reissue code typed in this tab nor the last holder's news or code
+// is left for the next person at the computer; Stop ("stop:") leaves a reissue
+// code alone, and a code just handed over too.
 // Check now and Stop go off, as in the tab Stop was pressed in, and in a tab
 // that hears of the forget (followPassForget), focus on one of them stays on
 // its panel until the page is drawn again once the wait is over, so the drawing
@@ -2910,22 +2911,25 @@ function forgetTypedCode() {
 
 // forgetShownCode drops a code just handed over once the Pass page has drawn
 // it, kept or not, for a reader leaving the page (render) or the document
-// (pagehide), and takes its panel off the page too: a page brought back from
-// the back-forward cache is shown as it was left until it is drawn again (the
-// pageshow listener). One this browser could not keep goes as its panel
-// promises, and one it keeps can still be shown from the held Pass's panel.
-// One not yet drawn, its answer having come while the reader was on another
-// page, or they having left before its drawing came, has been seen by nobody,
-// so it is left to be drawn when they come back to the Pass page: one this
-// browser could not keep is nowhere else, and beside one it keeps may be the
-// code of the Pass it took the place of, which is nowhere else either.
+// (pagehide), and takes the panel of a code just handed over off the page in
+// any case: a page brought back from the back-forward cache is shown as it was
+// left until it is drawn again (the pageshow listener), and a panel on the page
+// has been drawn, even one whose code has gone already, dropped by another
+// tab's Remove or Forget whose drawing still waits on the forget
+// (stopForPassForget), say. One this browser could not keep goes as its panel
+// promises, and one it keeps can still be shown from the held Pass's panel. One
+// not yet drawn, its answer having come while the reader was on another page,
+// or they having left before its drawing came, has been seen by nobody, so it
+// is left to be drawn when they come back to the Pass page: one this browser
+// could not keep is nowhere else, and beside one it keeps may be the code of
+// the Pass it took the place of, which is nowhere else either.
 function forgetShownCode() {
   if (passJustIssued && passJustIssued.shown) {
     passJustIssued = null;
-    const panel = document.getElementById("pass-issued");
-    if (panel) {
-      panel.remove();
-    }
+  }
+  const panel = document.getElementById("pass-issued");
+  if (panel) {
+    panel.remove();
   }
 }
 
@@ -5809,11 +5813,12 @@ window.addEventListener("pageshow", (event) => {
 
 // Leaving the document, for Stripe say, takes what was typed in the Pass page's
 // code box with it, and a code just handed over, kept or not, once drawn, as
-// leaving the page within the site does (render), so the back-forward cache
-// does not bring them back (forgetShownCode). A checkout still on its way is
-// called off, since the reader has left it (callOffPassCheckouts), and so is a
-// press still waiting to go (passLeft, passForgetsSettled), which would
-// otherwise go once the page is brought back.
+// leaving the page within the site does (render), and the panel of one still on
+// the page, even one whose code another tab's forget has dropped already, so
+// the back-forward cache does not bring them back (forgetShownCode). A checkout
+// still on its way is called off, since the reader has left it
+// (callOffPassCheckouts), and so is a press still waiting to go (passLeft,
+// passForgetsSettled), which would otherwise go once the page is brought back.
 window.addEventListener("pagehide", () => {
   passLeft += 1;
   forgetTypedCode();
