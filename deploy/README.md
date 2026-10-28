@@ -328,9 +328,19 @@ The pushed tags stay in the registry, which is what makes a rollback a deploy of
 an older commit rather than a rebuild. **Never roll back across migration
 `0005`**, to an image from before the archive existed: that code lists archived
 threads as live, and its pruning deletes them with their images left in the
-bucket. A binary that finds migrations it does not know logs an error saying so
-and still serves, so read the log after any rollback. `-sweep` refuses to run at
-all in that state.
+bucket. **Nor across `0009`**, to an image from before posts could be held
+(`0009` to `0011` arrive together): that code knows nothing of `held_at`, so
+every post and thread the content rules held back for a moderator (threats,
+self-harm encouragement, grooming cues) would show in its thread, the index and
+the catalog for anyone to read and reply to, and nothing of `expired_at`, so
+every archived thread a held reply kept past its time would be back in the
+archive. On any board where the old pruning reaches a held thread, every new
+thread would fail too: that code counts held threads against `thread_limit` and
+archives whatever falls past it, and the schema forbids archiving a held thread.
+A held thread nobody replies to sinks with every new thread until it gets there.
+A binary that finds migrations it does not know
+logs an error saying so and still serves, so read the log after any rollback.
+`-sweep` refuses to run at all in that state.
 
 ```bash
 export IMAGE_TAG="$(git rev-parse --short HEAD)"
@@ -447,7 +457,12 @@ the app keeps addresses out of them itself.
 
 A thread that falls off the end of its board is archived, and the sweeper
 deletes it, with its images, once its board's `archive_days` (7 by default)
-have passed. It is the same image run as `educhan -sweep`: one pass, then it
+have passed. An archived thread with a held reply is the exception: the sweep
+that would have deleted it takes it out of public view instead (`expired_at`),
+and a later sweep removes it once its last held reply is approved or deleted.
+A held thread is never archived.
+
+The sweeper is the same image run as `educhan -sweep`: one pass, then it
 exits. It runs as a Cloud Run **Job**, started once a day by Cloud Scheduler,
 because a Cloud Run service only has CPU while it answers a request, so a timer
 inside it would fire whenever it happened to.
@@ -622,12 +637,12 @@ counts against the memory limit, and an image uploaded to one instance answers
 `404` from another. Use `local` there only for a throwaway demo, and pin
 `--max-instances 1` if you do.
 
-**Flood control is per instance.** `cooldownLimiter` in
-`internal/app/ratelimit.go` holds its state in process memory, so with N
-instances a client gets up to N times the intended allowance. Moving it to shared
-storage — Memorystore, or a table — means replacing that one type, which nothing
-else depends on. The verification code cooldown rides on the same limiter, so it
-is per instance too.
+**Flood control is per instance.** `cooldownLimiter` (the cooldowns) and
+`refusalBudget` (`EDUCHAN_REFUSAL_LIMIT`) in `internal/app/ratelimit.go` hold
+their state in process memory, so with N instances a client gets up to N times
+each allowance. Moving them to shared storage — Memorystore, or a table — means
+replacing those two types, which nothing else depends on. The verification code
+cooldown rides on the same limiter, so it is per instance too.
 
 **Institutional verification has no mail sender yet.** `EDUCHAN_VERIFY_SECRET` is
 left unset in `service.yaml`, which switches the feature off, and it should stay

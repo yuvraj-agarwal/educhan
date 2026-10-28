@@ -956,8 +956,8 @@ almost always it does not. `threads_board_public_order_idx` (live and not held) 
 strip-metadata branch adds `0008_attachment_names.sql`. A rollback across `0009` is
 unsafe for the same reason as one across `0005`: older code ignores `held_at`, so every
 held post and thread is public and takes replies. `deploy/README.md`'s rollback warning
-does not say so yet; the README's **Held posts** does. The same goes for `0011`: older
-code shows the expired threads again.
+says so too, as does the README's **Held posts**. The same goes for `0011`: older code
+shows the expired threads again.
 
 A held post's image is gated where it is served: `serveMedia` asks `MediaPublic` (the
 `0010` indexes on `attachments.original_path` and `thumb_path` keep that one lookup per
