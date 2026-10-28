@@ -71,7 +71,8 @@ by submitting a build (section 2.5), not by building locally.
 ## 2. Cloud Run
 
 **The short way.** In [Cloud Shell](https://shell.cloud.google.com), with a
-project that has billing linked, one script does every step in this section:
+project that has billing linked, one script does every step in this section but
+the Pass (2.10):
 APIs, Artifact Registry, service accounts, Cloud SQL, the media bucket, secrets,
 the build, the deploy, the request-log exclusion, and the archive sweeper Job
 with its daily schedule. Re-running it from a newer checkout is how an update
@@ -91,7 +92,7 @@ bash deploy/first-deploy.sh YOUR_PROJECT_ID            # region defaults to asia
 
 It runs builds as a service account of its own (`educhan-build`) rather than
 the project's default build account, so the build grants below are the same in
-every project. The rest of this section is what the script does, step by step.
+every project. Sections 2.1 to 2.9 are what the script does, step by step.
 
 ### 2.1 One-time project setup
 
@@ -325,6 +326,8 @@ for secret in educhan-database-url educhan-poster-id-salt educhan-mod-key; do
 done
 ```
 
+Selling the Pass adds three more, made only if it goes on sale (section 2.10).
+
 **Set the salt once and leave it alone.** It keys per-thread poster IDs and
 secure tripcodes; without it each instance and each revision generates its own,
 so the same browser shows a different ID depending on which container answered.
@@ -374,7 +377,8 @@ an older commit rather than a rebuild. **Never roll back across migration
 threads as live, and its pruning deletes them with their images left in the
 bucket. A binary that finds migrations it does not know logs an error saying so
 and still serves, so read the log after any rollback. `-sweep` refuses to run at
-all in that state.
+all in that state. While the Pass is on, a rollback to an image from before it
+retires it (section 2.10).
 
 ```bash
 export IMAGE_TAG="$(git rev-parse --short HEAD)"
@@ -504,7 +508,11 @@ the bucket to check it is usable, and the sweep checks that each file is there
 before deleting it). It gets neither the moderation key nor
 `EDUCHAN_VERIFY_SECRET`, which it has no use for (and the server refuses to start
 with that secret set and no mail sender). The poster-ID salt is left out too, as
-nothing the sweeper does touches a poster ID.
+nothing the sweeper does touches a poster ID. So is every educhan Pass setting,
+whether or not the service sells the Pass: each run prunes the Pass's tables
+without them, because every order carries the term it was sold with and every
+other row its own deadline, and a Pass setting given without
+`EDUCHAN_PASS_SECRET` would stop the Job from starting.
 
 ```bash
 gcloud run jobs deploy educhan-sweep \
@@ -564,6 +572,442 @@ failed in the console (`gcloud run jobs executions list --job educhan-sweep
 or the Job's own retry, tries it again, so a retry is always safe. In the log,
 `blobs_missing` above zero means the media settings are wrong; `blob_failures`
 means the store refused or was unreachable.
+
+### 2.10 Selling the educhan Pass (optional)
+
+The Pass is off until `EDUCHAN_PASS_SECRET` is set, and nothing else in this
+guide needs it. Turn it on only when it goes on sale. The server refuses to
+start with some of the Pass settings and not the others, so they go on
+together, in one `gcloud run services update`, or not at all. They go on the
+service only: the sweeper Job gets none of them, and would refuse to start with
+any of them set without the secret (section 2.9).
+
+What a Pass buys is skipping the captcha, so sell it only where the captcha is
+on, which `GET /api/site` shows as `"captcha":true`; a service made before the
+captcha gets its secret first (section 2.4). The block below checks that, that
+the service runs an image with the Pass, and that the Pass is not on already,
+and makes nothing otherwise. It is for turning the Pass on; a Pass you retired
+comes back another way (below).
+
+**In the Stripe dashboard first.** Under *Settings → Public details*, set the
+public business name, which Checkout shows buyers and won't start without, and a
+support email: it is printed on every receipt, and a buyer who lost their code
+writes there to have it reissued. Then, in the same Stripe account (and
+sandbox) and mode (test or live) as the secret key the block below asks for,
+make a restricted key (*Developers → API keys → Create restricted key*) with
+**Checkout Sessions: Write** and **Prices: Read** and nothing else. Those are
+the only two calls the server makes. A full secret key also works but can do far
+more than the server needs; the server refuses to start with anything but an
+`sk_…` or `rk_…` key. Turn on Stripe's email receipts for successful payments,
+and set up no custom domain for Checkout: the server sends buyers only to
+`https://checkout.stripe.com` and refuses any other address Stripe hands back.
+
+Then, in the Dashboard of that same account (and sandbox) and mode, switch
+Adaptive Pricing off. With it on, Stripe may show a buyer abroad the price
+converted into their own currency, at Stripe's exchange rate and with any fee
+Stripe adds for the conversion, and charge them that rather than USD 20.00. The
+server does not switch it off for its checkouts: the parameter that does came in
+a later Stripe API version than the `2024-06-20` the server pins.
+
+In Cloud Shell. Past its first lines the block runs in a subshell that stops at
+the first step that fails, so a run either finishes or says where it stopped,
+and the keys, read with `read`, stay out of your shell and its history:
+
+```bash
+export REGION="${REGION:-asia-south1}"   # the region the service runs in
+export RUN_SA="educhan-run@$(gcloud config get-value project).iam.gserviceaccount.com"
+# The one address readers use, as a bare origin: no path, and a trailing slash
+# is dropped. With a domain of your own, export PUBLIC_URL=https://YOUR-DOMAIN
+# before every run of this block (below); without one, it is the run.app
+# address first-deploy.sh prints.
+export PUBLIC_URL="${PUBLIC_URL:-$(gcloud run services describe educhan --region "$REGION" --format='value(status.url)')}"
+PUBLIC_URL="${PUBLIC_URL%/}"
+
+(
+set -euo pipefail
+trap 'echo "Stopped at the step that failed above; nothing after it ran. Run the block again." >&2' ERR
+field() { python3 -c "import sys,json;print(json.load(sys.stdin)[\"$1\"])"; }
+
+# Checked before anything is made in Stripe.
+gcloud run services describe educhan --region "$REGION" --format='value(metadata.name)' >/dev/null ||
+  { echo "No service educhan in ${REGION}: export REGION with the service's region."; exit 1; }
+[[ $PUBLIC_URL =~ ^https://[^/?#]+$ ]] ||
+  { echo "PUBLIC_URL must be a bare https:// origin, not ${PUBLIC_URL}."; exit 1; }
+# Every image answers /api/boards.
+curl -fsS -o /dev/null "${PUBLIC_URL}/api/boards" ||
+  { echo "${PUBLIC_URL} does not answer."; exit 1; }
+# Asked before the captcha: an image from before the captcha is also one from
+# before the Pass, and is told here to redeploy rather than sent to 2.4.
+PASS_STATE=$(curl -fsS "${PUBLIC_URL}/api/pass") || PASS_STATE=
+[[ $PASS_STATE == *'"enabled":'* ]] ||
+  { echo "${PUBLIC_URL} runs an image from before the Pass: deploy the current one first (sections 2.5 and 2.6)."; exit 1; }
+[[ $PASS_STATE != *'"enabled":true'* ]] ||
+  { echo "The Pass is on at ${PUBLIC_URL} already. If a run stopped at its last step, that step went through; either way, see section 2.10 after this block."; exit 1; }
+[[ $(curl -fsS "${PUBLIC_URL}/api/site") == *'"captcha":true'* ]] ||
+  { echo "The captcha is off at ${PUBLIC_URL}: give the service its secret first (section 2.4)."; exit 1; }
+read -rsp 'Stripe restricted key: ' STRIPE_KEY; echo
+read -rsp 'Stripe secret key (for the setup calls only): ' STRIPE_ADMIN; echo
+[[ $STRIPE_KEY == [rs]k_* && $STRIPE_ADMIN == [rs]k_* ]] ||
+  { echo 'Those are not Stripe keys (sk_… or rk_…).'; exit 1; }
+
+# The product and its one-time price: USD 20.00, a year of the Pass. The amount
+# is in the currency's smallest unit (2000 = USD 20.00), and any tax is part of
+# it, not added on top (below). A new price later is a new Price and a new
+# EDUCHAN_STRIPE_PRICE_ID, not a code change. Give it no prices in other
+# currencies (currency options), now or once it is on sale: the server does not
+# sell a Price that has them, but sees options added to it only when it next
+# reads it, up to an hour later, and a checkout before then may charge a buyer
+# placed in one of those currencies that option's amount.
+PRODUCT=$(curl -fsS https://api.stripe.com/v1/products -u "${STRIPE_ADMIN}:" \
+  -d name="educhan Pass" | field id)
+PRICE_ID=$(curl -fsS https://api.stripe.com/v1/prices -u "${STRIPE_ADMIN}:" \
+  -d product="$PRODUCT" -d currency=usd -d unit_amount=2000 -d tax_behavior=inclusive \
+  | field id)
+# The server reads the Price and starts checkouts with the restricted key, so
+# do both with it now, as the server does, and close the checkout at once: a
+# key pasted short, made in another account, sandbox or mode, or missing either
+# permission stops the run here, before anything is stored. The closed checkout
+# needs no cleanup, and its expiry, if an earlier run's endpoint hears of it,
+# matches no order and changes nothing.
+PRICE_JSON=$(curl -sS --fail-with-body -G "https://api.stripe.com/v1/prices/${PRICE_ID}" -u "${STRIPE_KEY}:" -H 'Stripe-Version: 2024-06-20' \
+  -d "expand[]=currency_options") ||
+  { echo "$PRICE_JSON"; echo "The restricted key can't read the new Price: paste it whole, made with Prices: Read in the same Stripe account (and sandbox) and mode (test or live) as the secret key."; exit 1; }
+SESSION_JSON=$(curl -sS --fail-with-body https://api.stripe.com/v1/checkout/sessions -u "${STRIPE_KEY}:" -H 'Stripe-Version: 2024-06-20' \
+  -d mode=payment -d "line_items[0][price]=${PRICE_ID}" -d "line_items[0][quantity]=1" \
+  -d submit_type=pay -d "automatic_tax[enabled]=false" \
+  -d success_url="${PUBLIC_URL}/pass?paid" -d cancel_url="${PUBLIC_URL}/pass?cancelled") ||
+  { echo "$SESSION_JSON"; echo "Stripe would not start a checkout with the restricted key; its answer is above and says what to fix, most often a key without Checkout Sessions: Write or an account without a public business name (above)."; exit 1; }
+curl -fsS -X POST "https://api.stripe.com/v1/checkout/sessions/$(field id <<<"$SESSION_JSON")/expire" \
+  -u "${STRIPE_KEY}:" >/dev/null
+[[ $(field url <<<"$SESSION_JSON") == https://checkout.stripe.com/* ]] ||
+  { echo "Stripe sends its checkouts to a custom domain, which the server refuses: remove it (see above)."; exit 1; }
+
+# The webhook endpoint, pinned to the API version the server is written
+# against. Its signing secret is returned by this call and no other.
+ENDPOINT_JSON=$(curl -fsS https://api.stripe.com/v1/webhook_endpoints -u "${STRIPE_ADMIN}:" \
+  -d url="${PUBLIC_URL}/api/pass/stripe-webhook" -d api_version=2024-06-20 \
+  -d "enabled_events[]=checkout.session.completed" \
+  -d "enabled_events[]=checkout.session.async_payment_succeeded" \
+  -d "enabled_events[]=checkout.session.async_payment_failed" \
+  -d "enabled_events[]=checkout.session.expired" \
+  -d "enabled_events[]=charge.refunded" \
+  -d "enabled_events[]=charge.dispute.created")
+ENDPOINT=$(field id <<<"$ENDPOINT_JSON")
+WEBHOOK_SECRET=$(field secret <<<"$ENDPOINT_JSON")
+
+# Made once and never replaced: every stored Pass is a hash under it. It gets
+# its one version in a step of its own, so a run stopped between the two
+# finishes the job next time.
+gcloud secrets describe educhan-pass-secret >/dev/null 2>&1 ||
+  gcloud secrets create educhan-pass-secret --replication-policy=automatic
+PASS_VERSIONS=$(gcloud secrets versions list educhan-pass-secret --limit=1 --format='value(name)')
+[[ -n $PASS_VERSIONS ]] ||
+  openssl rand -hex 32 | gcloud secrets versions add educhan-pass-secret --data-file=-
+for secret in educhan-stripe-secret-key educhan-stripe-webhook-secret; do
+  gcloud secrets describe "$secret" >/dev/null 2>&1 ||
+    gcloud secrets create "$secret" --replication-policy=automatic
+done
+for secret in educhan-pass-secret educhan-stripe-secret-key educhan-stripe-webhook-secret; do
+  gcloud secrets add-iam-policy-binding "$secret" \
+    --member="serviceAccount:${RUN_SA}" --role=roles/secretmanager.secretAccessor
+done
+# The two Stripe values get a new version on every run, to match what it made,
+# and the service moves onto them straight away.
+printf '%s' "$STRIPE_KEY" | gcloud secrets versions add educhan-stripe-secret-key --data-file=-
+printf '%s' "$WEBHOOK_SECRET" | gcloud secrets versions add educhan-stripe-webhook-secret --data-file=-
+echo "Moving the service onto webhook endpoint ${ENDPOINT}, under Product ${PRODUCT}."
+gcloud run services update educhan --region "$REGION" \
+  --update-secrets "EDUCHAN_PASS_SECRET=educhan-pass-secret:latest,EDUCHAN_STRIPE_SECRET_KEY=educhan-stripe-secret-key:latest,EDUCHAN_STRIPE_WEBHOOK_SECRET=educhan-stripe-webhook-secret:latest" \
+  --update-env-vars "EDUCHAN_STRIPE_PRICE_ID=${PRICE_ID},EDUCHAN_PUBLIC_URL=${PUBLIC_URL}"
+echo "Done. The service verifies webhook endpoint ${ENDPOINT}, under Product ${PRODUCT}."
+)
+```
+
+A run that stops can be run again, but each run that gets past its checks makes
+another Product, Price and webhook endpoint in Stripe. Once one prints "Done",
+under *Developers → Webhooks*, delete every other endpoint whose URL ends in
+`/api/pass/stripe-webhook`, since the server can't verify its deliveries, and
+archive every other "educhan Pass" Product. A run can also stop in its last
+step, the update, after the update went through; the next run then says the
+Pass is on already. Clean up the same way, keeping the endpoint and Product that
+the stopped run named when it printed "Moving the service onto". If that line
+is gone, the endpoint to keep is the one whose signing secret (*Reveal* on its
+page) is the first line this prints, and the Product to keep is the one with the
+Price on the second:
+
+```bash
+gcloud secrets versions access latest --secret=educhan-stripe-webhook-secret; echo
+gcloud run services describe educhan --region "$REGION" | grep EDUCHAN_STRIPE_PRICE_ID
+```
+
+Once the Pass is on, on sale or paused, the block refuses to run. Its new
+endpoint and signing secret would leave any event Stripe is still retrying to
+the old endpoint unverifiable, so a payment among them would never become a
+Pass, and a refund or dispute would take nothing back. Change only what needs
+changing instead: a new Price as below, or a new restricted key, made as above
+in the same Stripe account. The key goes in with this block, which checks it is
+in the old key's mode (test or live) and makes the setup block's two calls with
+it before storing it, then moves the service onto it; delete the old key in
+Stripe only once it prints "Done":
+
+```bash
+export REGION="${REGION:-asia-south1}"
+(
+set -euo pipefail
+trap 'echo "Stopped at the step that failed above; keep the old key until a run prints Done." >&2' ERR
+field() { python3 -c "import sys,json;print(json.load(sys.stdin)[\"$1\"])"; }
+SERVICE_JSON=$(gcloud run services describe educhan --region "$REGION" --format=json)
+setting() {
+  python3 -c "import sys,json;print(next((e.get('value','') for e in json.load(sys.stdin)['spec']['template']['spec']['containers'][0].get('env',[]) if e['name']=='$1'),''))" <<<"$SERVICE_JSON"
+}
+PRICE_ID=$(setting EDUCHAN_STRIPE_PRICE_ID)
+PUBLIC_URL=$(setting EDUCHAN_PUBLIC_URL)
+TAX=$(setting EDUCHAN_STRIPE_AUTOMATIC_TAX)
+# Read as the server reads it.
+case ${TAX,,} in 1|true|yes|on) TAX=true ;; *) TAX=false ;; esac
+[[ $PRICE_ID == price_* && -n $PUBLIC_URL ]] ||
+  { echo 'The service has no Pass Price or address set, so the Pass is not on.'; exit 1; }
+read -rsp 'New Stripe restricted key: ' STRIPE_KEY; echo
+[[ $STRIPE_KEY == [rs]k_* ]] || { echo 'That is not a Stripe key (sk_… or rk_…).'; exit 1; }
+# The webhook endpoint hears only of payments in the mode the setup block ran
+# in, which is the old key's.
+OLD_KEY=$(gcloud secrets versions access latest --secret=educhan-stripe-secret-key)
+[[ ${STRIPE_KEY:3:5} == "${OLD_KEY:3:5}" ]] ||
+  { echo "That key is from the other mode (test or live) than the old one: make it in the old one's, where the webhook endpoint is."; exit 1; }
+PRICE_JSON=$(curl -sS --fail-with-body -G "https://api.stripe.com/v1/prices/${PRICE_ID}" -u "${STRIPE_KEY}:" -H 'Stripe-Version: 2024-06-20' \
+  -d "expand[]=currency_options") ||
+  { echo "$PRICE_JSON"; echo "The new key can't read ${PRICE_ID}: paste it whole, made with Prices: Read in the old key's Stripe account (and sandbox). If it was, and the service's log says the Pass price needs fixing (below), fix the Price first."; exit 1; }
+SESSION_JSON=$(curl -sS --fail-with-body https://api.stripe.com/v1/checkout/sessions -u "${STRIPE_KEY}:" -H 'Stripe-Version: 2024-06-20' \
+  -d mode=payment -d "line_items[0][price]=${PRICE_ID}" -d "line_items[0][quantity]=1" \
+  -d submit_type=pay -d "automatic_tax[enabled]=${TAX}" \
+  -d success_url="${PUBLIC_URL}/pass?paid" -d cancel_url="${PUBLIC_URL}/pass?cancelled") ||
+  { echo "$SESSION_JSON"; echo "Stripe would not start a checkout with the new key; its answer is above. If it is about the Price (inactive, recurring or tax), fix the Price first (below); otherwise it says what to fix, most often a key without Checkout Sessions: Write."; exit 1; }
+curl -fsS -X POST "https://api.stripe.com/v1/checkout/sessions/$(field id <<<"$SESSION_JSON")/expire" \
+  -u "${STRIPE_KEY}:" >/dev/null
+printf '%s' "$STRIPE_KEY" | gcloud secrets versions add educhan-stripe-secret-key --data-file=-
+gcloud run services update educhan --region "$REGION" \
+  --update-secrets EDUCHAN_STRIPE_SECRET_KEY=educhan-stripe-secret-key:latest
+echo "Done. The service uses the new key; delete the old one in Stripe."
+)
+```
+
+Once the setup block has printed "Done", `curl -s "${PUBLIC_URL}/api/pass"`
+should answer `"enabled":true` with the price and no `"tax"`: with
+`EDUCHAN_STRIPE_AUTOMATIC_TAX` unset, the server tells Stripe to collect no tax
+(`automatic_tax[enabled]=false`), even if the account collects it by default, so
+the Pass page says nothing about tax, and, with Adaptive Pricing off (above),
+every buyer pays USD 20.00. The server does not switch Adaptive Pricing off
+itself, so with it on Stripe may show and charge a buyer abroad an amount
+converted into their currency. A Price with prices in other currencies too
+(currency options) is not sold. Stripe lets currency options be added to a Price
+in place, keeping its ID, and the server sees them only at its next read of the
+Price, within the hour, so a checkout before then may charge a buyer placed in
+one of those currencies that option's amount: give the Price on sale none. To
+have Stripe Tax collect sales tax, VAT or GST, switch Stripe Tax on in the
+account and add `EDUCHAN_STRIPE_AUTOMATIC_TAX=1` to the env vars: Stripe then
+takes any tax out of the USD 20.00 rather than adding it, and asks each buyer
+for a billing address to work it out; `/api/pass` then answers
+`"tax":"included"` beside the price, and the Pass page says "tax included".
+While it is on, a Price that says neither `inclusive` nor `exclusive`, such as
+one made without `tax_behavior`, is not sold: `/api/pass` leaves the price out,
+checkout answers `503`, and the service's log says what to fix. Such a Price can
+still be given `tax_behavior=inclusive` once, but one made tax-exclusive, which
+the page shows as "plus any tax", can't be changed: make a new Price the way the
+setup block does, with `tax_behavior=inclusive`, set its id with `gcloud run
+services update educhan --region "$REGION" --update-env-vars
+EDUCHAN_STRIPE_PRICE_ID=price_…`, and only then archive the old one, since an
+archived Price can't be sold. Three more settings have working defaults and need
+no change: `EDUCHAN_PASS_DAYS`, `EDUCHAN_PASS_HOURLY_POSTS` and
+`EDUCHAN_PASS_COOLDOWN` (section 4).
+
+If the service's log says `the Pass price in Stripe needs fixing`, its `error`
+says why: the Price is archived, recurring, without a fixed amount (one whose
+buyer chooses what to pay, say) or priced in other currencies too (it has
+currency options, and the `error` names their currencies), or, with Stripe Tax
+on, says neither `inclusive` nor `exclusive`; or Stripe refused the request for
+the Price (a key or Price ID it does not take, say, such as a test-mode Price ID
+with a live key), and Stripe's own message after those words names the cause.
+Until it is fixed, `/api/pass` leaves the price out and checkout answers `503`,
+with Stripe Tax on or off, before any cooldown starts or anything is opened in
+Stripe. While Stripe is out of reach or failing, the log says `could not read
+the Pass price from Stripe` instead, and checkout answers `502` until Stripe
+answers. A new Price, made and set as above, mends a fault in the Price or its
+ID, and the key block above puts in a new key. Both stay in the Stripe account
+(and sandbox) and the mode (test or live) the setup block ran in, since its
+webhook endpoint hears only of payments there: a Price ID from anywhere else
+needs a new Price made there, not a key from where that Price is. This reads the
+latest such line, with when and by which revision it was logged:
+
+```bash
+gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="educhan" AND jsonPayload.msg="the Pass price in Stripe needs fixing"' \
+  --freshness=7d --limit=1 --format='value(timestamp,resource.labels.revision_name,jsonPayload.error)'
+```
+
+A line from before your last change no longer applies; the price back in
+`/api/pass` a minute or so after a fix shows it took. While sales are paused the
+server doesn't read the Price, so it logs nothing new.
+
+`PUBLIC_URL` is where Stripe sends a buyer back and where it sends its
+webhooks, and it has to be the one address readers use: the cookie that lets a
+browser collect its code belongs to the address the checkout began on, so a
+checkout begun anywhere else cannot be collected where Stripe returns the buyer.
+A service answers on more than one `run.app` address (`gcloud` may print another
+as "Service URL" while it deploys), so give readers only the one the block
+takes, which `first-deploy.sh` prints after "educhan is live at". If readers
+come in through a domain of your own, export `PUBLIC_URL` with it before running
+the block, and turn the `run.app` addresses off once the domain serves the site
+(`gcloud run services update educhan --region "$REGION" --no-default-url`);
+`first-deploy.sh` then checks and prints an address that no longer answers, so
+check your domain's `/api/pass` yourself.
+
+**Moving to a domain once the Pass is on sale** takes the webhook endpoint with
+it, and readers have to carry their Passes over: a collected Pass is kept only
+in the browser, under the address it was collected on, so the domain can't read
+one collected on `run.app`. The move is therefore two updates, with the
+`run.app` addresses still answering in between. The first, once the domain
+serves the site, moves the endpoint and the return address and pauses sales,
+since a checkout begun on `run.app` from then on would come back to the domain,
+where it can't be collected. Editing the endpoint's URL keeps its signing
+secret, so Secret Manager needs no change:
+
+```bash
+export REGION="${REGION:-asia-south1}"
+export PUBLIC_URL=https://YOUR-DOMAIN   # a bare origin, as above
+PUBLIC_URL="${PUBLIC_URL%/}"
+
+read -rsp 'Stripe secret key: ' STRIPE_ADMIN; echo
+# Newest first. Move the one the setup block last named, at "Moving the
+# service onto" or "Done" (see the cleanup above).
+curl -fsS 'https://api.stripe.com/v1/webhook_endpoints?limit=100' -u "${STRIPE_ADMIN}:" \
+  | python3 -c 'import sys,json;[print(e["id"],e["url"]) for e in sorted(json.load(sys.stdin)["data"],key=lambda e:-e["created"])]'
+read -rp 'Endpoint to move (we_…): ' ENDPOINT
+# The service changes only if the domain serves the Pass and the endpoint moved.
+if [[ $PUBLIC_URL =~ ^https://[^/?#]+$ && $ENDPOINT == we_* &&
+      $(curl -fsS "${PUBLIC_URL}/api/pass") == *'"enabled":true'* ]] &&
+   curl -fsS "https://api.stripe.com/v1/webhook_endpoints/${ENDPOINT}" -u "${STRIPE_ADMIN}:" \
+     -d url="${PUBLIC_URL}/api/pass/stripe-webhook" >/dev/null; then
+  gcloud run services update educhan --region "$REGION" \
+    --update-env-vars "EDUCHAN_PUBLIC_URL=${PUBLIC_URL},EDUCHAN_PASS_SALES=paused"
+else
+  echo 'The domain does not serve the Pass yet, or the endpoint did not move, so the service is unchanged.'
+fi
+unset STRIPE_ADMIN
+```
+
+Then give readers the domain. While the `run.app` addresses still answer, a
+holder copies their code from the Pass page there (Copy the code) and enters it
+on the domain's, and a checkout begun there before the update, a slow payment
+included, is still collected there. Leave them answering as long as readers
+need, then turn them off and open sales again in one update:
+
+```bash
+gcloud run services update educhan --region "$REGION" \
+  --no-default-url --update-env-vars EDUCHAN_PASS_SALES=open
+```
+
+If sales were paused before the move, while waiting to retire the Pass say,
+leave out `--update-env-vars EDUCHAN_PASS_SALES=open` so they stay paused.
+
+A holder who did not carry their code over, or whose checkout on `run.app` was
+not collected by then, writes to the support address on the receipt and gets a
+reissue code (the README's *Lost codes*), though a Pass whose purchase was
+refunded or disputed may have no payment left to reissue it from (also there).
+
+Re-running `first-deploy.sh` keeps these settings. Applying `service.yaml` with
+`services replace`, or running the long form in section 2.6 again, does not:
+each sets the whole configuration, so it takes every Pass setting off and
+retires the Pass without the pause (below). If you manage the service that way,
+uncomment the Pass entries in `service.yaml` with your Price ID and
+`PUBLIC_URL`, and `EDUCHAN_STRIPE_AUTOMATIC_TAX` if you set it, or add them to
+the long form, before you run it again, and keep `EDUCHAN_PASS_SALES=paused`
+there while sales are paused, or the next run opens them. With the `run.app`
+addresses turned off, `service.yaml` needs
+`run.googleapis.com/default-url-disabled: "true"` under the Service's
+`metadata.annotations` as well (it is there, commented out), or each
+`services replace` turns them back on. The Service's metadata takes one
+`annotations:` key, so if it already has one, such as section 2.6's
+`invoker-iam-disabled`, add the line under it: with a second key, one of the two
+is dropped.
+
+**To stop selling, pause.** This leaves everything already sold working:
+
+```bash
+gcloud run services update educhan --region "$REGION" \
+  --update-env-vars EDUCHAN_PASS_SALES=paused
+```
+
+Checkout then refuses purchases and renewals alike with `403`, before it reads
+the request's body or asks Stripe anything, and the Pass page says "The Pass is not on
+sale right now." where Buy and Renew were. Everything else goes on: Stripe's
+webhooks are still verified and recorded, so a checkout opened before the pause
+and paid after it is collected, and a refund or dispute still takes back what it
+paid for; existing Passes keep skipping the captcha; and the page still
+collects, shows and checks codes, and reissue codes are still made and redeemed.
+`EDUCHAN_PASS_SALES=open` (the default) sells again; any other value refuses to
+start. Re-running `first-deploy.sh` keeps the pause.
+
+**Retiring the Pass is a different step:** take the secret and every other Pass
+setting off together, or the server refuses to start. Removing a setting that
+was never set is harmless, so the same command works whichever optional ones
+you added:
+
+```bash
+gcloud run services update educhan --region "$REGION" \
+  --remove-secrets EDUCHAN_PASS_SECRET,EDUCHAN_STRIPE_SECRET_KEY,EDUCHAN_STRIPE_WEBHOOK_SECRET \
+  --remove-env-vars EDUCHAN_STRIPE_PRICE_ID,EDUCHAN_PUBLIC_URL,EDUCHAN_STRIPE_AUTOMATIC_TAX,EDUCHAN_PASS_DAYS,EDUCHAN_PASS_HOURLY_POSTS,EDUCHAN_PASS_COOLDOWN,EDUCHAN_PASS_SALES
+```
+
+Every Pass endpoint then answers as if there were no Pass, and existing Passes
+stop skipping the captcha. The webhook answers `404`, and Stripe gives up on an
+event after about three days, so an event sent meanwhile is lost unless the
+settings are back before then: a payment among them never becomes a Pass, and a
+refund or dispute takes nothing back. So pause first, and retire only once
+nothing is in flight: no checkout still open (Stripe keeps one open for up to a
+day), no payment still processing (a bank debit can take a couple of weeks,
+and the server waits 30 days for one; the Dashboard's *Payments* lists any
+still pending), and no refund or dispute pending. Waiting 31 days after the
+pause covers the first two. The tables stay and the sweep keeps
+pruning them. Putting the same settings back brings back every Pass not yet
+pruned, and lets Stripe's retries land, so bring it back that way, not with the
+setup block, whose new endpoint would leave those retries unverifiable. First
+check in the Stripe Dashboard that the webhook endpoint is still enabled, and
+enable it again if Stripe disabled it for failing, then:
+
+```bash
+gcloud run services update educhan --region "$REGION" \
+  --update-secrets "EDUCHAN_PASS_SECRET=educhan-pass-secret:latest,EDUCHAN_STRIPE_SECRET_KEY=educhan-stripe-secret-key:latest,EDUCHAN_STRIPE_WEBHOOK_SECRET=educhan-stripe-webhook-secret:latest" \
+  --update-env-vars "EDUCHAN_STRIPE_PRICE_ID=price_…,EDUCHAN_PUBLIC_URL=https://YOUR-ADDRESS,EDUCHAN_PASS_SALES=paused"
+```
+
+with the Price ID from the "educhan Pass" Product in the Dashboard, the address
+its endpoint points at, and any other Pass setting you had, such as
+`EDUCHAN_STRIPE_AUTOMATIC_TAX=1`. It comes back paused; `EDUCHAN_PASS_SALES=open`
+sells again.
+
+**A rollback can retire it too.** While the Pass is on, on sale or paused,
+rolling the service back to an image from before the Pass (before migration
+`0012`) does what retiring does, without the pause: that code answers `404` at
+the webhook. Roll back no further than the first release with the Pass, or
+retire it first as above. If it has happened, roll forward within three days
+and Stripe's retries land; then check the endpoint is still enabled.
+
+**Reissuing a lost code needs the moderation key.** The owner makes a reissue
+code with `POST /api/pass/reissue`, which sits behind `EDUCHAN_MOD_KEY`
+(the README's *Lost codes*). `first-deploy.sh` already sets that key on the
+service, so there is nothing to add here; a service set up by hand needs it
+too, or no lost code can be reissued. It is not a Pass setting, so it stays
+when the Pass is retired.
+
+**Set `EDUCHAN_PASS_SECRET` once and leave it alone.** Every stored Pass code and
+payment record is a hash under it, so rotating it cancels every Pass that was
+sold, and leaves no record a refund or a reissue could find.
+
+**Keep the webhook reachable.** Stripe calls `POST /api/pass/stripe-webhook` from
+its own addresses, and a buyer who has paid gets nothing until that call lands.
+Stripe retries for up to three days, but once a load balancer and Cloud Armor
+are in front of the service, no rate or geography rule may block that path. The
+service also needs outbound HTTPS to `api.stripe.com`. That is open by default;
+if egress is ever restricted, allow it.
 
 ---
 
@@ -639,6 +1083,14 @@ ones whose value differs between a development machine and Cloud Run:
 | `EDUCHAN_DB_MAX_CONNS` | `3` (default) | `3` | Connection pool cap per instance; times `maxScale` it must fit the Cloud SQL tier (section 3) |
 | `EDUCHAN_UPLOADS_ENABLED` | `1` when testing images | **`false`** | Off refuses image posts with `403`. Keep it off until images are stripped of metadata and scanned |
 | `EDUCHAN_MAIL_DEV` | `1` when testing verification | **unset** | Allows the development sender. Never on Cloud Run, where stdout is Cloud Logging |
+| `EDUCHAN_PASS_SECRET` | unset unless testing the Pass | from Secret Manager, once the Pass is on sale | Unset switches the Pass off, and any other Pass setting given without it refuses to start. Set together with the four below (section 2.10). Never on the sweeper Job, nor is any Pass setting (section 2.9) |
+| `EDUCHAN_STRIPE_SECRET_KEY` / `_WEBHOOK_SECRET` | unset | from Secret Manager | The restricted API key and the webhook endpoint's `whsec_…` signing secret |
+| `EDUCHAN_STRIPE_PRICE_ID` / `EDUCHAN_PUBLIC_URL` | unset | the `price_…` id of a one-time Price in one currency, with no currency options / the `https://` origin readers use | Plain env; the public URL is where Stripe sends a buyer back, a bare origin (any path refuses to start), and the only one a checkout can be collected on (section 2.10) |
+| `EDUCHAN_STRIPE_AUTOMATIC_TAX` | unset | unset, or `1` with Stripe Tax on | Stripe works out the tax at checkout, from the billing address it then asks for, and takes it out of the tax-inclusive Price, so every buyer still pays its amount (in USD, with Adaptive Pricing off: section 2.10) and the Pass page says "tax included". A Price without `tax_behavior` is not sold while it is on: `/api/pass` shows no price and checkout answers `503`. Unset, checkout tells Stripe to collect no tax, whatever the account's default (section 2.10) |
+| `EDUCHAN_PASS_DAYS` | `365` (default) | `365` (default) | How long a Pass lasts, from `1` to `36500`. Each order keeps the term it was sold with, so a change applies only to checkouts started after it |
+| `EDUCHAN_PASS_HOURLY_POSTS` | `30` (default) | `30` (default) | Posts in one clock hour that skip the captcha; at least `1` |
+| `EDUCHAN_PASS_COOLDOWN` | `30` (default) | `30` (default) | Seconds between checkouts from one client; not negative |
+| `EDUCHAN_PASS_SALES` | `open` (default) | `open`, or `paused` to stop selling | `paused` refuses new purchases and renewals and keeps everything sold working; any other value refuses to start (section 2.10) |
 
 `EDUCHAN_TRUST_PROXY` is the one worth getting right. It is a hop count, and a
 value higher than the real chain lets a client pick its own rate-limit bucket by
@@ -678,6 +1130,10 @@ instances a client gets up to N times the intended allowance. Moving it to share
 storage — Memorystore, or a table — means replacing that one type, which nothing
 else depends on. The verification code cooldown rides on the same limiter, so it
 is per instance too.
+
+**So is the Pass's hourly budget.** `passBudget` in `internal/app/pass.go` counts
+in process memory too, so with N instances a Pass can skip the captcha up to N
+times `EDUCHAN_PASS_HOURLY_POSTS` in an hour.
 
 **Institutional verification has no mail sender yet.** `EDUCHAN_VERIFY_SECRET` is
 left unset in `service.yaml`, which switches the feature off, and it should stay
