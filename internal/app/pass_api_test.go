@@ -1103,16 +1103,17 @@ func TestPassPurchase(t *testing.T) {
 
 	p.paid(session, "pi_test_1")
 	p.paid(session, "pi_test_1") // Stripe may deliver twice.
+	before := time.Now()
 	status, issued := p.claim()
+	after := time.Now()
 	if status != http.StatusOK || issued.Status != "issued" {
 		t.Fatalf("claim: status %d, %+v", status, issued)
 	}
 	if !passCodeShape(issued.Pass) {
 		t.Fatalf("issued code %q is not XXXXX-XXXXX-XXXXX-XXXXX", issued.Pass)
 	}
-	wantExpiry := passExpiry(time.Now(), 365)
-	if !issued.ExpiresAt.Equal(wantExpiry) {
-		t.Errorf("expires %v, want %v (a year, rounded up to a day)", issued.ExpiresAt, wantExpiry)
+	if !dayRoundedAfter(issued.ExpiresAt, before, after, 365*24*time.Hour) {
+		t.Errorf("expires %v, want a year from the claim, rounded up to a day", issued.ExpiresAt)
 	}
 
 	// The code is shown once; the claim is spent.
@@ -1419,9 +1420,11 @@ func TestPassCollectsOnlyThroughItsOwnClaim(t *testing.T) {
 	// The second tab is paid: its Pass is issued, and nothing is left to
 	// collect here.
 	p.paid(second, "pi_second")
+	year := 365 * 24 * time.Hour
+	before := time.Now()
 	code, issued := p.claim()
-	if want := passExpiry(time.Now(), 365); code != http.StatusOK || issued.Status != "issued" || issued.Claim || !issued.ExpiresAt.Equal(want) {
-		t.Fatalf("claim of the latest checkout: status %d, %+v; want a Pass to %v", code, issued, want)
+	if code != http.StatusOK || issued.Status != "issued" || issued.Claim || !dayRoundedAfter(issued.ExpiresAt, before, time.Now(), year) {
+		t.Fatalf("claim of the latest checkout: status %d, %+v; want a Pass for a year from the claim", code, issued)
 	}
 	// The first tab, paid later, is not collected here and changes nothing
 	// about the Pass the second one made.
@@ -1444,8 +1447,9 @@ func TestPassCollectsOnlyThroughItsOwnClaim(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("reissue of the earlier tab's payment: status %d", status)
 	}
+	before = time.Now()
 	code, own := p.otherBrowser().redeem(token)
-	if code != http.StatusOK || own.Status != "issued" || own.Pass == issued.Pass || !own.ExpiresAt.Equal(passExpiry(time.Now(), 365)) {
+	if code != http.StatusOK || own.Status != "issued" || own.Pass == issued.Pass || !dayRoundedAfter(own.ExpiresAt, before, time.Now(), year) {
 		t.Fatalf("redeem of the earlier tab's payment: status %d, %+v", code, own)
 	}
 	for _, c := range []string{issued.Pass, own.Pass} {
@@ -1464,8 +1468,9 @@ func TestPassCollectsOnlyThroughItsOwnClaim(t *testing.T) {
 	bought := shared.checkout("")
 	shared.paid(left, "pi_left_open")
 	shared.paid(bought, "pi_buyer")
+	before = time.Now()
 	code, buyer := shared.claim()
-	if code != http.StatusOK || buyer.Status != "issued" || !buyer.ExpiresAt.Equal(passExpiry(time.Now(), 365)) {
+	if code != http.StatusOK || buyer.Status != "issued" || !dayRoundedAfter(buyer.ExpiresAt, before, time.Now(), year) {
 		t.Fatalf("the buyer's claim: status %d, %+v", code, buyer)
 	}
 	var origin bool
@@ -1659,25 +1664,29 @@ func (p *passHarness) claimSetCookie() (int, *http.Cookie) {
 // holds nothing.
 func TestPassSlowPaymentIsWaitedFor(t *testing.T) {
 	p := passServer(t, nil)
+	started := time.Now()
 	session, cookie := p.checkoutSetCookie("")
 	if cookie == nil || time.Duration(cookie.MaxAge)*time.Second < stripeCheckoutTTL+passPendingPaymentTTL-time.Minute {
 		t.Fatalf("the checkout's claim cookie %v lapses before a slow payment's hold could", cookie)
 	}
 	object := map[string]any{"id": session, "object": "checkout.session", "mode": "payment",
 		"payment_status": "unpaid", "payment_intent": "pi_debit"}
+	before := time.Now()
 	if status := p.webhook(stripeCheckoutCompleted, object); status != http.StatusOK {
 		t.Fatalf("completed webhook: status %d", status)
 	}
+	after := time.Now()
 	var held time.Time
 	if err := p.app.pool.QueryRow(context.Background(), `SELECT expires_at FROM pass_orders`).Scan(&held); err != nil {
 		t.Fatal(err)
 	}
-	if !held.Equal(dayCeil(held)) || held.Before(time.Now().Add(passPendingPaymentTTL-time.Minute)) {
-		t.Fatalf("a checkout waiting on its payment is held until %v, want a midnight %v on", held.UTC(), passPendingPaymentTTL)
+	if !dayRoundedAfter(held, before, after, passPendingPaymentTTL) {
+		t.Fatalf("a checkout waiting on its payment is held until %v, want the first UTC midnight %v on", held.UTC(), passPendingPaymentTTL)
 	}
-	// The cookie set at checkout outlives the hold, and asking after the
-	// purchase neither sets nor clears it.
-	if time.Now().Add(time.Duration(cookie.MaxAge) * time.Second).Before(held) {
+	// The cookie set at checkout outlives the hold, counted from before the
+	// checkout was asked for, and asking after the purchase neither sets nor
+	// clears it.
+	if started.Add(time.Duration(cookie.MaxAge) * time.Second).Before(held) {
 		t.Fatalf("the claim cookie lapses before the order it holds (%v)", held.UTC())
 	}
 	if status, set := p.claimSetCookie(); status != http.StatusAccepted || set != nil {
@@ -2124,9 +2133,10 @@ func TestPassRenewal(t *testing.T) {
 		t.Fatalf("an expired Pass: status %d, %+v", status, out)
 	}
 	p.paid(p.checkout(issued.Pass), "pi_late_renewal")
+	before := time.Now()
 	if status, out := p.claim(); status != http.StatusOK ||
-		!out.ExpiresAt.Equal(dayCeil(time.Now().AddDate(0, 0, 365))) {
-		t.Fatalf("renewing an expired Pass: status %d, %+v", status, out)
+		!dayRoundedAfter(out.ExpiresAt, before, time.Now(), 365*24*time.Hour) {
+		t.Fatalf("renewing an expired Pass: status %d, %+v; want a year from the claim", status, out)
 	}
 	if status, _ := p.activate(issued.Pass); status != http.StatusOK {
 		t.Fatalf("the code after renewing an expired Pass: status %d", status)
@@ -2489,8 +2499,16 @@ func TestPassReissue(t *testing.T) {
 // a moment between since and now: the week README promises an order and a
 // reissue code, written out here rather than read from passClaimTTL.
 func withinAWeek(deadline, since time.Time) bool {
-	week := 7 * 24 * time.Hour
-	return !deadline.Before(dayCeil(since.Add(week))) && !deadline.After(dayCeil(time.Now().Add(week)))
+	return dayRoundedAfter(deadline, since, time.Now(), 7*24*time.Hour)
+}
+
+// dayRoundedAfter reports whether at is the first UTC midnight d after a
+// moment from before to after, as the server rounds every date it sets from
+// its clock during a request: before is read before the request is sent and
+// after once it is answered, so the moment the server read is between them
+// and at is from dayCeil(before + d) to dayCeil(after + d).
+func dayRoundedAfter(at, before, after time.Time, d time.Duration) bool {
+	return at.Equal(dayCeil(at)) && !at.Before(dayCeil(before.Add(d))) && !at.After(dayCeil(after.Add(d)))
 }
 
 // reissueCodeShape reports whether code is written as the owner is given it:
@@ -4811,9 +4829,11 @@ func TestPassOrderKeepsItsTerm(t *testing.T) {
 		t.Fatalf("the restarted server sells %d days", status.Days)
 	}
 	q.paid(bought, "pi_month")
+	month := 30 * 24 * time.Hour
+	before := time.Now()
 	code, issued := q.claim()
-	if want := passExpiry(time.Now(), 30); code != http.StatusOK || issued.Status != "issued" || !issued.ExpiresAt.Equal(want) {
-		t.Fatalf("a month's order collected after the change: status %d, %+v; want it to run to %v", code, issued, want)
+	if code != http.StatusOK || issued.Status != "issued" || !dayRoundedAfter(issued.ExpiresAt, before, time.Now(), month) {
+		t.Fatalf("a month's order collected after the change: status %d, %+v; want it to run a month from the claim", code, issued)
 	}
 	q.paid(p.checkout(issued.Pass), "pi_month_renewal")
 	if code, renewed := q.claim(); code != http.StatusOK || renewed.Status != "renewed" ||
@@ -4822,8 +4842,9 @@ func TestPassOrderKeepsItsTerm(t *testing.T) {
 	}
 	q.paid(uncollected, "pi_uncollected_month")
 	_, _, token := q.reissueCode("mod-key", "pi_uncollected_month")
+	before = time.Now()
 	if code, out := q.otherBrowser().redeem(token); code != http.StatusOK || out.Status != "issued" ||
-		!out.ExpiresAt.Equal(passExpiry(time.Now(), 30)) {
+		!dayRoundedAfter(out.ExpiresAt, before, time.Now(), month) {
 		t.Fatalf("a month's order reissued after the change: status %d, %+v", code, out)
 	}
 }
@@ -4970,8 +4991,10 @@ func TestPassOrderTakesTheLock(t *testing.T) {
 func TestPassRevocationIsDayRounded(t *testing.T) {
 	p := passServer(t, nil)
 	p.buy("pi_rounded")
+	before := time.Now()
 	p.refund("pi_rounded")
 	p.refund("pi_not_ours")
+	after := time.Now()
 	rows, err := p.app.pool.Query(context.Background(), `SELECT expires_at FROM pass_revocations`)
 	if err != nil {
 		t.Fatal(err)
@@ -4984,8 +5007,7 @@ func TestPassRevocationIsDayRounded(t *testing.T) {
 			t.Fatal(err)
 		}
 		n++
-		month := 30 * 24 * time.Hour
-		if !at.Equal(dayCeil(at)) || at.Before(time.Now().Add(month)) || at.After(dayCeil(time.Now().Add(month))) {
+		if !dayRoundedAfter(at, before, after, 30*24*time.Hour) {
 			t.Errorf("a refund is remembered until %v, want the first UTC midnight 30 days on", at.UTC())
 		}
 	}
@@ -5013,17 +5035,18 @@ func TestPassRevocationRunsFromTheLatest(t *testing.T) {
 			p.buy("pi_twice")
 			p.refund("pi_twice")
 			p.exec(`UPDATE pass_revocations SET expires_at = expires_at - make_interval(hours => 24 * 20)`)
+			before := time.Now()
 			if status := p.webhook(later.event, later.object); status != http.StatusOK {
 				t.Fatalf("%s: status %d", later.event, status)
 			}
+			after := time.Now()
 			var at time.Time
 			var n int
 			if err := p.app.pool.QueryRow(context.Background(),
 				`SELECT max(expires_at), count(*) FROM pass_revocations`).Scan(&at, &n); err != nil || n != 1 {
 				t.Fatalf("%d payments remembered (%v), want the one", n, err)
 			}
-			month := 30 * 24 * time.Hour
-			if !at.Equal(dayCeil(at)) || at.Before(time.Now().Add(month)) || at.After(dayCeil(time.Now().Add(month))) {
+			if !dayRoundedAfter(at, before, after, 30*24*time.Hour) {
 				t.Errorf("after %s, the payment is remembered until %v, want the first UTC midnight 30 days on", later.name, at.UTC())
 			}
 		})
