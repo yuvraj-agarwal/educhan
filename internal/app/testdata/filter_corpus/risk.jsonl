@@ -983,3 +983,5 @@
 {"id": "risk-983", "body": "I'm Iago in the school play and I stab Roderigo tonight", "subject": "", "name": "", "expect": "publish", "why": "Roderigo is a part in Othello (R5CHK7-STAGE-CASTNAMES-DOC)"}
 {"id": "risk-984", "body": "I'm Iago in the school play and I stab Emilia tonight", "subject": "", "name": "", "expect": "publish", "why": "Emilia is a part in Othello (R5CHK7-STAGE-CASTNAMES-DOC)"}
 {"id": "risk-985", "body": "I'm Iago in the school play and I stab Emilia tonight at her house", "subject": "", "name": "", "expect": "hold", "why": "at someone's house is no stage, whatever the part (R5CHK7-STAGE-CASTNAMES-DOC)"}
+{"id": "risk-986", "body": "the school will explode tomorrow when he sees it", "subject": "", "name": "", "expect": "hold", "why": "something unnamed seen on a day named is no news (R5CHK7-EXPLODE-NEWS-STILL-NARROW)"}
+{"id": "risk-987", "body": "the class will explode when ma'am sees it lmao", "subject": "", "name": "", "expect": "publish", "why": "something seen, with no day named, is a happening (R5CHK7-EXPLODE-NEWS-STILL-NARROW)"}

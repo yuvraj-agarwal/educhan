@@ -8136,7 +8136,9 @@ func (f *scannedField) threatComingCheck(v *view, m []int) bool {
 // assembly ("at assembly when they announce the results"). A clock time
 // anywhere after "explode" leaves only an announcement, results, marks or a
 // list as news: "at 10am when the results are declared", not "at 7 when the
-// band plays".
+// band plays". Something unnamed seen or heard on a day named is no news
+// (explodeSees, explodeUnnamed): "tomorrow when he sees it", not "when they
+// see this lol".
 func explodesAtNews(ws []string) bool {
 	for i, w := range ws {
 		if !explodeWhen[w] {
@@ -8178,7 +8180,8 @@ func explodesAtNews(ws []string) bool {
 				explodeNewsHeads[c] && j > 0 && explodeNewsKinds[clause[j-1]],
 				explodeReturn[c] && anyIn(clause, explodePapers):
 				news, announced = 2, announced || explodeAnnounce[c] // "the date sheet", "gives back the copies"
-			case explodeOut[c] && is(next, "out"), explodeBack[c] && is(next, "back"), explodeHappenings[c],
+			case explodeOut[c] && is(next, "out"), explodeBack[c] && is(next, "back"),
+				explodeHappenings[c] && !(explodeSees[c] && explodeUnnamed[next] && anyIn(ws[:i], soonWords)),
 				explodeLet[c] && explodeLetWho[next] && anyIn(clause[j+1:min(len(clause), j+5)], explodeLetGo):
 				news = max(news, 1) // "when the warden lets us go home early"
 			}
@@ -8314,6 +8317,8 @@ var (
 	explodeBack       = canonSetOf(`bring brings bringing brought`)
 	explodeHappenings = canonSetOf(`see sees saw seeing hear hears heard hearing win wins won winning serve serves
 		served resign resigns resigned retire retires fix fixes fixed play plays perform performs sing sings stage`)
+	explodeSees     = canonSetOf(`see sees saw seeing hear hears heard hearing`)
+	explodeUnnamed  = canonSetOf(`it this that`)
 	explodeTiming   = canonSetOf(`gate gates door doors shut shuts least fill fills filled filling`)
 	explodeAssembly = canonSetOf(`assembly assemblies anthem prayer prayers`)
 	explodeArrive   = canonSetOf(`arrive arrives arrived arriving enter enters entered entering reach reaches
