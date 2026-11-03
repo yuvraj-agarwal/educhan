@@ -8120,25 +8120,28 @@ func (f *scannedField) threatComingCheck(v *view, m []int) bool {
 
 // explodesAtNews reports, in the words after "will explode", a clause of
 // "when", "once" or "if" that says the place will explode at news or a
-// happening a crowd cheers: an announcement, results, marks or a list put
-// up, something seen, heard, found out, come out or brought back, a holiday,
-// the wifi, a win, a show, food served, a fix, a resignation ("the school
-// will explode tomorrow when they announce the holiday", "the staffroom will
-// explode when they find out", "the stadium will explode when india wins").
-// A clause that names none of these is no news, and neither is one with the
+// happening a crowd cheers: an announcement, results, marks or a list put up,
+// something seen, heard, found out, come out or brought back, a holiday, the
+// wifi, a win, a show, food served, a fix, a resignation ("the school will
+// explode tomorrow when they announce the holiday", "the staffroom will
+// explode when they find out", "the stadium will explode when india wins"). A
+// clause that names none of these is no news, and neither is one with the
 // poster in it, a bomb's timing, gates or doors closing, a place filling,
 // "least expect", people arriving, going in or somewhere, or assembly going
 // on, whatever news it names as well: "when I press the button", "when the
 // bell rings", "once the gates close", "when you least expect it", "when the
-// students arrive", "when everyone is in class", "when assembly is going
-// on". Results arriving or in ("when the results are in") are news, and so
-// is something announced in assembly, but not a place that will explode at
+// students arrive", "when everyone is in class", "when assembly is going on".
+// Results arriving or in ("when the results are in") are news, and so is
+// something announced in assembly, but not a place that will explode at
 // assembly ("at assembly when they announce the results"). A clock time
 // anywhere after "explode" leaves only an announcement, results, marks or a
-// list as news: "at 10am when the results are declared", not "at 7 when the
-// band plays". Something unnamed seen or heard on a day named is no news
-// (explodeSees, explodeUnnamed): "tomorrow when he sees it", not "when they
-// see this lol".
+// list as news (explodeClockNews): "at 10am when the results are declared",
+// not "at 9am when they cancel school" or "at 7 when the band plays".
+// Something unnamed seen or heard on a day named, before "when" or after it,
+// is no news (explodeSees, seenUnnamed): "tomorrow when he sees it", "when
+// they see it tomorrow", not "when they see this lol" or "tomorrow when ma'am
+// sees this meme". What is in print is no hidden thing (inPrint): "when they
+// see what's in the yearbook".
 func explodesAtNews(ws []string) bool {
 	for i, w := range ws {
 		if !explodeWhen[w] {
@@ -8164,10 +8167,11 @@ func explodesAtNews(ws []string) bool {
 			switch {
 			case explodeHits[c] && j+2 < len(clause) && explodeScores[clause[j+2]]:
 				news = max(news, 1) // "when rohit hits a century", not "when the timer hits zero"
-			case explodeTriggers[c] || firstPersonSubjects[c] || explodeTiming[c] || explodeHidden[c],
+			case explodeTriggers[c] || explodeTiming[c] || explodeHidden[c],
+				firstPersonSubjects[c] && !(j > 0 && explodeSay[clause[j-1]]), // not "says we can go home"
 				(is(c, "what's") || is(c, "whats") || is(c, "what") && (is(next, "is") || is(next, "was"))) &&
-					(anyIn(clause[j+1:min(len(clause), j+3)], explodeInside)):
-				return false // "when they see what's in the bag", "when they open the box"
+					(anyIn(clause[j+1:min(len(clause), j+3)], explodeInside)) && !inPrint(clause[j+1:]):
+				return false // "when they see what's in the bag", "when they open the box", not "what's in the news"
 			case explodeAssembly[c] && !announced:
 				return false // "when assembly is going on", not "when they announce it in assembly"
 			case explodeArrive[c] && peopleSubject(subject) && !newsObject(clause[j+1:]),
@@ -8176,14 +8180,18 @@ func explodesAtNews(ws []string) bool {
 				explodeBe[c] && (is(next, "in") || is(next, "at") || is(next, "there") || is(next, "here")) &&
 					(explodeBeSubjects[c] || peopleSubject(subject)):
 				return false // "when the principal walks in", "when everyone is in class", not "the results are in"
+			case explodeClockNews[c]:
+				news, announced = 2, announced || explodeAnnounce[c] // "the results", "when they announce"
 			case explodeNews[c],
 				explodeNewsHeads[c] && j > 0 && explodeNewsKinds[clause[j-1]],
 				explodeReturn[c] && anyIn(clause, explodePapers):
-				news, announced = 2, announced || explodeAnnounce[c] // "the date sheet", "gives back the copies"
+				news, announced = max(news, 1), announced || explodeAnnounce[c] // "the date sheet", "gives back the copies"
 			case explodeOut[c] && is(next, "out"), explodeBack[c] && is(next, "back"),
-				explodeHappenings[c] && !(explodeSees[c] && explodeUnnamed[next] && anyIn(ws[:i], soonWords)),
+				explodeReads[c] && (is(next, "out") || explodeUnnamed[next] && j+2 < len(clause) && is(clause[j+2], "out")),
+				explodeHappenings[c] && !(explodeSees[c] && seenUnnamed(clause, j) &&
+					(anyIn(ws[:i], soonWords) || anyIn(clause[j+2:], soonWords))),
 				explodeLet[c] && explodeLetWho[next] && anyIn(clause[j+1:min(len(clause), j+5)], explodeLetGo):
-				news = max(news, 1) // "when the warden lets us go home early"
+				news = max(news, 1) // "when the warden lets us go home early", "when she reads it out"
 			}
 		}
 		return news == 2 || news == 1 && !clockTime(ws)
@@ -8195,24 +8203,110 @@ func explodesAtNews(ws []string) bool {
 // post, a bomb or what sets one off (explodeDevices), or the poster arming
 // it: a first-person subject with explodeRigs in the two words after it, or
 // explodePlants before "it" or "something" ("i put it", not "i put in so
-// much work"), and not "the bomb" praising what was just named ("our dance
-// is the bomb"). Neither news in the clause after "explode" nor a stage or
-// an event in the sentence excuses them: "when the results come out, i
-// planted it in the staffroom", "when they give the prizes, the bomb is
-// under the stage".
+// much work") anywhere but where it is shown (explodeShown: "i set it as my
+// wallpaper"), and not a device named in praise (explodePraise: "our dance
+// is the bomb", "my results are a bomb"). Neither news in the clause after
+// "explode" nor a stage or an event in the sentence excuses them: "when the
+// results come out, i planted it in the staffroom", "when they give the
+// prizes, the bomb is under the stage".
 func explodeArmed(ws []string) bool {
 	for i, w := range ws {
-		if explodeDevices[w] && !(i > 1 && is(ws[i-1], "the") && (explodeIs[ws[i-2]] ||
-			strings.HasSuffix(ws[i-2], "'s"))) {
+		if explodeDevices[w] && !explodePraise(ws, i) {
 			return true
 		}
 		for k := i + 1; firstPersonSubjects[w] && k < len(ws) && k <= i+2; k++ {
-			if explodeRigs[ws[k]] || explodePlants[ws[k]] && k+1 < len(ws) && explodeIts[ws[k+1]] {
+			if explodeRigs[ws[k]] || explodePlants[ws[k]] && k+1 < len(ws) && explodeIts[ws[k+1]] &&
+				!explodeShown(ws[k+2:]) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// explodePraise reports explodeDevices at ws[i] said in praise of what was
+// just named: "the bomb" after explodeIs or a possessive ("our dance is the
+// bomb", "the dj's the bomb"), "a bomb" after explodeIs or "be" with
+// something of someone's as the subject or "of" after it ("my results are a
+// bomb", "it'll be a bomb of a day"), not "there is a bomb", "the package is
+// a bomb" or "my bag is a bomb"; and "explosive" after explodeIs or "be"
+// said of explodeMoods ("the atmosphere will be explosive").
+func explodePraise(ws []string, i int) bool {
+	if i < 2 {
+		return false
+	}
+	be := explodeIs[ws[i-2]] || is(ws[i-2], "be")
+	switch {
+	case is(ws[i-1], "the") && (explodeIs[ws[i-2]] || strings.HasSuffix(ws[i-2], "'s")):
+		return true
+	case is(ws[i-1], "a") && be && (i+1 < len(ws) && is(ws[i+1], "of") || ownedSubject(ws[:i-2])):
+		return true
+	case is(ws[i], "explosive") && (explodeIs[ws[i-1]] || is(ws[i-1], "be")):
+		k := i - 2
+		for k >= 0 && (is(ws[k], "will") || is(ws[k], "gonna") || is(ws[k], "be")) {
+			k--
+		}
+		return k >= 0 && explodeMoods[ws[k]]
+	}
+	return false
+}
+
+// ownedSubject reports the words before a verb ending in something of
+// someone's that holds nothing (not explodeHidden): "my results", "our
+// dance", not "my bag" or "there".
+func ownedSubject(ws []string) bool {
+	n := len(ws)
+	return n >= 2 && ownerWord(ws[n-2]) && !explodeHidden[ws[n-1]] && !threatPlaceWords[ws[n-1]]
+}
+
+// explodeShown reports, after the poster setting or putting "it", a place it
+// is shown rather than hidden: "as my wallpaper", "up with the dj", "on my
+// story", "on the notice board" (explodeShows), not "in the staffroom",
+// "under the stage" or nothing at all.
+func explodeShown(ws []string) bool {
+	if len(ws) == 0 {
+		return false
+	}
+	if is(ws[0], "as") || is(ws[0], "up") && len(ws) > 1 && is(ws[1], "with") {
+		return true
+	}
+	if !is(ws[0], "on") {
+		return false
+	}
+	k := 1
+	if k < len(ws) && (determiners[ws[k]] || ownerWord(ws[k])) {
+		k++
+	}
+	return k < len(ws) && explodeShows[ws[k]]
+}
+
+// seenUnnamed reports something unnamed after explodeSees at clause[j]: "it",
+// or "this" or "that" with none of explodeMedia after them ("when he sees
+// it", "when they see this", not "when ma'am sees this meme").
+func seenUnnamed(clause []string, j int) bool {
+	if j+1 >= len(clause) || !explodeUnnamed[clause[j+1]] {
+		return false
+	}
+	return is(clause[j+1], "it") || j+2 >= len(clause) || !explodeMedia[clause[j+2]]
+}
+
+// inPrint reports, after "what's" or "what is", what is in something printed
+// or posted (explodePrints): "what's in the yearbook", "what is in the
+// news", not "what's in the bag" or "what's in the hall".
+func inPrint(ws []string) bool {
+	k := 0
+	for k < len(ws) && k < 2 && (is(ws[k], "is") || is(ws[k], "was")) {
+		k++
+	}
+	if k >= len(ws) || !explodeInside[ws[k]] {
+		return false
+	}
+	k++
+	for k < len(ws) && (determiners[ws[k]] || ownerWord(ws[k])) {
+		k++
+	}
+	return k < len(ws) && (explodePrints[ws[k]] || k+1 < len(ws) && is(ws[k], "question") &&
+		explodePrints[ws[k+1]])
 }
 
 // peopleSubject reports, in the words of a clause before its verb, someone
@@ -8263,14 +8357,15 @@ func clockTime(ws []string) bool {
 }
 
 var (
-	// explodeWhen open the clause explodesAtNews reads. explodeNews in it are
-	// news, and so are explodeNewsHeads after explodeNewsKinds ("the date
+	// explodeWhen open the clause explodesAtNews reads. explodeClockNews in
+	// it are news, and so, except after a clock time, are the rest of
+	// explodeNews, explodeNewsHeads after explodeNewsKinds ("the date
 	// sheet", "the answer key") and explodeReturn with explodePapers ("gives
 	// back the copies"). explodeOut before "out", explodeBack before "back",
-	// explodeHappenings, explodeHits before explodeScores ("hits a century")
-	// and explodeLet before explodeLetWho and explodeLetGo ("lets us go home
-	// early") are the happenings a crowd cheers, news except after a clock
-	// time. explodeTriggers are a bomb's timing or people inside,
+	// explodeReads before "out", explodeHappenings, explodeHits before
+	// explodeScores ("hits a century") and explodeLet before explodeLetWho
+	// and explodeLetGo ("lets us go home early", "says we can go home") are
+	// the happenings a crowd cheers, news except after a clock time too. explodeTriggers are a bomb's timing or people inside,
 	// explodeTiming gates or doors closing, a place filling and "least
 	// expect", explodeHidden, and "what's" before explodeInside, something
 	// hidden ("the bag", "what's in the bag"), explodeAssembly assembly going
@@ -8295,8 +8390,9 @@ var (
 	explodePapers = canonSetOf(`paper papers copy copies sheet sheets test tests`)
 	explodeHits   = canonSetOf(`hit hits`)
 	explodeScores = canonSetOf(`six sixes four fours boundary boundaries century centuries fifty goal goals homer`)
-	explodeLet    = canonSetOf(`let lets`)
-	explodeLetWho = canonSetOf(`us everyone everybody them`)
+	explodeLet    = canonSetOf(`let lets say says said`)
+	explodeSay    = canonSetOf(`say says said`)
+	explodeLetWho = canonSetOf(`us we everyone everybody them`)
 	explodeLetGo  = canonSetOf(`home early`)
 	explodeHidden = canonSetOf(`bag bags box boxes locker lockers package packages parcel parcels backpack backpacks
 		suitcase`)
@@ -8306,9 +8402,30 @@ var (
 	// explodeIts, after the poster, arming it, anywhere after "will explode"
 	// (explodeArmed).
 	explodeDevices = canonSetOf(`bomb bombs button timer detonate detonator detonators fuse fuses explosive
-		explosives ied`)
-	explodeRigs     = canonSetOf(`planted rigged wired`)
-	explodePlants   = canonSetOf(`put set hid placed left plant rig wire`)
+		explosives ied device devices`)
+	explodeRigs   = canonSetOf(`planted rigged wired`)
+	explodePlants = canonSetOf(`put set hid hidden placed left plant rig wire`)
+	// explodeShows, after "on", are where a thing put is shown, not hidden
+	// (explodeShown); explodeMoods are what is "explosive" in praise
+	// (explodePraise).
+	explodeShows = canonSetOf(`story stories status insta instagram gc chat group wallpaper dp profile feed notice
+		noticeboard board website site page timeline whatsapp snap screen`)
+	explodeMoods = canonSetOf(`atmosphere vibe vibes energy crowd mood match game party night show performance`)
+	// explodeClockNews are the news a clock time leaves news: an
+	// announcement, results, marks or a list.
+	explodeClockNews = canonSetOf(`announce announces announced announcing announcement announcements declare
+		declares declared result results mark marks grade grades score scores rank ranks ranking rankings list
+		lists merit toppers topper post posts posted`)
+	// explodeReads before "out", or "it" and "out", are a reading out
+	// ("when she reads it out"); explodeMedia after "this" or "that" name
+	// what is seen ("this meme"); explodePrints after "what's in" are
+	// printed or posted, nothing hidden ("what's in the yearbook").
+	explodeReads = canonSetOf(`read reads reading`)
+	explodeMedia = canonSetOf(`meme memes video videos pic pics photo photos picture pictures reel reels clip clips
+		post posts tweet tweets trailer edit edits`)
+	explodePrints = canonSetOf(`yearbook yearbooks news newspaper newspapers paper papers magazine magazines
+		results result report reports list lists letter letters email emails mail circular circulars notice
+		notices newsletter`)
 	explodeIts      = canonSetOf(`it something stuff them one`)
 	explodeIs       = canonSetOf(`is are was were`)
 	explodeAnnounce = canonSetOf(`announce announces announced announcing announcement announcements declare declares
