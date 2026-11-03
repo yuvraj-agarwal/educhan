@@ -2267,6 +2267,18 @@ func TestPassReissue(t *testing.T) {
 		}
 	}
 
+	// The browser that bought the Pass keeps its claim cookie once the
+	// purchase is collected, with nothing under it now: a reissue code typed
+	// there is answered with no purchase to collect, which the page would
+	// otherwise show as one in progress.
+	if _, ok := p.claimCookie(); !ok {
+		t.Fatal("collecting the Pass took the claim cookie from the browser that bought it")
+	}
+	_, _, again := p.reissueCode("mod-key", "pi_lost")
+	if status, out := p.redeem(again); status != http.StatusOK || out.Status != "issued" || !passCodeShape(out.Pass) || out.Claim {
+		t.Fatalf("a reissue code typed in the browser that bought and collected the Pass: status %d, %+v; want no purchase to collect", status, out)
+	}
+
 	// A newer reissue code replaces the one before it, and a reissue code
 	// lapses at its deadline.
 	_, _, older := p.reissueCode("mod-key", "pi_lost")
@@ -4083,18 +4095,24 @@ func TestPassReadsEveryClaimCookie(t *testing.T) {
 		t.Fatalf("asked again after the second answer: status %d, %+v; want %s, the Pass made last", status, again, other.Pass)
 	}
 
-	// A token with nothing under it is no claim, however many there are; and
-	// past the 16th, cookies are not read at all (passClaimCookieLimit), so one
-	// request queues no more lookups than that.
+	// A token with nothing under it is no claim, to the status or to a reissue
+	// code's answer, however many there are; and past the 16th, cookies are not
+	// read at all (passClaimCookieLimit), so one request queues no more lookups
+	// than that.
 	buyer := p.otherBrowser()
 	buyer.paid(buyer.checkout(""), "pi_past_the_limit")
 	own, _ := buyer.claimCookie()
 	if buyer.sendingClaimCookies(empty).reportsClaim() {
 		t.Fatal("a token with nothing under it is reported as a claim")
 	}
+	p.otherBrowser().buy("pi_lost_alone")
+	_, _, code := p.reissueCode("mod-key", "pi_lost_alone")
+	if status, out := buyer.sendingClaimCookies(empty).redeem(code); status != http.StatusOK || out.Status != "issued" || out.Claim {
+		t.Fatalf("a reissue code typed beside a token with nothing under it: status %d, %+v; want no purchase to collect", status, out)
+	}
 	// A reissue code typed in the browser tells it the purchase is there.
 	p.otherBrowser().buy("pi_lost_beside")
-	_, _, code := p.reissueCode("mod-key", "pi_lost_beside")
+	_, _, code = p.reissueCode("mod-key", "pi_lost_beside")
 	if status, out := buyer.sendingClaimCookies(empty, own).redeem(code); status != http.StatusOK || out.Status != "issued" || !out.Claim {
 		t.Fatalf("a reissue code typed beside a planted cookie: status %d, %+v; want the purchase still to collect", status, out)
 	}
