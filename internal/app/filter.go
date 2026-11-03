@@ -7806,10 +7806,12 @@ var payRuns = runsOf(`will|wil|gonna|gunna all|finally|definitely|really|surely|
 // with nothing paid after it but "for it" or "for this": "they will all pay
 // tomorrow at school", "10B will pay for it on monday". Money, a fee, a bill,
 // a treat or attention paid ("will pay for the trip", "will pay 500 rs",
-// "will pay attention"), a thing bought, ordered or signed up for, a thing
-// broken that is no one's body ("the guys who broke the window will pay for
-// it"), a question about the paying ("you'll pay tomorrow?"), the poster's
-// own group ("we will pay"), and what threatCheck turns down, are no threat.
+// "will pay attention"), a thing bought, ordered or signed up for by the
+// payer (purchasePaid), a thing broken that is no one's body, unless the
+// sentence sets a fight ("the guys who broke the window will pay for it",
+// not "the guys who broke my glasses will pay tomorrow behind the school"),
+// a question about the paying ("you'll pay tomorrow?"), the poster's own
+// group ("we will pay"), and what threatCheck turns down, are no threat.
 func (f *scannedField) payCheck(v *view, m []int) bool {
 	text := v.text
 	ws := wordsIn(text[m[0]:m[1]])
@@ -7817,7 +7819,8 @@ func (f *scannedField) payCheck(v *view, m []int) bool {
 		return false
 	}
 	next := nextWords(clauseAfter(text, m[1]), 8)
-	if len(next) > 1 && is(next[0], "for") && payForWhat[next[1]] {
+	forIt := len(next) > 1 && is(next[0], "for") && payForWhat[next[1]]
+	if forIt {
 		next = next[2:]
 	}
 	if len(next) > 0 && !payTails[next[0]] {
@@ -7825,7 +7828,9 @@ func (f *scannedField) payCheck(v *view, m []int) bool {
 	}
 	around := sentenceAround(text, m[0], m[1])
 	sentence := wordsIn(around)
-	if anyIn(sentence, moneyWords) || anyIn(sentence, purchaseWords) || damagePaid(sentence) {
+	if anyIn(sentence, moneyWords) ||
+		purchasePaid(wordsIn(sentenceBefore(text, m[0])), sentenceAfter(text, m[1])) ||
+		damagePaid(sentence) && !fightSet(sentence, forIt) {
 		return false
 	}
 	// A question about paying, asked in the clause the promise is in, is
@@ -7860,9 +7865,10 @@ var (
 	payTails = canonSetOf(`tomorrow tmrw tmr today tonight soon on at after in this next when just mark trust
 		monday tuesday wednesday thursday friday saturday sunday morning evening dearly big time`)
 	// moneyWords, in the sentence, make paying a payment, and so do
-	// purchaseWords, what is bought, ordered or signed up for: "the people
-	// who ordered hoodies will pay on monday", "you'll pay tomorrow when you
-	// come to collect it".
+	// purchaseWords, what is bought, ordered or signed up for, where
+	// purchasePaid reads them as the payer's: "the people who ordered
+	// hoodies will pay on monday", "you'll pay tomorrow when you come to
+	// collect it".
 	moneyWords = canonSetOf(`rs rupees inr dollars bucks cash fee fees money bill bills upi gpay paytm card online
 		price amount rent fine deposit ticket tickets treat`)
 	purchaseWords = canonSetOf(`signed sign ordered order orders bought buy buying booked collect collecting
@@ -7873,6 +7879,84 @@ var (
 	damageVerbs = canonSetOf(`broke broken smashed damaged cracked scratched`)
 	unbroken    = canonSetOf(`heart hearts trust promise promises spirit`)
 )
+
+// purchasePaid reports a thing bought, ordered or signed up for that "will
+// pay" pays for, read in the words before the promise (before) and the text
+// after it in the sentence (after): in a relative clause before it, which is
+// the payer's ("everyone who signed up for the trip will pay", "the people
+// who ordered hoodies"), or in a clause after it that is not the poster's
+// own ("you'll pay tomorrow when you come to collect the book"), unless the
+// poster's purchase is the reader's ("i ordered your hoodie"). The poster's
+// own purchase after the promise is a threat's preparation ("you will pay
+// tomorrow after school, i bought a bat", "i ordered something special",
+// "i've booked the hall for it"), and "buy your way out", "in order of" and
+// "signed" opening a clause, a sign-off ("signed the kid you bullied"), are
+// no purchase.
+func purchasePaid(before []string, after string) bool {
+	for i, w := range before {
+		if !purchaseWords[w] {
+			continue
+		}
+		for k := i - 1; k >= 0 && k >= i-3; k-- {
+			if relativeWords[before[k]] {
+				return true
+			}
+			if !auxWords[before[k]] {
+				break
+			}
+		}
+	}
+	for _, clause := range strings.FieldsFunc(after, func(r rune) bool { return strings.ContainsRune(",;:", r) }) {
+		ws := wordsIn(clause)
+		for i, w := range ws {
+			if !purchaseWords[w] {
+				continue
+			}
+			var next string
+			if i+1 < len(ws) {
+				next = ws[i+1]
+			}
+			switch {
+			case i == 0 && (is(w, "signed") || is(w, "sign")),
+				i > 0 && is(ws[i-1], "in") && is(w, "order"),
+				i+2 < len(ws) && ownerWords[next] && is(ws[i+2], "way"):
+			case anyIn(ws[:i], firstPerson):
+				if is(next, "your") || is(next, "ur") {
+					return true
+				}
+			default:
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// fightSet reports a fight's place, a weapon or a death in ws, or a fight's
+// time when nothing is said to be paid for (forIt), which make a thing broken
+// no payment's: "the guys who broke my glasses will pay tomorrow behind the
+// school", "whoever broke my phone will pay tomorrow after school", "whoever
+// broke my phone will pay, they're dead"; not "the guys who broke the window
+// will pay for it after school".
+func fightSet(ws []string, forIt bool) bool {
+	if anyIn(ws, weaponHeads) || hasWord(ws, "dead") {
+		return true
+	}
+	for i, w := range ws {
+		place := is(w, "behind") || is(w, "outside")
+		if !place && (forIt || !timeBefore[w]) {
+			continue
+		}
+		k := i + 1
+		for k < len(ws) && k < i+3 && (determiners[ws[k]] || ownerWord(ws[k])) {
+			k++
+		}
+		if k < len(ws) && threatPlaceWords[ws[k]] {
+			return true
+		}
+	}
+	return false
+}
 
 // damagePaid reports a thing broken or damaged in ws, which is what "will
 // pay" or "will pay for it" pays for: "the guys who broke the window will pay
