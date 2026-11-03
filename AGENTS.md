@@ -443,7 +443,7 @@ properties and needs a browser check before the test changes.
   waited for the puzzle and again when a refusal of its answer arrives; one with an
   answer held already, or needing none, goes with the press. A form's page is the one
   noted as it was drawn (`drawnFor.route`, read at the press), by the render that drew
-  it, or by `renderVerify` for a `/verify` drawn again after a forget or a confirmation,
+  it, or by `renderVerify` for a `/verify` drawn again, one Forget this browser draws
   over the error of a `/verify` that would not load say, never a render begun since that
   has not drawn yet: a post's board and thread are where it goes, and it is the page a
   post or a code request is answered on, so one pressed just after a link is answered as
@@ -540,9 +540,9 @@ properties and needs a browser check before the test changes.
   the entry a jump within the page leaves behind is the kept page's own, and Back stays
   on it. A render a newer one has overtaken draws nothing, loaded or not, and says
   nothing (`overtaken`, which the board, thread and /verify views ask once their request
-  is answered, /verify drawn again after a confirmation or a forget too, a forget
-  drawing it only while /verify is the page being drawn), so of two redraws only the
-  later one is shown or said to have failed. Either way the post goes ahead and is
+  is answered, as does every redraw of /verify, after a confirmation or a forget say, a
+  forget drawing it only while /verify is the page being drawn), so of two redraws only
+  the later one is shown or said to have failed. Either way the post goes ahead and is
   answered on the form on screen, and a success goes to it. The loading state, the
   dimming and the skeleton that may follow it, is the latest render's (`rendersBegun`):
   every render begun, whatever its view, ends any before it (`endLoading`), so an older

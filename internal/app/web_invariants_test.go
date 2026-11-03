@@ -1066,8 +1066,8 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 			// code request answered before that page drew would draw its code
 			// step over the page being left, and a refusal would be said on the
 			// page the reader went to. drawnFor names /verify however it was
-			// drawn, by its render or again after a forget or a confirmation
-			// (renderVerify), over the error of a /verify that would not load
+			// drawn, by its render or again (renderVerify), one Forget this
+			// browser draws over the error of a /verify that would not load
 			// say, which noted nothing: naming the page before, it would have
 			// every press of the form judged off the screen. state.route is
 			// read only to draw again the /verify the reader is on by then
@@ -1684,13 +1684,13 @@ func TestForgettingTheBadgeReachesEveryTab(t *testing.T) {
 		"const stored = storeCredential(issued.credential);",
 		`verifyStep = { step: "email", label: "" }; `+verifyOvertaken+overtakenDrawn+" }",
 	)
-	// Each of those redraws, which are not renders, decides on what it found
-	// on screen before it asks the server, and passes that to renderVerify,
-	// which draws, and has its notice said or taken off, only if that is still
-	// on screen once the server has answered: an address step the reader moved
-	// to meanwhile, by Verify another address or Use a different address,
-	// which change no route, is left as it is, as is /verify drawn again by a
-	// forget, with its notice. Forget this credential's own redraw passes the
+	// Each of those redraws, which are not renders, decides on what it found on
+	// screen before it asks the server, and passes that to renderVerify, which
+	// draws, and has its notice said or taken off, only if that is still on
+	// screen once the server has answered: an address step the reader moved to
+	// meanwhile, by Verify another address or Use a different address, which
+	// change no route, is left as it is, as is /verify drawn again, by a forget
+	// with its notice say. Forget this credential's own redraw passes the
 	// button pressed, so an address step the reader moved to from its panel
 	// meanwhile is left too. Forget this browser's, pressed here or heard from
 	// another tab, passes nothing, as render does, and draws whatever /verify

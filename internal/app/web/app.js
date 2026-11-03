@@ -2607,21 +2607,22 @@ function verifyViewHTML() {
     ${forgetBrowserHTML()}`;
 }
 
-// renderVerify draws /verify for route, the render or the press that asked for
+// renderVerify draws /verify for route, the render or the redraw that asked for
 // it, unless a newer render has begun while it asked the server: then, like the
 // other views, it draws nothing and says nothing (overtaken). A redraw that is
 // not a render passes over, what it found on screen that called for it, or for
 // Forget this credential the button pressed, and draws nothing either if that
 // has left the screen while it asked: the reader has moved on within /verify
-// meanwhile, to an address step they may be filling in, say, or a forget has
-// drawn the page again. Forget this browser's redraw, pressed here or heard
-// from another tab, passes nothing: it draws whatever /verify then shows, so
-// that its notice is said. It returns whether it drew. Whoever asked, a page it
-// draws notes what it was drawn for as one render draws does (drawnFor), with
-// no thread and no image open: drawn after a forget or a confirmation, it may
-// replace the error of a /verify that would not load, which notes nothing, or
-// the page a render of /verify still loading has yet to replace, and a press of
-// its form is judged on the page drawnFor names (submitVerification).
+// meanwhile, to an address step they may be filling in, say, or another redraw,
+// after a forget say, has drawn the page again. Forget this browser's redraw,
+// pressed here or heard from another tab, passes nothing: it draws whatever
+// /verify then shows, so that its notice is said. It returns whether it drew.
+// Whoever asked, a page it draws notes what it was drawn for as one render
+// draws does (drawnFor), with no thread and no image open, so that a press of
+// its form is judged on that page (submitVerification) whatever it replaced:
+// the page a render of /verify still loading has yet to replace, say, or, for
+// Forget this browser's redraw, the error of a /verify that would not load,
+// which notes nothing.
 async function renderVerify(route, over) {
   await loadVerification();
   if (overtaken(route) || (over && !over.isConnected)) {
@@ -3338,10 +3339,10 @@ async function resolvePost(route) {
 // overtaken says whether a newer render has begun since the one for route. An
 // overtaken render draws nothing, loaded or not, and leaves the screen to the
 // newer one: the board, thread and /verify views ask once their request is
-// answered, /verify drawn again after a forget or a confirmation too, and
-// render after the board list and before anything else it does to the page. A
-// redraw that fails and keeps its page puts back the route that page was drawn
-// for, which overtakes every render still loading.
+// answered, as does every redraw of /verify, after a forget say, and render
+// after the board list and before anything else it does to the page. A redraw
+// that fails and keeps its page puts back the route that page was drawn for,
+// which overtakes every render still loading.
 function overtaken(route) {
   return state.route !== route;
 }
@@ -4162,14 +4163,15 @@ let renderedPath = null;
 
 // What the page on screen was drawn for: its address, less the fragment, its
 // route, and the thread its controls read. The render that draws a page notes
-// them, and so does renderVerify, for /verify drawn again after a forget or a
-// confirmation too; the steps /verify draws over its own page, the code step
+// them, and renderVerify notes them for every /verify it draws, one drawn again
+// after a forget say; the steps /verify draws over its own page, the code step
 // after a request and the address step that Verify another address or Use a
 // different address draws, are drawn for the route noted. Nothing is noted for
-// the skeleton, the age screen or an error, none of which draws a form that
-// reads it: drawnFor names the page drawn before them until another is drawn. A
-// redraw that keeps the page for a post on its way, and then will not load,
-// puts them back, the address in the address bar too (render).
+// the skeleton, the age screen or the error of a page that would not load, none
+// of which draws a form that reads it: drawnFor names the page drawn before
+// them until another is drawn. A redraw that keeps the page for a post on its
+// way, and then will not load, puts them back, the address in the address bar
+// too (render).
 let drawnFor = { path: null, route: null, thread: null };
 
 // A same-page quote link or backlink only moves the fragment, and the browser
