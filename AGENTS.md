@@ -1217,7 +1217,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   the picture is written at 8 bytes a pixel rather than 6 and its thumbnail scaled through
   the alpha, and Paeth doubles the decode; both on the scale on which the CMYK JPEG below
   takes 8.5 to 10 s, not its 5.5 to 7.5: beside it the two took about half and three
-  quarters of its time), an 8-bit transparent one 2 to 3, the slowest GIF 3.5 to 4.5 (25
+  quarters of its time), an 8-bit transparent one 2 to 3, the slowest GIF 4 to 5 (25
   frames of a 2000×2000 canvas each with a table of its own of 256 colours, whichever
   colours they are: `colourIndex` finds each in the same three steps, where a hash let a
   GIF choose colours that all fell in one place and took up to a minute), a lossless WebP
