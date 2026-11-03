@@ -940,12 +940,13 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   count (`TestWebPStillWithAFrameAfterItsPictureIsStoredAsAStill`). `Inspect` also reads
   every other WebP's chunks as `stripWebP` does, without writing the file (`webpKept`),
   and refuses whatever `stripWebP` would refuse once processed: a RIFF that runs past the
-  end of the file or a chunk that does, no bitstream, and in a simple-format file an ALPH
-  before its bitstream, or in an extended one a bitstream that does not match the canvas,
-  a second bitstream, an ALPH after its bitstream, beside a lossless one or after another
-  ALPH, a second VP8X or an ANIM. Before that `Inspect`'s own checks caught only the RIFF
-  of these, leaving the rest to x/image's `DecodeConfig`, which reads no further than a
-  VP8X or, in a file without one, the bitstream, so in an extended file any of the rest, a
+  end of the file or a chunk that does, no bitstream or one whose header cannot be read,
+  and in a simple-format file an ALPH before its bitstream, or in an extended one a VP8X
+  that is not 10 bytes, a bitstream that does not match the canvas, a second bitstream, an
+  ALPH after its bitstream, beside a lossless one or after another ALPH, a second VP8X or
+  an ANIM. Before that `Inspect`'s own checks caught only the RIFF of these, leaving the
+  rest to x/image's `DecodeConfig`, which reads no further than a VP8X or, in a file
+  without one, the bitstream, so in an extended file any of the rest past its VP8X, a
   chunk that runs past the end wherever it lies among them, passed `Inspect` and was
   refused after flood control, and so was a chunk after the picture that runs past the end
   in a simple-format file (`TestMalformedWebPIsRefused`, whose cases `Inspect` must
