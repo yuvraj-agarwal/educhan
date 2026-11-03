@@ -795,12 +795,15 @@ has changed one of those properties and needs a browser check before the test ch
   tab makes to the Pass, on whatever page this tab is on (`followPassStorage`), takes it
   off once the browser no longer holds that (`dropStalePassNotice`, reading
   `passNoticeHeld`); any other notice, a refusal say, stays. Another tab's Remove or
-  Forget takes the notice off this tab's Pass page at once, whatever it says, and such a
-  notice off any other page, by its mark (`stopForPassForget`) or by the removal itself
-  (`followPassStorage`), and Stop's mark leaves it. Taken off by anything but the reader
-  (`takePassNoticeOff`, which `dropStalePassNotice` uses too), it hands focus on its
-  dismiss button to `el.main`, with `preventScroll`, rather than drop it to the top of
-  the document, and the drawing after keeps it there (`redrawPass`, by its id).
+  Forget takes the notice off this tab's Pass page at once, whatever it says, and off any
+  other page such a notice, or one `forgetPassOrder` put up that a checkout's claim it
+  could not drop may still be collected (noted in `passClaimNotices`), which that Remove
+  or Forget asks to drop with every other claim (`passNoticeForgotten`), by its mark
+  (`stopForPassForget`) or by the removal itself (`followPassStorage`), and Stop's mark
+  leaves it. Taken off by anything but the reader (`takePassNoticeOff`, which
+  `dropStalePassNotice` uses too), it hands focus on its dismiss button to `el.main`,
+  with `preventScroll`, rather than drop it to the top of the document, and the drawing
+  after keeps it there (`redrawPass`, by its id).
   The held panel's Check it again and the steps beside a code the browser could not keep
   are offered only where the code box is drawn (`box`). Another tab's Remove, Forget, new
   code or finding that its code is no longer valid reaches this one by the `storage`
@@ -835,12 +838,14 @@ has changed one of those properties and needs a browser check before the test ch
   until" and renewal wording, Check it again and every notice read, and
   `passIssuedHTML`'s `ranOut` go by it, so a slow clock does not call a run-out Pass
   good, nor a fast one a good Pass run out. A Pass the server says has run out,
-  answering Check it again, a renewal's check (`recheckPass`) or a code typed in, is
-  stored with its date and `expired: true` (`storePass(code, expires, true)`), and
-  counts as run out whatever either clock says until it is stored again without the
-  mark, renewed say; a post's answer gives no date, so `markPassExpired` keeps the code
-  alone, marked. While sales are paused the page says `PASS_PAUSED` where Buy and Renew
-  were; `PASS_NOT_ON_SALE` is the server's `passNotOnSale` word for word
+  answering Check it again, the check of the code held after a renewal collected here
+  or after a claim or reissue code whose answer was lost (`recheckPass`, from
+  `confirmRenewal` and `passAfterLostAnswer`), or a code typed in, is stored with its
+  date and `expired: true` (`storePass(code, expires, true)`), and counts as run out
+  whatever either clock says until it is stored again without the mark, renewed say; a
+  post's answer gives no date, so `markPassExpired` keeps the code alone, marked. While
+  sales are paused the page says `PASS_PAUSED` where Buy and Renew were;
+  `PASS_NOT_ON_SALE` is the server's `passNotOnSale` word for word
   (`TestPassPageWhileSalesArePaused`), and `PASS_REISSUE_SPENT` its `passReissueSpent`. A
   browser that keeps no cookies or storage is not sent to Stripe (`passCanBeKept`). The
   header's Pass link (`data-pass-link`) is hidden unless `GET /api/site` says `"pass"` or

@@ -1184,8 +1184,9 @@ not-found view.
   not take off a true notice. It goes when the Pass page is drawn again, whatever sets
   that off, or at once when another tab changes the Pass, whatever page this tab shows.
   Remove the Pass or Forget this browser pressed in another tab, or any other removal of
-  the Pass there, takes whatever notice is on this tab's Pass page off at once, and such
-  a notice off any other page; Stop collecting it here leaves it. A renewal the page
+  the Pass there, takes whatever notice is on this tab's Pass page off at once, and off
+  any other page such a notice, or one saying this browser may still be collecting a
+  checkout this tab could not drop; Stop collecting it here leaves it. A renewal the page
   collects is checked against the Pass it holds (`/api/pass/activate`) before it says
   that Pass is renewed; one it cannot match to the Pass it holds is reported as a renewal
   of a Pass, by a payment from this browser or by the reissue code that brought it, with
