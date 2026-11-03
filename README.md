@@ -941,7 +941,9 @@ server that would refuse what it sends.
     before it names, and an index past the end of a frame's colour table shows opaque
     black, but for the transparent one. Some GIFs that browsers show are refused as Go's
     decoder refuses them, once they are decoded and so after flood control (`image could
-    not be decoded`); those found so far are one whose pixels index past their table, but
+    not be decoded`); those found so far are one whose compressed pixels stop, with the
+    end code, short of a frame's last pixel, too soon for Go's decoder, while Chromium
+    shows the rest of the frame transparent; one whose pixels index past their table, but
     for indices up to a transparent index that is itself past it, which Go's decoder
     takes; one whose compressed pixels go on after a frame's last pixel, before its end
     code, with another pixel or a code that is not valid, where Chromium stops reading the

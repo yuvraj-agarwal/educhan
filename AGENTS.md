@@ -748,6 +748,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   all of them up to a transparent index past the table transparent. Other files browsers
   play and `image/gif` refuses are refused by the decoder, in `Process` and so after flood
   control (`image could not be decoded`); the kinds found so far are one with a frame
+  whose LZW data ends, with the end code, before the frame's last pixel is coded, which
+  `image/gif` refuses as not enough image data, where Chromium's `<img>` shows the rest of
+  the frame transparent and WebCodecs' `ImageDecoder` fails the frame; one with a frame
   whose pixels index past their table, but for indices up to a transparent index that is
   itself past it, which `image/gif` takes, where Chromium shows those pixels black; one
   whose LZW data goes on after a frame's last pixel, before its end code, with another

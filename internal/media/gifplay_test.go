@@ -574,23 +574,27 @@ func TestGIFIsReadAsChromiumReadsIt(t *testing.T) {
 
 // The kinds of GIF found that browsers show, image/gif refuses, and the walk
 // cannot tell from their blocks are refused once decoded, after flood control
-// (`image could not be decoded`), as README.md and AGENTS.md say. One has
-// more data after a frame's LZW end code than image/gif takes: the rest of
-// the sub-block the end code ends in, and, when it ends one, one more
-// sub-block of a single byte (golang.org/issue/16146); past that image/gif
-// reports too much image data, where Chromium shows the frame and reads on
-// from its terminator (a reviewer had it show such a file). One has LZW data
-// that goes on after a frame's last pixel, before its end code: another
-// pixel, or a code that is not valid. image/gif reports too much image data
-// or an invalid code, where Chromium stops reading the frame's codes once it
-// has its pixels (each case below was seen in Chromium 141's ImageDecoder to
-// play as the plain file does). And one has pixels on an index past the end
-// of their colour table, which Chromium shows black, and image/gif refuses
-// but for indices up to a transparent index that is itself past the table
+// (`image could not be decoded`), as README.md and AGENTS.md say. One has LZW
+// data that reaches its end code before a frame's last pixel: image/gif
+// reports not enough image data, where Chromium's <img> shows the pixels
+// coded and the rest of the frame transparent, and its ImageDecoder fails the
+// frame (a reviewer had both show such a file). One has more data after a
+// frame's LZW end code than image/gif takes: the rest of the sub-block the
+// end code ends in, and, when it ends one, one more sub-block of a single
+// byte (golang.org/issue/16146); past that image/gif reports too much image
+// data, where Chromium shows the frame and reads on from its terminator (a
+// reviewer had it show such a file). One has LZW data that goes on after a
+// frame's last pixel, before its end code: another pixel, or a code that is
+// not valid. image/gif reports too much image data or an invalid code, where
+// Chromium stops reading the frame's codes once it has its pixels (each case
+// below was seen in Chromium 141's ImageDecoder to play as the plain file
+// does). And one has pixels on an index past the end of their colour table,
+// which Chromium shows black, and image/gif refuses but for indices up to a
+// transparent index that is itself past the table
 // (TestGIFTransparentIndexPastItsTable). Each case is the two-frame GIF the
-// controls are stored as when what image/gif refuses is left out. A frame
-// with no colour table at all, which image/gif refuses too, the walk can tell
-// from its descriptor, and refuses before anything is decoded
+// controls are stored as, its first frame changed as the case's name says. A
+// frame with no colour table at all, which image/gif refuses too, the walk
+// can tell from its descriptor, and refuses before anything is decoded
 // (TestGIFFramePixelsReadsWhatTheDecoderReads).
 func TestGIFsImageGIFRefusesAreRefusedOnceDecoded(t *testing.T) {
 	table := [][3]byte{{0, 0, 0}, {255, 0, 0}, {0, 255, 0}, {0, 0, 255}}
@@ -634,6 +638,8 @@ func TestGIFsImageGIFRefusesAreRefusedOnceDecoded(t *testing.T) {
 		first func(*rawFrame)
 		err   string // image/gif's error
 	}{
+		{"the end code after two of the four pixels",
+			func(f *rawFrame) { f.codes = append(slices.Clone(redCodes[:3]), lzwCode{5, 3}) }, "not enough image data"},
 		{"a sub-block of two bytes after an end code that ends its sub-block",
 			func(f *rawFrame) { f.after = [][]byte{{0x00, 0x01}} }, "too much image data"},
 		{"a sub-block of 255 bytes after an end code that ends its sub-block",
