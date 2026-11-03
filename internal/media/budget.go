@@ -53,10 +53,15 @@ const UploadBudget int64 = 64 << 20
 //     alpha plane crafted as a lossless bitstream that runs every transform. Of
 //     that, decoding takes ~1-4 s, converting the picture for image/png
 //     (lossyWebPToNRGBA) ~1 s, writing the PNG, of up to ~70 MB, ~2-4 s, and
-//     the thumbnail ~1 s; with an alpha opaque but for rounded corners, or
-//     clear throughout, it takes ~3.5-4.5 s. Those were measured in runs in
-//     which the 16-bit PNG took its ~4-5 s and the CMYK JPEG ~8.5-10 s, as on a
-//     busy host (below).
+//     the thumbnail ~1 s. The time follows the colour as well as the alpha:
+//     with an alpha opaque but for rounded corners it takes ~3.5-4.5 s over a
+//     photograph and ~5-5.5 s over a synthetic one or noise, and with one clear
+//     throughout, whose PNG is written in a fraction of a second, ~1.5-2.5 s
+//     over a photograph. Those were measured in runs in which the 16-bit PNG
+//     took its ~4-5 s and the CMYK JPEG ~8.5-10 s, as on a busy host (below);
+//     in runs where the CMYK JPEG took ~6-6.5 s, a clear alpha took ~1.4-1.9 s
+//     over a photograph and ~2.5-2.7 s over noise that fills the default size
+//     limit, which takes longer to decode.
 //   - a JPEG at the scan cap (jpegScanBlockVisits weighs each scan by its
 //     work): a progressive one of ~0.8 million blocks, the most the memory
 //     estimate admits of one (a 25-megapixel 4:2:2 picture or ~17 megapixels
