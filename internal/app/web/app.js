@@ -2616,13 +2616,21 @@ function verifyViewHTML() {
 // meanwhile, to an address step they may be filling in, say, or a forget has
 // drawn the page again. Forget this browser's redraw, pressed here or heard
 // from another tab, passes nothing: it draws whatever /verify then shows, so
-// that its notice is said. It returns whether it drew.
+// that its notice is said. It returns whether it drew. Whoever asked, a page it
+// draws notes what it was drawn for as one render draws does (drawnFor), with
+// no thread and no image open: drawn after a forget or a confirmation, it may
+// replace the error of a /verify that would not load, which notes nothing, or
+// the page a render of /verify still loading has yet to replace, and a press of
+// its form is judged on the page drawnFor names (submitVerification).
 async function renderVerify(route, over) {
   await loadVerification();
   if (overtaken(route) || (over && !over.isConnected)) {
     return false;
   }
   el.main.innerHTML = verifyViewHTML();
+  state.thread = null;
+  expandedLink = null;
+  drawnFor = { path: renderedPath, route, thread: null };
   // Explained once, on the page that can do something about it.
   badgeLost = "";
   announce("Institutional verification");
@@ -3339,9 +3347,9 @@ function overtaken(route) {
 }
 
 // leavePage forgets what the page on screen gave its controls to read, its
-// thread and the image open on it, as render draws the skeleton, the age
-// screen or an error in its place. A page drawn in its place sets both for
-// itself (render).
+// thread and the image open on it, as render draws the skeleton, the age screen
+// or an error in its place. A page drawn in its place sets both for itself
+// (render, renderVerify).
 function leavePage() {
   state.thread = null;
   expandedLink = null;
@@ -3369,12 +3377,13 @@ async function render({ draft = captureDraft() } = {}) {
   // What the page on screen gives its controls to read, its thread and the
   // image open on it, stays as it is while this render loads, whatever it loads
   // (a post link's lookup, say, and the thread it goes on to), until something
-  // is drawn in the page's place (leavePage, and below): a refusal answered
-  // meanwhile updates the page it is shown on, and Escape closes the image open
-  // there. A redraw of the page a post is on its way from, or whose form has
-  // yet to be told what it missed off the screen, or whose form is pressed
-  // while it loads, keeps the page on screen (below). That is read as the draft
-  // stands when it is used (carriedDraft).
+  // is drawn in the page's place (leavePage, renderVerify, and below): a
+  // refusal answered meanwhile updates the page it is shown on, and Escape
+  // closes the image open there. A redraw with the routeKey of the page a post
+  // is on its way from, or whose form has yet to be told what it missed off the
+  // screen, or whose form is pressed while it loads, Update say, keeps the page
+  // on screen (below), where a post link's lookup, whose routeKey is its own,
+  // does not. That is read as the draft stands when it is used (carriedDraft).
   const keepPage = () => {
     const carried = carriedDraft(draft);
     return Boolean(carried && carried.held && carried.key === routeKey(route));
@@ -3396,11 +3405,12 @@ async function render({ draft = captureDraft() } = {}) {
   // left, on the next page that needs it.
   closeAgeScreen();
 
-  // A redraw of the page a post is on its way from, or whose form has yet to be
-  // told what it missed off the screen (captureDraft), keeps the page on
-  // screen, dimmed, rather than a skeleton, so the form stays in the document
-  // until it goes into the new page (restoreDraft), and so does one whose form
-  // is pressed before the skeleton would be drawn (carriedDraft).
+  // A redraw with the routeKey of the page a post is on its way from, or whose
+  // form has yet to be told what it missed off the screen (captureDraft), keeps
+  // the page on screen, dimmed, rather than a skeleton, so the form stays in
+  // the document until it goes into the new page (restoreDraft), and so does
+  // one whose form is pressed before the skeleton would be drawn
+  // (carriedDraft).
   const finish = beginLoading({ skeleton: () => !keepPage() });
   let resolved = null;
   try {
@@ -3611,8 +3621,8 @@ function field(form, name) {
 // not by the newest render begun: one begun before the last has drawn, the
 // second of a double click say, would carry this page's form, held or not, into
 // the form of the page it goes to. A form read for its values is noted with
-// them, with how often it had been pressed (presses), so that one pressed
-// while the redraw loads is carried held after all (carriedDraft).
+// them, with how often it had been pressed (presses), so that one pressed while
+// the redraw loads is carried held after all (carriedDraft).
 function captureDraft() {
   const key = routeKey(drawnFor.route || state.route);
   const form = el.main.querySelector("form[data-kind]");
@@ -3628,17 +3638,21 @@ function captureDraft() {
 }
 
 // carriedDraft is the draft a redraw carries, as of now. One read from a form
-// for its values stands for that form only until the form is pressed: a press
-// made while the redraw loads, its page still on screen, form and all, is
-// carried as one made just before the redraw began would have been, the form
-// itself carried held (captureDraft), whatever has become of its post since.
-// So a redraw with the form's routeKey, Update say, keeps the page on screen
-// for it (render), while a post link's lookup into its thread blanks the page
-// all the same once it is slow enough to draw its skeleton; and the page drawn,
-// by the redraw or the thread the lookup goes on to, puts the form back, or
-// reads it as it is by then (restoreDraft), rather than the values read before
-// the press, which the form a post went from would leave in the new form, to
-// be posted twice.
+// for its values stands for that form only until the form is pressed: any press
+// made while the redraw loads, its page still on screen, form and all, has the
+// form itself carried held, whatever has become of the press since. A post
+// pressed then is carried as one pressed just before the redraw began would
+// have been (captureDraft), and so is a press refused then before anything is
+// sent, an empty one say, though the same press made just before the redraw
+// began has the form read for its values. So a redraw with the form's routeKey,
+// Update say, keeps the page on screen for any press made while it loads, with
+// no skeleton, and keeps it, form and all, when the new page will not load
+// (render), while a post link's lookup into its thread blanks the page all the
+// same once it is slow enough to draw its skeleton; and the page drawn, by the
+// redraw or the thread the lookup goes on to, puts the form back, or reads it
+// as it is by then (restoreDraft), rather than the values read before the
+// press, which the form a post went from would leave in the new form, to be
+// posted twice.
 function carriedDraft(draft) {
   if (!draft || !draft.from || (presses.get(draft.from) ?? 0) === draft.pressed) {
     return draft;
@@ -4146,8 +4160,14 @@ document.addEventListener("click", (event) => {
 // The address the view on screen was rendered for, less its fragment.
 let renderedPath = null;
 
-// What the page on screen was drawn for, noted by the render that drew it: its
-// address, less the fragment, its route, and the thread its controls read. A
+// What the page on screen was drawn for: its address, less the fragment, its
+// route, and the thread its controls read. The render that draws a page notes
+// them, and so does renderVerify, for /verify drawn again after a forget or a
+// confirmation too; the steps /verify draws over its own page, the code step
+// after a request and the address step that Verify another address or Use a
+// different address draws, are drawn for the route noted. Nothing is noted for
+// the skeleton, the age screen or an error, none of which draws a form that
+// reads it: drawnFor names the page drawn before them until another is drawn. A
 // redraw that keeps the page for a post on its way, and then will not load,
 // puts them back, the address in the address bar too (render).
 let drawnFor = { path: null, route: null, thread: null };
@@ -4786,23 +4806,24 @@ function notSent() {
 // in the document, on the page that drew it. Going to another page changes
 // state.route at once, while the old form stays in the document until the new
 // page is drawn over it. A form's route is the page it is on at the press, as
-// the render that drew that page noted it (drawnFor), never a render begun
-// since that has not drawn yet: pressed just after a link, a post is answered
-// as off the screen while state.route has another routeKey, and on the form
-// again once a redraw of its own page, a post link's lookup into its thread
-// say, carries it, and a code request as off the screen (below). A redraw of
-// the same page, Update say, or of another page of the same board's index (the
-// same routeKey), keeps a posting form whose post is on its way in the
-// document, one pressed while the redraw loads included (carriedDraft): it puts
-// the form in place of the one the new page draws for the same thread or board
-// (restoreDraft) or, when the new page will not load, leaves the page on
-// screen, form and all (render). Either way the post goes ahead and is answered
-// on that form. Only a new page that draws no such form, the thread locked or
-// archived meanwhile, takes it off the screen. No redraw carries a /verify
-// form, so one is on screen only until the next render, of /verify too, one
-// begun just before its press included: a code requested from the form a redraw
-// is about to replace, its answer coming once that redraw has drawn, leaves the
-// page showing the address step, with nothing to say a code was sent.
+// what drew that page noted it (drawnFor), the render or, for /verify drawn
+// again after a forget say, renderVerify, never a render begun since that has
+// not drawn yet: pressed just after a link, a post is answered as off the
+// screen while state.route has another routeKey, and on the form again once a
+// redraw of its own page, a post link's lookup into its thread say, carries it,
+// and a code request as off the screen (below). A redraw of the same page,
+// Update say, or of another page of the same board's index (the same routeKey),
+// keeps a posting form whose post is on its way in the document, one pressed
+// while the redraw loads included (carriedDraft): it puts the form in place of
+// the one the new page draws for the same thread or board (restoreDraft) or,
+// when the new page will not load, leaves the page on screen, form and all
+// (render). Either way the post goes ahead and is answered on that form. Only a
+// new page that draws no such form, the thread locked or archived meanwhile,
+// takes it off the screen. No redraw carries a /verify form, so one is on
+// screen only until the next render, of /verify too, one begun just before its
+// press included: a code requested from the form a redraw is about to replace,
+// its answer coming once that redraw has drawn, leaves the page showing the
+// address step, with nothing to say a code was sent.
 function formOnScreen(form, route) {
   return form.isConnected && (form.dataset.kind ? routeKey(state.route) === routeKey(route) : state.route === route);
 }
@@ -4882,14 +4903,15 @@ function takeUnsaidNotice(form) {
 // server says by then. With refocus, a form that had the focus at the press,
 // which disabling the focused control took away, gets it back on its button,
 // ready to press again (put back in a box to write in, it would start another
-// puzzle), and so does the button of the form a redraw loading meanwhile then
-// draws in its place (refocusedForms, restoreDraft). That is only while the
-// focus is still lost, on the page itself or nowhere: a reader who moved it
-// during the wait, to read a post say, keeps it where they put it. And it does
-// not scroll the page: a reader who scrolled away during the wait stays where
-// they are. The notice saying what happened is at the top of the page, in view
-// only of a reader who is there. Until release, the form is in heldForms, and a
-// redraw of its page carries it across as it is (captureDraft, restoreDraft).
+// puzzle), and, for a posting form, the only kind noted for it
+// (refocusedForms), so does the button of the form a redraw loading meanwhile
+// then draws in its place (restoreDraft). That is only while the focus is still
+// lost, on the page itself or nowhere: a reader who moved it during the wait,
+// to read a post say, keeps it where they put it. And it does not scroll the
+// page: a reader who scrolled away during the wait stays where they are. The
+// notice saying what happened is at the top of the page, in view only of a
+// reader who is there. Until release, the form is in heldForms, and a redraw of
+// its page carries it across as it is (captureDraft, restoreDraft).
 function holdForm(form) {
   const controls = Array.from(form.elements).filter((control) => !control.disabled);
   const focused = form.contains(document.activeElement);
@@ -4919,7 +4941,9 @@ function holdForm(form) {
     const lost = !document.activeElement || document.activeElement === document.body;
     if (refocus && focused && lost) {
       form.querySelector('button[type="submit"]')?.focus({ preventScroll: true });
-      refocusedForms.add(form);
+      if (form.dataset.kind) {
+        refocusedForms.add(form);
+      }
     }
     return imageOff;
   };
@@ -4961,10 +4985,11 @@ el.main.addEventListener("submit", async (event) => {
   if (owed && owed.imageRefused && !(image && image.files.length)) {
     blockRefusedPicker(form, owed.limitReached);
   }
-  // Every press is counted, so that a redraw loading meanwhile, whose draft
-  // was read from this form before it, carries the form as it would have had
-  // the press come first (carriedDraft), and the focus an earlier refusal gave
-  // back is no longer this press's to give again (refocusedForms).
+  // Every press is counted, one refused below before anything is sent included,
+  // so that a redraw loading meanwhile, whose draft was read from this form
+  // before it, carries the form itself, held, as it carries a post pressed
+  // before it began (carriedDraft), and the focus an earlier refusal gave back
+  // is no longer this press's to give again (refocusedForms).
   presses.set(form, (presses.get(form) ?? 0) + 1);
   refocusedForms.delete(form);
   const button = form.querySelector('button[type="submit"]');
@@ -5308,11 +5333,12 @@ async function submitVerification(form) {
   }
 
   const sending = requesting ? "Sending…" : "Verifying…";
-  // The page the form is on, as for a post: the one the render that drew it
-  // noted (drawnFor), never one begun since that has not drawn yet, after a
-  // link pressed just before say, which has the form off the screen from the
-  // press (formOnScreen): its answer draws no step over the page being left,
-  // and says nothing on the page the reader went to.
+  // The page the form is on, as for a post: the one noted as it was drawn
+  // (drawnFor), by the render that drew it or by renderVerify, for /verify
+  // drawn again after a forget say, never a render begun since that has not
+  // drawn yet, after a link pressed just before say, which has the form off the
+  // screen from the press (formOnScreen): its answer draws no step over the
+  // page being left, and says nothing on the page the reader went to.
   const route = drawnFor.route;
   // "Forget this browser", pressed while the request is on its way, cancels
   // it: nothing goes that has not gone yet, and what comes back keeps nothing,
