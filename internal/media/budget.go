@@ -91,13 +91,17 @@ const UploadBudget int64 = 64 << 20
 //     repeat a cheap scan thousands of times and decode for thousands of
 //     seconds.
 //   - a GIF of many colours: 25 frames of a 2000×2000 canvas, which the frame
-//     cap (maxGIFFramePixels) lets come to 100 million pixels, each drawn from
-//     a table of its own of 256 colours, ~4-5 s, whichever colours they are:
-//     each is found in the frame's table in the same three steps
-//     (colourIndex), a tenth to a quarter slower than the hash it replaced
-//     over colours the hash spread out, which took ~3.5-4.5 s. Four 5000×5000
-//     frames of one table take ~3-3.5 s, and frames a pixel wide, whose rows
-//     the cap counts as 64 pixels each (gifRowPixels), a few tenths.
+//     cap (maxGIFFramePixels) lets come to 100 million pixels, each drawn
+//     from a table of its own of 256 colours, ~4-4.5 s whichever colours they
+//     are, and ~4.5-5 s when each frame leaves pixels undrawn, for whose
+//     colours its rows are gone over a second time (undrawnInTable), however
+//     those pixels lie: every other row, every other pixel, half at random or
+//     all but two a row. Each colour is found in a frame's table in the same
+//     three steps (colourIndex), a tenth to a quarter slower than the hash it
+//     replaced over colours the hash spread out, which took ~3.5-4.5 s. Four
+//     5000×5000 frames of one table take ~3-3.5 s, and frames a pixel wide,
+//     whose rows the cap counts as 64 pixels each (gifRowPixels), a few
+//     tenths.
 //
 // Inflating a PNG's image data follows its size, not its shape: image/png
 // inflates the whole stream, and empty deflate blocks, each with codes that

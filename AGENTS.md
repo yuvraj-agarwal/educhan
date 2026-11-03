@@ -1229,15 +1229,18 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   the picture is written at 8 bytes a pixel rather than 6 and its thumbnail scaled through
   the alpha, and Paeth doubles the decode; both on the scale on which the CMYK JPEG below
   takes 8.5 to 10 s, not its 5.5 to 7.5: beside it the two took about half and three
-  quarters of its time), an 8-bit transparent one 2 to 3, the slowest GIF 4 to 5 (25
-  frames of a 2000×2000 canvas each with a table of its own of 256 colours, whichever
-  colours they are: `colourIndex` finds each in the same three steps, where a hash let a
-  GIF choose colours that all fell in one place and took up to a minute), a lossless WebP
-  of 25 megapixels, which a crafted file of a few dozen bytes can be, 4 to 6.5, a lossy
-  WebP with transparency at the most pixels the memory estimate admits (19 megapixels
-  square, 21 in a strip) 1.5 to 9.5 by what its alpha holds and the colour under it, which
-  with the CMYK JPEG below makes it the slowest kind (it was measured in runs in which
-  that JPEG took 8.5 to 10 s, see `processingAllowance`), and a JPEG is held to
+  quarters of its time), an 8-bit transparent one 2 to 3, the slowest GIF 4.5 to 5 (25
+  frames of a 2000×2000 canvas each with a table of its own of 256 colours, which each
+  leave pixels undrawn, whose colours `undrawnInTable` goes over the rows again to find,
+  looking up those pixels' alone (`TestOnlyUndrawnPixelsAreLookedForInTheTable`; looking
+  up every pixel's took 5 to 6.5); 4 to 4.5 when they draw every pixel, whichever colours
+  they are: `colourIndex` finds each in the same three steps, where a hash let a GIF
+  choose colours that all fell in one place and took up to a minute), a lossless WebP of
+  25 megapixels, which a crafted file of a few dozen bytes can be, 4 to 6.5, a lossy WebP
+  with transparency at the most pixels the memory estimate admits (19 megapixels square,
+  21 in a strip) 1.5 to 9.5 by what its alpha holds and the colour under it, which with
+  the CMYK JPEG below makes it the slowest kind (it was measured in runs in which that
+  JPEG took 8.5 to 10 s, see `processingAllowance`), and a JPEG is held to
   `maxJPEGScanRevisits` passes' work over its blocks (`jpegScanBlockVisits`, which weighs
   a baseline scan's visit at six first-pass visits and an AC refinement scan's at two, for
   what the decoder does on each), so the worst admitted one, a 25-megapixel baseline file

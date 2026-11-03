@@ -784,7 +784,10 @@ func (p *gifPlayer) ownTable(r image.Rectangle, next bool) (transparent, ok bool
 // so that it can be written in that colour, the table having no room for a
 // transparent entry (ownTable): row is what the frame's picture shows of a
 // row of r, and drawn whether the frame draws a pixel. It is a second pass
-// over r, and asks the context as often as the first (halted).
+// over r, and asks the context as often as the first (halted), but looks for
+// the colours of the pixels the frame does not draw alone, so that a frame
+// that leaves a few undrawn costs no more lookups than one that draws them
+// all (TestOnlyUndrawnPixelsAreLookedForInTheTable).
 func (p *gifPlayer) undrawnInTable(r image.Rectangle, row func(y int) []uint32, drawn func(i int) bool) bool {
 	for y := r.Min.Y; y < r.Max.Y; y++ {
 		if p.due(r.Dx()) && p.halted() {
@@ -792,7 +795,10 @@ func (p *gifPlayer) undrawnInTable(r image.Rectangle, row func(y int) []uint32, 
 		}
 		at := y*p.w + r.Min.X
 		for i, k := range row(y) {
-			if _, ok := p.index.lookup(k); !drawn(at+i) && !ok {
+			if drawn(at + i) {
+				continue
+			}
+			if _, ok := p.index.lookup(k); !ok {
 				return false
 			}
 		}
@@ -818,13 +824,14 @@ func (p *gifPlayer) undrawnInTable(r image.Rectangle, row func(y int) []uint32, 
 // Each frame is let go once it has been played, its place in frames set to
 // nil.
 //
-// It checks ctx once a frame and returns its error at once if it is done, so a
-// long animation stops being played the moment the request is cancelled or out
-// of time; and within a frame, as it goes through the rows of a stored frame's
-// table (ownTable) or writes them (frame), every haltEvery pixels, and at once
-// when out refuses a write (as a context-aware storedBuffer does), so a large
-// frame stops within a fraction of a millisecond of work too. While ctx is live
-// none of that changes a byte of what is written.
+// It checks ctx once a frame and returns its error at once if it is done, so
+// a long animation stops being played the moment the request is cancelled or
+// out of time; and within a frame, as it goes through the rows of a stored
+// frame's table (ownTable, and undrawnInTable for a second look) or writes
+// them (frame), every haltEvery pixels, and at once when out refuses a write
+// (as a context-aware storedBuffer does), so a large frame stops within a
+// fraction of a millisecond of work too. While ctx is live none of that
+// changes a byte of what is written.
 func playGIF(ctx context.Context, frames []*image.Paletted, heads []gifFrameHead, canvas image.Rectangle, loop int, out io.Writer) error {
 	w, h := canvas.Dx(), canvas.Dy()
 	colours, global := gifColours(frames, heads, canvas)

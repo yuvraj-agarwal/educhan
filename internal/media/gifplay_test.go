@@ -2677,3 +2677,55 @@ func TestGIFColoursCannotChooseHowLongTheyTake(t *testing.T) {
 		}
 	}
 }
+
+// TestOnlyUndrawnPixelsAreLookedForInTheTable holds that undrawnInTable,
+// ownTable's second look at the rows of a stored frame of 256 colours that
+// leaves some pixels undrawn, looks for the colours of those pixels alone in
+// the frame's table, not for every pixel's: a look at a frame of 2000×2000
+// pixels in 256 colours with one pixel a row undrawn must take no more than
+// three quarters of the CPU of the look at the same frame with every pixel
+// undrawn (CPU time of the test's own thread, the least of three runs of
+// each). It took about half. Looking every pixel up, it took about one and a
+// half times as long, and a GIF of 25 frames of 2000×2000 that each left
+// every other row undrawn took 5 to 5.5 s to process rather than 4.5 to 5
+// (processingAllowance).
+func TestOnlyUndrawnPixelsAreLookedForInTheTable(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	const w, h = 2000, 2000
+	colours := spreadColours(256)
+	p := &gifPlayer{w: w, ctx: context.Background()}
+	p.index.reset()
+	for i, c := range colours {
+		p.index.add(colourKey(c), uint8(i))
+	}
+	// Each row shows the 256 colours over and over in an order of its own, so
+	// that no pixel is looked up as the one before it was.
+	rows := make([][]uint32, h)
+	for y := range rows {
+		rows[y] = make([]uint32, w)
+		for x := range rows[y] {
+			rows[y][x] = colourKey(colours[(x*37+y*101)&255])
+		}
+	}
+	row := func(y int) []uint32 { return rows[y] }
+	look := func(drawn func(i int) bool) time.Duration {
+		best := time.Duration(math.MaxInt64)
+		for round := 0; round < 3; round++ {
+			runtime.GC()
+			start := threadCPU()
+			if !p.undrawnInTable(image.Rect(0, 0, w, h), row, drawn) {
+				t.Fatal("a colour the table holds was not found in it")
+			}
+			best = min(best, threadCPU()-start)
+		}
+		return best
+	}
+	undrawn := look(func(int) bool { return false })
+	drawn := look(func(i int) bool { return i%w != 0 })
+	t.Logf("every pixel undrawn: %v; one a row undrawn: %v", undrawn, drawn)
+	if drawn > undrawn*3/4 {
+		t.Errorf("a look at a frame with one pixel a row undrawn took %v of CPU, against %v with every pixel undrawn; want no more than three quarters as long", drawn, undrawn)
+	}
+}
