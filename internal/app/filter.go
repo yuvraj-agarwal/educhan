@@ -7260,9 +7260,10 @@ var (
 // lab kit (experimentWords, labKit, not counting the lab's own name), "chem
 // practical tomorrow, i'm gonna blow up the lab lol", "if I mix the wrong
 // chemicals I'll blow up the whole lab". A fuel or harm named in the
-// sentence (fuelWords, explicitHarm), or a fuel, a weapon or people after
-// "with" in the words after it ("with everyone in it", "with a pipe bomb"),
-// still counts, and so does "blow up the chem lab tomorrow".
+// sentence (fuelWords, explicitHarm), or people or another target in the
+// words after it (labOccupied: "with everyone in it", "with a pipe bomb",
+// "with Priya in it", "and then the whole school"), still counts, and so
+// does "blow up the chem lab tomorrow".
 func labMishap(named, sentence, after []string) bool {
 	if !anyIn(named, labHeads) || anyIn(sentence, fuelWords) || explicitHarm(sentence) {
 		return false
@@ -7281,15 +7282,81 @@ func labMishap(named, sentence, after []string) bool {
 	if !anyIn(sentence, experimentWords) && kit <= 0 {
 		return false
 	}
+	return !labOccupied(after)
+}
+
+// labOccupied reports, in the words after a lab blown up or set on fire, a
+// fuel, a weapon or people after "with" ("with everyone in it", "with a pipe
+// bomb", "with the teacher inside"); a name or a class after "with" or
+// "while" and put in the lab ("with Priya in it", "with 10B inside", "while
+// Rahul is in there"); or another place or people joined to the lab by "and"
+// ("and then the whole school", "and the staffroom"). "With my terrible
+// chemistry skills" and "and fail the practical" are none of these.
+func labOccupied(after []string) bool {
+	// in reports the lab said to have someone in it, in the three words
+	// from i: "in it", "in there", "inside".
+	in := func(i int) bool {
+		for k := i; k < len(after) && k < i+3; k++ {
+			if is(after[k], "inside") || is(after[k], "in") && k+1 < len(after) && labInsides[after[k+1]] {
+				return true
+			}
+		}
+		return false
+	}
+	// someone reads a name, a class or people at the start of ws, and how
+	// many words they take; a word that ends in "'s" or "'re" is read
+	// without it ("everyone's in there").
+	someone := func(ws []string) int {
+		if np := readNoun(ws); np.people(true) {
+			return np.n
+		}
+		w := strings.TrimSuffix(strings.TrimSuffix(ws[0], "'s"), "'re")
+		switch {
+		case len(ws) > 1 && classSection(ws[:2]):
+			return 2
+		case classSection(ws[:1]) || objectWords[w] || headKind(w) == nounPerson || headKind(w) == nounKin:
+			return 1
+		case lowerName(w) && !labKit[w] && !labStuff[w]:
+			return 1
+		}
+		return 0
+	}
 	for k, w := range after {
-		if is(w, "with") {
+		switch {
+		case k+1 >= len(after):
+		case is(w, "with"):
 			if np := readNoun(after[k+1:]); np.kind == nounFuel || np.kind == nounWeapon || np.people(true) {
-				return false
+				return true
+			}
+			if n := someone(after[k+1:]); n > 0 && in(k+1+n) {
+				return true
+			}
+		case is(w, "while") && !labSelves[after[k+1]]:
+			if n := someone(after[k+1:]); n > 0 && in(k+1+n) {
+				return true
+			}
+		case k == 0 && is(w, "and"):
+			j := k + 1
+			if is(after[j], "then") || is(after[j], "also") {
+				j++
+			}
+			if np := readNoun(after[j:]); np.place() || np.people(true) {
+				return true
 			}
 		}
 	}
-	return true
+	return false
 }
+
+var (
+	// labInsides, after "in", put someone in the lab: "with Priya in it";
+	// labSelves, after "while", are the poster ("while I'm in there");
+	// labStuff are what a lab is left with that is no one ("with water in
+	// it").
+	labInsides = canonSetOf(`it there here`)
+	labSelves  = canonSetOf(`i i'm im we we're were`)
+	labStuff   = canonSetOf(`water alcohol ethanol gas sodium potassium magnesium everything nothing smoke fire`)
+)
 
 // shootingRange reports a range for shooting in ws: "the shooting range".
 func shootingRange(ws []string) bool {
