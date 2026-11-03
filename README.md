@@ -849,34 +849,35 @@ solves a puzzle of its own. A request refused for the answer itself is answered
 `403` with `"captcha": "required" | "invalid" | "expired" | "used"` beside the
 message; the page solves a fresh puzzle and sends the post once more, so the
 reader presses the button once (unless they have left the form meanwhile, or
-this browser was forgotten since the press: a request goes only from a form
-still on screen, in a browser not forgotten since, and a post the forget stopped
-says "This browser was forgotten before the post went through, so nothing was
-posted."). A `used` answer was spent by an earlier request, which, like others
-from the same address, may have started cooldowns, so the resend can meet one of
-them; the page then says how long to wait and keeps the fresh answer for the
-next press, on the terms below. Every response written after a request's answer
-is spent carries `Educhan-Captcha: spent`, whatever its status, a refusal
-included, such as one for a cooldown another request started meanwhile (one from
-the same address or, for a code request, one for the same email address from
-anywhere), an image whose pixels fail to decode, a thread that filled up or was
-archived, locked or deleted meanwhile, or, for a code request, a code that could
-not be sent. The one exception is a spend the database applied but whose reply
-was lost: the answer is spent, though the response, a `500` saying the server
-could not check the captcha, carries no header. The page keeps its answer
-through any other refusal without that header (the captcha's own refusals carry
-none, and drop it), though only while it is good and until another answer takes
-its place, one a puzzle started meanwhile solves, before the refusal or after
-it, say, so the next press goes straight out; and it starts the next puzzle as
-soon as a refusal with the header arrives, while its form is on screen in a
-browser not forgotten since the press. A request that brought no response at all
-puts its answer back on the same terms, though it may have been spent: then, as
-after that `500`, the first request whose captcha check can look it up is
-refused as used and solves a fresh one, while one refused before that check,
-such as a reply to a thread locked meanwhile or an image whose header does not
-read, or by a lookup that fails (a `500` with no header), does not learn it was
-used and keeps it again, and one checked after the captcha secret was rotated is
-refused as invalid and solves a fresh one too.
+this browser was forgotten since the press: a request that waits for a puzzle
+goes only from a form still on screen, in a browser not forgotten since, and a
+post the forget stopped says "This browser was forgotten before the post went
+through, so nothing was posted."). A `used` answer was spent by an earlier
+request, which, like others from the same address, may have started cooldowns,
+so the resend can meet one of them; the page then says how long to wait and
+keeps the fresh answer for the next press, on the terms below. Every response
+written after a request's answer is spent carries `Educhan-Captcha: spent`,
+whatever its status, a refusal included, such as one for a cooldown another
+request started meanwhile (one from the same address or, for a code request, one
+for the same email address from anywhere), an image whose pixels fail to decode,
+a thread that filled up or was archived, locked or deleted meanwhile, or, for a
+code request, a code that could not be sent. The one exception is a spend the
+database applied but whose reply was lost: the answer is spent, though the
+response, a `500` saying the server could not check the captcha, carries no
+header. The page keeps its answer through any other refusal without that header
+(the captcha's own refusals carry none, and drop it), though only while it is
+good and until another answer takes its place, one a puzzle started meanwhile
+solves, before the refusal or after it, say, so the next press goes straight
+out; and it starts the next puzzle as soon as a refusal with the header arrives,
+while its form is on screen in a browser not forgotten since the press. A
+request that brought no response at all puts its answer back on the same terms,
+though it may have been spent: then, as after that `500`, the first request
+whose captcha check can look it up is refused as used and solves a fresh one,
+while one refused before that check, such as a reply to a thread locked
+meanwhile or an image whose header does not read, or by a lookup that fails (a
+`500` with no header), does not learn it was used and keeps it again, and one
+checked after the captcha secret was rotated is refused as invalid and solves a
+fresh one too.
 
 While a post or a code request waits for its puzzle and its answer, its form is
 held: its boxes and buttons are switched off, and look it, so what is sent is
@@ -884,25 +885,41 @@ what the form shows. A reader who goes to another page before the answer is
 ready sends nothing, and what they wrote is dropped with the page they left,
 never put into a form on the page they went to, even after a double click; the
 answer is put back for the next press, on the same terms, and a request that had
-already gone is not reported on that page either. A post link that leads back
-into the form's own thread (`>>>/board/N` naming a post there, which the page
-looks up) takes the form off the screen while the post is looked up and, if the
-page blanks meanwhile, until the thread is drawn again. The lookup then puts the
-form back into the thread that it draws, emptied if its post went (a thread
-locked or archived meanwhile draws no form, and keeps the text that was not sent
-under its note instead), or, if the thread will not load and the page has not
-blanked yet, leaves the page as it was, form and all, with a notice saying why.
-A post refused, or not sent, while the form was off the screen is told what it
+already gone is not reported on that page either. A post pressed just after a
+link to another page or board, before that page is drawn, goes all the same if
+its answer is ready or it needs none, to the form's own board and thread, never
+the one being loaded, and is answered like one whose form has left the screen,
+not on the page the reader went to. A post link that leads back into the form's
+own thread (`>>>/board/N` naming a post there, which the page looks up) takes
+the form off the screen while the post is looked up and, if the page blanks
+meanwhile, until the thread is drawn again. The lookup then puts the form back
+into the thread that it draws, emptied if its post went (a thread locked or
+archived meanwhile draws no form, and keeps the text that was not sent under its
+note instead), or, if the thread will not load and the page has not blanked yet,
+leaves the page as it was, form and all, with a notice saying why. A lookup that
+fails itself (a `500`, say, or the server unreachable) draws the error in the
+page's place, as another page that will not load does, and the form goes with
+it: a post still on its way goes ahead and is answered like one whose form has
+left the screen, said nowhere, and a notice the form was owed goes unsaid. A
+post refused, or not sent, while the form was off the screen is told what it
 would have been told on screen, such as the refusal or, for a post that was not
 sent, that nothing was posted, by whatever redraw brings the form back to its
 page, begun before the answer or after it: that lookup, say, or Update, the same
 link again or Back to the thread, pressed during it. It is told once, ahead of
 any reason the thread did not load, with its button given the focus as after a
-refusal. After a refusal of the image itself (the image limit reached, or
-uploads switched off) the image is taken off, as on screen, and a page left as
-it was switches the picker off and updates the thread's counts, as on screen, as
-does a press of the form made first, unless an image has been attached since,
-while a thread drawn again draws both as the server now says. A redraw for
+refusal. A post pressed while that lookup or Update loads, before the page
+blanks, is carried as if pressed just before it began: Update keeps the page on
+screen for it, and the lookup puts the form back as above. Answered on its page,
+a success goes to the new post and a refusal is said once, with the focus as on
+screen; answered while the lookup has the form off the screen, it is told as
+above. Either way nothing it sent is left in a new form to be posted twice.
+After a refusal of the image itself (the image limit reached, or uploads
+switched off) the image is taken off, as on screen, and a page left as it was
+switches the picker off and updates the thread's counts, as on screen, as does a
+press of the form made first, unless an image has been attached since, which
+that press sends for the server to answer, while a thread drawn again draws both
+as the server now says, taking off with nothing more said an image attached
+since that its picker does not take, so the refusal is said once. A redraw for
 another page, or one the reader begins once the page has blanked, does not bring
 the form back, and what it was owed goes with it; a press of the form drops what
 it was owed too, so the form is told only of that press. Update, pressed
