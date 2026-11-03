@@ -524,11 +524,10 @@ func (a *App) handleCaptcha(w http.ResponseWriter, r *http.Request) {
 // It refuses every answer it can before flood control: a missing, malformed,
 // wrong or expired one, and one already spent, so a captcha refusal costs no
 // cooldown. Looking up a spent one here, rather than leaving it to the spend,
-// tells a replay "used" at once, even while a cooldown runs, so the page
-// solves a fresh puzzle instead of waiting out a cooldown for an answer that
-// can never work. It writes nothing, so a request refused afterwards, by flood
-// control or anything else before the spend, leaves its answer unspent for the
-// retry.
+// tells a replay "used" at once, even while a cooldown runs, so the page solves
+// a fresh puzzle instead of waiting out a cooldown for an answer that can never
+// work. It writes nothing, so a request refused afterwards, by flood control or
+// anything else before the spend, leaves its answer unspent for the retry.
 func (a *App) checkCaptcha(w http.ResponseWriter, r *http.Request, payload string, exempt bool) (*captchaTicket, bool) {
 	if !a.captchaEnabled() || exempt {
 		return nil, true
@@ -571,13 +570,15 @@ func (a *App) checkCaptcha(w http.ResponseWriter, r *http.Request, payload strin
 // through any other refusal without it (the captcha's own refusals carry none,
 // and drop it), though only while the answer is good and until it holds
 // another, one a puzzle started meanwhile solves, before the refusal or after
-// it, say. So after that 500 the first request to reach checkCaptcha with the
-// answer it kept is refused as used, and the client solves again; one refused
-// before the check, such as a reply to a thread locked meanwhile or an image
-// whose header does not read, keeps it again, on the same terms. While the
-// request's form is still on screen, and the browser has not been forgotten
-// since the press, it solves the next puzzle as soon as a refusal with the
-// header arrives.
+// it, say. So after that 500 the first request whose checkCaptcha looks up the
+// answer it kept, and can, is refused as used, and the client solves again. One
+// refused before checkCaptcha, such as a reply to a thread locked meanwhile or
+// an image whose header does not read, or by a lookup there that fails, a 500
+// again with no header, does not learn the answer was used and keeps it again,
+// on the same terms; and one checked after the secret was rotated is refused as
+// invalid, and the client solves again too. While the request's form is still
+// on screen, and the browser has not been forgotten since the press, it solves
+// the next puzzle as soon as a refusal with the header arrives.
 const captchaSpentHeader = "Educhan-Captcha"
 
 // spendCaptcha marks a checked answer used, refusing a second use of it. It

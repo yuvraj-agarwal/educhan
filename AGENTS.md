@@ -406,28 +406,28 @@ before the test changes.
   notice name it through `uploadLimitText` — never a board, since no board has a limit of
   its own.
 - **The captcha** (`/* Captcha */` in `app.js`, server side in `captcha.go`). `loadSite`
-  reads `captcha` from `GET /api/site` into `state.site.captcha`, and a form's note
-  on the check is drawn by its button only while that is on. The puzzle starts only
-  on something done in or to a form that needs it, never on render: focus moving into a
-  box to write in, however it gets there (the `focusin` listener; a quote and the
-  `/verify` buttons put the focus there too; the badge box is not one), unticking the
-  badge on a form whose tick stopped a puzzle or that already has something written or
-  attached (`captchaBadgeToggled`, `captchaFormHasWriting`), the page taking a ticked
-  badge out of a form on screen with something written or attached
-  (`withdrawBadgeOption`, for the badge changed in another tab or in this one, and a
-  refusal of the badge as expired or revoked; never Forget this browser, which sends
-  nothing, nor `/verify` loading over the form; a form off the screen then, while a post
-  link's lookup loads say, starts none, nor does the form a redraw draws in its place,
-  noted or told of the refusal), the press that is then refused once to say so, on a
-  form with something written or attached (`submit`), an image picked or dropped on it
-  and attached (`captchaImageAttached`; not one a re-render puts back), a refusal saying
-  it spent the answer while its form is on screen, and a press with no good answer held.
-  Ticking the badge stops it unless a request is waiting for it (`stopCaptcha`, which
-  says whether it stopped one). It runs ALTCHA's vendored worker in up to
-  `CAPTCHA_MAX_WORKERS` copies with interleaved counters (side by side where the browser
-  allows; Chromium runs their Web Crypto on one thread), and only in a secure context
-  (`CAPTCHA_INSECURE` otherwise) with `Worker` and `crypto.subtle` (`CAPTCHA_FAILED`
-  otherwise), failing before any fetch, and only on a response shaped like a challenge
+  reads `captcha` from `GET /api/site` into `state.site.captcha`, and a form's note on
+  the check is drawn by its button only while that is on. The puzzle starts only on
+  something done in or to a form that needs it, never on render: focus moving into a box
+  to write in, however it gets there (the `focusin` listener; a quote and the `/verify`
+  buttons put the focus there too; the badge box is not one), unticking the badge on a
+  form whose tick stopped a puzzle or that already has something written or attached
+  (`captchaBadgeToggled`, `captchaFormHasWriting`), the page taking a ticked badge out
+  of a form on screen with something written or attached (`withdrawBadgeOption`, for the
+  badge changed in another tab or in this one, and a refusal of the badge as expired or
+  revoked; never Forget this browser, which sends nothing, nor `/verify` loading over
+  the form; a form off the screen then, while a post link's lookup loads say, starts
+  none, nor does the form a redraw draws in its place, noted or told of the refusal),
+  the press that is then refused once to say so, on a form with something written or
+  attached (`submit`), an image picked or dropped on it and attached
+  (`captchaImageAttached`; not one a re-render puts back), a refusal saying it spent the
+  answer while its form is on screen, and a press with no good answer held. Ticking the
+  badge stops it unless a request is waiting for it (`stopCaptcha`, which says whether
+  it stopped one). It runs ALTCHA's vendored worker in up to `CAPTCHA_MAX_WORKERS`
+  copies with interleaved counters (side by side where the browser allows; Chromium runs
+  their Web Crypto on one thread), and only in a secure context (`CAPTCHA_INSECURE`
+  otherwise) with `Worker` and `crypto.subtle` (`CAPTCHA_FAILED` otherwise), failing
+  before any fetch, and only on a response shaped like a challenge
   (`CAPTCHA_UNAVAILABLE` otherwise); a `429` from `/api/captcha` says too many checks
   were started from the reader's network, with its wait (`captchaBusy`), never a post's
   or a code request's cooldown. Every copy is terminated when the puzzle ends, a throw
@@ -444,39 +444,50 @@ before the test changes.
   while one is on its way solves a fresh puzzle, and puts it back (`keepCaptcha`: only
   into an empty place, only while good) only when it left it unspent, or may have spent
   it without saying so, as when it brought no response, or the `500` for a spend whose
-  database reply was lost: if spent, the first request to reach `checkCaptcha` with it
-  is refused as used and solves a fresh one, while one refused before that check (a
-  reply to a thread locked meanwhile, or an image whose header does not read, say) puts
-  it back again on the same terms. One whose form has left the screen is dropped unsent
-  with its answer put back, on the same terms, and, sent or not, is not navigated from
-  and says nothing on the page the reader went to; a post that did go still empties and
-  releases its form, wherever it is. A post's form keeps instead what it would have been
-  told on screen, until its next press (`unsaidNotices`), such as the refusal or, for a
-  post not sent, that nothing was posted (`errorMessage`, or `FORGOTTEN_BEFORE_SENDING`
-  after a forget since the press), with whether it had the focus at the press. A redraw
-  that carried it held says that notice once and gives the focus as `release` would, as
-  it puts its values back into its own page, after a post link's lookup into its thread
-  say (`restoreDraft`), or keeps that page, form and all, when it will not load, saying
-  it ahead of why (`render`); a form that does not come back takes it with it. From the
+  database reply was lost: if spent, the first request whose `checkCaptcha` can look it
+  up is refused as used and solves a fresh one, while one refused before that check (a
+  reply to a thread locked meanwhile, or an image whose header does not read, say) or by
+  a lookup that fails (a `500` with no header) does not learn it was used and puts it
+  back again on the same terms, and one sent after the secret was rotated is refused as
+  invalid and solves a fresh one too. One whose form has left the screen is dropped
+  unsent with its answer put back, on the same terms, and, sent or not, is not navigated
+  from and says nothing on the page the reader went to; a post that did go still empties
+  and releases its form, wherever it is. A post's form keeps instead what it would have
+  been told on screen (`unsaidNotices`), such as the refusal or, for a post not sent,
+  that nothing was posted (`errorMessage`, or `FORGOTTEN_BEFORE_SENDING` after a forget
+  since the press), with whether it had the focus at the press, until a redraw tells it
+  or its next press drops it, one refused before anything is sent included. Any redraw
+  that carries the form tells it, whenever it began: `captureDraft` carries a form held
+  or still owed a notice into a redraw of its own page, a post link's lookup into its
+  thread say, or Update, the same link again or Back to that page, pressed before the
+  answer or after it. It says that notice once and gives the focus as `release` would,
+  as it puts the form's values back into its own page (`restoreDraft`), or as it keeps
+  that page, form and all, when it will not load, ahead of why (`render`), where a
+  refusal of the image itself also switches the picker off and puts the thread's counts
+  in step, as on screen (`blockRefusedPicker`); a page drawn afresh draws both from what
+  the server says by then. A render a newer one overtakes says nothing, leaving that to
+  the newer one; a redraw for another page, or one the reader begins once the page has
+  blanked, does not bring the form back, and the form takes its entry with it. From the
   press to the answer the form is held (`holdForm`: controls switched off once the form
   has been read and checked, straight into the `try` whose catch releases them, and
   switched back on after a refusal, with the focus on the button, without scrolling to
   it, if the form had it and it is still lost, on the page or nowhere, or after a
   success once the form is emptied; `app.css` shows the held controls switched off). A
-  redraw of the form's own page while it is held (Update, or another page of the same
-  board's index, which has the same `routeKey`: the view, the board and the thread,
-  never the index page) keeps the page, dimmed, in place of the skeleton (`keepPage` in
-  `render`), with the thread its controls read and the open image left as they are until
-  something is drawn in its place (`leavePage`), as every render leaves them, a post
-  link's lookup included, so a refusal answered while that redraw loads updates the page
-  on screen, and puts the held form itself into the new page in place of the one drawn
-  there, its `<details>` opened (`heldForms`, `captureDraft`, `restoreDraft`); a form
-  answered by then is read for its values like any draft, emptied after a success, and
-  told what it would have been told if it was answered off the screen (above); one whose
-  ticked badge the server refused as expired or revoked while it was away is noted as
-  well (`badgeWithdrawn`), which that notice takes the place of, while a redraw that
-  reads the form only once it is released carries the note into the form it draws, so
-  its next press is refused once. A draft, held or not, is keyed by the page on screen
+  redraw of the form's own page while the form is held or still owed a notice (above),
+  such as Update, or another page of the same board's index, which has the same
+  `routeKey` (the view, the board and the thread, never the index page), keeps the page,
+  dimmed, in place of the skeleton (`keepPage` in `render`), with the thread its
+  controls read and the open image left as they are until something is drawn in its
+  place (`leavePage`), as every render leaves them, a post link's lookup included, so a
+  refusal answered while that redraw loads updates the page on screen, and puts the held
+  form itself into the new page in place of the one drawn there, its `<details>` opened
+  (`heldForms`, `captureDraft`, `restoreDraft`); a form answered by then is read for its
+  values like any draft, emptied after a success, and told what it would have been told
+  if it was answered off the screen (above); one whose ticked badge the server refused
+  as expired or revoked while it was away is noted as well (`badgeWithdrawn`), which
+  that notice takes the place of, while a redraw that reads the form once it owes none,
+  after a press refused as empty say, carries the note into the form it draws, so its
+  next press is refused once. A draft, held or not, is keyed by the page on screen
   (`drawnFor` in `captureDraft`), never by a render begun since that has not drawn yet,
   so the second of a double click neither carries the form into the page it goes to nor
   keeps the page on screen under that page's address. A redraw that fails to load leaves
@@ -505,36 +516,39 @@ before the test changes.
   refusal, `release` leaves the held form's picker as a redraw meanwhile drew it,
   switched off with that drawing's reason (or the site's, where it drew none) or
   switched on (`redrawnPickers`), and a refusal of the image itself (image limit
-  reached, uploads switched off) then switches it off in the submit handler. A picker
-  `release` switches off loses its image, and `release` then returns the reason, which
-  every later notice but those two refusals, a refusal's or a forget's, adds, saying the
-  image was taken off and why (`imageTakenOff`), or, for a refusal of the thread itself
-  (archived, locked, gone), only that it was taken off, since no post can go there. A
-  refusal answered while a redraw loads, before it draws, ends the same: when the new
-  page takes the image off (`pickerRefusal`), `restoreDraft` words the refusal's notice
-  again with that reason, as the submit handler kept it (`refusalNotices`), or adds the
-  image's going and why to any other notice on screen, rather than putting the picker's
-  reason in its place. Each notice is worded for what the form still holds, its text
-  read from the box after `release` (`errorMessage`'s `hasText` and `imageOff`), so a
-  post left with nothing is told to write something instead, unless the thread takes no
-  posts at all. A request that succeeds keeps the answer it took; a refusal carrying
-  `"captcha"` drops it and, while the form is on screen, sends once more with a fresh
-  one, whose refusal says nothing was posted, or for a code request that no code was
-  sent, and `"required"` also turns `state.site.captcha` on for a page drawn without
-  knowing, as a `404` from `GET /api/captcha` turns it off, the request then going
-  without an answer. Any other refusal, or no response at all, puts the answer back, on
-  `keepCaptcha`'s terms, unless it carries `Educhan-Captcha: spent`
-  (`CAPTCHA_SPENT_HEADER`, set by `spendCaptcha`, a `429` from the second flood-control
-  check included), which drops it and starts the next puzzle at once if the form is on
-  screen and the browser not forgotten since the press. A post that carries the badge
-  never waits for or sends an answer (`() => state.site.captcha && !held`), and a code
-  request always does. `CAPTCHA_LIFETIME_MS` must be no more than the server's
-  `captchaTTL` less a minute. `TestCaptchaAnswerStaysInMemory`,
-  `TestCaptchaIsAskedForOnlyWhenSomeoneWrites`, `TestCaptchaIsSkippedOnlyByABadgedPost`,
-  `TestClientAndServerAgreeOnTheCaptcha` (which also holds `CAPTCHA_TIMEOUT_MS` to the
-  two minutes, the hardest base puzzle at 4 ms an attempt to half of it,
-  `CAPTCHA_MAX_WORKERS` to the four copies the README names, counting interleaved, and a
-  `404` from `/api/captcha` to turning the captcha off),
+  reached, uploads switched off) then switches it off and puts the thread's counts in
+  step (`blockRefusedPicker`): the submit handler does so for a form on screen, and for
+  one answered off the screen the page a failed redraw keeps for it does (`render`),
+  while a page drawn afresh draws its picker and counts from what the server says by
+  then, the image having gone at the refusal. A picker `release` switches off loses its
+  image, and `release` then returns the reason, which every later notice but those two
+  refusals, a refusal's or a forget's, adds, saying the image was taken off and why
+  (`imageTakenOff`), or, for a refusal of the thread itself (archived, locked, gone),
+  only that it was taken off, since no post can go there. A refusal answered while a
+  redraw loads, before it draws, ends the same: when the new page takes the image off
+  (`pickerRefusal`), `restoreDraft` words the refusal's notice again with that reason,
+  as the submit handler kept it (`refusalNotices`), or adds the image's going and why to
+  any other notice on screen, rather than putting the picker's reason in its place. Each
+  notice is worded for what the form still holds, its text read from the box after
+  `release` (`errorMessage`'s `hasText` and `imageOff`), so a post left with nothing is
+  told to write something instead, unless the thread takes no posts at all. A request
+  that succeeds keeps the answer it took; a refusal carrying `"captcha"` drops it and,
+  while the form is on screen, sends once more with a fresh one, whose refusal says
+  nothing was posted, or for a code request that no code was sent, and `"required"` also
+  turns `state.site.captcha` on for a page drawn without knowing, as a `404` from `GET
+  /api/captcha` turns it off, the request then going without an answer. Any other
+  refusal, or no response at all, puts the answer back, on `keepCaptcha`'s terms, unless
+  it carries `Educhan-Captcha: spent` (`CAPTCHA_SPENT_HEADER`, set by `spendCaptcha`, a
+  `429` from the second flood-control check included), which drops it and starts the
+  next puzzle at once if the form is on screen and the browser not forgotten since the
+  press. A post that carries the badge never waits for or sends an answer (`() =>
+  state.site.captcha && !held`), and a code request always does. `CAPTCHA_LIFETIME_MS`
+  must be no more than the server's `captchaTTL` less a minute.
+  `TestCaptchaAnswerStaysInMemory`, `TestCaptchaIsAskedForOnlyWhenSomeoneWrites`,
+  `TestCaptchaIsSkippedOnlyByABadgedPost`, `TestClientAndServerAgreeOnTheCaptcha` (which
+  also holds `CAPTCHA_TIMEOUT_MS` to the two minutes, the hardest base puzzle at 4 ms an
+  attempt to half of it, `CAPTCHA_MAX_WORKERS` to the four copies the README names,
+  counting interleaved, and a `404` from `/api/captcha` to turning the captcha off),
   `TestCaptchaWorkersAreAlwaysStopped`, `TestARequestGoesOnlyFromAFormOnScreen`,
   `TestAPendingFormIsHeld`, `TestAHeldFormSurvivesARedrawOfItsPage`,
   `TestCaptchaRefusalSaysWhatTheFormStillHolds`, `TestTheCaptchaFAQSaysWhatThePageDoes`,
@@ -560,10 +574,10 @@ before the test changes.
   `TestABurstOfImagesFromOneAddressPostsOnce` for images on two boards, and
   `TestABurstOfCodeRequestsFromOneClientSendsOneCode` and
   `TestABurstOfCodeRequestsForOneAddressSendsOneCode` for code requests; each holds its
-  burst at the spends (`spendingBurst`) until all of it has passed the first check, so it
-  fails on every run if the second check, or one of its keys, is dropped from its
-  handler). A request refused by the second check that carried an answer has spent it and
-  carries the spent header; one refused by the first kept its answer. A badged burst
+  burst at the spends (`spendingBurst`) until all of it has passed the first check, so
+  it fails on every run if the second check, or one of its keys, is dropped from its
+  handler). A request refused by the second check that carried an answer has spent it
+  and carries the spent header; one refused by the first kept its answer. A badged burst
   posts once too (`TestABadgedBurstFromOneAddressPostsOnce`), but spends nothing between
   the halves, so the first check alone holds it and the test does not pin the second. In
   the posting handlers the check is the last refusal before flood control; in
@@ -673,34 +687,36 @@ before the test changes.
   which starts no puzzle, as drawing a page never does), and a badged post refused as
   expired or revoked, for a form on the page the reader went to meanwhile, and for
   `/verify` there, drawn again where it shows that badge's panel, as another tab's is,
-  so it says why the badge went (`TestAFormSendsOnlyTheBadgeItWasDrawnFor`). A held
-  form a redraw has taken off the screen, while a post link's lookup draws its skeleton
-  say, misses each of these, so `restoreDraft`, putting it back, takes its option out
-  if the page no longer holds the badge its box was drawn for, noting a ticked box but
-  starting no puzzle (`TestForgettingTheBadgeReachesEveryTab`). Forget this browser
-  takes the option out without a word and drops the note: a word would tell whoever
-  presses next that the browser held a badge, and with the poster key gone the post
-  shares an ID with none made before. A badged post refused as expired or revoked
-  forgets the credential it sent only while storage still holds it, so a badge verified
-  since in this browser stays, and its form, still on screen with something written or
-  attached, starts the puzzle the post it goes on to needs. The refusal's notice tells a
-  form on screen; one off the screen, while a post link's lookup loads say, is noted,
-  starting nothing, and keeps that notice: a redraw that carried it held says the notice
-  as it puts the form's values back into its own page, noting nothing on the form it
-  draws, or keeps that page, form and all, when it will not load, dropping the note,
-  and one that reads the form only once it is released carries the note, so the
-  form it draws refuses its next press once. When storage holds another badge, verified
-  since in this browser (in another tab, or in this one by a confirmation answered after
-  the reader left /verify), and the browser was not forgotten since the press (a badge
-  stored after a forget is someone else's), the form on screen is told so in the page's
-  own words rather than the server's "verify again" (`badgeReplacedNotice`): its badge
-  was replaced by one verified since in this browser, so nothing was posted, and, unless
-  release left the post with nothing in it (the form is then told only what went and
-  why, and, by `imageTakenOff`, to write something instead), pressing again posts
-  without a badge, and Update, or the board's Index for a new thread, draws the form
-  again offering the new one, unticked. That notice is its one refusal for the badge, so
-  a note left on it while the post was on its way goes, whatever left it: a change of
-  badge in another tab (`followCredentialStorage`), a confirmation answered in this one
+  so it says why the badge went (`TestAFormSendsOnlyTheBadgeItWasDrawnFor`). A held form
+  a redraw has taken off the screen, while a post link's lookup draws its skeleton say,
+  misses each of these, so `restoreDraft`, putting it back, takes its option out if the
+  page no longer holds the badge its box was drawn for, noting a ticked box but starting
+  no puzzle (`TestForgettingTheBadgeReachesEveryTab`). Forget this browser takes the
+  option out without a word and drops the note: a word would tell whoever presses next
+  that the browser held a badge, and with the poster key gone the post shares an ID with
+  none made before. A badged post refused as expired or revoked forgets the credential
+  it sent only while storage still holds it, so a badge verified since in this browser
+  stays, and its form, still on screen with something written or attached, starts the
+  puzzle the post it goes on to needs. The refusal's notice tells a form on screen; one
+  off the screen, while a post link's lookup loads say, is noted, starting nothing, and
+  keeps that notice: a redraw that carries it held, begun before the answer or after it
+  while the notice is still unsaid, says the notice as it puts the form's values back
+  into its own page, noting nothing on the form it draws, or keeps that page, form and
+  all, when it will not load, dropping the note. A press before then drops the notice
+  and is refused once by the note, unless it is refused before that, as empty say, and a
+  redraw after such a press carries the note, so the form it draws refuses its next
+  press once. When storage holds another badge, verified since in this browser (in
+  another tab, or in this one by a confirmation answered after the reader left /verify),
+  and the browser was not forgotten since the press (a badge stored after a forget is
+  someone else's), the form on screen is told so in the page's own words rather than the
+  server's "verify again" (`badgeReplacedNotice`): its badge was replaced by one
+  verified since in this browser, so nothing was posted, and, unless release left the
+  post with nothing in it (the form is then told only what went and why, and, by
+  `imageTakenOff`, to write something instead), pressing again posts without a badge,
+  and Update, or the board's Index for a new thread, draws the form again offering the
+  new one, unticked. That notice is its one refusal for the badge, so a note left on it
+  while the post was on its way goes, whatever left it: a change of badge in another tab
+  (`followCredentialStorage`), a confirmation answered in this one
   (`submitVerification`), another badged post's refusal in this one (`submit`),
   `/verify` loading over the form (`loadVerification`), or a redraw that puts it back
   (`restoreDraft`).
@@ -1084,28 +1100,28 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `allow` checks them again and starts them all once the captcha answer is spent, so a
   post refused as used starts none. Thread and reply cooldowns are keyed per board and
   client, the upload cooldown per client across the whole server. A submission clears
-  every cooldown that applies to it or none is started, so a post refused by one limit is
-  not charged for the other; `allowAll` is what enforces that. It checks every cooldown
-  and starts them all while holding one lock that every admission takes (`admission`), so
-  of simultaneous requests for one key at most one is admitted, and a request is refused
-  only by a cooldown an admitted action started. It can be none, when an admitted request
-  took first another cooldown that each of them needs: two image threads to one board are
-  both refused by the upload cooldown an image reply elsewhere started
-  (`TestAllowAllRefusesOnlyForACooldownAnAdmittedRequestHolds`,
+  every cooldown that applies to it or none is started, so a post refused by one limit
+  is not charged for the other; `allowAll` is what enforces that. It checks every
+  cooldown and starts them all while holding one lock that every admission takes
+  (`admission`), so of simultaneous requests for one key at most one is admitted, and a
+  request is refused only by a cooldown an admitted action started. It can be none, when
+  an admitted request took first another cooldown that each of them needs: two image
+  threads to one board are both refused by the upload cooldown an image reply elsewhere
+  started (`TestAllowAllRefusesOnlyForACooldownAnAdmittedRequestHolds`,
   `TestAllowAllAdmitsOneOfARace`). Nothing is refunded once an action is admitted, so
   every refusal knowable up front comes before `allow`, such as a malformed poster key,
-  the body, a badge the poster cannot have, uploads switched off, a file its header shows
-  to be unusable (`media.Inspect` in `parseSubmission`, which reads the format and the
-  size without decoding), a reply the thread would refuse (`ReplyRefusal`), and a
+  the body, a badge the poster cannot have, uploads switched off, a file its header
+  shows to be unusable (`media.Inspect` in `parseSubmission`, which reads the format and
+  the size without decoding), a reply the thread would refuse (`ReplyRefusal`), and a
   captcha answer that is missing, wrong, expired or already spent (`checkCaptcha`).
-  Decoding the pixels is not up front, because it is the cost the upload cooldown limits,
-  so an image whose pixels fail to decode is refused by `storeUpload` after `allow`
-  (`TestImagesRefusedByTheirHeaderStartNoCooldown` pins both sides). Nor is a change to
-  the thread after `ReplyRefusal` read it, archived, locked or deleted meanwhile, or its
-  last image slot taken by a racing reply, which `CreateReply` refuses after `allow` too.
-  State is per process and in memory, the captcha's challenge count (`captchaMeter`)
-  included — a shared backend means replacing `cooldownLimiter`, which nothing else
-  depends on, and the meter.
+  Decoding the pixels is not up front, because it is the cost the upload cooldown
+  limits, so an image whose pixels fail to decode is refused by `storeUpload` after
+  `allow` (`TestImagesRefusedByTheirHeaderStartNoCooldown` pins both sides). Nor is a
+  change to the thread after `ReplyRefusal` read it, archived, locked or deleted
+  meanwhile, or its last image slot taken by a racing reply, which `CreateReply` refuses
+  after `allow` too. State is per process and in memory, the captcha's challenge count
+  (`captchaMeter`) included — a shared backend means replacing `cooldownLimiter`, which
+  nothing else depends on, and the meter.
   The keys carry client addresses, so the limiters are also a privacy surface: `New`
   builds a `cooldownSweep` over all four limiters and the captcha's challenge meter
   (`captchaMeter`, anything with `sweepExpired` is `expiring`) and starts its timer,
