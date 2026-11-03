@@ -13680,21 +13680,27 @@ var (
 		heating lighting hitting punching banging picking scratching scraping biting carving slicing stabbing
 		applying touching rubbing snapping`)
 	selfHandlings = canonSetOf(`using holding pressing heating lighting hitting punching banging picking applying
-		touching rubbing snapping`)
+		touching rubbing snapping hold holds held pulling pull pulls`)
 	selfHarmObjects = canonSetOf(`nail nails glass match matches cigarette cigarettes wall walls scab scabs myself
 		cutter cutters pin pins paperclip paperclips belt belts rope ropes rubber rubbers eraser erasers coin coins
 		spoon spoons`)
-	// playGear, held, and playKit before one of playUses, with no place on
-	// the body or "myself" after them, are handled in play, a craft or a
-	// rite, and so is the body used (handsUsed) before one of playUses:
-	// "holding the bat", "a hammer in woodwork", "the glue gun in art",
-	// "matches for the puja", "my wrist in badminton", "my hands to catch".
+	// playGear, held (holdForms), and playKit before one of playUses, with no
+	// place on the body or "myself" after them, are handled in play, a craft
+	// or a rite, and so is the body used (handsUsed) before one of playUses
+	// with no flame (flameWords) before a clause of its own begins: "holding
+	// the bat", "a hammer in woodwork", "the glue gun in art", "matches for
+	// the puja", "my wrist in badminton", "my hands to catch", not "my hand
+	// over the candle". Hair pulled (hairPulls, hairWords) is the harm.
 	playGear = canonSetOf(`bat bats stick sticks racket rackets racquet racquets club clubs`)
 	playKit  = canonSetOf(`bat bats stick sticks rod rods hammer gun guns match matches`)
 	playUses = canonSetOf(`woodwork carpentry art craft crafts badminton cricket hockey football tennis
 		volleyball basketball baseball golf catch catching practice nets puja pooja diya diyas candle candles
 		stove gas frame frames shelf`)
-	handsUsed = canonSetOf(`using holding`)
+	holdForms  = canonSetOf(`holding hold holds held`)
+	handsUsed  = canonSetOf(`using holding hold holds held`)
+	flameWords = canonSetOf(`diya diyas candle candles stove stoves gas flame flames fire fires`)
+	hairPulls  = canonSetOf(`pulling pull pulls`)
+	hairWords  = canonSetOf(`hair hairs eyelashes lashes eyebrows brows`)
 	// selfOften, after "every" with nothing after it, are how often the
 	// harm comes: "hurt myself less every time", "every day".
 	selfOften  = canonSetOf(`time day night week morning evening`)
@@ -16862,9 +16868,13 @@ func unseenAfter(next []string) bool {
 // degree the harm or "do it" anywhere, or the handling of a tool of harm or
 // the body later in the clause ("hurt myself less after cutting", "burn myself
 // less every time i do it", "hurt myself less when using my nails", "hurt
-// myself less when using a box cutter", not "burn myself less when holding the
-// kettle" or "hurt myself less when using a hammer in woodwork"). "How to cut
-// myself less" still asks about cutting.
+// myself less when using a box cutter", "burn myself less when i hold my hand
+// over the candle", "hurt myself less when pulling my hair", not "burn myself
+// less when holding the kettle" or "hurt myself less when using a hammer in
+// woodwork"), or with no handling before it in its clause, a tool of harm
+// after "with" (harmWith: "hurt myself less when playing with broken glass",
+// not "when playing with my friends"). "How to cut myself less" still asks
+// about cutting.
 func selfIdiom(ws, next []string) bool {
 	if len(next) == 0 || is(next[0], "less") && hasWord(ws, "cut") {
 		return false
@@ -16898,11 +16908,13 @@ func selfIdiom(ws, next []string) bool {
 	case is(next[0], "out") && len(rest[0]) > 4 && strings.HasSuffix(rest[0], "ly"):
 		return true // "burn myself out completely"
 	}
+	handled := false // a handling earlier in the clause, whose harmHandled read what follows "with"
 	for i, w := range rest {
 		if !phrasal && (selfHarmings[w] && !selfHandlings[w] || is(w, "it") && i > 0 && doForms[rest[i-1]] ||
-			selfHandlings[w] && harmHandled(w, rest[i+1:])) {
+			selfHandlings[w] && harmHandled(w, rest[i+1:]) || is(w, "with") && !handled && harmWith(rest[i:])) {
 			return false // "less after cutting", "less every time i do it", "less when using my nails"
 		}
+		handled = handled && !selfClauses[w] || selfHandlings[w]
 	}
 	if is(rest[0], "every") {
 		k := 1
@@ -16916,12 +16928,12 @@ func selfIdiom(ws, next []string) bool {
 	return selfIdiomTimes[rest[0]]
 }
 
-// harmWith reports, in the words ws after an activity and before a clause
-// of its own begins, "with" and one of selfHarmObjects or fire as the head
-// of the noun phrase after it, its last word before one of nounEnds:
-// "playing with matches", "playing with fire", "playing with broken glass";
-// not "playing with my friends", "playing with glass marbles" or "playing
-// with the wall ball".
+// harmWith reports, in the words ws after an activity or from "with" on, and
+// before a clause of its own begins, "with" and one of selfHarmObjects or fire
+// as the head of the noun phrase after it, its last word before one of
+// nounEnds: "playing with matches", "playing with fire", "playing with broken
+// glass"; not "playing with my friends", "playing with glass marbles" or
+// "playing with the wall ball".
 func harmWith(ws []string) bool {
 	for i, w := range ws {
 		if selfClauses[w] {
@@ -16953,8 +16965,14 @@ func harmWith(ws []string) bool {
 // ordinary use after it (plainUse), and not what is handled in play, a
 // craft or a rite, with nothing of harm after it (playGear, playKit and
 // handsUsed: "holding the bat", "using a hammer in woodwork", "lighting
-// matches for the puja", "using my hands to catch"), nor "picking my nose".
+// matches for the puja", "using my hands to catch", though the body is held
+// over no flame, flamelessUse: not "holding my hand over the candle"), nor
+// "picking my nose". What is pulled (hairPulls) is handled only if it is
+// hair (hairWords): "pulling my hair", not "pulling the rope".
 func harmHandled(handling string, ws []string) bool {
+	if hairPulls[handling] {
+		return anyBefore(ws, hairWords, selfClauses) // "pulling my hair", not "pulling the rope"
+	}
 	for i, w := range ws {
 		switch {
 		case selfClauses[w]:
@@ -16966,11 +16984,11 @@ func harmHandled(handling string, ws []string) bool {
 		case selfTools[w]:
 			return true
 		case weaponHeads[w] || bluntHeads[w] || selfHarmObjects[w]:
-			return !(playGear[w] && is(handling, "holding") && !bodyAfter(ws[i+1:]) ||
+			return !(playGear[w] && holdForms[handling] && !bodyAfter(ws[i+1:]) ||
 				playKit[w] && playUse(ws[i+1:])) // "a hammer to nail the frame": what is handled is the hammer
 		case (selfBody[w] || bodyHeads[w]) && !(i > 0 && (is(ws[i-1], "with") || is(ws[i-1], "bare") ||
 			i > 1 && ownerWord(ws[i-1]) && is(ws[i-2], "with"))):
-			return !(handsUsed[handling] && playUse(ws[i+1:]) || is(handling, "picking") && is(w, "nose"))
+			return !(handsUsed[handling] && flamelessUse(ws[i+1:]) || is(handling, "picking") && is(w, "nose"))
 		}
 	}
 	return false
@@ -16982,6 +17000,12 @@ func harmHandled(handling string, ws []string) bool {
 // my arm".
 func playUse(ws []string) bool {
 	return !bodyAfter(ws) && anyBefore(ws, playUses, selfClauses)
+}
+
+// flamelessUse reports playUse with no flame (flameWords) before a clause of
+// its own begins: "in badminton", "for the puja", not "over the candle".
+func flamelessUse(ws []string) bool {
+	return playUse(ws) && !anyBefore(ws, flameWords, selfClauses)
 }
 
 // bodyAfter reports, in the words ws before a clause of its own begins, a
