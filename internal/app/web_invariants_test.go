@@ -127,17 +127,21 @@ const overtakenDrawn = "renderVerify(state.route, overtook).then((drawn) => { if
 const panelRedrawn = `const panel = el.main.querySelector('[data-action="forget-verification"]'); ` +
 	`if (state.route.view === "verify" && ageStatus() === "ok" && panel) { renderVerify(state.route, panel); }`
 
-// awayFromScreen is all the submit handler does for a post answered, or
-// dropped unsent, while its form is off the screen: it keeps with the form
-// what the form would have been told on screen, with whether it had the focus
-// at the press and whether that refuses its badge, the wording of a refusal
-// for a redraw that takes the image off too, and takes the image off after a
-// refusal of the image itself, as on screen, and returns.
+// awayFromScreen is how the submit handler's catch ends for a post refused, or
+// dropped unsent, while its form is off the screen, once it has released the
+// form and dealt with a refused badge, noting the form, and with uploads
+// switched off: it keeps with the form what the form would have been told on
+// screen, with whether it had the focus at the press, whether that refuses its
+// badge and whether it refuses the image itself, for the thread's image limit
+// or not, and the wording of a refusal for a redraw that takes the image off
+// too; it takes the image off after a refusal of the image itself, as on
+// screen, where a page kept for the form then switches the picker off
+// (blockRefusedPicker); and it returns.
 const awayFromScreen = "if (!shown) { const imageRefused = limitReached || uploadsOff; " +
 	`const fileField = form.querySelector("[data-file-field]"); if (imageRefused && fileField) { clearFileField(fileField); } ` +
 	"if (!imageRefused) { refusalNotices.set(form, notice); } unsaidNotices.set(form, { " +
 	"notice: imageRefused ? errorMessage(err, { hasText, imageOff }) : notice(imageOff), focused, " +
-	`badgeRefused: Boolean(held) && (reason === "expired" || reason === "revoked"), }); return; }`
+	`badgeRefused: Boolean(held) && (reason === "expired" || reason === "revoked"), imageRefused, limitReached, }); return; }`
 
 // inOrder fails the test unless every one of steps occurs in src, each after
 // the one before it.
@@ -981,10 +985,12 @@ func TestCaptchaIsNotWorkedOnForNothing(t *testing.T) {
 // and says nothing on the page the reader went to, while a post that did go
 // still empties and releases its form, wherever it is. A post's form keeps what
 // it would have been told instead, and is told it once, with the focus it would
-// have had, by a redraw that carried it held, as it puts its values back into
-// its own page, after a post link's lookup into its thread say, or keeps that
-// page when it will not load: a refusal as on screen, say, or for a post not
-// sent, which on screen would have gone, that nothing was posted.
+// have had, by a redraw that carries it, held or still owed that notice, begun
+// before the answer or after it, as it puts its values back into its own page,
+// after a post link's lookup into its thread say, or keeps that page when it
+// will not load: a refusal as on screen, say, or for a post not sent, which on
+// screen would have gone, that nothing was posted. Every press of the form
+// drops what an earlier one left unsaid.
 func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 	script := appScript(t)
 	if on := squash(withoutComments(jsFunction(t, script, "formOnScreen"))); !strings.Contains(on,
@@ -1055,8 +1061,8 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 		// page the reader went to, and /verify there showing its panel is drawn
 		// again, as for any change of the page's badge
 		// (TestAFormSendsOnlyTheBadgeItWasDrawnFor), and a code step left to
-		// another confirmation says why on this form only while it is on
-		// screen (TestForgettingTheBadgeReachesEveryTab).
+		// another confirmation says why on this form only while it is on screen
+		// (TestForgettingTheBadgeReachesEveryTab).
 		for _, follows := range []string{
 			`if (pageBadge) { for (const posting of el.main.querySelectorAll("form[data-kind]")) { ` +
 				`if (posting !== form) { withdrawBadgeOption(posting, pageBadge, false); } } }`,
@@ -1072,20 +1078,26 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 		}
 	}
 	// What a post's form off the screen would have been told is said once, by a
-	// redraw that carried the form held: by restoreDraft, as it puts the form's
-	// values back into its own page, after a post link's lookup into its thread
-	// say, before it words that notice again for a picker the new page drew
-	// switched off, so that ends as it would have on screen; or by render, ahead
-	// of why, when the redraw will not load and keeps the page, form and all
-	// (TestAHeldFormSurvivesARedrawOfItsPage). The focus goes to the form's button
-	// as release gives it on screen: if the form had it at the press, noted as
-	// holdForm notes it, and it is lost now. A refusal of the badge is said in
-	// place of the note the catch left on the form, which would refuse the next
-	// press for the badge again. Each press drops what an earlier one left unsaid,
-	// so a form is told only of the press it is answering, and a form that does
+	// redraw that carries the form held, begun before the answer or after it
+	// while the form has something unsaid, Update or Back say (captureDraft):
+	// by restoreDraft, as it puts the form's values back into its own page,
+	// after a post link's lookup into its thread say, before it words that
+	// notice again for a picker the new page drew switched off, so that ends as
+	// it would have on screen; or by render, ahead of why, when the redraw will
+	// not load and keeps the page, form and all, the picker switched off after
+	// a refusal of the image itself, as on screen
+	// (TestAHeldFormSurvivesARedrawOfItsPage). The focus goes to the form's
+	// button as release gives it on screen: if the form had it at the press,
+	// noted as holdForm notes it, and it is lost now. A refusal of the badge is
+	// said in place of the note the catch left on the form, which would refuse
+	// the next press for the badge again. Every press of a posting form drops
+	// what an earlier one left unsaid before anything else, one refused before
+	// it is sent included, an empty one or one the badge's note refuses say, so
+	// a form is told only of the press it is answering, and a form that does
 	// not come back takes what it was not told with it.
 	inOrder(t, "the submit handler", submit,
-		"unsaidNotices.delete(form); const focused = form.contains(document.activeElement); const release = holdForm(form);",
+		"if (form.dataset.verify) { await submitVerification(form); return; } unsaidNotices.delete(form); const button = ",
+		"const focused = form.contains(document.activeElement); const release = holdForm(form);",
 		"} catch (err) {", `const box = field(form, "body");`, "const said = (off) =>", "const notice = (off) =>", awayFromScreen)
 	if take := squash(withoutComments(jsFunction(t, script, "takeUnsaidNotice"))); take != "function takeUnsaidNotice(form) { "+
 		"const unsaid = unsaidNotices.get(form); unsaidNotices.delete(form); return unsaid; }" {
@@ -1103,11 +1115,11 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 			`form.querySelector('button[type="submit"]')?.focus({ preventScroll: true }); } }`,
 	)
 	if code := withoutComments(script); !strings.Contains(code, "\nconst unsaidNotices = new WeakMap();\n") ||
-		strings.Count(code, "unsaidNotices") != 5 || strings.Count(code, "takeUnsaidNotice(") != 3 ||
+		strings.Count(code, "unsaidNotices") != 6 || strings.Count(code, "takeUnsaidNotice(") != 3 ||
 		strings.Count(restored, "unsaid") != 7 || strings.Count(code, "focused,") != 1 {
 		t.Error("unsaidNotices is no longer only declared, kept by the submit handler for a form off the screen, dropped " +
-			"at its next press, and taken out by restoreDraft and a kept page's failed redraw, or restoreDraft reads it for " +
-			"something besides the notice, the badge and the focus")
+			"at its next press, read by captureDraft and taken out by restoreDraft and a kept page's failed redraw, or " +
+			"restoreDraft reads it for something besides the notice, the badge and the focus")
 	}
 	// A post not sent because its form had left the screen would have gone on
 	// screen, so it is told that nothing was posted and, unless release left it
@@ -1165,10 +1177,12 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 // fresh puzzle. The answer goes back only when the request left it unspent, or
 // may have spent it without saying so (as when it brought no response, or the
 // 500 for a spend whose reply from the database was lost), and only into an
-// empty place while it is still good: if it was spent, the first request to
-// reach the server's captcha check with it is refused as used and solves a
+// empty place while it is still good: if it was spent, the first request whose
+// captcha check on the server can look it up is refused as used and solves a
 // fresh one, while one refused before that check, a reply to a thread locked
-// meanwhile say, puts it back again.
+// meanwhile say, or by a lookup that fails, a 500 with no header, puts it back
+// again, and one sent after the server's secret was rotated is refused as
+// invalid and solves a fresh one too.
 func TestEachCaptchaAnswerGoesOnOneRequest(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -1281,7 +1295,7 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 		t.Error("forgottenAt is no longer a WeakMap noted only by forgetForm and read only by restoreDraft")
 	}
 	if capture := squash(withoutComments(jsFunction(t, script, "captureDraft"))); !strings.Contains(capture,
-		"if (heldForms.has(form)) { return { key, held: form, forgets: browserForgets }; }") {
+		"if (heldForms.has(form) || unsaidNotices.has(form)) { return { key, held: form, forgets: browserForgets }; }") {
 		t.Error("captureDraft no longer notes browserForgets beside a held form it carries")
 	}
 	inOrder(t, "restoreDraft", squash(withoutComments(jsFunction(t, script, "restoreDraft"))),
@@ -1362,8 +1376,8 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 	// browserForgets since the press. A post the forget stopped says so on its
 	// form, or keeps it for a redraw to say if its form was off the screen, and
 	// the error sendWithCaptcha throws for it, whose message is for nobody,
-	// never reaches errorMessage, which words only one not sent because its form
-	// had left the screen (TestARequestGoesOnlyFromAFormOnScreen).
+	// never reaches errorMessage, which words only one not sent because its
+	// form had left the screen (TestARequestGoesOnlyFromAFormOnScreen).
 	submit := squash(withoutComments(submitHandler(t, script)))
 	inOrder(t, "the submit handler", submit,
 		"const forgets = browserForgets; const forgotten = () => forgets !== browserForgets;",
@@ -1768,19 +1782,19 @@ func TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress(t *testing.T) {
 	// sent only while storage holds it. A form on screen is told by the
 	// refusal's notice. One off the screen, which the refusal tells nothing
 	// then (TestARequestGoesOnlyFromAFormOnScreen), keeps that notice, which a
-	// redraw that carried it held says as it puts its values back into its
-	// page or keeps that page, and is noted, starting nothing, for a redraw
-	// that reads it once it is released, so the form that redraw draws in its
-	// place refuses its next press once: without either, that press posts the
-	// reply without its badge, unsaid, under the ID the reader's other posts
-	// there without one share. A form on screen whose badge storage has
-	// replaced since the press, the browser not forgotten meanwhile, is told so
-	// in place of the server's wording, which says to verify again, and a note
-	// left on it while the post was on its way goes, whatever left it (a change
-	// of badge in another tab, a confirmation answered in this one, another
-	// badged post's refusal in this one, /verify loading over the form, or a
-	// redraw that puts it back), so that notice is its one refusal for the
-	// badge.
+	// redraw that carries it, held or still owed the notice, says as it puts
+	// its values back into its page or keeps that page, and is noted, starting
+	// nothing, so that a press before then is refused once, as is the next
+	// press of the form a redraw draws in its place after a press refused as
+	// empty has dropped the notice: without either, that press posts the reply
+	// without its badge, unsaid, under the ID the reader's other posts there
+	// without one share. A form on screen whose badge storage has replaced
+	// since the press, the browser not forgotten meanwhile, is told so in place
+	// of the server's wording, which says to verify again, and a note left on
+	// it while the post was on its way goes, whatever left it (a change of
+	// badge in another tab, a confirmation answered in this one, another badged
+	// post's refusal in this one, /verify loading over the form, or a redraw
+	// that puts it back), so that notice is its one refusal for the badge.
 	refused := submit[max(strings.Index(submit, "} catch (err) {"), 0):]
 	if !strings.Contains(refused, `if (held && (reason === "expired" || reason === "revoked")) { `+
 		"if (forgets === browserForgets && storedCredential() === held.token) { const pageBadge = state.verification.badge; "+
@@ -1998,7 +2012,8 @@ func TestAPendingFormIsHeld(t *testing.T) {
 		}
 	}
 	inOrder(t, "the submit handler", submit, "sendWithCaptcha(", "form.reset();", "clearFileField(fileField); } release(false);", "} catch (err) {")
-	if blocked, released := strings.Index(submit, "blockFileField("), strings.Index(submit, "release(shown);"); blocked < released {
+	if blocked, released := strings.Index(submit, "blockRefusedPicker("), strings.Index(submit, "release(shown);"); blocked < released ||
+		strings.Contains(submit, "blockFileField(") {
 		t.Error("the submit handler switches its controls back on after switching the picker off, which turns the picker back on")
 	}
 
@@ -2066,20 +2081,25 @@ func TestAPendingFormIsHeld(t *testing.T) {
 // leaves the page there, as it was drawn, with the error in a notice above it
 // rather than in its place, unless a newer render has begun, which has the
 // screen. A held form that has been answered by the time the page is drawn is
-// read like any draft, so one whose post went is drawn empty. Its page is told
-// by routeKey, which leaves out the index page, so another page of the same
-// board's index carries a held new-thread form as Update does. And when the
-// hold ends, success or refusal, release leaves its picker as the new page drew
-// one: a redraw that drew it switched off, the thread having reached its image
-// limit meanwhile, has the held form's switched off with the same reason,
-// rather than offering an image to a thread that takes no more, and the image
-// it held taken off, which release reports for the notice to say
+// read like any draft, so one whose post went is drawn empty. A form answered
+// off the screen before the redraw began, and not told yet what it missed, is
+// carried held as well, so that the redraw tells it
+// (TestARequestGoesOnlyFromAFormOnScreen). Its page is told by routeKey, which
+// leaves out the index page, so another page of the same board's index carries
+// a held new-thread form as Update does. And when the hold ends, success or
+// refusal, release leaves its picker as the new page drew one: a redraw that
+// drew it switched off, the thread having reached its image limit meanwhile,
+// has the held form's switched off with the same reason, rather than offering
+// an image to a thread that takes no more, and the image it held taken off,
+// which release reports for the notice to say
 // (TestCaptchaRefusalSaysWhatTheFormStillHolds); one that drew it live, the
 // limit raised meanwhile, has it switched on, though it was switched off at the
 // press; and one that drew none, on a site that takes no images, has it
 // switched off with the site's reason. A refusal of the image itself, the image
-// limit reached or uploads switched off, then switches it off in the submit
-// handler.
+// limit reached or uploads switched off, then switches it off
+// (blockRefusedPicker): the submit handler does that for a form on screen, and
+// for one answered off the screen a page that a failed redraw keeps for it
+// does, while a page drawn afresh draws its picker as the server says.
 func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 	script := appScript(t)
 	if !strings.Contains(withoutComments(script), "\nconst heldForms = new WeakSet();\n") {
@@ -2091,13 +2111,17 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 	}
 	// A draft is keyed by the page on screen, which the render that drew it
 	// noted, never by a render begun since that has not drawn: the second of a
-	// double click would carry this page's form into the other page's.
+	// double click would carry this page's form into the other page's. A form
+	// is carried as itself while it is held, or has something it was not told
+	// off the screen: read for its values instead, it would be redrawn with
+	// that left unsaid, the focus lost, and an image a refusal took off gone
+	// without a word.
 	capture := squash(withoutComments(jsFunction(t, script, "captureDraft")))
 	inOrder(t, "captureDraft", capture,
 		"const key = routeKey(drawnFor.route || state.route);",
 		`const form = el.main.querySelector("form[data-kind]");`,
 		"return unsent ? { key, open: true, body: unsent.value } : null;",
-		"if (heldForms.has(form)) { return { key, held: form, forgets: browserForgets }; }",
+		"if (heldForms.has(form) || unsaidNotices.has(form)) { return { key, held: form, forgets: browserForgets }; }",
 		"return { key, ...formDraft(form) };",
 	)
 	if strings.Count(capture, "routeKey(") != 1 || strings.Count(capture, "key") != 4 {
@@ -2152,21 +2176,25 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 	// its place, the skeleton, the age screen, an error or a new page, whatever
 	// loads meanwhile, so a refusal answered while a redraw loads updates the
 	// page on screen, after a post link's lookup too, and Escape closes the
-	// image open there. A render a newer one has overtaken draws nothing, loaded
-	// or not, and one that draws notes what the page was drawn for (drawnFor),
-	// which a kept page whose redraw will not load gets back, with the error
-	// as a notice, after what its form, answered off the screen meanwhile, was not
-	// told (TestARequestGoesOnlyFromAFormOnScreen), never in place of the page:
-	// after two redraws that fail, the page is still the one drawn, not the first
-	// redraw's half-begun one. The address bar goes back to that page's address
-	// too, the history entry the reader is on replaced, or a jump within the page
-	// afterwards would find an address the page was not drawn for and draw the
-	// page that failed. Every render begun, the age screen's and the rules'
-	// included, ends the loading state of any before it (below). A post link's
-	// lookup goes on to the thread unless the reader went somewhere else
-	// meanwhile, which a jump within the page, moving only the fragment, is not:
-	// the address is compared less its fragment, or a skip link pressed during the
-	// lookup would leave the skeleton on screen for good.
+	// image open there. A render a newer one has overtaken draws nothing,
+	// loaded or not, and one that draws notes what the page was drawn for
+	// (drawnFor), which a kept page whose redraw will not load gets back, with
+	// the error as a notice, after what its form, answered off the screen, was
+	// not told (TestARequestGoesOnlyFromAFormOnScreen), never in place of the
+	// page: after two redraws that fail, the page is still the one drawn, not
+	// the first redraw's half-begun one. A refusal of that form's image
+	// switches its picker off there, and puts the thread kept with the page in
+	// step, as on screen (blockRefusedPicker); the page's thread is that
+	// form's, the draft being keyed by the page the form is on. The address bar
+	// goes back to that page's address too, the history entry the reader is on
+	// replaced, or a jump within the page afterwards would find an address the
+	// page was not drawn for and draw the page that failed. Every render begun,
+	// the age screen's and the rules' included, ends the loading state of any
+	// before it (below). A post link's lookup goes on to the thread unless the
+	// reader went somewhere else meanwhile, which a jump within the page,
+	// moving only the fragment, is not: the address is compared less its
+	// fragment, or a skip link pressed during the lookup would leave the
+	// skeleton on screen for good.
 	render := squash(withoutComments(jsFunction(t, script, "render")))
 	inOrder(t, "render", render,
 		"async function render({ draft = captureDraft() } = {}) {",
@@ -2184,6 +2212,7 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 			"state.route = drawnFor.route; "+
 			"state.thread = drawnFor.thread; const unsaid = takeUnsaidNotice(draft.held); "+
 			"if (unsaid && unsaid.badgeRefused) { badgeWithdrawn.delete(draft.held); } "+
+			"if (unsaid && unsaid.imageRefused) { blockRefusedPicker(draft.held, unsaid.limitReached); } "+
 			`const said = el.notice.hidden ? "" : el.notice.querySelector(".notice-text").textContent; `+
 			`showNotice([unsaid ? unsaid.notice : "", said, message].filter(Boolean).join(" ")); `+
 			"if (unsaid && unsaid.focused && (!document.activeElement || document.activeElement === document.body)) { "+
@@ -2408,11 +2437,27 @@ func TestCaptchaRefusalSaysWhatTheFormStillHolds(t *testing.T) {
 			"const notice = (off) => imageTakenOff(said(off), off, { hasText, isThread, closed });",
 		awayFromScreen,
 		"showNotice(imageTakenOff(FORGOTTEN_BEFORE_SENDING, imageOff, { hasText, isThread }));",
-		"if (limitReached) {",
-		"if (limitReached || uploadsOff) { showNotice(errorMessage(err, { hasText, imageOff })); return; } "+
+		"if (limitReached || uploadsOff) { blockRefusedPicker(form, limitReached); "+
+			"showNotice(errorMessage(err, { hasText, imageOff })); return; } "+
 			"refusalNotices.set(form, notice); showNotice(notice(imageOff)); } });",
 	)
+	// A refusal of the image itself switches the picker off with its reason,
+	// and puts the thread on screen in step with what it taught: on screen
+	// here, and for a form answered off the screen on the page a failed redraw
+	// keeps for it (TestAHeldFormSurvivesARedrawOfItsPage), and nowhere else,
+	// since a page drawn afresh draws both from what the server says by then.
 	code := withoutComments(script)
+	if block := squash(withoutComments(jsFunction(t, script, "blockRefusedPicker"))); block !=
+		"function blockRefusedPicker(form, limitReached) { "+
+			`const fileField = form.querySelector("[data-file-field]"); const thread = state.thread; `+
+			"if (limitReached) { if (fileField) { blockFileField(fileField, imageLimitReason(thread && thread.board)); } "+
+			"if (thread) { thread.at_image_limit = true; if (thread.board && thread.board.image_limit > 0) { "+
+			"thread.images = Math.max(Number(thread.images) || 0, thread.board.image_limit); } } } "+
+			"else if (fileField) { blockFileField(fileField, UPLOADS_OFF_REASON); } redrawThreadCounts(); }" ||
+		strings.Count(code, "blockRefusedPicker(") != 3 {
+		t.Errorf("blockRefusedPicker no longer switches the picker off with the refusal's reason and redraws the thread's "+
+			"counts, or is called besides on screen and on a kept page: %s", block)
+	}
 	if strings.Count(refused, "showNotice(") != 3 || strings.Count(refused, "body.trim()") != 0 ||
 		strings.Count(code, "imageTakenOff(") != 4 {
 		t.Error("the submit handler words a refusal somewhere besides the three notices this test reads, or from the text pressed, " +
