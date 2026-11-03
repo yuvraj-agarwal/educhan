@@ -591,8 +591,8 @@ func (a *App) handlePassCheckout(w http.ResponseWriter, r *http.Request) {
 	// The Pass to renew is read without the Pass lock, as gone once it is a
 	// month past its expiry (passCutoff), as the order will be held to, so a
 	// code that is no good is refused before it costs its holder a cooldown.
-	// The order reads it again by the same code, under the lock
-	// (createPassOrder).
+	// The order reads it again by the same code, under the lock, by the clock
+	// once Stripe has answered (createPassOrder).
 	var renewToken []byte
 	if strings.TrimSpace(req.Renew) != "" {
 		code, ok := parsePassCode(req.Renew)
@@ -666,7 +666,7 @@ func (a *App) handlePassCheckout(w http.ResponseWriter, r *http.Request) {
 		RenewTokenHash: renewToken,
 		Days:           a.cfg.Pass.Days,
 		ExpiresAt:      passClaimDeadline(now),
-	}, now)
+	}, time.Now())
 	if errors.Is(err, errPassGone) {
 		// Refunded, past its grace month, or given another code by a reissue
 		// between the lookup above and the order. The Stripe session is left
@@ -932,12 +932,14 @@ func (a *App) redeemPassReissue(w http.ResponseWriter, r *http.Request, typed, n
 		return
 	}
 	// Whether this browser also has a purchase to collect, so the page goes
-	// on to collect it. The reissue is committed by now, so failing to read
-	// this does not fail the answer, which would tell the reader the code did
-	// not work after it had: the page also asks GET /api/pass on every visit.
+	// on to collect it, by the clock as it is read, not the one the reissue
+	// read before it waited for the lock. The reissue is committed by now, so
+	// failing to read this does not fail the answer, which would tell the
+	// reader the code did not work after it had: the page also asks GET
+	// /api/pass on every visit.
 	claim := false
 	if claims := passClaimTokens(r); len(claims) > 0 {
-		waiting, err := a.store.passClaimWaiting(r.Context(), claimHashes(claims), c.Now)
+		waiting, err := a.store.passClaimWaiting(r.Context(), claimHashes(claims), time.Now())
 		if err != nil && r.Context().Err() == nil {
 			a.log.Error("could not look up the purchase in progress", "error", err)
 		}
@@ -1433,7 +1435,12 @@ func (a *App) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 // queued behind each other.
 const passLockID int32 = 0x50617373 // "Pass"
 
-// passTx runs fn in a transaction holding the Pass lock.
+// passTx runs fn in a transaction holding the Pass lock. A function that runs
+// it and holds a lookup to a bound of now (passCutoff) is given
+// a now its caller reads just before calling it, so the bound is the moment
+// the request reached the store, earlier than the lookup by no more than the
+// wait for the lock. The prune, which only frees rows past such bounds, can be
+// given an earlier one, as checkout's is.
 func (s *Store) passTx(ctx context.Context, fn func(pgx.Tx) error) error {
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1, hashtext(current_schema()))`, passLockID); err != nil {
@@ -1463,13 +1470,13 @@ var errPassGone = errors.New("the Pass to renew is gone")
 // the browser, which no other order is under (pass_orders_claim_idx is unique).
 // A renewal's Pass is looked up again under the lock, by the code the checkout
 // was given and as gone a month past its expiry, as its own lookup was
-// (passCutoff), so a refund, the month running out, or a reissue that gave the
-// Pass another code, landing in between while Stripe was being asked for a
-// session, answers errPassGone rather than renewing a Pass whose code the
-// browser no longer holds. A Pass reissued from a right that moved to a renewal
-// (moveOrigin) would otherwise be handed over with this renewal still to land
-// on it, past the check that stops a reissue while one is under way
-// (renewalUnderWay).
+// (passCutoff), but at now, which the checkout reads once Stripe has answered,
+// so a refund, the month running out, or a reissue that gave the Pass another
+// code, landing in between while Stripe was being asked for a session, answers
+// errPassGone rather than renewing a Pass whose code the browser no longer
+// holds. A Pass reissued from a right that moved to a renewal (moveOrigin)
+// would otherwise be handed over with this renewal still to land on it, past
+// the check that stops a reissue while one is under way (renewalUnderWay).
 //
 // The order names the Pass it renews with no foreign key, whose check would
 // lock the Pass's row and leave this transaction's id on it (0012). What the

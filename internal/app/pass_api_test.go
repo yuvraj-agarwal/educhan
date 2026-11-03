@@ -1853,17 +1853,28 @@ func TestPassRenewalOfAPassThatIsGone(t *testing.T) {
 	}
 
 	// Run past its grace month while Stripe was opening the checkout, but not
-	// pruned yet: the order is refused all the same.
+	// pruned yet: the order is held to the clock as it is written, once Stripe
+	// has answered, not to the one the checkout read before asking, and is
+	// refused all the same. Nothing moves the Pass's expiry here: its month
+	// ends two seconds on, while the checkout's own lookup finds it, and runs
+	// out while Stripe is opening the session.
 	ageing := p.buy("pi_aged_meanwhile")
+	gone := time.Now().Add(2 * time.Second)
+	p.exec(`UPDATE passes SET expires_at = $1 WHERE token_hash = $2`,
+		gone.Add(-passExpiredGrace), p.app.passTokenHash(strings.ReplaceAll(ageing.Pass, "-", "")))
+	p.exec(`UPDATE pass_payments SET ends_at = $1 WHERE payment_hash = $2`,
+		gone.Add(-passExpiredGrace), p.app.passPaymentHash("pi_aged_meanwhile"))
+	sessions := p.stripe.sessionCount()
 	p.stripe.mu.Lock()
-	p.stripe.opening = func() {
-		_, revokeErr = p.app.pool.Exec(context.Background(), `UPDATE passes SET expires_at = $1 WHERE token_hash = $2`,
-			time.Now().Add(-30*24*time.Hour-time.Minute), p.app.passTokenHash(strings.ReplaceAll(ageing.Pass, "-", "")))
-	}
+	p.stripe.opening = func() { time.Sleep(time.Until(gone) + 100*time.Millisecond) }
 	p.stripe.mu.Unlock()
+	out = passResponse{}
 	status = p.post("/api/pass/checkout", map[string]any{"adult": true, "renew": ageing.Pass}, &out)
-	if revokeErr != nil {
-		t.Fatal(revokeErr)
+	p.stripe.mu.Lock()
+	p.stripe.opening = nil
+	p.stripe.mu.Unlock()
+	if p.stripe.sessionCount() != sessions+1 {
+		t.Fatalf("the checkout's own lookup found the Pass gone before Stripe was asked (status %d, %+v); the test proves nothing", status, out)
 	}
 	if status != http.StatusConflict || out.Pass != passInvalid {
 		t.Fatalf("renewal of a Pass that ran past its grace month mid-checkout: status %d, %+v", status, out)
@@ -5390,6 +5401,38 @@ func TestPassReissueSurvivesAFailedClaimRead(t *testing.T) {
 		if strings.Contains(out, needle) {
 			t.Errorf("the log contains %q:\n%s", needle, out)
 		}
+	}
+}
+
+// TestPassReissueReadsTheClaimAfterIt holds the "claim" a reissue code's answer
+// carries to the clock as that is read, after the reissue, not to the one the
+// reissue read before it waited for the Pass lock: an unpaid order whose
+// deadline passes while the reissue waits is nothing to collect, as GET
+// /api/pass then says too.
+func TestPassReissueReadsTheClaimAfterIt(t *testing.T) {
+	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
+	p.buy("pi_waited_for")
+	_, _, code := p.reissueCode("mod-key", "pi_waited_for")
+	// The browser that types the code has a purchase of its own waiting,
+	// whose deadline passes while the reissue waits for the lock.
+	p.checkout("")
+	deadline := time.Now().Add(time.Second)
+	p.exec(`UPDATE pass_orders SET expires_at = $1`, deadline)
+	if !p.reportsClaim() {
+		t.Fatal("the browser has no purchase waiting; the test proves nothing")
+	}
+	lock := p.holdPassLock()
+	answer := p.fire(p.request("/api/pass/claim", map[string]any{"reissue": code, "nonce": p.collectNonce()}, nil))
+	lock.queued(1, "the reissue")
+	time.Sleep(time.Until(deadline) + 100*time.Millisecond)
+	lock.release()
+	r := <-answer
+	if r.err != nil || r.status != http.StatusOK || r.body.Status != "issued" || !passCodeShape(r.body.Pass) || r.body.Claim {
+		t.Fatalf("a reissue that waited past the deadline of the purchase beside it: status %d, %v, %+v; want the new code and no claim",
+			r.status, r.err, r.body)
+	}
+	if p.reportsClaim() {
+		t.Fatal("GET /api/pass tells the page to collect the lapsed order")
 	}
 }
 
