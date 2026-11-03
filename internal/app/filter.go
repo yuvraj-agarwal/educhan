@@ -8775,13 +8775,17 @@ func ageCheck(v *view, m []int) bool {
 		// ("class 12 students dm me for jee notes"), and not "class 8 girls
 		// relay results are out", "the class 8 girls dm me every day", "9th
 		// graders who went on the trip", "grade 9 student here, dm me" or
-		// "class 8 girl here".
+		// "class 8 girl here". Its students or kids asked to get in touch
+		// are looked for too when secrecy or a meeting follows and nothing
+		// they would study or sign up for does (pupilsSought): "class 8
+		// students dm me, no parents".
 		noun := ws[len(ws)-1]
-		if !soughtYouths[noun] {
+		pupils := pupilWords[noun]
+		if !soughtYouths[noun] && !pupils {
 			return false
 		}
 		before := wordsIn(clauseBefore(v.text, m[0]))
-		if n := len(before); n > 1 && is(before[n-1], "for") && seekingVerbs[before[n-2]] {
+		if n := len(before); !pupils && n > 1 && is(before[n-1], "for") && seekingVerbs[before[n-2]] {
 			return true
 		}
 		lead := ""
@@ -8792,6 +8796,9 @@ func ageCheck(v *view, m []int) bool {
 			return false
 		}
 		next := nextWords(clauseAfter(v.text, m[1]), 3)
+		if pupils {
+			return len(next) > 0 && reachTails[next[0]] && pupilsSought(wordsIn(v.text[m[1]:min(len(v.text), m[1]+120)]))
+		}
 		if !strings.HasSuffix(noun, "s") {
 			return len(next) > 0 && reachTails[next[0]]
 		}
@@ -8954,6 +8961,50 @@ var (
 	reachTails   = canonSetOf(`dm dms pm inbox msg message text hmu snap add ping call chat`)
 	seekingVerbs = canonSetOf(`looking searching look search lookin`)
 	soughtWho    = canonSetOf(`want wants wanna interested single online free lonely bored up down like likes`)
+)
+
+// pupilsSought reports secrecy or a meeting in ws, the words after a school
+// year's students or kids asked to get in touch, and nothing they would
+// study or sign up for: "class 8 students dm me, no parents", "class 7 kids
+// dm me, it's a secret", "lets meet after school, just us"; not "class 9
+// students dm me for doubts, no parents needed" or "for the quiz team, it's
+// a secret from the other section".
+func pupilsSought(ws []string) bool {
+	if anyIn(ws, pupilErrands) {
+		return false
+	}
+	for i, w := range ws {
+		switch {
+		case pupilSecrets[w]:
+			return true
+		case parentWords[w]:
+			for _, p := range ws[max(0, i-3):i] {
+				if keptFrom[p] {
+					return true
+				}
+			}
+		case is(w, "just") && i+1 < len(ws) && (is(ws[i+1], "us") || is(ws[i+1], "me")):
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	// pupilWords are a school year's students or kids, offered notes as
+	// often as looked for (pupilsSought).
+	pupilWords = canonSetOf(`student students kid kids`)
+	// pupilSecrets are secrecy or a meeting; parentWords after one of
+	// keptFrom are parents kept out: "no parents", "don't tell your mum".
+	pupilSecrets = canonSetOf(`secret secrets secretly private privately alone meet meetup meeting nobody noone`)
+	parentWords  = canonSetOf(`parents parent mom mum mommy mummy dad daddy papa family`)
+	keptFrom     = canonSetOf(`no without w/o tell dont don't not`)
+	// pupilErrands are what a year's students are got in touch with for:
+	// notes, doubts, an exam, a form, a team.
+	pupilErrands = canonSetOf(`notes note doubts doubt help jee neet exam exams test tests paper papers syllabus
+		study studying homework hw assignment assignments quiz form forms project projects team teams book books
+		tuition tuitions revision revise revising olympiad competition trip fee fees result results timetable
+		practical sample farewell fest event committee council election`)
 )
 
 // canonSetOf is setOf for words looked up in the loose view as well.
