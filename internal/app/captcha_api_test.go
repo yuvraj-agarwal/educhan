@@ -1064,13 +1064,13 @@ func TestALostSpendStartsNoCooldown(t *testing.T) {
 // A lookup of an answer that fails, or a spend of it that the database does not
 // apply, is the server's error, not a refusal of the answer: either is answered
 // 500 "could not check the captcha", with no captcha reason and no spent
-// header, and starts no cooldown, so the client keeps its answer
-// (captchaSpentHeader), which the request has not spent: here the same answer
-// posts once the database is back. (A spend the database applied but whose
-// reply was lost answers the same 500, the answer spent.) The table renamed
-// away fails the lookup, and a trigger that raises fails the spend, which the
-// lookup, now finding the answer unspent, and flood control, which the failed
-// lookup came before, let the post through to.
+// header, and starts no cooldown, so the client puts back its answer, which the
+// request has not spent, on keepCaptcha's terms (captchaSpentHeader): here the
+// same answer posts once the database is back. (A spend the database applied
+// but whose reply was lost answers the same 500, the answer spent.) The table
+// renamed away fails the lookup, and a trigger that raises fails the spend,
+// which the lookup, now finding the answer unspent, and flood control, which
+// the failed lookup came before, let the post through to.
 func TestAFailedCaptchaLookupOrSpendKeepsTheAnswer(t *testing.T) {
 	var logs syncBuffer
 	h := testServerLogging(t, withCaptcha(func(cfg *Config) { cfg.ThreadCooldown = time.Hour }), &logs)
