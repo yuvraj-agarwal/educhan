@@ -1028,7 +1028,7 @@ joke about dying with no cause or laugh beside it shown the support message). Th
 matched and a hold waits for a person.
 
 **The corpus** (`testdata/filter_corpus/{academic,life,contact,risk}{,_2,_3}.jsonl`) is
-3,817 made-up posts in three parts, one JSON object a line: `id` (unique across the
+3,892 made-up posts in three parts, one JSON object a line: `id` (unique across the
 files), `body`, `subject`, `name`, `expect` (`publish`, `block`, `support` or `hold`; a
 method question that shows support and is then held meets `hold`), `why`, and, only
 together, `known_miss: true` and a `note` saying why the miss is accepted rather than
@@ -1073,19 +1073,19 @@ still happen to be someone's, as with the unit tests' examples. Label a post by 
 filter should do, not by what it does. A rule change that turns a labelled post wrong is a
 regression to fix, or a label to correct with the reason in `why`; a `known_miss` is for a
 miss whose fix would cost more than it buys, and its `note` says what. **The rules have
-been fitted to all 3,817 posts**, all three parts: the `_2` part was written apart from
+been fitted to all 3,892 posts**, all three parts: the `_2` part was written apart from
 the rules, then used to rewrite the hold rules to read grammar and, after that, the
 contact and support rules to read verb classes, apps with their objects, the poster's own
 voice in any tense, number layouts and quotation; the `_3` part was written apart from
 them too, measured unseen (the README gives the figures), and then used to put right the
-ordinary posts it stopped and to widen each family cause by cause; the last 932 pin what a
-review of the rules found they missed or stopped wrongly, each written beside the change
-that put it right; so the rates `-v` logs describe how closely the rules fit these posts
-and are no measurement of anything else. The README says so, and a claim about how well
-the filter works needs posts it was not fitted to. Relabelled posts carry the reason in
-`why`: drama-range and 555-01xx numbers labelled `block` were relabelled `publish`, as was
-a WhatsApp channel link (one-way, so no private conversation), as the README's rules have
-them; and two lethal doses asked for under a study label ("for the tox exam, how many
+ordinary posts it stopped and to widen each family cause by cause; the last 1,007 pin
+what a review of the rules found they missed or stopped wrongly, each written beside the
+change that put it right; so the rates `-v` logs describe how closely the rules fit these
+posts and are no measurement of anything else. The README says so, and a claim about how
+well the filter works needs posts it was not fitted to. Relabelled posts carry the reason
+in `why`: drama-range and 555-01xx numbers labelled `block` were relabelled `publish`, as
+was a WhatsApp channel link (one-way, so no private conversation), as the README's rules
+have them; and two lethal doses asked for under a study label ("for the tox exam, how many
 tablets of paracetamol is a lethal dose for an adult") were relabelled `hold`, since a
 label lets through a statement, a "why" or a topic, never the dose asked. In `_3`, a bare "inbox me" was relabelled `publish` (it names no way to reach
 anyone, as a bare "dm me" does not), and each doubt about a label that was settled the
