@@ -115,6 +115,58 @@ func TestUploadsReserveTheirBytes(t *testing.T) {
 	}
 }
 
+// TryReserveUpload takes room that is free now, as ReserveUpload would at
+// once, and never waits: with too little free, or with an upload waiting for
+// room ahead of it, it takes nothing, so it cannot slip past the queue.
+func TestTryReserveUploadNeverWaits(t *testing.T) {
+	b := narrowUploads(t, 100)
+	queued := func() int {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.waiters.Len()
+	}
+
+	first, ok := TryReserveUpload(60)
+	if !ok || b.held() != 60 {
+		t.Fatalf("try 60 of a free 100: took it %v, held %d; want it taken", ok, b.held())
+	}
+	if _, ok := TryReserveUpload(50); ok {
+		t.Fatal("try 50 with 40 free: taken, want refused")
+	}
+
+	got := make(chan func(), 1)
+	go func() {
+		release, err := ReserveUpload(context.Background(), 50)
+		if err != nil {
+			t.Errorf("reserve 50 with 40 free: %v", err)
+		}
+		got <- release
+	}()
+	for deadline := time.Now().Add(5 * time.Second); queued() == 0; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the reservation of 50 never waited")
+		}
+	}
+	if _, ok := TryReserveUpload(10); ok {
+		t.Fatal("try 10 with 40 free and a reservation waiting: taken, want refused")
+	}
+	if n := b.held(); n != 60 {
+		t.Errorf("held %d after refused tries, want 60", n)
+	}
+
+	first()
+	second := <-got
+	if third, ok := TryReserveUpload(50); !ok {
+		t.Error("try 50 with 50 free and nothing waiting: refused, want taken")
+	} else {
+		third()
+	}
+	second()
+	if n := b.held(); n != 0 {
+		t.Errorf("held %d after every reservation was given back, want 0", n)
+	}
+}
+
 // Save holds the processing budget until both renditions are stored: until
 // then it holds them, and a budget given back before the writes would let in
 // more than it was sized for.

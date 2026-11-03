@@ -114,10 +114,10 @@ const defaultMaxUploadBytes int64 = 8 << 20
 // its bytes have been read, so a limit past that would be one nothing could
 // reach. The body that carries an image, up to multipartOverhead more than
 // the image, must also fit the memory set aside for request bodies
-// (media.UploadBudget, 64 MiB), where it is reserved whole before it is read:
-// a body larger than that budget would be reserved as the whole of it and read
-// past it, and the budget would no longer bound what the uploads hold. That
-// allows 63 MiB, so the processing budget is what decides.
+// (media.UploadBudget, 64 MiB), where it is reserved whole before most of it
+// is read: a body larger than that budget would be reserved as the whole of it
+// and read past it, and the budget would no longer bound what the uploads
+// hold. That allows 63 MiB, so the processing budget is what decides.
 const maxUploadLimit = min(media.MaxUploadBytes, media.UploadBudget-multipartOverhead)
 
 // checkUploadLimit refuses an attachment size limit over maxUploadLimit.

@@ -15,7 +15,7 @@ import (
 var ErrBusy = errors.New("media: no room to take the image in time")
 
 // UploadBudget is the memory the uploads themselves may take between them,
-// from before their bytes are read until their post has been answered
+// from before most of their bytes are read until their post has been answered
 // (ReserveUpload): the request bodies, which processingBudget does not count.
 // It holds about eight bodies carrying an image at the default size limit
 // (8 MiB), and more of smaller ones. Without it nothing bounded how many were
@@ -144,6 +144,14 @@ func ReserveUpload(ctx context.Context, n int64) (release func(), err error) {
 	return uploads.acquire(ctx, n)
 }
 
+// TryReserveUpload takes n bytes of the upload budget if they are free now and
+// no upload waits for room ahead of it, as ReserveUpload would without
+// waiting, and returns the function that gives them back; otherwise it takes
+// nothing and reports false. It never waits.
+func TryReserveUpload(n int64) (release func(), ok bool) {
+	return uploads.tryAcquire(n)
+}
+
 // acquireProcessing waits until cost fits in the processing budget and returns
 // the function that gives it back, as acquire does. A cost over the whole
 // budget is refused by Inspect before this is reached; here it is capped at
@@ -210,6 +218,20 @@ func (b *budget) acquire(ctx context.Context, n int64) (func(), error) {
 		b.mu.Unlock()
 	}
 	return nil, err
+}
+
+// tryAcquire takes n from the budget, as acquire does when there is room and
+// no queue, and returns the function that gives it back; or, with no room or
+// a queue, takes nothing and reports false.
+func (b *budget) tryAcquire(n int64) (func(), bool) {
+	n = min(max(n, 1), b.size)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.waiters.Len() != 0 || b.used+n > b.size {
+		return nil, false
+	}
+	b.used += n
+	return func() { b.release(n) }, true
 }
 
 func (b *budget) release(n int64) {

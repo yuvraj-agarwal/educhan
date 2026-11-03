@@ -1161,10 +1161,22 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   (`errUploadShare`, `busyRetryAfter` to wait, nothing charged) without waiting, or `400`
   `upload too slow` if its body falls behind on the way (`turnAway`); and `pacedBody`
   holds the body to an even pace through its read window, moving the read deadline before
-  every read to `uploadPaceGrace` (5 s) past when what has arrived would have at the pace
-  that brings it all in by the window's end, so a body that sends nothing or a trickle is
-  answered `400` and gives its room back after the grace, not at the window's end
-  (`TestIdleUploadsCannotHoldTheUploadBudget`). A body without a `Content-Length`
+  every read to a grace past when what has arrived would have at the pace that brings it
+  all in by the window's end, so a body that sends nothing or a trickle is answered `400`
+  and gives its room back after the grace, not at the window's end
+  (`TestIdleUploadsCannotHoldTheUploadBudget`). That still let sixteen addresses, each
+  within its share with three connections that declared the largest body and sent none of
+  it, keep the budget full and its queue for room long, each body holding its room for the
+  whole grace (`uploadPaceGrace`, 5 s) and coming straight back once cut off: an honest
+  image post waited 8 to 11 s behind them, or was turned away `503`. So a body's first
+  bytes are read before anything is reserved for it (`startBody`), one that sends none
+  within `uploadPaceGrace` answered `400` having held neither room nor a place in the
+  queue; the grace is earned, `uploadStartGrace` (1 s) to begin with and a second more for
+  every second's worth of the body, at the pace, that has arrived, so one that sends its
+  first bytes and stops gives its room back after a second; and one post of a client waits
+  for room at a time, the client's next post that finds none answered `429` at once
+  (`reserveUpload`), so a few clients cannot fill the queue ahead of everyone else
+  (`TestIdleBodiesDoNotHoldUpOtherImagePosts`). A body without a `Content-Length`
   (chunked) would have to reserve the most a body may be, and could then be held only to
   the pace of that, which cut a small one sent slowly off, or to none, which let seven
   trickles from three addresses hold the whole budget for the window; so, with uploads on,

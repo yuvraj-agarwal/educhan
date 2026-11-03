@@ -25,14 +25,14 @@ const multipartOverhead = 1 << 20
 
 // clientUploadShare is the most of the upload budget (media.UploadBudget)
 // the bodies of one client's posts may hold at once: half of it. A body holds
-// its room from before it is read until its post is answered, and a post
-// whose body never arrives never reaches flood control, so without a share
+// its room from before most of it is read until its post is answered, and a
+// post whose body never arrives never reaches flood control, so without a share
 // one client could hold the whole budget with a few connections that declare
-// large bodies and send nothing, turn every other image post away as busy,
-// and be charged nothing for it. Half is one upload of the largest size the
-// server may be configured to take (maxUploadLimit and its
-// multipartOverhead), and three at the default limit: more than one client
-// can post at once, the upload cooldown being per client across the server.
+// large bodies and send little of them, turn every other image post away as
+// busy, and be charged nothing for it. Half is one upload of the largest size
+// the server may be configured to take (maxUploadLimit and its
+// multipartOverhead), and three at the default limit: more than one client can
+// post at once, the upload cooldown being per client across the server.
 const clientUploadShare = media.UploadBudget / 2
 
 // errUploadShare is a post refused because its client's other posts hold
@@ -40,11 +40,14 @@ const clientUploadShare = media.UploadBudget / 2
 var errUploadShare = errors.New("too many images uploading at once from this client")
 
 // uploadShares counts what each client's posts hold of the upload budget,
-// keyed on shareKey, so that none holds more than clientUploadShare. A
-// client's entry goes once it holds nothing.
+// keyed on shareKey, so that none holds more than clientUploadShare, and
+// which clients have a post waiting for room in it, so that none has more
+// than one (reserveUpload). A client's entries go once it holds nothing and
+// has nothing waiting.
 type uploadShares struct {
-	mu   sync.Mutex
-	held map[string]int64
+	mu      sync.Mutex
+	held    map[string]int64
+	waiting map[string]bool
 }
 
 // take records n more bytes held by client and returns the function that
@@ -68,6 +71,29 @@ func (s *uploadShares) take(client string, n int64) (func(), bool) {
 			if s.held[client] -= n; s.held[client] <= 0 {
 				delete(s.held, client)
 			}
+		})
+	}, true
+}
+
+// wait records that one of client's posts is waiting for room in the upload
+// budget and returns the function that records it no longer is, or reports
+// false, recording nothing, when another of its posts already is.
+func (s *uploadShares) wait(client string) (func(), bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.waiting[client] {
+		return nil, false
+	}
+	if s.waiting == nil {
+		s.waiting = map[string]bool{}
+	}
+	s.waiting[client] = true
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			delete(s.waiting, client)
 		})
 	}, true
 }
@@ -101,21 +127,40 @@ func (s *uploadShares) of(client string) int64 {
 }
 
 // uploadPaceGrace is how far behind an even pace a multipart post's body may
-// fall (pacedBody). App.uploadPaceGrace is this, except in tests.
+// fall (pacedBody), once it has earned it, and how long, with uploads on, a
+// body has to send its first bytes before it is answered upload too slow,
+// having held nothing (parseSubmission). App.uploadPaceGrace is this, except
+// in tests.
 const uploadPaceGrace = 5 * time.Second
+
+// uploadStartGrace is the grace a body that holds room in the upload budget
+// has to begin with: it earns the rest of uploadPaceGrace as it arrives
+// (pacedBody). App.uploadStartGrace is this, except in tests.
+const uploadStartGrace = time.Second
 
 // pacedBody holds a multipart post's body to an even pace through its read
 // window (uploadReadTimeout), so that a body which is not arriving gives its
-// room in the upload budget back within uploadPaceGrace rather than at the end
+// room in the upload budget back within a few seconds rather than at the end
 // of the window. Before each read it moves the connection's read deadline to
 // the time by which what has arrived would have arrived at the pace that
 // brings the whole body (size, what was reserved for it) in at the end of the
-// window, plus the grace, and never past the window's end: a connection that
-// sends nothing is cut off after the grace, and one that trickles soon after,
-// while a body on course to arrive inside the window, as every body the window
-// admits must be on average, has the grace to fall behind by on the way. A
-// body cut off is answered 400 (upload too slow, uploadTooSlowStatus), as one
-// past the window is.
+// window, plus a grace, and never past the window's end: a connection that
+// sends nothing more is cut off after the grace, and one that trickles soon
+// after, while a body on course to arrive inside the window, as every body the
+// window admits must be on average, has the grace to fall behind by on the
+// way. A body cut off is answered 400 (upload too slow, uploadTooSlowStatus),
+// as one past the window is.
+//
+// The grace is earned: a body has uploadStartGrace to begin with, and a second
+// more for every second's worth of it, at that pace, that has arrived, up to
+// uploadPaceGrace. Room in the budget is a body's from before most of it is
+// read, so a body that stopped after its first bytes held room for the whole
+// grace; with a few addresses' shares of such bodies, coming back each time
+// they were cut off, the budget was theirs, and other image posts waited behind
+// them. Now such a body holds its room for the start grace. A body that is
+// arriving earns its grace in its first seconds, faster the further ahead of
+// its pace it is: one that waited for room has been sending into its
+// connection's buffers meanwhile, and what is there is read at once.
 //
 // Every body that holds room in the upload budget has a length, so its pace
 // is its own: with uploads on, a multipart post without a Content-Length is
@@ -124,17 +169,19 @@ const uploadPaceGrace = 5 * time.Second
 // the most it may be, a JSON post's worth (maxRequestBytes).
 type pacedBody struct {
 	io.ReadCloser
-	setDeadline   func(time.Time) error
-	start         time.Time
-	window, grace time.Duration
-	size, n       int64
+	setDeadline               func(time.Time) error
+	start                     time.Time
+	window, grace, startGrace time.Duration
+	size, n                   int64
 }
 
 func (p *pacedBody) Read(b []byte) (int, error) {
 	end := p.start.Add(p.window)
 	due := end
 	if p.size > 0 {
-		due = p.start.Add(p.grace + time.Duration(float64(p.window)*float64(p.n)/float64(p.size)))
+		// When what has arrived would have, at the pace.
+		arrived := time.Duration(float64(p.window) * float64(p.n) / float64(p.size))
+		due = p.start.Add(arrived + min(p.grace, p.startGrace+arrived))
 	}
 	if due.After(end) {
 		due = end
@@ -143,6 +190,63 @@ func (p *pacedBody) Read(b []byte) (int, error) {
 	k, err := p.ReadCloser.Read(b)
 	p.n += int64(k)
 	return k, err
+}
+
+// uploadHeadBytes is the most of a multipart post's body read before room is
+// reserved for it (parseSubmission): its first read, into a buffer the size
+// of a connection's own.
+const uploadHeadBytes = 4 << 10
+
+// startedBody is a multipart post's body whose first read was made before
+// anything was reserved for it (startBody): what that read brought, then
+// what it ended with, if it ended with an error, and otherwise the rest of
+// the body.
+type startedBody struct {
+	head []byte
+	err  error
+	io.ReadCloser
+}
+
+func (s *startedBody) Read(b []byte) (int, error) {
+	if len(s.head) > 0 {
+		n := copy(b, s.head)
+		s.head = s.head[n:]
+		return n, nil
+	}
+	if s.err != nil {
+		return 0, s.err
+	}
+	return s.ReadCloser.Read(b)
+}
+
+// startBody waits up to uploadPaceGrace for the first bytes of a multipart
+// post's body, with uploads on, before anything is reserved for it: its
+// client's share of the upload budget, room in the budget, or a place in the
+// queue for room (parseSubmission). It reports false, having answered the
+// post upload too slow (uploadTooSlowStatus), when none came in that time,
+// and the connection is closed, the body unread. Otherwise the body reads on
+// from where that first read left off (startedBody), and started reports
+// whether it brought anything: a body that ended or failed before its first
+// byte has nothing to hold room for, and the read of the form reports why.
+// The first read is of uploadHeadBytes at most, a connection's own buffer's
+// worth, which is all a post holds before it holds room.
+func (a *App) startBody(w http.ResponseWriter, r *http.Request) (started, ok bool) {
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(a.uploadPaceGrace))
+	head := make([]byte, uploadHeadBytes)
+	var (
+		n   int
+		err error
+	)
+	for n == 0 && err == nil {
+		n, err = r.Body.Read(head)
+	}
+	if n == 0 && isReadTimeout(err) {
+		w.Header().Set("Connection", "close")
+		writeError(w, uploadTooSlowStatus, uploadTooSlow)
+		return false, false
+	}
+	r.Body = &startedBody{head: head[:n], err: err, ReadCloser: r.Body}
+	return n > 0, true
 }
 
 // maxFormParts caps the parts of a multipart post. The form has seven at most;
@@ -253,15 +357,20 @@ type submissionForm interface {
 // used: multipart/form-data when it carries an image, JSON otherwise. It writes
 // the error response itself and reports success.
 //
-// A multipart body, with uploads on, is read only once there is room for it
-// in the upload budget (media.ReserveUpload), which counts the bodies being
-// read and held until their posts are answered: as much as the request says
-// it is. ctx is the post's reserveContext: with no room in time the body is
-// read to its end unkept and the post is answered 503 (busy), before flood
-// control has charged it anything. The room comes out of the client's share
-// of the budget first (reserveUpload): a post whose client's other posts hold
-// that already is read to its end unkept and answered 429 at once, without
-// waiting, and also charged nothing.
+// A multipart body, with uploads on, is read past its first bytes only once
+// there is room for it in the upload budget (media.ReserveUpload), which
+// counts the bodies being read and held until their posts are answered: as
+// much as the request says it is. Its first bytes come first (startBody): a
+// body that sends none within uploadPaceGrace is answered upload too slow
+// having held nothing, neither room nor a place in the queue for room, so
+// that connections which declare a body and send none of it keep the budget
+// from no one. ctx is the post's reserveContext: with no room in time the
+// body is read to its end unkept and the post is answered 503 (busy), before
+// flood control has charged it anything. The room comes out of the client's
+// share of the budget first (reserveUpload): a post whose client's other
+// posts hold that already, or one of which already waits for room, is read
+// to its end unkept and answered 429 at once, without waiting, and also
+// charged nothing.
 //
 // Such a body has to say how long it is: one without a Content-Length
 // (chunked) is answered 411 before anything is reserved for it or read of it
@@ -273,19 +382,19 @@ type submissionForm interface {
 // away 503. Browsers send a Content-Length with every form.
 //
 // A multipart body sets its own connection deadlines, because it may take
-// longer than one WriteTimeout from the end of its headers allows: the body
-// has uploadReadTimeout to arrive from when there is room to read it, at an
-// even pace with uploadPaceGrace to spare (pacedBody), and a body slower than
-// that is answered 400 (upload too slow, uploadTooSlowStatus), not the 503 a
-// server with no room gives; the write deadline covers that read and the
-// answer to it, and processContext resets it for the processing that follows.
-// The deadlines are set once the wait for room is over, whatever its outcome,
-// so a post that waited has its whole uploadReadTimeout for its body — the
-// wait was the server's, and taken out of the body's time it would turn a busy
-// server into a slow upload — and a post turned away has that long for the
-// rest of its body to be read past, at the same pace, and the answer written:
-// upload too slow if it fell behind on the way, as with room, and otherwise
-// why it was turned away (turnAway).
+// longer than one WriteTimeout from the end of its headers allows: the body has
+// uploadReadTimeout to arrive from when there is room to read it, at an even
+// pace with up to uploadPaceGrace to spare, earned as it arrives (pacedBody),
+// and a body slower than that is answered 400 (upload too slow,
+// uploadTooSlowStatus), not the 503 a server with no room gives; the write
+// deadline covers that read and the answer to it, and processContext resets it
+// for the processing that follows. The deadlines are set once the wait for room
+// is over, whatever its outcome, so a post that waited has its whole
+// uploadReadTimeout for its body — the wait was the server's, and taken out of
+// the body's time it would turn a busy server into a slow upload — and a post
+// turned away has that long for the rest of its body to be read past, at the
+// same pace, and the answer written: upload too slow if it fell behind on the
+// way, as with room, and otherwise why it was turned away (turnAway).
 func (a *App) parseSubmission(ctx context.Context, w http.ResponseWriter, r *http.Request, form submissionForm) (*submission, bool) {
 	if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
 		if !decodeJSON(w, r, form) {
@@ -317,15 +426,21 @@ func (a *App) parseSubmission(ctx context.Context, w http.ResponseWriter, r *htt
 		err      error
 	)
 	if a.cfg.UploadsEnabled {
-		reserved, err = a.reserveUpload(ctx, r, size)
+		started, ok := a.startBody(w, r)
+		if !ok {
+			return nil, false
+		}
+		if started {
+			reserved, err = a.reserveUpload(ctx, r, size)
+		}
 	}
-	// Nothing has read the body yet: its time starts now.
+	// No more than the body's first read has been made: its time starts now.
 	rc := http.NewResponseController(w)
 	now := time.Now()
 	_ = rc.SetReadDeadline(now.Add(a.uploadReadTimeout))
 	_ = rc.SetWriteDeadline(now.Add(a.uploadReadTimeout + answerAllowance))
-	r.Body = &pacedBody{ReadCloser: r.Body, setDeadline: rc.SetReadDeadline,
-		start: now, window: a.uploadReadTimeout, grace: a.uploadPaceGrace, size: size}
+	r.Body = &pacedBody{ReadCloser: r.Body, setDeadline: rc.SetReadDeadline, start: now,
+		window: a.uploadReadTimeout, grace: a.uploadPaceGrace, startGrace: a.uploadStartGrace, size: size}
 	if err != nil {
 		// The browser is still sending the body. Answered before it has
 		// finished, a connection closed under it can reach the poster as a
@@ -351,17 +466,36 @@ func (a *App) parseSubmission(ctx context.Context, w http.ResponseWriter, r *htt
 // reserveUpload takes room for a multipart post's body of at most size bytes:
 // its client's share first (clientUploadShare, the client as shareKey counts
 // it), refused at once with errUploadShare when the client's other posts hold
-// it already, and then the upload budget itself (media.ReserveUpload), waited
-// for under ctx. The function it returns gives both back.
+// it already, and then the upload budget itself: what is free now
+// (media.TryReserveUpload), or else what it waits for under ctx
+// (media.ReserveUpload). One post of a client waits for room at a time: while
+// one does, the client's next post that finds no room is refused at once with
+// errUploadShare too. The queue for room is in the order posts asked, so
+// without that a few clients, each within its share, could put their
+// bodies' worth of posts in it ahead of everyone else's, each to hold its
+// room for a while once it got it, and keep other image posts waiting; with
+// it, each such client has one post in the queue. The function it returns
+// gives back what it took.
 func (a *App) reserveUpload(ctx context.Context, r *http.Request, size int64) (func(), error) {
-	share, ok := a.uploadShares.take(shareKey(clientIP(r, a.cfg.TrustedProxyHops)), size)
+	client := shareKey(clientIP(r, a.cfg.TrustedProxyHops))
+	share, ok := a.uploadShares.take(client, size)
 	if !ok {
 		return nil, errUploadShare
 	}
-	reserved, err := media.ReserveUpload(ctx, size)
-	if err != nil {
-		share()
-		return nil, err
+	reserved, ok := media.TryReserveUpload(size)
+	if !ok {
+		waited, ok := a.uploadShares.wait(client)
+		if !ok {
+			share()
+			return nil, errUploadShare
+		}
+		var err error
+		reserved, err = media.ReserveUpload(ctx, size)
+		waited()
+		if err != nil {
+			share()
+			return nil, err
+		}
 	}
 	return func() {
 		reserved()

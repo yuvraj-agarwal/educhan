@@ -1094,16 +1094,20 @@ server that would refuse what it sends.
   flood control counts them, except that the addresses of one IPv6 /64 network count as
   one client, since a host can usually take any address in its /64: the people on one such
   network share that half, as those behind one IPv4 address do, while flood control still
-  counts each of their addresses apart. A post waits for room in either budget for about
-  ten seconds at most. Once there is room to read it, its body has 30 seconds to arrive,
-  at an even pace with 5 seconds to spare — a body that falls further behind the pace that
-  would bring it all in by then, sending nothing or a trickle, is cut off then and its
-  room given back — and once it has arrived its image has 25 seconds to be processed and
-  stored. A post that cannot be taken in time — no room within the wait, or its image not
-  stored within those 25 seconds — answers `503` (see [Flood control](#flood-control))
-  with nothing stored, rather than being made after its answer could no longer be sent. A
-  body that takes longer than its 30 seconds, or falls behind its pace, is the
-  connection's doing, not the server's, and answers `400` with
+  counts each of their addresses apart. A body takes no room until its first bytes arrive,
+  and one that sends none within 5 seconds answers `400` as below, having held none. A
+  post waits for room in either budget for about ten seconds at most, and a client has one
+  image post waiting for room for its body at a time: its next that finds none answers
+  `429` at once, as one past its share does. Once there is room to read it, its body has
+  30 seconds to arrive, at an even pace with up to 5 seconds to spare (one at first, and
+  one more for each second's worth of the body that has arrived) — a body that falls
+  further behind the pace that would bring it all in by then, sending nothing or a
+  trickle, is cut off then and its room given back — and once it has arrived its image has
+  25 seconds to be processed and stored. A post that cannot be taken in time — no room
+  within the wait, or its image not stored within those 25 seconds — answers `503` (see
+  [Flood control](#flood-control)) with nothing stored, rather than being made after its
+  answer could no longer be sent. A body that takes longer than its 30 seconds, or falls
+  behind its pace, is the connection's doing, not the server's, and answers `400` with
   `{"error":"upload too slow"}`, with nothing stored and no cooldown started; the time a
   post spent waiting for room is not counted against its body. It is not
   `408 Request Timeout`, because Chromium takes a `408` that arrives on a reused HTTP/1.1
@@ -1466,10 +1470,11 @@ arriving (see **Memory** under [Image attachments](#image-attachments)) — answ
 the same way, with a `Retry-After` and `retry_after` of 10 seconds. Nothing is stored for
 it, and a cooldown it started is given back, so it can be sent again as soon as the wait
 is over. A post with an image from a client whose other image posts already hold half the
-room for upload bodies answers `429` the same way, at once, with a `Retry-After` and
-`retry_after` of 10 seconds and no cooldown started. A post whose body takes longer than
-30 seconds to arrive, counted from when there was room to read it, or falls more than 5
-seconds behind the even pace that would bring it in by then, answers `400` with
+room for upload bodies, or one of which already waits for room, answers `429` the same
+way, at once, with a `Retry-After` and `retry_after` of 10 seconds and no cooldown
+started. A post whose body sends nothing within 5 seconds, takes longer than 30 seconds to
+arrive, counted from when there was room to read it, or falls further behind the even pace
+that would bring it in by then than its 1 to 5 seconds to spare, answers `400` with
 `{"error":"upload too slow"}` and no `Retry-After`, since waiting does not make a
 connection faster — one turned away as busy or over its share included, whose body is
 still read past at that pace — and, with uploads on, a form sent without a
@@ -1607,13 +1612,13 @@ posting endpoints also accept `multipart/form-data` with the same fields plus an
 file. Errors are `{"error": "..."}`. A request refused by flood control (`429`) and a post
 turned away because the server is too busy (`503`) add `retry_after` plus a `Retry-After`
 header; the other `429` and `503`, too many wrong verification codes and `/healthz` with
-the database down, carry neither. An image post whose body does not arrive within 30
-seconds of there being room to read it, or falls more than 5 seconds behind the even pace
-that would bring it in by then, answers `400` (`upload too slow`), not `408`, which
-Chromium answers on a reused connection by sending the post again. With uploads on, a
-`multipart/form-data` post has to send a `Content-Length`, as browsers do: one sent
-without (chunked) answers `411` (`a post with a file needs a Content-Length`) before any
-of its body is read.
+the database down, carry neither. An image post whose body sends nothing within 5 seconds,
+does not arrive within 30 seconds of there being room to read it, or falls further behind
+the even pace that would bring it in by then than its 1 to 5 seconds to spare, answers
+`400` (`upload too slow`), not `408`, which Chromium answers on a reused connection by
+sending the post again. With uploads on, a `multipart/form-data` post has to send a
+`Content-Length`, as browsers do: one sent without (chunked) answers `411`
+(`a post with a file needs a Content-Length`) before any of its body is read.
 
 ```bash
 curl -s localhost:8080/api/boards
