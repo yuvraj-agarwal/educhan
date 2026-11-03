@@ -885,7 +885,10 @@ reading costs. Which copy of its quote a block is about (`matchOccurrence`) is c
 one pass over the field, the quote's words matched as a sequence of the field's runs
 of words, and those steps are counted with the rest; searched for again one character
 on from each copy, as the page does, a line of "a a a …" before a spelled-out address
-of forty single letters took about 140 ms. Measured on one core of a shared four-vCPU Intel Xeon @ 2.80GHz
+of forty single letters took about 140 ms. `TestFilterCountsCopiesInOnePass` holds the
+pass by what it costs rather than by the steps it reports: no more allocations, and no
+more than eight times the time, for a copy at nearly every character as for a post of
+the same length with none. Measured on one core of a shared four-vCPU Intel Xeon @ 2.80GHz
 (`GOMAXPROCS=1` under `taskset`, no race detector, the slower verdict's best of several
 runs, timed as the process's CPU time, with a subject and a name; the machine's load
 about 4 to 6): ordinary posts are the corpus's published posts run together a blank line

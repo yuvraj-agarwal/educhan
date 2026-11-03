@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -3321,6 +3322,61 @@ func TestFilterCountsWhichCopyCost(t *testing.T) {
 					unit, runs, total, f.work(), work)
 			}
 		}
+	}
+}
+
+// TestFilterCountsCopiesInOnePass holds the count of copies to one pass by
+// what it costs, not by the steps matchOccurrence says it took, which a
+// slower way of counting could report just as well. Over the post of
+// TestFilterCountsWhichCopyCost, with a copy at nearly every character, it
+// must allocate no more, and take no more than mostTimes as long at best, as
+// over a post of the same length whose quote is not repeated before the
+// block's own copy. Searching for the quote again after each copy, as the
+// page does, allocated once a copy and took over a thousand times as long.
+func TestFilterCountsCopiesInOnePass(t *testing.T) {
+	const mostTimes = 8
+	tail := "\nemail me " + strings.Repeat("a ", 44) + "a @ g m a i l . c o m"
+	runs := (maxBodyLen - utf8.RuneCountInString(tail)) / 2
+	many := strings.Repeat("a ", runs) + tail
+	f := scanField(fieldBody, many, markupReadings(many))
+	found, ok := f.firstBlock()
+	if !ok || found.from < len(many)-len(tail) {
+		t.Fatalf("%+v, %v: want the address in the post's last line blocked", found, ok)
+	}
+	_, searched := quoteSource(many, found.from, found.to)
+	// few is as long as many, with the same last line, and so the same
+	// block, after runs of "b ".
+	few := strings.Repeat("b ", runs) + tail
+	count := func(body string) int {
+		n, _ := matchOccurrence(body, found.from, searched)
+		return n
+	}
+	// best is the shortest of several counts, which load on the machine
+	// only lengthens.
+	best := func(body string) time.Duration {
+		shortest := time.Duration(math.MaxInt64)
+		for range 25 {
+			start := time.Now()
+			count(body)
+			shortest = min(shortest, time.Since(start))
+		}
+		return shortest
+	}
+	if n := count(many); n < runs-40 {
+		t.Fatalf("%d copies counted before the block over %d runs of \"a \", want nearly one a run", n, runs)
+	}
+	if n := count(few); n > 44 {
+		t.Fatalf("%d copies counted before the block over %d runs of \"b \", want at most the last line's", n, runs)
+	}
+	manyAllocs := testing.AllocsPerRun(5, func() { count(many) })
+	fewAllocs := testing.AllocsPerRun(5, func() { count(few) })
+	if manyAllocs > fewAllocs {
+		t.Errorf("%v allocations counting %d copies, %v counting a few: allocated once a copy or more",
+			manyAllocs, count(many), fewAllocs)
+	}
+	if m, f := best(many), best(few); m > mostTimes*f {
+		t.Errorf("counting %d copies took %v at best, %.1f times the %v of a few, more than %d times",
+			count(many), m, float64(m)/float64(f), f, mostTimes)
 	}
 }
 
