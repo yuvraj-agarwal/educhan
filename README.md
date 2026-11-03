@@ -706,7 +706,8 @@ answers `409`, because otherwise somebody who saw a code once could renew it
 and have the owner reissue it to them. A renewal nobody collected, such as a
 renewal checkout paid after another checkout started in its browser, is
 reissued like a purchase: its reissue code renews the Pass it was for and
-hands over no code.
+hands over no code, or makes a new Pass and hands over its code if that one has
+gone.
 
 When the purchase is refunded or disputed and the Pass goes on, the right to
 reissue it moves to another payment only while that payment pays for all the
