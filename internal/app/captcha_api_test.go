@@ -233,13 +233,13 @@ func TestCaptchaAndFloodControl(t *testing.T) {
 }
 
 // A refusal says whether it took the answer with it. Every refusal before the
-// spend, a cooldown included, leaves the answer for the next press and carries
-// no header; one after it, for an image whose pixels fail to decode say,
-// carries the header, and the answer is refused as used from then on. So, but
-// for an answer that may have been spent without the page being told, as after
-// the one 500 that captchaSpentHeader describes or a request that brought no
-// response at all, the page keeps an answer exactly as long as it is good and
-// solves the next one only when it has to.
+// spend carries no header, and each but the captcha's own, a cooldown included,
+// leaves the answer for the next press; one after it, for an image whose pixels
+// fail to decode say, carries the header, and the answer is refused as used
+// from then on. So, but for an answer that may have been spent without the page
+// being told, as after the one 500 that captchaSpentHeader describes or a
+// request that brought no response at all, the page keeps an answer exactly as
+// long as it is good and solves the next one only when it has to.
 func TestARefusalSaysWhetherTheAnswerWasSpent(t *testing.T) {
 	h := captchaServer(t, func(cfg *Config) { cfg.ThreadCooldown = time.Hour })
 	h.addBoard("general", "other", "third")

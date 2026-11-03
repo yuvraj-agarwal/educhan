@@ -444,8 +444,8 @@ before the test changes.
   while one is on its way solves a fresh puzzle, and puts it back (`keepCaptcha`: only
   into an empty place, only while good) only when it left it unspent, or may have spent
   it without saying so, as when it brought no response, or the `500` for a spend whose
-  database reply was lost: if spent, the next request is refused as used and solves a
-  fresh one. One whose form has left the screen is dropped unsent with its answer put
+  database reply was lost: if spent, the next to send it is refused as used and solves
+  a fresh one. One whose form has left the screen is dropped unsent with its answer put
   back, and, sent or not, is not navigated from and says nothing on the page the reader
   went to; a post that did go still empties and releases its form, wherever it is. From
   the press to the answer the form is held (`holdForm`: controls switched off once the
@@ -1079,8 +1079,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `TestAllowAllAdmitsOneOfARace`). Nothing is refunded once an action is admitted, so
   every refusal knowable up front comes before `allow`, such as a malformed poster key,
   the body, a badge the poster cannot have, uploads switched off, a file its header shows
-  to be unusable (`media.Inspect` in `parseSubmission`: not an accepted format, or more
-  than `media.MaxPixels`), a reply the thread would refuse (`ReplyRefusal`), and a
+  to be unusable (`media.Inspect` in `parseSubmission`, which reads the format and the
+  size without decoding), a reply the thread would refuse (`ReplyRefusal`), and a
   captcha answer that is missing, wrong, expired or already spent (`checkCaptcha`).
   Decoding the pixels is not up front, because it is the cost the upload cooldown limits,
   so an image whose pixels fail to decode is refused by `storeUpload` after `allow`

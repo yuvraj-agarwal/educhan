@@ -1078,15 +1078,15 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 
 // No answer is on two requests at once. The server takes an answer from only
 // one of two requests that carry it, and refuses the other as used, so a page
-// that handed its held answer to a second press while the first was on its
-// way, a slow upload say, would have one of its own posts refused, and that
-// one, its form gone, dropped without a word. So a request takes the answer
-// out of the page as it is handed over, in the same step, and a press
-// meanwhile solves a fresh puzzle. The answer goes back only when the request
-// left it unspent, or may have spent it without saying so (as when it brought
-// no response, or the 500 for a spend whose reply from the database was lost),
-// and only into an empty place while it is still good: if it was spent, the
-// request that next sends it is refused as used and solves a fresh one.
+// that handed its held answer to a second press while the first was on its way,
+// a slow upload say, would have one of its own posts refused, and that one, its
+// form gone, dropped without a word. So a request takes the answer out of the
+// page as it is handed over, in the same step, and a press meanwhile solves a
+// fresh puzzle. The answer goes back only when the request left it unspent, or
+// may have spent it without saying so (as when it brought no response, or the
+// 500 for a spend whose reply from the database was lost), and only into an
+// empty place while it is still good: if it was spent, the request that next
+// sends it is refused as used and solves a fresh one.
 func TestEachCaptchaAnswerGoesOnOneRequest(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -1830,18 +1830,17 @@ func TestAFormSendsOnlyTheBadgeItWasDrawnFor(t *testing.T) {
 	}
 }
 
-// From the press until the answer, a post's or a code request's form is
-// held: its controls switched off, once it has been read and checked, so
-// nothing the reader changes meanwhile (a badge ticked, an address corrected,
-// a line added) is left out of what is sent, or wiped by the reset after it.
-// A refusal switches back on what was switched off, and nothing else, before
-// the recovery that may switch the picker off for good, and gives the focus
-// that switching off took back to the form's button, unless the reader has
-// put it somewhere since, without scrolling a reader who has scrolled away
-// from the form back to it; nothing writes into a held form from outside it:
-// not a quote, not a dropped image, whose drop on a picker only the hold
-// switched off leaves the notice on screen as it was; and app.css shows the
-// held controls switched off.
+// From the press until the answer, a post's or a code request's form is held:
+// its controls switched off, once it has been read and checked, so nothing the
+// reader changes meanwhile (a badge ticked, an address corrected, a line added)
+// is left out of what is sent, or wiped by the reset after it. A refusal
+// switches back on what was switched off, and nothing else, before the recovery
+// that may switch the picker off for good, and gives the focus that switching
+// off took back to the form's button, unless the reader has put it somewhere
+// since, without scrolling a reader who has scrolled away from the form back to
+// it; a held form takes nothing added from outside it, such as a quote, or a
+// dropped image, whose drop on a picker only the hold switched off leaves the
+// notice on screen as it was; and app.css shows the held controls switched off.
 func TestAPendingFormIsHeld(t *testing.T) {
 	script := appScript(t)
 	hold := squash(withoutComments(jsFunction(t, script, "holdForm")))
