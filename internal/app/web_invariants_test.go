@@ -4093,7 +4093,7 @@ func TestHeaderLinksToThePassOnlyWhereItIs(t *testing.T) {
 // another tab makes (followPassStorage), so on a server without the Pass the
 // link goes with the Pass, in this tab and every other, and comes back when
 // one is stored. markPassExpired only marks a Pass held, which keeps the link
-// as it was.
+// as it was. Focus on the link as it goes moves to the page just below.
 func TestHeaderPassLinkFollowsThePassHeld(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -4108,6 +4108,15 @@ func TestHeaderPassLinkFollowsThePassHeld(t *testing.T) {
 	}
 	if !strings.Contains(withoutComments(jsFunction(t, script, "followPassStorage")), "  dropStalePassNotice();\n  showPassLink();\n") {
 		t.Error("another tab's change to the Pass no longer shows or hides the header's Pass link here")
+	}
+	// Focus on the link as it goes would fall to the top of the document with
+	// it, so it goes to the page just below, without scrolling the page.
+	if got := withoutComments(jsFunction(t, script, "showPassLink")); got != "function showPassLink() {\n"+
+		"  if (!el.passLink) {\n    return;\n  }\n  const focused = document.activeElement === el.passLink;\n"+
+		"  el.passLink.hidden = !(state.site.pass || storedPass());\n"+
+		"  if (focused && el.passLink.hidden) {\n    el.main.focus({ preventScroll: true });\n  }\n}" {
+		t.Errorf("the header's Pass link, hidden with focus on it, drops focus to the top of the document or scrolls "+
+			"the page, or no longer follows the Pass held:\n%s", got)
 	}
 	if n := strings.Count(code, "showPassLink()"); n != 5 {
 		t.Errorf("showPassLink() appears %d times; want its definition, renderNav, storePass, forgetPass and followPassStorage", n)

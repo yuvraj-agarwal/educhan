@@ -1290,11 +1290,12 @@ not-found view.
   that control again, without scrolling the page, and otherwise moves it to what was
   drawn in its place. Focus on a notice's dismiss button, when something else takes the
   notice off, such as another tab's Remove or a drawing that finds it no longer true,
-  goes to the page just below it, without scrolling the page. A notice put up in place
-  of another while focus is on the old one's dismiss button keeps focus on the new
-  one's, without scrolling the page, on every page; one put up while focus is elsewhere
-  takes none. The reader's own dismissal is as it was: the notice goes, and focus goes
-  where the browser puts it.
+  goes to the page just below it, without scrolling the page, as does focus on the
+  header's link to `/pass` when the Pass goes, by another tab's Remove say, and the link
+  with it. A notice put up in place of another while focus is on the old one's dismiss
+  button keeps focus on the new one's, without scrolling the page, on every page; one
+  put up while focus is elsewhere takes none. The reader's own dismissal is as it was:
+  the notice goes, and focus goes where the browser puts it.
 - **Phones**: a single fluid column with the catalog at two tiles across, thumbnails that
   never overflow the viewport, and 16px form text so iOS does not zoom on focus.
 - **Accessibility**: a skip link, one visible focus ring on every control, headings and

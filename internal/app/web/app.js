@@ -1605,10 +1605,18 @@ function renderNav(route) {
 // the Pass held has run out (markPassExpired) leaves the link as it is, since
 // the browser holds that Pass still. So on a server without the Pass the link
 // goes with the Pass, and does not tell the next person at the computer that
-// the last one held one.
+// the last one held one. Focus on the link as it goes, by another tab's Remove
+// or Forget say, would fall to the top of the document with it, so it goes to
+// the page just below (el.main), without scrolling the page, as it does from a
+// Pass notice something else takes off (takePassNoticeOff).
 function showPassLink() {
-  if (el.passLink) {
-    el.passLink.hidden = !(state.site.pass || storedPass());
+  if (!el.passLink) {
+    return;
+  }
+  const focused = document.activeElement === el.passLink;
+  el.passLink.hidden = !(state.site.pass || storedPass());
+  if (focused && el.passLink.hidden) {
+    el.main.focus({ preventScroll: true });
   }
 }
 
