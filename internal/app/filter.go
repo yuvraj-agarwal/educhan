@@ -713,9 +713,40 @@ var spellingFolds = map[string]string{
 	"sh'ing": "self harming", "sh-ing": "self harming",
 }
 
-// shouldWords, after "sh'd", make it "should": "sh'd have", "sh'd not".
+// shouldWords, after "sh'd", make it "should": "sh'd have", "sh'd not go".
+// "Not" before a stretch of time does not ("i sh'd not long ago",
+// notLongAgo).
 var shouldWords = map[string]bool{"have": true, "hav": true, "ve": true, "been": true, "be": true, "not": true,
 	"never": true, "of": true}
+
+// notLongAgo reports, in s after "sh'd not", a stretch of time: "long", or
+// "too", "that" or "so" before it ("not long ago", "not that long ago", "not
+// long after the fight"), or "ago" within four words ("not even a week
+// ago").
+func notLongAgo(s string) bool {
+	var ws []string
+	for i := 0; i < len(s) && len(ws) < 4; {
+		for i < len(s) && s[i] == ' ' {
+			i++
+		}
+		j := i
+		for j < len(s) && 'a' <= s[j] && s[j] <= 'z' {
+			j++
+		}
+		if j == i {
+			break
+		}
+		ws = append(ws, s[i:j])
+		i = j
+	}
+	switch {
+	case len(ws) > 0 && ws[0] == "long":
+		return true
+	case len(ws) > 1 && ws[1] == "long" && (ws[0] == "too" || ws[0] == "that" || ws[0] == "so"):
+		return true
+	}
+	return slices.Contains(ws, "ago")
+}
 
 // foldSpellings reads v's words of spellingFolds as what they stand for. A
 // word is a run of ASCII letters, joined by an apostrophe or a hyphen with a
@@ -745,7 +776,7 @@ func foldSpellings(v view) view {
 			for e < len(t) && letter(t[e]) {
 				e++
 			}
-			ok = !shouldWords[t[k:e]]
+			ok = !shouldWords[t[k:e]] || t[k:e] == "not" && notLongAgo(t[e:])
 		}
 		if ok && !(j < len(t) && (t[j] >= utf8.RuneSelf || isASCIIDigit(t[j]))) {
 			if b == nil {
