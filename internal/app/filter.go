@@ -10175,7 +10175,7 @@ func pupilReader(ws []string) bool {
 // is one only with a clause after it that does not go on as a noun phrase
 // would (pupilNameEnds: not "for new friends") and when it is none of
 // pupilNotNames, which are said after "for" to the reader or of nobody
-// ("for free", "for cutie").
+// ("for free", "for cutie", "for princess", "for champ").
 func pupilNamed(ws []string, at int) bool {
 	return at > 0 && is(ws[at-1], "for") && lowerName(ws[at]) && !pupilNotNames[ws[at]] &&
 		(at+1 == len(ws) || pupilNameEnds[ws[at+1]])
@@ -10298,14 +10298,19 @@ var (
 	// occasions gifts are for, not the reader ("gifts for the class", "for
 	// the farewell"). pupilNameEnds may start the clause after a name
 	// ("for kabir, keep it secret"), and pupilNotNames, which lowerName
-	// takes, are said after "for" of the reader or of nobody.
+	// takes, are said after "for" of the reader or of nobody: praise and
+	// endearments ("for princess", "for handsome", "for jaan", "for champ")
+	// as well as "for free" and "for real".
 	pupilWe         = canonSetOf(`we we're we'll we've we'd let's lets`)
 	pupilGiftGroups = canonSetOf(`class batch section team squad seniors senior juniors junior`)
 	pupilOccasions  = canonSetOf(`birthday bday farewell party fest celebration diwali christmas xmas eid holi rakhi`)
 	pupilNameEnds   = canonSetOf(`keep dont don't do it it's its pls plz please so but shh tell from on at this
 		tomorrow today tonight we we're i i'm i'll she he they is will ok okay`)
-	pupilNotNames = canonSetOf(`free sure once good real best special lucky cute cutie baby babe dear darling love
-		sweetie sweetheart honey favourite favorite fav crush new`)
+	pupilNotNames = canonSetOf(`free sure once good real best special lucky cute cutie cutest baby babe dear dearest
+		darling love lovely sweetie sweetheart sweety sweet honey favourite favorite fav crush new angel princess prince
+		queen king handsome beautiful gorgeous pretty prettiest adorable precious little smart brave sunshine star
+		superstar rockstar champ champion buddy kiddo kiddie doll dolly cupcake pumpkin munchkin bae boo hottie sexy
+		hot jaan jaanu babu baba bacha bachcha beta beti chotu chhotu sona shona pari gudiya`)
 )
 
 // canonSetOf is setOf for words looked up in the loose view as well.
