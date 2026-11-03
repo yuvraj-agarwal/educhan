@@ -2389,8 +2389,10 @@ let passCodeForgetting = null;
 // Remove the Pass and Forget this browser, here (forgetPassClaim) or in another
 // tab (its mark), and another tab's removal of the Pass with a code to read
 // (followPassStorage, dropForgottenPassNotice). A held notice put up after an
-// await whose record was read before it reads this beside the record, and is
-// put up only if it has not moved meanwhile (Pass notices).
+// await reads this before it, beside its record when it reads that then, and
+// is put up only if it has not moved meanwhile (Pass notices): the post's,
+// Remove's and Forget's, say, and a renewal's or a lost answer's, said once
+// the Pass held has been checked (collectPass, redeemPassReissue).
 let passNoticeForgets = 0;
 
 // passClaimGone is the latest time, by the clock this computer's tabs share
@@ -3451,9 +3453,11 @@ function passRunOutText() {
 //   held too, gives way to its warning alone (dropForgottenPassNotice). Stop's
 //   mark leaves every notice. Each moves passNoticeForgets, as this tab's own
 //   Remove and Forget do (forgetPassClaim): a held notice put up after an
-//   await, its record read before it, reads that count beside the record and
-//   is not put up, or only the claim's warning, if it has moved meanwhile,
-//   since no notice was on screen yet for it to take off.
+//   await, the post's, Remove's and Forget's, or a renewal's or a lost
+//   answer's said once the Pass held has been checked, say, reads that count
+//   before the await, beside its record when it reads that then, and is not
+//   put up, or only the claim's warning, if it has moved meanwhile, since no
+//   notice was on screen yet for it to take off.
 //
 // passNoticesHeld holds, for each held notice, the record it was noted beside.
 const passNoticesHeld = new WeakMap();
@@ -4663,14 +4667,18 @@ function showClaimed(claim, news, notice = "", asked = false) {
 // stopped collecting since it was asked (passForgets). A claim refused when
 // asked again with a nonce kept from an earlier one may have renewed the
 // Pass held in an answer that never arrived, so that Pass is checked
-// (passAfterLostAnswer). The first claim of a drawing Check now asked for
-// (asked) answers that press, and what it comes to is said in view; later
-// ones are the page's own news (showClaimed). An answer that leaves nothing
-// under the claim, the Pass collected and nothing more waiting, say, or a
-// refusal that finds nothing there, tells this tab that nothing was left for
-// this browser to collect as of when that claim was sent (sent), which takes
-// off a claim notice said for a forget that went before that, before what the
-// answer brings is drawn in its place (heedPassClaimGone).
+// (passAfterLostAnswer). What a renewal or that check comes to is said once
+// the Pass held has been checked (confirmRenewal), and not at all if something
+// that takes a held notice off, another tab's removal of the Pass, say, came
+// meanwhile (passNoticeForgets), since there was no notice yet for it to take
+// off. The first claim of a drawing Check now asked for (asked) answers that
+// press, and what it comes to is said in view; later ones are the page's own
+// news (showClaimed). An answer that leaves nothing under the claim, the Pass
+// collected and nothing more waiting, say, or a refusal that finds nothing
+// there, tells this tab that nothing was left for this browser to collect as
+// of when that claim was sent (sent), which takes off a claim notice said for
+// a forget that went before that, before what the answer brings is drawn in
+// its place (heedPassClaimGone).
 async function collectPass(visit, asked = false) {
   let wait = PASS_CLAIM_FIRST_WAIT_MS;
   for (;;) {
@@ -4703,12 +4711,13 @@ async function collectPass(visit, asked = false) {
         dropPassNonce(PASS_NONCE_STORAGE_KEY);
         heedPassClaimGone(sent);
       }
+      const notices = passNoticeForgets;
       const notice = news === "renewed" ? await confirmRenewal(res) : "";
       if (forgets !== passForgets) {
         return;
       }
       if (visit === passVisit || news) {
-        showClaimed(res.claim === true, news, notice, asked);
+        showClaimed(res.claim === true, news, notices === passNoticeForgets ? notice : "", asked);
       }
       if (res.claim !== true) {
         return;
@@ -4719,10 +4728,12 @@ async function collectPass(visit, asked = false) {
       // was dropped.
       dropPassNonce(PASS_NONCE_STORAGE_KEY);
       heedPassClaimGone(sent);
-      const notice = again ? await passAfterLostAnswer() : "";
+      const notices = passNoticeForgets;
+      const found = again ? await passAfterLostAnswer() : "";
       if (forgets !== passForgets) {
         return;
       }
+      const notice = notices === passNoticeForgets ? found : "";
       if (visit === passVisit || notice) {
         showClaimed(false, notice ? "checked" : "", notice, asked);
       }
@@ -4820,8 +4831,12 @@ function canonicalCode(typed) {
 // tab that had given up waiting for it, or the reader left the document
 // meanwhile (pagehide); an answer that arrives after Remove or Forget, here or
 // in another tab, is dropped unstored (passForgotten). What it comes to is said
-// in view (showPassNotice). Stop collecting it here leaves it alone otherwise,
-// but for what it says about the claim Stop dropped (passForgets).
+// in view (showPassNotice): what a renewal or that check comes to once the Pass
+// held has been checked (confirmRenewal), and not at all if something that
+// takes a held notice off, another tab's removal of the Pass, say, came
+// meanwhile (passNoticeForgets), since there was no notice yet for it to take
+// off. Stop collecting it here leaves it alone otherwise, but for what it says
+// about the claim Stop dropped (passForgets).
 async function redeemPassReissue(typed) {
   let res = null;
   let failed = null;
@@ -4861,6 +4876,7 @@ async function redeemPassReissue(typed) {
     forgetTypedCode();
   }
   let notice = "";
+  const notices = passNoticeForgets;
   if (news === "renewed") {
     notice = await confirmRenewal(res, true);
   } else if (failed && again && (failed.status === 400 || failed.status === 403)) {
@@ -4873,6 +4889,12 @@ async function redeemPassReissue(typed) {
   }
   if (passForgotten(forgets)) {
     return;
+  }
+  // Another tab removed the Pass while it was checked, with no mark of a Remove
+  // or Forget to stop this first (passForgotten): had the notice been up, that
+  // would have taken it off (Pass notices).
+  if (notices !== passNoticeForgets) {
+    notice = "";
   }
   // Moved on meanwhile: what the answer brought is kept, and drawn when the
   // reader comes back.

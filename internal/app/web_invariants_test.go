@@ -2769,7 +2769,8 @@ func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 	// since then (passClaimGone), as forgetPassOrder does; Remove and Forget
 	// read passNoticeForgets beside the record their notice is noted beside,
 	// once, and compare it once, to put up no held notice once a forget that
-	// takes one off has come meanwhile, as the post's notice does
+	// takes one off has come meanwhile, as the post's notice does, and
+	// collectPass's and redeemPassReissue's once the Pass held is checked
 	// (TestPassNoticeGoesWithWhatItSaid).
 	pressed := map[string]int{}
 	for opener, want := range map[string][2]int{
@@ -2794,7 +2795,7 @@ func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 		"passForgets":        {"forgetPassClaim", "collectPass", "stopForPassForget", "redeemPassReissue", "submitPass", "passForgetsSettled"},
 		"passCodeForgets":    {"forgetPassClaim", "stopForPassForget", "passForgotten", "recheckPass", "redeemPassReissue", "checkHeldPass", "submitPass", "passForgetsSettled"},
 		"passCodeForgetting": {"settlePassForgetting", "passForgotten"},
-		"passNoticeForgets":  {"forgetPassClaim", "dropForgottenPassNotice"},
+		"passNoticeForgets":  {"forgetPassClaim", "dropForgottenPassNotice", "collectPass", "redeemPassReissue"},
 		"passClaimGone":      {"heedPassClaimGone", "forgetPassOrder"},
 	} {
 		uses, named := 1+pressed[counter], strings.Join(users, ", ")
@@ -2933,7 +2934,7 @@ func TestPassLostRenewalAnswerIsCheckedOnThePassHeld(t *testing.T) {
 		}
 	}
 	collect := withoutComments(jsFunction(t, script, "collectPass"))
-	if !strings.Contains(collect, `const notice = again ? await passAfterLostAnswer() : "";`) {
+	if !strings.Contains(collect, `const found = again ? await passAfterLostAnswer() : "";`) {
 		t.Error("collectPass checks the Pass held after a refusal it has no reason to doubt")
 	}
 	// What a claim brought, and what a check after a lost answer found, is
@@ -3691,33 +3692,34 @@ func TestPassRunOutIsSaidForThePageBesideIt(t *testing.T) {
 // One put up after an await, the post's once its thread is drawn, Forget this
 // browser's and Remove's once their forget is answered, takes that record
 // before the await, and every one is checked as it is noted, so a change
-// another tab made meanwhile, a renewal say, takes it off at once; it reads
-// beside the record what has taken held notices off so far, and is not put up
-// once Remove or Forget this browser, here or in another tab, or another tab's
-// removal of the Pass, has come meanwhile, since there was no notice yet for
-// them to take off. It goes at the next drawing of the Pass page, whatever set
-// it off, and at another tab's change to the Pass, on whatever page this tab
-// is on, once the browser no longer holds that as stored. That is decided by
-// the stored record, never by a clock, so a Pass the server said has run out
-// is still the one the notice spoke of on a computer whose clock is slow, and
-// the server's date added to the same run-out mark changes nothing. A claim
-// notice says a claim of this browser may still be collected and what to
-// press: forgetPassOrder's, and Remove's, Forget this browser's and Stop
-// collecting it here's when educhan could not be reached. Each is noted with
-// when its own forget went, and only an answer showing the claim gone takes it
-// off, on whatever page this tab is on: a forget pressed after its own went,
-// here or in another tab, answered with the claim dropped (read from that
-// forget's mark as it goes), or this tab's own collection or GET /api/pass,
-// sent after it, finding nothing left. None is put up once this tab has
-// learned that already; a forget pressed since and not yet answered leaves it
-// to be put up. A forget pressed and not yet answered, one answered with the
-// claim kept, one whose tab closed first, and a Pass stored, changed or
-// removed in another tab leave it; Remove's and Forget's, which also say the
+// another tab made meanwhile, a renewal say, takes it off at once. Each put up
+// after an await, those and a renewal's or a lost answer's said once the Pass
+// held has been checked, reads before the await what has taken held notices off
+// so far, and is not put up once Remove or Forget this browser, here or in
+// another tab, or another tab's removal of the Pass, has come meanwhile, since
+// there was no notice yet for them to take off. It goes at the next drawing of
+// the Pass page, whatever set it off, and at another tab's change to the Pass,
+// on whatever page this tab is on, once the browser no longer holds that as
+// stored. That is decided by the stored record, never by a clock, so a Pass the
+// server said has run out is still the one the notice spoke of on a computer
+// whose clock is slow, and the server's date added to the same run-out mark
+// changes nothing. A claim notice says a claim of this browser may still be
+// collected and what to press: forgetPassOrder's, and Remove's, Forget this
+// browser's and Stop collecting it here's when educhan could not be reached.
+// Each is noted with when its own forget went, and only an answer showing the
+// claim gone takes it off, on whatever page this tab is on: a forget pressed
+// after its own went, here or in another tab, answered with the claim dropped
+// (read from that forget's mark as it goes), or this tab's own collection or
+// GET /api/pass, sent after it, finding nothing left. None is put up once this
+// tab has learned that already; a forget pressed since and not yet answered
+// leaves it to be put up. A forget pressed and not yet answered, one answered
+// with the claim kept, one whose tab closed first, and a Pass stored, changed
+// or removed in another tab leave it; Remove's and Forget's, which also say the
 // browser holds no Pass, give way to the claim's warning alone whenever a held
 // notice would go. Remove and Forget this browser in another tab take every
-// other notice off the Pass page here, and a held notice off any other page,
-// by the mark or, if the browser would not store that, by the removal itself,
-// and a Stop leaves them be (TestPassForgottenInAnotherTabStopsThisOne,
+// other notice off the Pass page here, and a held notice off any other page, by
+// the mark or, if the browser would not store that, by the removal itself, and
+// a Stop leaves them be (TestPassForgottenInAnotherTabStopsThisOne,
 // TestPassRemovedInAnotherTabLeavesThisOne). A late follow-up acts on its own
 // notice alone (TestPassRunOutIsSaidForThePageBesideIt).
 func TestPassNoticeGoesWithWhatItSaid(t *testing.T) {
@@ -3945,11 +3947,44 @@ func TestPassNoticeGoesWithWhatItSaid(t *testing.T) {
 	sent := strings.Index(collect, "const sent = Date.now();\n    try {\n      res = await api(\"/api/pass/claim\", {")
 	answered := strings.Index(collect, "if (res.claim !== true) {\n        dropPassNonce(PASS_NONCE_STORAGE_KEY);\n        heedPassClaimGone(sent);\n      }")
 	refused := strings.Index(collect, "dropPassNonce(PASS_NONCE_STORAGE_KEY);\n      heedPassClaimGone(sent);\n"+
-		"      const notice = again ? await passAfterLostAnswer() : \"\";")
+		"      const notices = passNoticeForgets;\n      const found = again ? await passAfterLostAnswer() : \"\";")
 	if sent < 0 || answered < sent || refused < answered || strings.Index(collect, "showClaimed(") < answered ||
 		strings.Index(collect, "if (forgets !== passForgets) {\n      return;\n    }") > answered {
 		t.Error("this tab's collection no longer takes off a claim notice said for an earlier forget once a claim it sent " +
 			"after it finds nothing left, before what the answer brings is drawn")
+	}
+	// A renewal's notice, and what the check of the Pass held after a lost
+	// answer finds, wait on that check (confirmRenewal, passAfterLostAnswer),
+	// in this tab's collection and in a reissue code's answer. Each reads what
+	// has taken held notices off so far before the check, and says nothing if
+	// that has moved by the time it is answered, another tab's removal of the
+	// Pass with no mark heard first, say, since there was no notice yet for it
+	// to take off.
+	redeemed := withoutComments(jsFunction(t, script, "redeemPassReissue"))
+	for name, gate := range map[string][3]string{
+		"a renewal collected": {collect, "const notices = passNoticeForgets;\n      const notice = news === \"renewed\" ? await confirmRenewal(res) : \"\";\n" +
+			"      if (forgets !== passForgets) {\n        return;\n      }\n      if (visit === passVisit || news) {\n" +
+			"        showClaimed(res.claim === true, news, notices === passNoticeForgets ? notice : \"\", asked);\n      }",
+			"showClaimed(res.claim === true"},
+		"the Pass checked after a claim's lost answer": {collect, "const notices = passNoticeForgets;\n" +
+			"      const found = again ? await passAfterLostAnswer() : \"\";\n      if (forgets !== passForgets) {\n        return;\n      }\n" +
+			"      const notice = notices === passNoticeForgets ? found : \"\";\n      if (visit === passVisit || notice) {\n" +
+			"        showClaimed(false, notice ? \"checked\" : \"\", notice, asked);\n      }", "showClaimed(false"},
+		"a reissue code's renewal or lost answer": {redeemed, "let notice = \"\";\n  const notices = passNoticeForgets;\n" +
+			"  if (news === \"renewed\") {\n    notice = await confirmRenewal(res, true);\n  } else if (", "showPassNotice(notice);"},
+	} {
+		at := strings.Index(gate[0], gate[1])
+		if at < 0 || strings.Count(gate[0], gate[2]) != 1 {
+			t.Errorf("%s is no longer said only if nothing that takes a held notice off came while the Pass held was checked", name)
+		}
+	}
+	cleared := regexp.MustCompile(`if \(passForgotten\(forgets\)\) \{\s*return;\s*\}\s*` +
+		`if \(notices !== passNoticeForgets\) \{\s*notice = "";\s*\}`).FindStringIndex(redeemed)
+	if checked, said := strings.Index(redeemed, "notice = await passAfterLostAnswer("), strings.Index(redeemed, "showPassNotice(notice);"); checked < 0 ||
+		cleared == nil || cleared[0] < checked || said < cleared[1] ||
+		strings.Count(redeemed, "passNoticeForgets") != 2 || strings.Count(collect, "passNoticeForgets") != 4 {
+		t.Error("a reissue code's renewal, or what the check after its lost answer finds, is said although something that " +
+			"takes a held notice off came while the Pass held was checked")
 	}
 	if got := withoutComments(jsFunction(t, script, "loadPassInfo")); got != "async function loadPassInfo() {\n  const sent = Date.now();\n"+
 		"  try {\n    const info = await api(\"/api/pass\");\n    if (!(info && info.enabled && info.claim)) {\n      heedPassClaimGone(sent);\n    }\n"+

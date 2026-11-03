@@ -1198,16 +1198,17 @@ not-found view.
   clock does not take off a true notice. It is checked as it is put up, so a renewal
   stored in another tab while the thread loads takes it off at once; it goes when the Pass
   page is drawn again, whatever sets that off, or at once when another tab changes the
-  Pass, whatever page this tab shows. One that waits to be put up, while the thread loads
-  say, is not put up if Remove the Pass or Forget this browser is pressed, here or in
-  another tab, or another tab removes the Pass, while it waits, since each of those would
-  have taken it off; Remove's and Forget's (below) then say only their warning about the
-  checkout. A notice that this browser may still be collecting a checkout because educhan
-  could not be reached to drop it, after a checkout answered once a forget was pressed,
-  Remove the Pass, Forget this browser or Stop collecting it here, is said on whatever
-  page this tab shows, since it asks for a step, except Stop collecting it here's, said
-  only on the Pass page, which goes on collecting with Stop offered again. Besides what
-  takes any notice off, the reader dismissing it or moving to another page, say, it goes,
+  Pass, whatever page this tab shows. One that waits to be put up, while the thread
+  loads or the Pass held is checked after a renewal or a lost answer, say, is not put up
+  if Remove the Pass or Forget this browser is pressed, here or in another tab, or
+  another tab removes the Pass, while it waits, since each of those would have taken it
+  off; Remove's and Forget's (below) then say only their warning about the checkout. A
+  notice that this browser may still be collecting a checkout because educhan could not
+  be reached to drop it, after a checkout answered once a forget was pressed, Remove the
+  Pass, Forget this browser or Stop collecting it here, is said on whatever page this
+  tab shows, since it asks for a step, except Stop collecting it here's, said only on
+  the Pass page, which goes on collecting with Stop offered again. Besides what takes
+  any notice off, the reader dismissing it or moving to another page, say, it goes,
   whatever page this tab shows, once this tab learns that nothing is left to collect as
   of a time after its own forget went: a forget pressed after it, here or in another tab,
   that educhan answers by dropping the checkouts, or this tab's own collecting, or loading

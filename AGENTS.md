@@ -808,15 +808,17 @@ has changed one of those properties and needs a browser check before the test ch
   changes nothing), taken before any await (`said` in the post's answer, Remove and
   Forget, `record` in `showPassRunOut`), and `notePassHeld` checks it at once, so a
   renewal stored in another tab while the thread loads takes it off then. The post's
-  answer, Remove and Forget read `passNoticeForgets` beside `said` too (`forgets`):
-  this tab's own Remove and Forget move it (`forgetPassClaim`), and so do another
-  tab's marks of them and its removal of the Pass (`dropForgottenPassNotice`),
-  so one that moved while the notice waited, when no notice was on screen for
-  it to take off, keeps the post's notice from being put up, and puts Remove's
-  and Forget's up as the claim's warning alone. Every drawing of the Pass page,
-  whatever set it off (`drawPass`), and every change another tab makes to the
-  Pass, on whatever page this tab is on (`followPassStorage`), takes it off once
-  the browser no longer holds that (`dropStalePassNotice`, reading `passNoticeHeld`); any
+  answer, Remove and Forget read `passNoticeForgets` beside `said` too (`forgets`), and
+  a claim's or a reissue code's notice of a renewal or of a lost answer reads it before
+  the Pass held is checked (`notices` in `collectPass` and `redeemPassReissue`): this
+  tab's own Remove and Forget move it (`forgetPassClaim`), and so do another tab's
+  marks of them and its removal of the Pass (`dropForgottenPassNotice`), so one that
+  moved while the notice waited, when no notice was on screen for it to take off, keeps
+  the post's notice and a renewal's or a lost answer's from being put up, and puts
+  Remove's and Forget's up as the claim's warning alone. Every drawing of the Pass
+  page, whatever set it off (`drawPass`), and every change another tab makes to the
+  Pass, on whatever page this tab is on (`followPassStorage`), takes it off once the
+  browser no longer holds that (`dropStalePassNotice`, reading `passNoticeHeld`); any
   other notice, a refusal say, stays. A claim notice says a claim of this browser may
   still be collected and what to press once back online (`passClaimNotices`, holding
   the claim's warning alone and when its own forget went, `at`): `forgetPassOrder`'s
