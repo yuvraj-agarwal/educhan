@@ -119,8 +119,9 @@ CREATE INDEX IF NOT EXISTS pass_orders_expires_idx ON pass_orders (expires_at);
 
 -- Payments refunded or disputed: the processor can deliver a refund ahead of
 -- a retried "paid" event, and this is what stops that late event from turning
--- a refunded purchase into a Pass. Kept for a month, longer than the processor
--- retries an event, rounded up to a UTC midnight.
+-- a refunded purchase into a Pass. Kept for a month from the payment's latest
+-- refund or dispute, longer than the processor retries an event, rounded up to
+-- a UTC midnight.
 CREATE TABLE IF NOT EXISTS pass_revocations (
     payment_hash BYTEA PRIMARY KEY,
     expires_at   TIMESTAMPTZ NOT NULL

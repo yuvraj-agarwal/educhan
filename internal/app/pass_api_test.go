@@ -4990,6 +4990,42 @@ func TestPassRevocationIsDayRounded(t *testing.T) {
 	}
 }
 
+// TestPassRevocationRunsFromTheLatest holds the record of a refunded or
+// disputed payment to a month from its latest refund or dispute, as the
+// README says: a dispute that follows a refund of the same payment, or the
+// refund delivered again, starts the month again rather than leaving the
+// first one's date.
+func TestPassRevocationRunsFromTheLatest(t *testing.T) {
+	for _, later := range []struct {
+		name   string
+		event  string
+		object map[string]any
+	}{
+		{"a dispute following the refund", stripeDisputeCreated, map[string]any{"object": "dispute", "payment_intent": "pi_twice"}},
+		{"the refund delivered again", stripeChargeRefunded, map[string]any{"object": "charge", "payment_intent": "pi_twice", "refunded": true}},
+	} {
+		t.Run(later.name, func(t *testing.T) {
+			p := passServer(t, nil)
+			p.buy("pi_twice")
+			p.refund("pi_twice")
+			p.exec(`UPDATE pass_revocations SET expires_at = expires_at - make_interval(hours => 24 * 20)`)
+			if status := p.webhook(later.event, later.object); status != http.StatusOK {
+				t.Fatalf("%s: status %d", later.event, status)
+			}
+			var at time.Time
+			var n int
+			if err := p.app.pool.QueryRow(context.Background(),
+				`SELECT max(expires_at), count(*) FROM pass_revocations`).Scan(&at, &n); err != nil || n != 1 {
+				t.Fatalf("%d payments remembered (%v), want the one", n, err)
+			}
+			month := 30 * 24 * time.Hour
+			if !at.Equal(dayCeil(at)) || at.Before(time.Now().Add(month)) || at.After(dayCeil(time.Now().Add(month))) {
+				t.Errorf("after %s, the payment is remembered until %v, want the first UTC midnight 30 days on", later.name, at.UTC())
+			}
+		})
+	}
+}
+
 // TestPassRefundCancelsAPassInItsGraceMonth holds a refund or dispute of any
 // payment on a Pass that has run out, and can still be renewed for its grace
 // month, to cancelling it outright, as the README says: nothing of its time is

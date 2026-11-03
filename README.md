@@ -547,10 +547,10 @@ the server secret and the Stripe account can see:
   Stripe session and payment ids, a hash of the browser's claim, the Pass it
   renews while that Pass exists (deleting a Pass clears it from every order
   that names it), the term it buys, and its deadline;
-- in `pass_revocations`, for a month after a refund or a dispute: the
-  payment's HMAC, so that a late "paid" event cannot undo it. Stripe sends
-  these for any payment on the account, so a refund of something else the
-  account sells is remembered the same way;
+- in `pass_revocations`, for a month after a payment's latest refund or
+  dispute: the payment's HMAC, so that a late "paid" event cannot undo it.
+  Stripe sends these for any payment on the account, so a refund of something
+  else the account sells is remembered the same way;
 - in `pass_reissues`, while a reissue code is unredeemed: its SHA-256 hash,
   the HMAC of the payment it reissues, and its deadline.
 
@@ -577,12 +577,13 @@ The transaction that deletes a Pass also clears it from every order that renews
 it, paid or not, so no order names a Pass that has gone; that writes only those
 orders, and each then holds that transaction's id, as does the row a refund or
 dispute writes beside them in `pass_revocations`, so whoever holds those files
-can still tell which orders one deletion cleared and, for the month that row is
-kept, which payment's refund or dispute it followed. Those files also hold the
-row versions a write or a deletion left behind until Postgres reuses their
-space, as does a physical backup that copied them, so a gone Pass's rows, and
-each cleared order's earlier version naming it, can outlast the deletion there.
-Stripe keeps the exact time of every payment anyway.
+can still tell which orders one deletion cleared and, while that row is kept and
+no later refund or dispute of the payment has written it again, which payment's
+refund or dispute it followed. Those files also hold the row versions a write or
+a deletion left behind until Postgres reuses their space, as does a physical
+backup that copied them, so a gone Pass's rows, and each cleared order's earlier
+version naming it, can outlast the deletion there. Stripe keeps the exact time
+of every payment anyway.
 
 They cannot link a Pass to a post. Posts carry nothing about a Pass, using one
 writes nothing (no "last used"), the code is stored only as a keyed hash, the
