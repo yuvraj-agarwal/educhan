@@ -494,7 +494,7 @@ properties and needs a browser check before the test changes.
   success once the form is emptied; a badge box drawn into the form meanwhile, for a
   badge stored in another tab or by a confirmation in this one, say, is drawn switched
   off and switched back on with them, and one taken out, the badge forgotten say, stays
-  out (`drawBadgeOption`); `app.css` shows the held controls switched off). A
+  out (`drawBadgeOption`); `app.css` makes the held controls look switched off). A
   redraw of the form's own page while the form is held or still owed a notice (above),
   such as Update, or another page of the same board's index, which has the same
   `routeKey` (the view, the board and the thread, never the index page), keeps the page,
@@ -750,26 +750,28 @@ properties and needs a browser check before the test changes.
   the screen, while a post link's lookup loads say, is noted, starting nothing, and
   keeps that notice: a redraw that carries it held, begun before the answer or after it
   while the notice is still unsaid, says the notice as it puts the form's values back
-  into its own page, noting nothing on the form it draws, or keeps that page, form and
-  all, when it will not load, dropping the note. A press before then drops the notice
-  and is refused once by the note, unless it is refused before that, as empty say, and a
-  redraw after such a press carries the note, so the form it draws refuses its next
-  press once. When storage holds another badge, verified since in this browser (in
-  another tab, or in this one by a confirmation answered after the reader left /verify),
-  and the browser was not forgotten since the press (a badge stored after a forget is
-  someone else's), the form on screen is told so in the page's own words rather than the
-  server's "verify again" (`badgeReplacedNotice`): its badge was replaced by one
-  verified since in this browser, so nothing was posted, and, unless release left the
-  post with nothing in it (the form is then told only what went and why, and, by
-  `imageTakenOff`, to write something instead), pressing again posts without a badge,
-  and ticking the form's box, which now offers the new one, posts with that one. It
-  reads the badge held and the form's box when it is said, which a redraw loading
-  meanwhile can do again (`restoreDraft`), the page it keeps on screen until then still
-  in the reader's hands: with none held by then, forgotten since, it ends with what
-  pressing again does; with another, verified since, it names that one; and with the
-  new badge's box ticked since, it says that pressing again posts with that badge. That
-  notice is its one refusal for the badge, so a note left on it while the post was on
-  its way goes, whatever left it: a change of badge in another tab
+  into its own page, noting nothing on the form it draws and ticking no box there, not
+  even one ticked on the page kept meanwhile, or keeps that page, form and all, when it
+  will not load, dropping the note. A press before then drops the notice and is refused
+  once by the note, unless it is refused before that, as empty say, and a redraw after
+  such a press carries the note, so the form it draws refuses its next press once. When
+  storage holds another badge, verified since in this browser (in another tab, or in
+  this one by a confirmation answered after the reader left /verify), and the browser
+  was not forgotten since the press (a badge stored after a forget is someone else's),
+  the form on screen is told so in the page's own words rather than the server's "verify
+  again" (`badgeReplacedNotice`): its badge was replaced by one verified since in this
+  browser, so nothing was posted, and, unless release left the post with nothing in it
+  (the form is then told only what went and why, and, by `imageTakenOff`, to write
+  something instead), pressing again posts without a badge, and ticking the form's box,
+  which now offers the new one, posts with that one. It reads the badge held, the form's
+  box and the poster key when it is worded, which a redraw loading meanwhile can do
+  again for the form it draws (`restoreDraft`), the page it keeps on screen until then
+  still in the reader's hands, dropping a note left on that form since (a box ticked
+  since and taken out with its badge, say): with none held by then, forgotten since, it
+  ends with what pressing again does; with another, verified since, it names that one;
+  and with the new badge's box ticked since, it says that pressing again posts with that
+  badge. That notice is its one refusal for the badge, so a note left on it while the
+  post was on its way goes, whatever left it: a change of badge in another tab
   (`followCredentialStorage`), a confirmation answered in this one
   (`submitVerification`), another badged post's refusal in this one (`submit`),
   `/verify` loading over the form (`loadVerification`), or a redraw that puts it back
