@@ -721,8 +721,8 @@ var shouldWords = map[string]bool{"have": true, "hav": true, "ve": true, "been":
 
 // notLongAgo reports, in s after "sh'd not", a stretch of time: "long", or
 // "too", "that" or "so" before it ("not long ago", "not that long ago", "not
-// long after the fight"), or "ago" within four words ("not even a week
-// ago").
+// long after the fight"), or "ago" within four words, a number counted as
+// one ("not even a week ago", "not even 2 days ago").
 func notLongAgo(s string) bool {
 	var ws []string
 	for i := 0; i < len(s) && len(ws) < 4; {
@@ -730,7 +730,7 @@ func notLongAgo(s string) bool {
 			i++
 		}
 		j := i
-		for j < len(s) && 'a' <= s[j] && s[j] <= 'z' {
+		for j < len(s) && ('a' <= s[j] && s[j] <= 'z' || isASCIIDigit(s[j])) {
 			j++
 		}
 		if j == i {

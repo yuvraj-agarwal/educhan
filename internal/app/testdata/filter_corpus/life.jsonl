@@ -514,3 +514,5 @@
 {"id": "life-748", "body": "i sh'd not that long ago and nobody knows", "subject": "", "name": "", "expect": "support", "why": "\"sh'd not that long ago\" is \"self harmed\" (V5-SHD-NOT)"}
 {"id": "life-749", "body": "you sh'd not go there alone after dark", "subject": "", "name": "", "expect": "publish", "why": "\"sh'd not go\" is \"should not go\" (V5-SHD-NOT control)"}
 {"id": "life-750", "body": "they sh'd not take that long to mark papers", "subject": "", "name": "", "expect": "publish", "why": "\"sh'd not take that long\": a verb after \"not\" makes it \"should\" (V5-SHD-NOT control)"}
+{"id": "life-751", "body": "i sh'd not even 2 days ago", "subject": "", "name": "", "expect": "support", "why": "\"sh'd not\" before a number of days ago is \"self harmed\" (R5CHK-SHD-NOT-DIGIT, beside life-746..748)"}
+{"id": "life-752", "body": "we sh'd not wait 10 minutes for the bus", "subject": "", "name": "", "expect": "publish", "why": "a verb after \"not\", and no \"ago\": \"should not wait\" (R5CHK-SHD-NOT-DIGIT)"}
