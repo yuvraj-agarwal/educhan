@@ -9643,17 +9643,36 @@ func pupilsReached(next []string) bool {
 
 // pupilsSought reports secrecy kept from adults or a meeting in ws, the
 // words after a school year's students or kids asked to get in touch.
-// Parents or teachers kept out ("no parents", "don't tell your mum", not
-// "no parents needed"), "don't tell anyone" and "just us" are secrecy
-// whatever else is said. A secret, a private chat, being alone and a
-// meeting are secrecy only with nothing they would study, sign up for or
-// do as a group (pupilErrands: "for the quiz team, it's a secret from the
-// other section", "secret santa", "a private discord for the batch", "a
-// surprise for ma'am"), and a meeting not in a school's or a group's place
-// ("meeting at lunch", "lets meet in the library", "in room 12"): "class 7
-// kids dm me, it's a secret", "lets meet after school, just us".
+// Parents or other adults kept out ("no parents", "no adults", "don't tell
+// your mum", not "no parents needed") are secrecy whatever else is said.
+// Teachers kept out, "don't tell anyone", a secret, a private chat, "between
+// us", being alone and a meeting are secrecy only with nothing they would
+// study, sign up for or do as a group (pupilErrands: "for the quiz team,
+// it's a secret from the other section", "secret santa", "a private discord
+// for the batch", "a surprise for ma'am, don't tell the teachers", "i have
+// the notes, don't tell anyone"; teacherErrands, for a teacher who is not
+// kept out: "a party for sir"), or with a lure beside it (pupilLures: "for
+// free robux", "i'll pay you", "i'll send you gifts"); a meeting is none in
+// a school's or a group's place ("meeting at lunch", "lets meet in the
+// library", "in room 12"). "Just us" is secrecy unless a group follows it
+// ("just us girls", "just us no seniors"). So "class 7 kids dm me, it's a
+// secret", "lets meet after school, just us" and "i'll send you gifts, keep
+// it between us" are held.
 func pupilsSought(ws []string) bool {
-	errand := anyIn(ws, pupilErrands)
+	lured := false
+	for i, w := range ws {
+		switch {
+		case is(w, "robux") || is(w, "vbucks") || is(w, "v-bucks"):
+			lured = true
+		case pupilLures[w]:
+			// Given to the reader: "i'll send you gifts", "i'll pay you",
+			// "gifts for you", "free money"; not "ma'am's gift".
+			before := ws[max(0, i-2):i]
+			lured = lured || anyIn(before, objectWords) || hasWord(before, "free") ||
+				i+2 < len(ws) && is(ws[i+1], "for") && objectWords[ws[i+2]] ||
+				is(w, "pay") && i+1 < len(ws) && objectWords[ws[i+1]]
+		}
+	}
 	kept := func(i int) bool {
 		for _, p := range ws[max(0, i-3):i] {
 			if keptFrom[p] {
@@ -9662,6 +9681,13 @@ func pupilsSought(ws []string) bool {
 		}
 		return false
 	}
+	// A teacher named and not kept out, whom a gift, a party or a plan is
+	// for: "a party for sir", "ma'am's gift".
+	forTeacher := false
+	for i, w := range ws {
+		forTeacher = forTeacher || teacherWords[strings.TrimSuffix(w, "'s")] && !kept(i)
+	}
+	errand := (anyIn(ws, pupilErrands) || forTeacher && anyIn(ws, teacherErrands)) && !lured
 	for i, w := range ws {
 		var next string
 		if i+1 < len(ws) {
@@ -9670,12 +9696,19 @@ func pupilsSought(ws []string) bool {
 		switch {
 		case parentWords[w] && kept(i) && !parentsNeeded[next]:
 			return true
-		case (is(w, "anyone") || is(w, "anybody")) && i > 0 && is(ws[i-1], "tell") && kept(i-1):
-			return true
 		case is(w, "just") && (is(next, "us") || is(next, "me")):
-			return true
+			rest := ws[i+2:]
+			for len(rest) > 0 && (is(rest[0], "the") || is(rest[0], "no") || is(rest[0], "without")) {
+				rest = rest[1:]
+			}
+			if len(rest) == 0 || !pupilGroups[rest[0]] {
+				return true
+			}
 		case errand:
-		case pupilSecrets[w]:
+		case teacherWords[w] && kept(i) && !parentsNeeded[next],
+			(is(w, "anyone") || is(w, "anybody")) && i > 0 && is(ws[i-1], "tell") && kept(i-1),
+			pupilSecrets[w],
+			is(w, "between") && (is(next, "us") || is(next, "ourselves")):
 			return true
 		case pupilMeets[w]:
 			near := false
@@ -9699,23 +9732,33 @@ var (
 	pupilPleases = canonSetOf(`pls plz please plss`)
 	// pupilSecrets are a secret, a private chat or being alone, and
 	// pupilMeets a meeting, which pupilPlaces after them make a group's;
-	// parentWords after one of keptFrom are parents or teachers kept out
-	// ("no parents", "don't tell your mum"), unless parentsNeeded follows.
+	// parentWords and teacherWords after one of keptFrom are parents or
+	// other adults, or teachers, kept out ("no parents", "don't tell your
+	// mum", "no teachers allowed"), unless parentsNeeded follows.
 	pupilSecrets = canonSetOf(`secret secrets secretly private privately alone nobody noone`)
 	pupilMeets   = canonSetOf(`meet meets meetup meeting meetings`)
 	pupilPlaces  = canonSetOf(`library canteen cafeteria room hall lunch recess club clubs ground field lab classroom
 		auditorium gym court`)
-	parentWords   = canonSetOf(`parents parent mom mum mommy mummy dad daddy papa family teacher teachers`)
+	parentWords = canonSetOf(`parents parent mom mum mommy mummy dad daddy papa family adults adult grownups
+		grown elders`)
 	keptFrom      = canonSetOf(`no without w/o tell dont don't not`)
 	parentsNeeded = canonSetOf(`needed required necessary involved`)
+	// pupilGroups after "just us" make it a group's ("just us girls", "just
+	// us no seniors"), and pupilLures are what a child is bought with when
+	// they are the reader's or free ("i'll pay you", "i'll send you gifts",
+	// "free money", not "a gift for ma'am"); robux are always one.
+	pupilGroups = canonSetOf(`girls boys guys class batch section students kids team squad seniors juniors`)
+	pupilLures  = canonSetOf(`money cash pay gift gifts reward rewards`)
 	// pupilErrands are what a year's students are got in touch with for:
 	// notes, doubts, an exam, a form, a team, a club, a debate, a group
-	// chat for the class, secret santa, a surprise for a teacher.
+	// chat for the class, secret santa, a surprise; teacherErrands are
+	// errands only with a teacher named: a gift, a party or a plan for one.
 	pupilErrands = canonSetOf(`notes note doubts doubt help jee neet exam exams test tests paper papers syllabus
 		study studying homework hw assignment assignments quiz form forms project projects team teams book books
 		tuition tuitions revision revise revising olympiad competition trip fee fees result results timetable
 		practical sample farewell fest event committee council election santa club clubs debate debates mun
 		surprise discord gc formula formulas sheet sheets chess choir band match tournament`)
+	teacherErrands = canonSetOf(`gift gifts present presents birthday card cake party plan plans planning`)
 )
 
 // canonSetOf is setOf for words looked up in the loose view as well.
