@@ -101,11 +101,14 @@ func runSweep(application *app.App) error {
 func serve(cfg app.Config, application *app.App, log *slog.Logger) error {
 	// Only a server has a use for these; the sweeper runs without them.
 	application.WarnServingSettings()
-	// Except for a multipart post, which is how app.js sends an image, and
-	// which sets its own read and write deadlines (see app.ReadHeaderTimeout),
-	// ReadHeaderTimeout and WriteTimeout together are the longest a request
-	// waits for its answer. A Verify request is one of those: app.js gives it
-	// up only after that (VERIFY_TIMEOUT_MS), and
+	// Every request's headers are read within ReadHeaderTimeout, a multipart
+	// post's included. Once they are in, a multipart post, which is how app.js
+	// sends an image, sets its own deadlines for reading its body and writing
+	// its answer (see app.ReadHeaderTimeout); any other request's answer is
+	// written within WriteTimeout of its headers or not at all. So but for a
+	// multipart post, ReadHeaderTimeout and WriteTimeout together are the
+	// longest a request waits for its answer. A Verify request is one of
+	// those: app.js gives it up only after that (VERIFY_TIMEOUT_MS), and
 	// TestVerifyAnswersBelongToTheStepTheyWereSentFrom holds it to
 	// app.ReadHeaderTimeout and app.WriteTimeout and checks that this server
 	// uses them.
