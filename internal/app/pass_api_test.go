@@ -4606,9 +4606,11 @@ func (p *passHarness) originOf(paymentIntent string) string {
 // from moving at all, and is counted again if it is refunded; while any
 // renewal is under way, the right that did move gives no reissue code, and one
 // made before is refused without being spent, to work again if the renewal
-// comes to nothing. An unpaid one counts until Stripe closes it or it is
-// pruned past its deadline, since until then it can still be paid. Collected,
-// the renewal stays on the holder's code.
+// comes to nothing. An unpaid one counts while a payment Stripe reports for it
+// would still count: until it goes, when Stripe closes it or it is pruned past
+// its deadline, say, and never once its own term has passed since that
+// deadline, pruned yet or not, when nothing can pay it or hold it for a slow
+// payment any more. Collected, the renewal stays on the holder's code.
 func TestPassReissueWaitsForARenewalUnderWay(t *testing.T) {
 	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
 	refusedNoOrigin := func(paymentIntent, when string) {
@@ -4707,31 +4709,39 @@ func TestPassReissueWaitsForARenewalUnderWay(t *testing.T) {
 	if status, _, _ := p.reissueCode("mod-key", "pi_lapsed_onlooker"); status != http.StatusOK {
 		t.Fatalf("reissue with the one renewal left once the holder's checkout closed unpaid: status %d", status)
 	}
-	// An unpaid order past its deadline is under way until it is pruned,
-	// since Stripe can still report it paid until then. Pruned, it is gone,
-	// and a payment for it after all renews nothing.
+	// An unpaid order past its deadline is under way while a payment Stripe
+	// reports for it would still count: until it is pruned, and never once its
+	// own term has passed since that deadline (passOrderPayable). An hour
+	// before that, and not pruned, it is counted, and a reissue code made
+	// before its checkout is refused and not spent. Pruned, it is gone, and a
+	// payment for it after all renews nothing.
+	keepEndsAt := func(onlooker string, end time.Time) {
+		t.Helper()
+		p.exec(`UPDATE pass_orders SET expires_at = $1::timestamptz - make_interval(hours => 24 * days)
+			WHERE renew_pass_id = (SELECT pass_id FROM pass_payments WHERE payment_hash = $2)`,
+			end, p.app.passPaymentHash(onlooker))
+	}
 	late := p.buy("pi_late_bought")
 	latecomer := p.otherBrowser()
 	latecomer.renew(late.Pass, "pi_late_onlooker")
-	session = p.checkout(late.Pass)
 	p.refund("pi_late_bought")
-	if _, err := p.app.pool.Exec(context.Background(), `
-		UPDATE pass_orders SET expires_at = now() - interval '1 day'
-		WHERE renew_pass_id = (SELECT pass_id FROM pass_payments WHERE payment_hash = $1)`,
-		p.app.passPaymentHash("pi_late_onlooker")); err != nil {
-		t.Fatal(err)
+	_, _, lateCode := p.reissueCode("mod-key", "pi_late_onlooker")
+	session = p.checkout(late.Pass)
+	keepEndsAt("pi_late_onlooker", time.Now().Add(time.Hour))
+	if status, out := latecomer.redeem(lateCode); status != http.StatusConflict || out.Error != passReissueRenewing {
+		t.Errorf("a reissue code made before it, used an hour before the holder's unpaid checkout is its own term past its deadline, not pruned: status %d, %+v",
+			status, out)
 	}
-	refusedNoOrigin("pi_late_onlooker", "while the holder's unpaid checkout is past its deadline and not pruned yet")
+	refusedNoOrigin("pi_late_onlooker", "an hour before the holder's unpaid checkout is its own term past its deadline, not pruned")
 	if err := p.app.store.prunePasses(context.Background(), time.Now()); err != nil {
 		t.Fatal(err)
-	}
-	status, _, lateCode := p.reissueCode("mod-key", "pi_late_onlooker")
-	if status != http.StatusOK {
-		t.Fatalf("reissue with the one renewal left once the holder's unpaid checkout was pruned: status %d", status)
 	}
 	status, taken := latecomer.redeem(lateCode)
 	if status != http.StatusOK || taken.Status != "issued" {
 		t.Fatalf("redeem once the holder's unpaid checkout was pruned: status %d, %+v", status, taken)
+	}
+	if status, _, _ := p.reissueCode("mod-key", "pi_late_onlooker"); status != http.StatusOK {
+		t.Fatalf("reissue with the one renewal left once the holder's unpaid checkout was pruned: status %d", status)
 	}
 	p.paid(session, "pi_late_renewal")
 	if status, out := p.claim(); status == http.StatusOK {
@@ -4739,6 +4749,46 @@ func TestPassReissueWaitsForARenewalUnderWay(t *testing.T) {
 	}
 	if status, out := p.activate(taken.Pass); status != http.StatusOK || !out.ExpiresAt.Equal(taken.ExpiresAt) {
 		t.Fatalf("the reissued code once the pruned renewal was paid: status %d, %+v; want good until %v", status, out, taken.ExpiresAt)
+	}
+	// An hour past that, it has gone before any prune, as once pruned: a
+	// reissue code made before its checkout is used, the right gives another,
+	// and nothing brings the order back, neither Stripe reporting its checkout
+	// completed with the payment still clearing nor that payment clearing.
+	past := p.buy("pi_past_bought")
+	passerby := p.otherBrowser()
+	passerby.renew(past.Pass, "pi_past_onlooker")
+	p.refund("pi_past_bought")
+	_, _, pastCode := p.reissueCode("mod-key", "pi_past_onlooker")
+	session = p.checkout(past.Pass)
+	keepEndsAt("pi_past_onlooker", time.Now().Add(-time.Hour))
+	status, taken = passerby.redeem(pastCode)
+	if status != http.StatusOK || taken.Status != "issued" {
+		t.Errorf("a reissue code made before it, used an hour after the holder's unpaid checkout is its own term past its deadline, not pruned: status %d, %+v",
+			status, taken)
+	}
+	gives := func(when string) {
+		t.Helper()
+		if status, out, _ := p.reissueCode("mod-key", "pi_past_onlooker"); status != http.StatusOK {
+			t.Errorf("reissue with the one renewal left %s: status %d, %+v", when, status, out)
+		}
+	}
+	gives("an hour after the holder's unpaid checkout is its own term past its deadline, not pruned")
+	clearing := map[string]any{"id": session, "object": "checkout.session", "mode": "payment",
+		"payment_status": "unpaid", "payment_intent": "pi_past_renewal"}
+	if status := p.webhook(stripeCheckoutCompleted, clearing); status != http.StatusOK {
+		t.Fatalf("the checkout completed with the payment still clearing: status %d", status)
+	}
+	gives("once Stripe reports that checkout completed with the payment still clearing")
+	clearing["payment_status"] = "paid"
+	if status := p.webhook(stripeCheckoutAsyncSuccess, clearing); status != http.StatusOK {
+		t.Fatalf("the payment cleared: status %d", status)
+	}
+	gives("once that payment has cleared")
+	if status, out := p.claim(); status == http.StatusOK {
+		t.Fatalf("the renewal past its keep, paid after all, was collected: %+v", out)
+	}
+	if status, out := p.activate(taken.Pass); status != http.StatusOK || !out.ExpiresAt.Equal(taken.ExpiresAt) {
+		t.Fatalf("the reissued code once the renewal past its keep was paid: status %d, %+v; want good until %v", status, out, taken.ExpiresAt)
 	}
 
 	// Made with nothing under way, and used after the holder paid to renew:
