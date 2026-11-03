@@ -7609,6 +7609,9 @@ func (f *scannedField) threatComingCheck(v *view, m []int) bool {
 		if len(next) > 1 && is(next[0], "with") && notRuin[next[1]] {
 			return false // "the hall will blow up with cheers"
 		}
+		if is(last, "explode") && explodesAtNews(wordsIn(clauseAfter(text, m[1]))) {
+			return false // "the class will explode tomorrow when sir announces the results"
+		}
 	default:
 		// Harm to people: a group picked out, all of them, or whoever is
 		// somewhere.
@@ -7630,6 +7633,40 @@ func (f *scannedField) threatComingCheck(v *view, m []int) bool {
 	}
 	return f.threatCheck(v, m)
 }
+
+// explodesAtNews reports, in the words after "will explode", a clause of
+// "when", "once" or "if" that says what the place will explode at: news,
+// results, a holiday, the wifi going down ("the school will explode
+// tomorrow when they announce the holiday"). A clause with the poster in it,
+// with people inside or a bomb's timing is no news: "when I press the
+// button", "when everyone is inside", "when the bell rings", "once the
+// assembly starts".
+func explodesAtNews(ws []string) bool {
+	for i, w := range ws {
+		if !explodeWhen[w] {
+			continue
+		}
+		clause := ws[i+1:]
+		if len(clause) < 2 {
+			return false
+		}
+		for _, c := range clause {
+			if explodeTriggers[c] || firstPersonSubjects[c] {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+var (
+	// explodeWhen open the clause explodesAtNews reads, and
+	// explodeTriggers in it are a bomb's timing or people inside.
+	explodeWhen     = canonSetOf(`when once if whenever`)
+	explodeTriggers = canonSetOf(`bomb bombs button timer detonate detonator trigger bell bells clock alarm inside
+		full packed crowded everyone's start starts begin begins ring rings strike strikes hits`)
+)
 
 // explodeRuns are a place said to be about to explode, read as
 // threatComingRules are and put to threatComingCheck, which takes the

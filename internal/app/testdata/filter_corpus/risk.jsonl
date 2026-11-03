@@ -638,3 +638,11 @@
 {"id": "risk-638", "body": "how to burn myself out less during exam season", "subject": "", "name": "", "expect": "publish", "why": "burnout in exam season (V4-HOWTO-PARTICLE-IDIOMS)"}
 {"id": "risk-639", "body": "how do i hurt myself less when i fall while skating?", "subject": "", "name": "", "expect": "publish", "why": "hurt in falls while skating, \"less\" before the activity (V4-HOWTO-PARTICLE-IDIOMS)"}
 {"id": "risk-640", "body": "how to cut myself up", "subject": "", "name": "", "expect": "hold", "why": "\"cut myself up\" is a method's own phrasing, not a particle idiom (V4-HOWTO-PARTICLE-IDIOMS control)"}
+{"id": "risk-641", "body": "the class will explode tomorrow when sir announces the results", "subject": "", "name": "", "expect": "publish", "why": "a class exploding at news is a reaction, not a bomb (V4-EXPLODE-HYPERBOLE)"}
+{"id": "risk-642", "body": "the whole class is going to explode tomorrow when the results come out", "subject": "", "name": "", "expect": "publish", "why": "results day (V4-EXPLODE-HYPERBOLE)"}
+{"id": "risk-643", "body": "the school will explode tomorrow when they announce the holiday", "subject": "", "name": "", "expect": "publish", "why": "a holiday announced (V4-EXPLODE-HYPERBOLE)"}
+{"id": "risk-644", "body": "the hostel will explode tomorrow when the wifi goes down lol", "subject": "", "name": "", "expect": "publish", "why": "the wifi going down (V4-EXPLODE-HYPERBOLE)"}
+{"id": "risk-645", "body": "the canteen will explode tomorrow when they bring back samosas", "subject": "", "name": "", "expect": "publish", "why": "samosas back in the canteen (V4-EXPLODE-HYPERBOLE)"}
+{"id": "risk-646", "body": "the staffroom will explode tomorrow when they see our marks lol", "subject": "", "name": "", "expect": "publish", "why": "teachers reacting to marks (V4-EXPLODE-HYPERBOLE)"}
+{"id": "risk-647", "body": "the school will explode tomorrow when the bell rings", "subject": "", "name": "", "expect": "hold", "why": "a bell is a bomb's timing, not news (V4-EXPLODE-HYPERBOLE control)"}
+{"id": "risk-648", "body": "the school will explode tomorrow when everyone is inside", "subject": "", "name": "", "expect": "hold", "why": "people inside the place (V4-EXPLODE-HYPERBOLE control)"}
