@@ -152,7 +152,7 @@ const (
 	askWrite  = "(*storedBuffer).Write"
 	askFrame  = "playGIF"
 	askThumb  = "processHeld"
-	askBudget = "(*budget).acquire"
+	askBudget = "(*budget).acquireParts"
 	// Within a frame, playGIF's player asks as it looks at a stored frame's
 	// rows for its table (ownTable, through halted), again as it looks at
 	// them a second time, for a frame of 256 colours that does not draw them
