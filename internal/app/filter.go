@@ -8331,9 +8331,11 @@ func phraseHead(ws []string) string {
 // bomb", "the dj's the bomb"), "a bomb" after explodeIs or "be" with
 // something named as the subject (ownedSubject) or "of" after it ("my
 // results are a bomb", "the lineup is a bomb", "it'll be a bomb of a day"),
-// not "there is a bomb", "the package is a bomb", "my bag is a bomb" or "my
-// tiffin is a bomb"; and "explosive" after explodeIs or "be" said of
-// explodeMoods ("the atmosphere will be explosive").
+// and so is a second subject after it (soIsNamed: "the lineup is a bomb and
+// so is the food"), not "there is a bomb", "the package is a bomb", "my bag
+// is a bomb", "my tiffin is a bomb" or "my results are a bomb and so is my
+// bag"; and "explosive" after explodeIs or "be" said of explodeMoods ("the
+// atmosphere will be explosive").
 func explodePraise(ws []string, i int) bool {
 	if i < 2 {
 		return false
@@ -8342,7 +8344,7 @@ func explodePraise(ws []string, i int) bool {
 	switch {
 	case is(ws[i-1], "the") && (explodeIs[ws[i-2]] || strings.HasSuffix(ws[i-2], "'s")):
 		return true
-	case is(ws[i-1], "a") && be && (i+1 < len(ws) && is(ws[i+1], "of") || ownedSubject(ws[:i-2])):
+	case is(ws[i-1], "a") && be && (i+1 < len(ws) && is(ws[i+1], "of") || ownedSubject(ws[:i-2]) && soIsNamed(ws[i+1:])):
 		return true
 	case is(ws[i], "explosive") && (explodeIs[ws[i-1]] || is(ws[i-1], "be")):
 		k := i - 2
@@ -8352,6 +8354,29 @@ func explodePraise(ws []string, i int) bool {
 		return k >= 0 && explodeMoods[ws[k]]
 	}
 	return false
+}
+
+// soIsNamed reports, in the words ws after a bomb said in praise, no "so"
+// and explodeIs after it ("and so is"), or a second subject after them that
+// ownedSubject reads as named from its first word and its head, or one of
+// explodeMines: "and so is the food", "so is the stage setup", "so is
+// yours", not "and so is my bag", "so is my school bag" or "so is the
+// package".
+func soIsNamed(ws []string) bool {
+	if len(ws) > 0 && is(ws[0], "and") {
+		ws = ws[1:]
+	}
+	if len(ws) < 3 || !is(ws[0], "so") || !explodeIs[ws[1]] {
+		return true
+	}
+	j := 3
+	for j < len(ws) && j < 5 && !phraseEnds[ws[j]] {
+		j++
+	}
+	if j == 3 {
+		return explodeMines[ws[2]] // "so is yours"
+	}
+	return ownedSubject([]string{ws[2], ws[j-1]}) // "so is the stage setup", not "so is my school bag"
 }
 
 // ownedSubject reports the words before a verb ending in something of
@@ -8555,8 +8580,11 @@ var (
 	explodeReads = canonSetOf(`read reads reading`)
 	explodeMedia = canonSetOf(`meme memes video videos pic pics photo photos picture pictures reel reels clip clips
 		post posts tweet tweets trailer edit edits`)
-	explodeIts      = canonSetOf(`it something stuff them one`)
-	explodeIs       = canonSetOf(`is are was were`)
+	explodeIts = canonSetOf(`it something stuff them one`)
+	explodeIs  = canonSetOf(`is are was were`)
+	// explodeMines after "so is" stand for something named like what was
+	// praised before them (soIsNamed: "our dance is a bomb and so is yours").
+	explodeMines    = canonSetOf(`mine yours his hers ours theirs`)
 	explodeAnnounce = canonSetOf(`announce announces announced announcing announcement announcements declare declares
 		declared post posts posted prize prizes`)
 	explodeOut        = canonSetOf(`find finds found finding come comes came coming`)
