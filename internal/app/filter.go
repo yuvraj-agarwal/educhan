@@ -7689,8 +7689,10 @@ var payRuns = runsOf(`will|wil|gonna|gunna all|finally|definitely|really|surely|
 // with nothing paid after it but "for it" or "for this": "they will all pay
 // tomorrow at school", "10B will pay for it on monday". Money, a fee, a bill,
 // a treat or attention paid ("will pay for the trip", "will pay 500 rs",
-// "will pay attention"), the poster's own group ("we will pay"), and what
-// threatCheck turns down, are no threat.
+// "will pay attention"), a thing bought, ordered or signed up for, a thing
+// broken that is no one's body ("the guys who broke the window will pay for
+// it"), a question about the paying ("you'll pay tomorrow?"), the poster's
+// own group ("we will pay"), and what threatCheck turns down, are no threat.
 func (f *scannedField) payCheck(v *view, m []int) bool {
 	text := v.text
 	ws := wordsIn(text[m[0]:m[1]])
@@ -7704,7 +7706,15 @@ func (f *scannedField) payCheck(v *view, m []int) bool {
 	if len(next) > 0 && !payTails[next[0]] {
 		return false
 	}
-	if anyIn(wordsIn(sentenceAround(text, m[0], m[1])), moneyWords) {
+	around := sentenceAround(text, m[0], m[1])
+	sentence := wordsIn(around)
+	if anyIn(sentence, moneyWords) || anyIn(sentence, purchaseWords) || damagePaid(sentence) {
+		return false
+	}
+	// A question about paying, asked in the clause the promise is in, is
+	// asked of a payment: "you'll pay tomorrow? ok i'll keep the book for
+	// you", "you'll pay on monday right?", not "you'll pay tomorrow, got it?".
+	if end := m[1] + len(clauseAfter(text, m[1])); end < len(text) && text[end] == '?' {
 		return false
 	}
 	reckoning := hasWord(ws, "all") || hasWord(ws, "finally")
@@ -7732,10 +7742,45 @@ var (
 	// nothing: "will pay tomorrow", "will pay on monday, just wait".
 	payTails = canonSetOf(`tomorrow tmrw tmr today tonight soon on at after in this next when just mark trust
 		monday tuesday wednesday thursday friday saturday sunday morning evening dearly big time`)
-	// moneyWords, in the sentence, make paying a payment.
+	// moneyWords, in the sentence, make paying a payment, and so do
+	// purchaseWords, what is bought, ordered or signed up for: "the people
+	// who ordered hoodies will pay on monday", "you'll pay tomorrow when you
+	// come to collect it".
 	moneyWords = canonSetOf(`rs rupees inr dollars bucks cash fee fees money bill bills upi gpay paytm card online
 		price amount rent fine deposit ticket tickets treat`)
+	purchaseWords = canonSetOf(`signed sign ordered order orders bought buy buying booked collect collecting
+		registered enrolled subscribed`)
+	// damageVerbs, before a thing that is no one's body, make paying for it
+	// paying for the damage (damagePaid), and unbroken are what is broken
+	// in a reckoning: "broke my heart".
+	damageVerbs = canonSetOf(`broke broken smashed damaged cracked scratched`)
+	unbroken    = canonSetOf(`heart hearts trust promise promises spirit`)
 )
+
+// damagePaid reports a thing broken or damaged in ws, which is what "will
+// pay" or "will pay for it" pays for: "the guys who broke the window will pay
+// for it tomorrow". A body, a person or a heart broken is a reckoning's
+// ("whoever broke my nose will pay"), and so is breaking with no thing named
+// ("broke into my locker").
+func damagePaid(ws []string) bool {
+	for i, w := range ws {
+		if !damageVerbs[w] {
+			continue
+		}
+		k := i + 1
+		for k < len(ws) && k < i+3 && (determiners[ws[k]] || ownerWord(ws[k])) {
+			k++
+		}
+		if k == i+1 || k >= len(ws) {
+			continue
+		}
+		if t := ws[k]; !bodyHeads[t] && !unbroken[t] && headKind(t) != nounPerson && headKind(t) != nounKin &&
+			!objectWords[t] {
+			return true
+		}
+	}
+	return false
+}
 
 // prognosis reports an illness, a hospital or a leaving in sentence or just
 // after offset i of text, which make "my grandpa won't see monday" or "our

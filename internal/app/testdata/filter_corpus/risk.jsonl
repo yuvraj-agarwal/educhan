@@ -646,3 +646,12 @@
 {"id": "risk-646", "body": "the staffroom will explode tomorrow when they see our marks lol", "subject": "", "name": "", "expect": "publish", "why": "teachers reacting to marks (V4-EXPLODE-HYPERBOLE)"}
 {"id": "risk-647", "body": "the school will explode tomorrow when the bell rings", "subject": "", "name": "", "expect": "hold", "why": "a bell is a bomb's timing, not news (V4-EXPLODE-HYPERBOLE control)"}
 {"id": "risk-648", "body": "the school will explode tomorrow when everyone is inside", "subject": "", "name": "", "expect": "hold", "why": "people inside the place (V4-EXPLODE-HYPERBOLE control)"}
+{"id": "risk-649", "body": "everyone who signed up for the trip will pay tomorrow in class", "subject": "", "name": "", "expect": "publish", "why": "people who signed up paying for the trip (V4-WILLPAY-LOGISTICS)"}
+{"id": "risk-650", "body": "you'll pay tomorrow when you come to collect the book", "subject": "", "name": "", "expect": "publish", "why": "paying on collecting a book (V4-WILLPAY-LOGISTICS)"}
+{"id": "risk-651", "body": "the people who ordered hoodies will pay on monday", "subject": "", "name": "", "expect": "publish", "why": "paying for hoodies ordered (V4-WILLPAY-LOGISTICS)"}
+{"id": "risk-652", "body": "you'll pay on monday right? for the hoodie", "subject": "", "name": "", "expect": "publish", "why": "a question about when a hoodie is paid for (V4-WILLPAY-LOGISTICS)"}
+{"id": "risk-653", "body": "you'll pay tomorrow? ok i'll keep the book for you", "subject": "", "name": "", "expect": "publish", "why": "a question about when the book is paid for (V4-WILLPAY-LOGISTICS)"}
+{"id": "risk-654", "body": "the guys who broke the window will pay for it tomorrow, principal said", "subject": "", "name": "", "expect": "publish", "why": "paying for a broken window (V4-WILLPAY-LOGISTICS)"}
+{"id": "risk-655", "body": "the boys who smashed the projector will pay for it on monday", "subject": "", "name": "", "expect": "publish", "why": "paying for a smashed projector (V4-WILLPAY-LOGISTICS)"}
+{"id": "risk-656", "body": "you will pay tomorrow after school, got it?", "subject": "", "name": "", "expect": "hold", "why": "the question is a tag on the threat, not about paying (V4-WILLPAY-LOGISTICS control)"}
+{"id": "risk-657", "body": "the guys who broke into my locker will pay for it tomorrow", "subject": "", "name": "", "expect": "hold", "why": "breaking in names no thing broken to pay for (V4-WILLPAY-LOGISTICS control)"}
