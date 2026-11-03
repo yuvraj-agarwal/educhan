@@ -12854,13 +12854,23 @@ var (
 	// body is where an injury happens ("less when i fall on my knees");
 	// selfHiddenAfter after "without" hide the harm ("without getting
 	// caught"), where another activity does not ("without failing");
-	// selfHarmings are no activity a phrasal verb or a degree is set in
-	// ("less bleeding"); selfAmounts start an amount after "down to" or "back
+	// selfHarmings are no activity a phrasal verb or a degree is set in, but
+	// the harm or the handling of what does it ("less bleeding", "out using
+	// a lighter", "less pressing the blade"); a degree is set only in an
+	// activity named, activityGerunds or selfSports ("less playing", "less
+	// jogging"); selfTools anywhere after either are a method's ("less when
+	// i use a blade"); selfAmounts start an amount after "down to" or "back
 	// to".
 	selfClauses     = canonSetOf(`when whenever while if because cause cuz since as until till`)
 	selfHiddenAfter = canonSetOf(`getting being leaving letting anyone anybody anything telling`)
-	selfHarmings    = canonSetOf(`bleeding scarring cutting burning hurting showing`)
-	selfAmounts     = canonSetOf(`one two three four five six seven eight nine ten twelve fifteen twenty thirty half
+	selfHarmings    = canonSetOf(`bleeding scarring cutting burning hurting showing using holding pressing
+		heating lighting hitting punching banging picking scratching scraping biting carving slicing stabbing
+		applying touching`)
+	selfSports = canonSetOf(`jogging sprinting exercising wrestling tackling skiing straightening curling`)
+	doForms    = canonSetOf(`do does did doing`)
+	selfTools  = canonSetOf(`blade blades razor razors lighter lighters compass compasses knife knives scissors
+		sharpener sharpeners needle needles`)
+	selfAmounts = canonSetOf(`one two three four five six seven eight nine ten twelve fifteen twenty thirty half
 		once twice zero`)
 	suicideTopics = canonSetOf(`prevention awareness essay essays rates rate statistics stats hotline helpline helplines squad bombing bomber bombers attack attacks mission missions doors door run runs research project report article documentary`)
 	kmsQuantity   = canonSetOf(`many few some several couple more less fewer extra total thousand thousands hundred hundreds lakh lakhs million millions of the those these in kitne kitna`)
@@ -15663,14 +15673,18 @@ func unseenAfter(next []string) bool {
 // the clause ("burn myself out"), a particle before what is given up ("cut
 // myself off social media", "cut myself off caffeine"), before an activity
 // or, for "out", a manner ("burn myself out studying", "burn myself out
-// completely"), a degree before an activity ("hurt myself less playing
+// completely"), a degree before an activity named ("hurt myself less playing
 // football"), or either before a time ("burn myself out less during exam
 // season", "hurt myself less when i fall"). Anything else after them is a
-// method's, and so is the harm hidden anywhere in the clause or a place on
-// the body before a clause of its own begins, selfMarks: "cut myself down my
-// arm", "burn myself less visibly", "hurt myself out of sight", "cut myself
-// back there so no one sees", not "hurt myself less when i fall on my
-// knees". "How to cut myself less" still asks about cutting.
+// method's, and so is the harm hidden anywhere in the clause, a tool, or a
+// place on the body before a clause of its own begins, selfMarks: "cut
+// myself down my arm", "burn myself less visibly", "hurt myself out of
+// sight", "cut myself back there so no one sees", "hurt myself less when i
+// use a blade", not "hurt myself less when i fall on my knees". So is the
+// handling of a tool after either ("hurt myself less using a blade", "burn
+// myself out using a lighter"), and the harm or "do it" after a degree
+// ("hurt myself less after cutting", "burn myself less every time i do
+// it"). "How to cut myself less" still asks about cutting.
 func selfIdiom(ws, next []string) bool {
 	if len(next) == 0 || is(next[0], "less") && hasWord(ws, "cut") {
 		return false
@@ -15697,11 +15711,16 @@ func selfIdiom(ws, next []string) bool {
 		return phrasal // "burn myself out", not "hurt myself less"
 	case phrasal && (is(rest[0], "of") || selfObject(rest)):
 		return true // "cut myself off social media"
-	case (phrasal || is(next[0], "less")) && len(rest[0]) > 4 && strings.HasSuffix(rest[0], "ing") &&
-		!selfHarmings[rest[0]]:
+	case phrasal && len(rest[0]) > 4 && strings.HasSuffix(rest[0], "ing") && !selfHarmings[rest[0]],
+		is(next[0], "less") && (activityGerunds[rest[0]] || selfSports[rest[0]]) && !selfHarmings[rest[0]]:
 		return true // "burn myself out studying", "hurt myself less playing football"
 	case is(next[0], "out") && len(rest[0]) > 4 && strings.HasSuffix(rest[0], "ly"):
 		return true // "burn myself out completely"
+	}
+	for i, w := range rest {
+		if !phrasal && (selfHarmings[w] || is(w, "it") && i > 0 && doForms[rest[i-1]]) {
+			return false // "less after cutting", "less every time i do it"
+		}
 	}
 	return selfIdiomTimes[rest[0]]
 }
@@ -15737,9 +15756,10 @@ func selfAmount(w string) bool {
 
 // selfMarked reports, in the words after a particle or a degree, the harm
 // hidden anywhere ("less visibly", "so no one sees", "without anyone
-// knowing") or a place on the body before a clause of its own begins ("down
-// my arm", "out of sight on my thigh", not "less when i fall on my knees").
-// "Without" hides it unless an activity follows ("without failing").
+// knowing"), a tool anywhere ("less when i use a blade"), or a place on the
+// body before a clause of its own begins ("down my arm", "out of sight on my
+// thigh", not "less when i fall on my knees"). "Without" hides it unless an
+// activity follows ("without failing").
 func selfMarked(ws []string) bool {
 	body := true
 	for i, w := range ws {
@@ -15750,7 +15770,7 @@ func selfMarked(ws []string) bool {
 			if i+1 >= len(ws) || !strings.HasSuffix(ws[i+1], "ing") || selfHiddenAfter[ws[i+1]] {
 				return true
 			}
-		case selfMarks[w] && (body || !selfBody[w]):
+		case selfMarks[w] && (body || !selfBody[w]), selfTools[w]:
 			return true
 		}
 	}

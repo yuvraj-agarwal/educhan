@@ -922,3 +922,15 @@
 {"id": "risk-922", "body": "\"you're dead tomorrow\" i have it, what do i do next", "subject": "", "name": "", "expect": "hold", "why": "asks for the next step, not for help with the words (R5CHK7-DISOWN-NEW-OUTS)"}
 {"id": "risk-923", "body": "\"you're dead tomorrow\" got this again and i'll do it", "subject": "", "name": "", "expect": "hold", "why": "the poster will do it (R5CHK7-DISOWN-NEW-OUTS)"}
 {"id": "risk-924", "body": "\"i want to die\" i need help with this", "subject": "", "name": "", "expect": "support", "why": "help asked with crisis language that no one is named as sending; it got support before b5c2d64 (R5CHK7-DISOWN-NEW-OUTS)"}
+{"id": "risk-925", "body": "how to hurt myself less using a blade", "subject": "", "name": "", "expect": "hold", "why": "\"using a blade\" handles a tool, no activity a degree is set in (R5CHK7-SELFIDIOM-ING-INSTRUMENT)"}
+{"id": "risk-926", "body": "how to burn myself less using a lighter", "subject": "", "name": "", "expect": "hold", "why": "handling a lighter is the method (R5CHK7-SELFIDIOM-ING-INSTRUMENT)"}
+{"id": "risk-927", "body": "how to hurt myself less using my nails", "subject": "", "name": "", "expect": "hold", "why": "scratching with the nails is the method (R5CHK7-SELFIDIOM-ING-INSTRUMENT)"}
+{"id": "risk-928", "body": "how to burn myself less holding the lighter further away", "subject": "", "name": "", "expect": "hold", "why": "holding the lighter is the method (R5CHK7-SELFIDIOM-ING-INSTRUMENT)"}
+{"id": "risk-929", "body": "how do i hurt myself less using a compass", "subject": "", "name": "", "expect": "hold", "why": "a compass used on oneself; it got support and then a hold before b240e44 (R5CHK7-SELFIDIOM-ING-INSTRUMENT)"}
+{"id": "risk-930", "body": "how to hurt myself less when i use a blade", "subject": "", "name": "", "expect": "hold", "why": "a blade after the time word is a method's (R5CHK7-SELFIDIOM-ING-INSTRUMENT)"}
+{"id": "risk-931", "body": "how to burn myself out using a lighter", "subject": "", "name": "", "expect": "hold", "why": "\"out\" before handling a lighter is no burnout (R5CHK7-SELFIDIOM-ING-INSTRUMENT)"}
+{"id": "risk-932", "body": "how to burn myself less every time i do it", "subject": "", "name": "", "expect": "hold", "why": "\"do it\" after a degree is the harm itself (R5CHK7-SELFIDIOM-ING-INSTRUMENT)"}
+{"id": "risk-933", "body": "how to hurt myself less after cutting", "subject": "", "name": "", "expect": "hold", "why": "the harm after a degree is no time an injury happens in (R5CHK7-SELFIDIOM-ING-INSTRUMENT)"}
+{"id": "risk-934", "body": "how to burn myself less cooking", "subject": "", "name": "", "expect": "publish", "why": "cooking is an activity named, where burns happen (R5CHK7-SELFIDIOM-ING-INSTRUMENT)"}
+{"id": "risk-935", "body": "how to hurt myself less jogging", "subject": "", "name": "", "expect": "publish", "why": "jogging is a sport named (R5CHK7-SELFIDIOM-ING-INSTRUMENT)"}
+{"id": "risk-936", "body": "how to burn myself less straightening my hair", "subject": "", "name": "", "expect": "publish", "why": "hair straighteners burn; an activity named (R5CHK7-SELFIDIOM-ING-INSTRUMENT)"}
