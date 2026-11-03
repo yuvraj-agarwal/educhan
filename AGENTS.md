@@ -448,28 +448,33 @@ before the test changes.
   up is refused as used and solves a fresh one, while one refused before that check (a
   reply to a thread locked meanwhile, or an image whose header does not read, say) or by
   a lookup that fails (a `500` with no header) does not learn it was used and puts it
-  back again on the same terms, and one sent after the secret was rotated is refused as
-  invalid and solves a fresh one too. One whose form has left the screen is dropped
+  back again on the same terms, and one checked after the secret was rotated is refused
+  as invalid and solves a fresh one too. One whose form has left the screen is dropped
   unsent with its answer put back, on the same terms, and, sent or not, is not navigated
   from and says nothing on the page the reader went to; a post that did go still empties
   and releases its form, wherever it is. A post's form keeps instead what it would have
   been told on screen (`unsaidNotices`), such as the refusal or, for a post not sent,
   that nothing was posted (`errorMessage`, or `FORGOTTEN_BEFORE_SENDING` after a forget
   since the press), with whether it had the focus at the press, until a redraw tells it
-  or its next press drops it, one refused before anything is sent included. Any redraw
-  that carries the form tells it, whenever it began: `captureDraft` carries a form held
-  or still owed a notice into a redraw of its own page, a post link's lookup into its
-  thread say, or Update, the same link again or Back to that page, pressed before the
-  answer or after it. It says that notice once and gives the focus as `release` would,
-  as it puts the form's values back into its own page (`restoreDraft`), or as it keeps
-  that page, form and all, when it will not load, ahead of why (`render`), where a
-  refusal of the image itself also switches the picker off and puts the thread's counts
-  in step, as on screen (`blockRefusedPicker`); a page drawn afresh draws both from what
-  the server says by then. A render a newer one overtakes says nothing, leaving that to
-  the newer one; a redraw for another page, or one the reader begins once the page has
-  blanked, does not bring the form back, and the form takes its entry with it. From the
-  press to the answer the form is held (`holdForm`: controls switched off once the form
-  has been read and checked, straight into the `try` whose catch releases them, and
+  or its next press takes it out, one refused before anything is sent included, which
+  after a refusal of the image itself first switches the picker off as below, unless an
+  image has been attached since. Any redraw that brings the form back to its page tells
+  it, whenever it began: `captureDraft` carries a form held or still owed a notice into
+  a redraw of its own page, a post link's lookup into its thread say, or Update, the
+  same link again or Back to that page, pressed before the answer or after it. It says
+  that notice once and gives the focus as `release` would, as it puts the form's values
+  back into its own page (`restoreDraft`), or as it keeps that page, form and all, when
+  it will not load, ahead of why (`render`), where a refusal of the image itself also
+  switches the picker off and puts the thread's counts in step, as on screen
+  (`blockRefusedPicker`); a page drawn afresh draws both from what the server says by
+  then. A render a newer one overtakes says nothing, leaving that to the newer one; a
+  redraw that does not bring the form back, such as one for another page, one the reader
+  begins once the page has blanked, one whose load fails once the page has blanked, its
+  error drawn in the page's place, or one that draws the thread locked or archived
+  meanwhile, which draws no form and keeps the unsent text under its note
+  (`keepUnsentDraft`), says nothing either, and the form takes its entry with it. From
+  the press to the answer the form is held (`holdForm`: controls switched off once the
+  form has been read and checked, straight into the `try` whose catch releases them, and
   switched back on after a refusal, with the focus on the button, without scrolling to
   it, if the form had it and it is still lost, on the page or nowhere, or after a
   success once the form is emptied; `app.css` shows the held controls switched off). A

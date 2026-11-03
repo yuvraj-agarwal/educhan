@@ -875,7 +875,7 @@ after that `500`, the first request whose captcha check can look it up is
 refused as used and solves a fresh one, while one refused before that check,
 such as a reply to a thread locked meanwhile or an image whose header does not
 read, or by a lookup that fails (a `500` with no header), does not learn it was
-used and keeps it again, and one sent after the captcha secret was rotated is
+used and keeps it again, and one checked after the captcha secret was rotated is
 refused as invalid and solves a fresh one too.
 
 While a post or a code request waits for its puzzle and its answer, its form is
@@ -900,7 +900,8 @@ link again or Back to the thread, pressed during it. It is told once, ahead of
 any reason the thread did not load, with its button given the focus as after a
 refusal. After a refusal of the image itself (the image limit reached, or
 uploads switched off) the image is taken off, as on screen, and a page left as
-it was switches the picker off and updates the thread's counts, as on screen,
+it was switches the picker off and updates the thread's counts, as on screen, as
+does a press of the form made first, unless an image has been attached since,
 while a thread drawn again draws both as the server now says. A redraw for
 another page, or one the reader begins once the page has blanked, does not bring
 the form back, and what it was owed goes with it; a press of the form drops what
