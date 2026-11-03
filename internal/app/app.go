@@ -62,13 +62,11 @@ type App struct {
 	// not: a newer release migrated it. The sweeper refuses to run on one.
 	schemaAhead []int
 
-	// postDeadline is postDeadline, uploadReadTimeout is uploadReadTimeout,
-	// uploadPaceGrace is uploadPaceGrace and uploadStartGrace is
-	// uploadStartGrace, which tests change.
+	// postDeadline is postDeadline, uploadReadTimeout is uploadReadTimeout and
+	// uploadPaceGrace is uploadPaceGrace, which tests change.
 	postDeadline      time.Duration
 	uploadReadTimeout time.Duration
 	uploadPaceGrace   time.Duration
-	uploadStartGrace  time.Duration
 
 	// uploadShares is what each client's posts hold of the upload budget
 	// (clientUploadShare).
@@ -139,7 +137,6 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		postDeadline:      postDeadline,
 		uploadReadTimeout: uploadReadTimeout,
 		uploadPaceGrace:   uploadPaceGrace,
-		uploadStartGrace:  uploadStartGrace,
 	}
 	every := cfg.cooldownSweepEvery
 	if every <= 0 {

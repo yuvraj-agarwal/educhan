@@ -1138,8 +1138,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   the library's default is a 16 MiB buffer for every object, kept only for retries a write
   without preconditions never makes (`TestGCSPutAllocatesNoBufferOfItsOwn`). The uploads'
   own bytes have a budget of their own, `media.UploadBudget` (64 MiB), which
-  `parseSubmission` takes from (`media.ReserveUpload`) before it reads a multipart body,
-  as much as the request's `Content-Length` says, up to the most a body may be, and which
+  `parseSubmission` takes from (`media.ReserveUpload`) as it reads a multipart body, for
+  what has arrived until an eighth of it has and then for as much as the request's
+  `Content-Length` says, up to the most a body may be (`admitBody`, below), and which
   the handler gives back when the post is answered (`submission.release`). For that to be
   what the body costs, `readMultipart` reads the body itself rather than through
   `ParseMultipartForm`, which keeps a file over its memory limit in a temporary file
@@ -1147,8 +1148,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   into a buffer the size of what is left of the body (`TestAnUploadIsReadOnce`). Its text
   fields may come to `maxRequestBytes` between them, as a JSON post may, the first value
   of each name is the one read, and parts past `maxFormParts` refuse the form
-  (`TestMultipartPostsAreReadAsTheFormSendsThem`). A body holds its room in the upload
-  budget from before it is read, and a post whose body never arrives never reaches flood
+  (`TestMultipartPostsAreReadAsTheFormSendsThem`). A body held its room in the upload
+  budget from before it was read, and a post whose body never arrives never reaches flood
   control, so before the share one client's eight connections declaring 8 MiB bodies and
   sending nothing held the whole budget for the read timeout, turned every other image
   post away `503`, and were charged nothing. Now `reserveUpload` takes from the client's
@@ -1171,12 +1172,24 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   image post waited 8 to 11 s behind them, or was turned away `503`. So a body's first
   bytes are read before anything is reserved for it (`startBody`), one that sends none
   within `uploadPaceGrace` answered `400` having held neither room nor a place in the
-  queue; the grace is earned, `uploadStartGrace` (1 s) to begin with and a second more for
-  every second's worth of the body, at the pace, that has arrived, so one that sends its
-  first bytes and stops gives its room back after a second; and one post of a client waits
-  for room at a time, the client's next post that finds none answered `429` at once
-  (`reserveUpload`), so a few clients cannot fill the queue ahead of everyone else
-  (`TestIdleBodiesDoNotHoldUpOtherImagePosts`). A body without a `Content-Length`
+  queue, and one post of a client waits for room at a time, the client's next post that
+  finds none answered `429` at once (`reserveUpload`), so a few clients cannot fill the
+  queue ahead of everyone else. A grace that began at a second and grew as the body
+  arrived then gave the room of a body that sent its first bytes and stopped back after a
+  second; but such a hold still cost its sender a boundary line, and a hundred /64s of one
+  /48, each its own client with its one post in the queue, kept an honest image post
+  waiting ten seconds, and that grace refused an 8 MB image sent over a round trip of 0.65
+  s or more, which TCP's slow start keeps far behind the pace in its first seconds. So a
+  body holds room for what it has sent (`admitBody`): a piece at a time, each taken before
+  it is read into and as large as all before it, until an eighth of the body has arrived,
+  and only then its declared size, so that holding that costs an eighth of it sent and a
+  body that stops sooner holds at most twice what it sent; what has arrived is held in
+  memory until the read of the form has copied it into the image's buffer, so until then
+  the upload budget, though not the client's share, holds room for it twice
+  (`bodyRoom.takeCopy`); a wait for a piece is the server's, and moves the body's
+  deadlines on by as long (`pacedBody.pause`); and the grace is the whole 5 s from the
+  first byte (`TestIdleBodiesDoNotHoldUpOtherImagePosts`,
+  `TestABodyOverALongRoundTripIsTaken`). A body without a `Content-Length`
   (chunked) would have to reserve the most a body may be, and could then be held only to
   the pace of that, which cut a small one sent slowly off, or to none, which let seven
   trickles from three addresses hold the whole budget for the window; so, with uploads on,
@@ -1220,9 +1233,10 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   process, and a progressive one, which the memory estimate holds to fewer blocks, about 3
   to 4 s to decode, rather than the thousands of seconds a repeated cheap scan would take)
   before that deadline, with `media.ErrBusy`, and room that is there is taken however near
-  the deadline. Its body then has `uploadReadTimeout` (30 s) to arrive, counted from when
-  the wait ends, so time spent waiting for room is not taken out of the body's: a read
-  deadline set on the connection through an `http.ResponseController` once `ReserveUpload`
+  the deadline. Its body has `uploadReadTimeout` (30 s) to arrive, counted from its first
+  bytes and moved on by each wait for room, so time spent waiting for room is not taken
+  out of the body's: read deadlines set on the connection through an
+  `http.ResponseController` (`pacedBody`), moved on once `ReserveUpload`
   has returned, whatever it returned (the logging middleware's `statusRecorder` carries an
   `Unwrap` so the controller reaches the connection underneath); a body slower than that
   is the client's doing, answered `400` (`upload too slow`, `uploadTooSlowStatus`,
@@ -1587,7 +1601,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `Config.cooldownSweepEvery`). The record-time sweep past `cooldownSweepThreshold` only
   bounds a burst between two ticks. The upload shares (`uploadShares`) are keyed on client
   addresses too, by `shareKey` (the address, or an IPv6 address's /64), and need no sweep:
-  a client's entry is taken by `reserveUpload` once a multipart post's headers have
+  a client's entry is taken by `reserveUpload` once a multipart post's first bytes have
   arrived, given back by `submission.release` when the post is answered, and deleted once
   it holds nothing (`TestUploadSharesForgetAClientOnceItHoldsNothing`), so it is held for
   about a minute at most, the wait for room, `uploadReadTimeout` and `processContext`

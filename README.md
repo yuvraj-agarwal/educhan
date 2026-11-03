@@ -1083,9 +1083,9 @@ server that would refuse what it sends.
   uploads being processed at once share a fixed budget (256 MiB per process), each holding
   its share until its files are stored; one whose estimate alone is over it is refused
   (see **Formats**), and the rest wait for room in the order they arrived. The uploads'
-  own bytes have a budget of their own (64 MiB), taken before a request body is read, so
-  how many requests an instance is let take at once does not decide how many images it
-  holds. Between them that is 320 MiB at most: eighty 8 MiB uploads sent at once to a
+  own bytes have a budget of their own (64 MiB), taken as a request body is read, so how
+  many requests an instance is let take at once does not decide how many images it holds.
+  Between them that is 320 MiB at most: eighty 8 MiB uploads sent at once to a
   server run with `GOMEMLIMIT=400MiB` peaked at 330 MiB resident, so an instance of 512
   MiB has room with that limit set. The posts of one client hold at most half the upload
   budget at once, so a client cannot take all of it with a few connections that declare
@@ -1095,14 +1095,16 @@ server that would refuse what it sends.
   one client, since a host can usually take any address in its /64: the people on one such
   network share that half, as those behind one IPv4 address do, while flood control still
   counts each of their addresses apart. A body takes no room until its first bytes arrive,
-  and one that sends none within 5 seconds answers `400` as below, having held none. A
-  post waits for room in either budget for about ten seconds at most, and a client has one
-  image post waiting for room for its body at a time: its next that finds none answers
-  `429` at once, as one past its share does. Once there is room to read it, its body has
-  30 seconds to arrive, at an even pace with up to 5 seconds to spare (one at first, and
-  one more for each second's worth of the body that has arrived) — a body that falls
-  further behind the pace that would bring it all in by then, sending nothing or a
-  trickle, is cut off then and its room given back — and once it has arrived its image has
+  and one that sends none within 5 seconds answers `400` as below, having held none; it
+  then takes room for what it has sent, a little ahead of it, until an eighth of it has
+  arrived, and only then as much as it says it is, so a body that stops holds little more
+  than it sent. A post waits for room in either budget for about ten seconds at most, and
+  a client has one image post waiting for room for its body at a time: its next that finds
+  none answers `429` at once, as one past its share does. Its body has 30 seconds to
+  arrive from its first bytes, the time it waits for room aside, at an even pace with up
+  to 5 seconds to spare — a body that falls further behind the pace that would bring it
+  all in by then, sending nothing or a trickle, is cut off then and its room given back —
+  and once it has arrived its image has
   25 seconds to be processed and stored. A post that cannot be taken in time — no room
   within the wait, or its image not stored within those 25 seconds — answers `503` (see
   [Flood control](#flood-control)) with nothing stored, rather than being made after its
@@ -1493,7 +1495,7 @@ loser of two replies racing for a thread's last image slot (see the HTTP API).
 The cooldowns are keyed on client addresses, and so are the upload shares (see **Memory**
 under [Image attachments](#image-attachments)), by the address or, for IPv6, by its /64
 network; those are the only places the server holds one. A client's share is held only
-while its image posts hold room for their bodies, from when their headers arrive until
+while its image posts hold room for their bodies, from when their first bytes arrive until
 they are answered, and it is dropped as soon as the last of them is, with no sweep to wait
 for: the post's deadlines bound that to about a minute (some ten seconds' wait for room,
 30 seconds for the body and 25 for the image) besides the time the database takes to store
