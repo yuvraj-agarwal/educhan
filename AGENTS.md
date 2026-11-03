@@ -441,11 +441,13 @@ properties and needs a browser check before the test changes.
   which a redraw of its page carries, and by the render that drew it for a `/verify`
   form, which none does) in a browser not forgotten since the press, asked once it has
   waited for the puzzle and again when a refusal of its answer arrives; one with an
-  answer held already, or needing none, goes with the press. A posting form's page is
-  the one the render that drew it noted (`drawnFor.route`, read at the press), never a
-  render begun since that has not drawn yet: its board and thread are where the post
-  goes, and it is the page the post is answered on, so a post pressed just after a link
-  to another page or board goes to the form's own and is answered as off the screen.
+  answer held already, or needing none, goes with the press. A form's page is the one
+  the render that drew it noted (`drawnFor.route`, read at the press), never a render
+  begun since that has not drawn yet: a post's board and thread are where it goes, and
+  it is the page a post or a code request is answered on, so one pressed just after a
+  link is answered as off the screen, a post going to its form's own board and thread,
+  unless the page being loaded has its form's `routeKey` (another page of the same
+  board's index, say, or its thread again), which carries it (`carriedDraft`, below).
   Each request takes its answer out of the page as it is handed over (`takeCaptcha`), so
   a second press while one is on its way solves a fresh puzzle, and puts it back
   (`keepCaptcha`: only into an empty place, only while good) only when it left it
@@ -465,13 +467,13 @@ properties and needs a browser check before the test changes.
   focus at the press, until a redraw tells it or its next press takes it out, one
   refused before anything is sent included, which after a refusal of the image itself
   first switches the picker off as below, unless an image has been attached since, which
-  that press sends for the server to answer. Any redraw that brings the form back to its
-  page tells it, whenever it began: `captureDraft` carries a form held or still owed a
-  notice into a redraw of its own page, a post link's lookup into its thread say, or
-  Update, the same link again or Back to that page, pressed before the answer or after
-  it. It says that notice once and gives the focus as `release` would, as it puts the
-  form's values back into its own page (`restoreDraft`), or as it keeps that page, form
-  and all, when it will not load, ahead of why (`render`), where a refusal of the image
+  is left for the server to answer. Any redraw that brings the form back to its page
+  tells it, whenever it began: `captureDraft` carries a form held or still owed a notice
+  into a redraw of its own page, a post link's lookup into its thread say, or Update,
+  the same link again or Back to that page, pressed before the answer or after it. It
+  says that notice once and gives the focus as `release` would, as it puts the form's
+  values back into its own page (`restoreDraft`), or as it keeps that page, form and
+  all, when it will not load, ahead of why (`render`), where a refusal of the image
   itself also switches the picker off and puts the thread's counts in step, as on screen
   (`blockRefusedPicker`); a page drawn afresh draws both from what the server says by
   then. A render a newer one overtakes says nothing, leaving that to the newer one; a
@@ -507,32 +509,32 @@ properties and needs a browser check before the test changes.
   `captureDraft` notes with a form it reads for its values how often it had been pressed
   (`presses`), and `carriedDraft` carries the form held instead once it has been pressed
   since, as `keepPage`, the skeleton's timer, the failure branch and `restoreDraft` each
-  read the draft when they use it, so a post pressed while Update or a post link's
-  lookup into its thread loads is answered as if pressed just before it began: on its
-  form once that is back on its page, a success going to the new post and a refusal said
-  once, with the focus as on screen, and as off the screen while the lookup has it away,
-  with no copy of what it sent left in a new form. A draft, held or not, is keyed by the
-  page on screen (`drawnFor` in `captureDraft`), never by a render begun since that has
-  not drawn yet, so the second of a double click neither carries the form into the page
-  it goes to nor keeps the page on screen under that page's address. A redraw that fails
-  to load leaves the kept page on screen, held form and all, with the address bar,
-  `renderedPath`, `state.route` and `state.thread` put back as that page was drawn for
-  them (`drawnFor`, noted by the render that drew it, however many redraws of it have
-  failed since) and the error in a notice. The address bar goes back
-  (`history.replaceState`) by replacing the history entry the reader is on when the
-  redraw fails, so after a link, with nothing pressed while the redraw loads, the
-  history holds the kept page twice and the first Back stays on it (`popstate` finds
-  `renderedPath` and only moves to the fragment), and a Back or Forward that will not
-  load leaves the entry it went to holding the kept page. A link pressed while a redraw
-  for another address loads, the same one again or a jump within the page, adds an
-  entry, and that is the one replaced, so the entry for the page that failed is left
-  behind it and Back loads that page again; after Update, whose page is the one kept,
-  the entry a jump within the page leaves behind is the kept page's own, and Back stays
-  on it. A render a newer one has overtaken draws nothing, loaded or not, and says
-  nothing (`overtaken`, which the board, thread and /verify views ask once their request
-  is answered, /verify drawn again after a confirmation or a forget too, a forget
-  drawing it only while /verify is the page being drawn), so of two redraws only the
-  later one is shown or said to have failed. Either way the post goes ahead and is
+  read the draft when they use it, so a post pressed while a redraw that brings its form
+  back loads, Update or a post link's lookup into its thread say, is answered as if
+  pressed just before it began: on its form once that is back on its page, a success
+  going to the new post and a refusal said once, with the focus as on screen, and as off
+  the screen while the lookup has it away, with no copy of what it sent left in a new
+  form. A draft, held or not, is keyed by the page on screen (`drawnFor` in
+  `captureDraft`), never by a render begun since that has not drawn yet, so the second
+  of a double click neither carries the form into the page it goes to nor keeps the page
+  on screen under that page's address. A redraw that fails to load leaves the kept page
+  on screen, held form and all, with the address bar, `renderedPath`, `state.route` and
+  `state.thread` put back as that page was drawn for them (`drawnFor`, noted by the
+  render that drew it, however many redraws of it have failed since) and the error in a
+  notice. The address bar goes back (`history.replaceState`) by replacing the history
+  entry the reader is on when the redraw fails, so after a link, with nothing pressed
+  while the redraw loads, the history holds the kept page twice and the first Back stays
+  on it (`popstate` finds `renderedPath` and only moves to the fragment), and a Back or
+  Forward that will not load leaves the entry it went to holding the kept page. A link
+  pressed while a redraw for another address loads, the same one again or a jump within
+  the page, adds an entry, and that is the one replaced, so the entry for the page that
+  failed is left behind it and Back loads that page again; after Update, whose page is
+  the one kept, the entry a jump within the page leaves behind is the kept page's own,
+  and Back stays on it. A render a newer one has overtaken draws nothing, loaded or not,
+  and says nothing (`overtaken`, which the board, thread and /verify views ask once
+  their request is answered, /verify drawn again after a confirmation or a forget too, a
+  forget drawing it only while /verify is the page being drawn), so of two redraws only
+  the later one is shown or said to have failed. Either way the post goes ahead and is
   answered on the form on screen, and a success goes to it. The loading state, the
   dimming and the skeleton that may follow it, is the latest render's (`rendersBegun`):
   every render begun, whatever its view, ends any before it (`endLoading`), so an older
@@ -587,21 +589,23 @@ properties and needs a browser check before the test changes.
   not by the names of their constants (`TestTheCaptchaNumbersTheDocsQuote`), so changing
   one means changing those pages too. On the server the answer is checked
   (`checkCaptcha`: signature, expiry, the work, and a lookup that it is not already
-  spent) before flood control. A lookup or a spend that fails answers `500` "could not
-  check the captcha", with no captcha reason and no spent header, and starts no
-  cooldown, so the page keeps the answer and it posts once the database is back
-  (`TestAFailedCaptchaLookupOrSpendKeepsTheAnswer`). Flood control comes in two halves:
-  the check (`notCoolingDown`, or `waitedOut` for a code request) refuses with a `429`
-  and starts nothing, then the answer is spent (`spendCaptcha`), and only then does
-  `allow` (or `allowAction`) check again and start the cooldowns, before any upload is
-  processed. So a request refused as used, which only a replay racing its original can
-  be at that point, starts no cooldown (`TestALostSpendStartsNoCooldown`), and of a
-  burst from one address that all passed the first check and need the same cooldown (new
-  threads or replies on one board, or images anywhere), or of code requests from one
-  client or for one email address, at most one goes ahead, and the second check refuses
-  a request only for a cooldown one that went ahead started
-  (`TestABurstFromOneAddressPostsOnce` for threads,
-  `TestABurstOfRepliesFromOneAddressPostsOnce` for replies,
+  spent) before flood control. A lookup that fails, or a spend the database does not
+  apply (one that raises, say), answers `500` "could not check the captcha", with no
+  captcha reason and no spent header, and starts no cooldown: the request has not spent
+  the answer, so the page keeps it for the next press
+  (`TestAFailedCaptchaLookupOrSpendKeepsTheAnswer`, where it posts once the database is
+  back). A spend the database applied but whose reply was lost answers the same, though
+  the answer is spent (above). Flood control comes in two halves: the check
+  (`notCoolingDown`, or `waitedOut` for a code request) refuses with a `429` and starts
+  nothing, then the answer is spent (`spendCaptcha`), and only then does `allow` (or
+  `allowAction`) check again and start the cooldowns, before any upload is processed. So
+  a request refused as used, which only a replay racing its original can be at that
+  point, starts no cooldown (`TestALostSpendStartsNoCooldown`), and of a burst from one
+  address that all passed the first check and need the same cooldown (new threads or
+  replies on one board, or images anywhere), or of code requests from one client or for
+  one email address, at most one goes ahead, and the second check refuses a request only
+  for a cooldown one that went ahead started (`TestABurstFromOneAddressPostsOnce` for
+  threads, `TestABurstOfRepliesFromOneAddressPostsOnce` for replies,
   `TestABurstOfImagesFromOneAddressPostsOnce` for images on two boards, and
   `TestABurstOfCodeRequestsFromOneClientSendsOneCode` and
   `TestABurstOfCodeRequestsForOneAddressSendsOneCode` for code requests; each holds its

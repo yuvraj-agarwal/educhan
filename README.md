@@ -889,9 +889,11 @@ already gone is not reported on that page either. A post pressed just after a
 link to another page or board, before that page is drawn, goes all the same if
 its answer is ready or it needs none, to the form's own board and thread, never
 the one being loaded, and is answered like one whose form has left the screen,
-not on the page the reader went to. A post link that leads back into the form's
-own thread (`>>>/board/N` naming a post there, which the page looks up) takes
-the form off the screen while the post is looked up and, if the page blanks
+not on the page the reader went to, unless that page carries the form (below). A
+code request pressed just after a link is answered the same way, drawing no code
+step over the page being left. A post link that leads back into the form's own
+thread (`>>>/board/N` naming a post there, which the page looks up) takes the
+form off the screen while the post is looked up and, if the page blanks
 meanwhile, until the thread is drawn again. The lookup then puts the form back
 into the thread that it draws, emptied if its post went (a thread locked or
 archived meanwhile draws no form, and keeps the text that was not sent under its
@@ -899,52 +901,54 @@ note instead), or, if the thread will not load and the page has not blanked yet,
 leaves the page as it was, form and all, with a notice saying why. A lookup that
 fails itself (a `500`, say, or the server unreachable) draws the error in the
 page's place, as another page that will not load does, and the form goes with
-it: a post still on its way goes ahead and is answered like one whose form has
-left the screen, said nowhere, and a notice the form was owed goes unsaid. A
-post refused, or not sent, while the form was off the screen is told what it
-would have been told on screen, such as the refusal or, for a post that was not
-sent, that nothing was posted, by whatever redraw brings the form back to its
-page, begun before the answer or after it: that lookup, say, or Update, the same
-link again or Back to the thread, pressed during it. It is told once, ahead of
-any reason the thread did not load, with its button given the focus as after a
-refusal. A post pressed while that lookup or Update loads, before the page
-blanks, is carried as if pressed just before it began: Update keeps the page on
-screen for it, and the lookup puts the form back as above. Answered on its page,
-a success goes to the new post and a refusal is said once, with the focus as on
+it: a post already sent is answered like one whose form has left the screen, one
+still waiting for its puzzle is not sent, and neither is said anywhere, nor is a
+notice the form was owed. A post refused, or not sent, while the form was off
+the screen is told what it would have been told on screen, such as the refusal
+or, for a post that was not sent, that nothing was posted, by whatever redraw
+brings the form back to its page, begun before the answer or after it: that
+lookup, say, or Update, the same link again or Back to the thread, pressed
+during it. It is told once, ahead of any reason the thread did not load, with
+its button given the focus as after a refusal. A post pressed while a redraw
+that brings its form back loads, such as that lookup, Update, the same link
+again or another page of the same board's index, before the page blanks, is
+carried as if pressed just before it began: the lookup puts the form back as
+above, and the others keep the page on screen for it. Answered on its page, a
+success goes to the new post and a refusal is said once, with the focus as on
 screen; answered while the lookup has the form off the screen, it is told as
 above. Either way nothing it sent is left in a new form to be posted twice.
 After a refusal of the image itself (the image limit reached, or uploads
 switched off) the image is taken off, as on screen, and a page left as it was
 switches the picker off and updates the thread's counts, as on screen, as does a
-press of the form made first, unless an image has been attached since, which
-that press sends for the server to answer, while a thread drawn again draws both
-as the server now says, taking off with nothing more said an image attached
-since that its picker does not take, so the refusal is said once. A redraw for
-another page, or one the reader begins once the page has blanked, does not bring
-the form back, and what it was owed goes with it; a press of the form drops what
-it was owed too, so the form is told only of that press. Update, pressed
-meanwhile, redraws the thread around the same form, still held, and the post
-goes ahead and is answered there: the form is cleared and the thread shows the
-post when it went, and the form is switched back on with the reason when it was
-refused. If the thread will not load, the page stays as it was, form and all,
-with a notice saying why, and the post is answered on it just the same. A post
-answered after a redraw, or while one loads, success or refusal, has its image
-picker left as the redraw draws it: switched off if the thread takes no more
-images, taking off the image a refused post still held, and back on if it takes
-them again; a refusal of the image itself then switches it off. Where the image
-was taken off, any other notice about the post says so and, unless the thread
-takes no posts at all (archived, locked or gone), says why and tells a post left
-with nothing to send to write something instead. Every page of a board's index
-carries the same new-thread form, so going to another page of the index keeps a
-new thread going as Update does: the page is drawn around the held form, and the
-thread is posted from there or, if that page will not load, from the page still
-on screen, whose address goes back into the address bar, in the history entry
-the reader is on. With nothing pressed while the new page loads, that is the
-entry the link, Back or Forward led to: after a link the history then holds the
-page kept twice, so one Back press stays on it, and after Back or Forward the
-entry gone to now holds the page kept. A link pressed during the load, the same
-one again or a jump within the page, adds an entry of its own, which then holds
-the page kept, and Back from it loads the page that failed again.
+press of the form made first, unless an image has been attached since, which is
+left for the server to answer, while a thread drawn again draws both as the
+server now says, taking off with nothing more said an image attached since that
+its picker does not take, so the refusal is said once. A redraw for another
+page, or one the reader begins once the page has blanked, does not bring the
+form back, and what it was owed goes with it; a press of the form drops what it
+was owed too, so the form is told only of that press. Update, pressed meanwhile,
+redraws the thread around the same form, still held, and the post goes ahead and
+is answered there: the form is cleared and the thread shows the post when it
+went, and the form is switched back on with the reason when it was refused. If
+the thread will not load, the page stays as it was, form and all, with a notice
+saying why, and the post is answered on it just the same. A post answered after
+a redraw, or while one loads, success or refusal, has its image picker left as
+the redraw draws it: switched off if the thread takes no more images, taking off
+the image a refused post still held, and back on if it takes them again; a
+refusal of the image itself then switches it off. Where the image was taken off,
+any other notice about the post says so and, unless the thread takes no posts at
+all (archived, locked or gone), says why and tells a post left with nothing to
+send to write something instead. Every page of a board's index carries the same
+new-thread form, so going to another page of the index keeps a new thread going
+as Update does: the page is drawn around the held form, and the thread is posted
+from there or, if that page will not load, from the page still on screen, whose
+address goes back into the address bar, in the history entry the reader is on.
+With nothing pressed while the new page loads, that is the entry the link, Back
+or Forward led to: after a link the history then holds the page kept twice, so
+one Back press stays on it, and after Back or Forward the entry gone to now
+holds the page kept. A link pressed during the load, the same one again or a
+jump within the page, adds an entry of its own, which then holds the page kept,
+and Back from it loads the page that failed again.
 
 An address that asks for challenges faster than people post gets harder ones: up
 to 60 a minute at the base work, then twice the work for each further 60, to at
