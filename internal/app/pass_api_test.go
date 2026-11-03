@@ -5009,12 +5009,12 @@ func TestPassRefundCancelsAPassInItsGraceMonth(t *testing.T) {
 }
 
 // TestPassLostRenewalAnswer holds what the page relies on when the answer to
-// a renewal never arrives. A renewal hands over no code, so nothing is kept
-// to answer it again from: asked again with the cookie and the nonce, the
-// claim answers 400 as for a browser with nothing to collect, and a reissue
-// code that collected a renewal answers 403 like any spent one. The renewal is
-// on the Pass all the same, and checking the code held shows its new date,
-// which is how the page tells the reader.
+// a renewal never arrives. A renewal that renews its Pass hands over no code,
+// so nothing is kept to answer it again from: asked again with the cookie and
+// the nonce, the claim answers 400 as for a browser with nothing to collect,
+// and a reissue code that collected a renewal answers 403 like any spent one.
+// The renewal is on the Pass all the same, and checking the code held shows
+// its new date, which is how the page tells the reader.
 func TestPassLostRenewalAnswer(t *testing.T) {
 	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
 	issued := p.buy("pi_lost_bought")

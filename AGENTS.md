@@ -635,13 +635,13 @@ needs a browser check before the test changes.
   wait), stores what that says unless the Pass held changed meanwhile, and says the Pass
   is renewed only when the date it checks is the renewal's and later than the one it had;
   a renewal a reissue code brought is said to come from the code, not from a payment in
-  this browser. A renewal hands over no code, so its claim or reissue code asked again is
-  refused: refused after a retry with a kept nonce, the page checks the held code the
-  same way (`passAfterLostAnswer`) and says only that the Pass is now good until a
-  later date, never where the time came from. A reissue code is typed or pasted into
-  the code box, which takes a Pass code too (`isReissueCode` tells them apart by the
-  server's word and length), and never rides in an address. Pressing the button is the
-  reader's say-so: a Pass held here is replaced at once and its code shown beside the
+  this browser. A renewal that renews its Pass hands over no code, so its claim or reissue
+  code asked again is refused: refused after a retry with a kept nonce, the page checks
+  the held code the same way (`passAfterLostAnswer`) and says only that the Pass is now
+  good until a later date, never where the time came from. A reissue code is typed or
+  pasted into the code box, which takes a Pass code too (`isReissueCode` tells them apart
+  by the server's word and length), and never rides in an address. Pressing the button is
+  the reader's say-so: a Pass held here is replaced at once and its code shown beside the
   new one, while a Pass code typed over a good one is refused. The code goes once in a
   claim's body with a nonce of its own (`educhan:pass-reissue-nonce`), the Pass code
   derived from the two; it is never stored, and stays in the box, in memory

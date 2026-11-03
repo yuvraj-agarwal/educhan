@@ -238,9 +238,9 @@ func (a *App) passTokenHash(code string) []byte {
 // committed it (a tab closed, a page reloaded, a connection dropped) is asked
 // again with the same cookie or reissue code and the same nonce, and handed
 // the same code, where a fresh draw would leave the buyer a Pass they can
-// never see. A renewal hands over no code, and is not answered again: the
-// order or reissue code is spent, so the retry is refused, and the page
-// checks the code it holds to learn the new date.
+// never see. A renewal that renews its Pass hands over no code, and is not
+// answered again: the order or reissue code is spent, so the retry is
+// refused, and the page checks the code it holds to learn the new date.
 //
 // Neither half is worth anything alone. A nonce copied off a browser, planted
 // in one or left behind in one gives nothing with any other cookie or reissue
@@ -901,12 +901,14 @@ func (a *App) forgetPassOrder(w http.ResponseWriter, r *http.Request, name strin
 }
 
 // redeemPassReissue answers a claim that carries a reissue code, in the
-// claim's own words: issued, with the new code shown once, or renewed, for an
-// uncollected renewal. A reissue code works once; asked again with the nonce
-// that spent it, it is answered with the same code (passReissuedCode), but a
-// renewal, which hands over no code, is refused like any spent reissue code.
-// One for a right that moved, used while its Pass is being renewed, is
-// refused for that and not spent (claimResult.Renewing).
+// claim's own words: issued, with the new code shown once, or renewed, for
+// an uncollected renewal of a Pass that is still there; one whose Pass has
+// gone makes a new Pass and is issued. A reissue code works once; asked
+// again with the nonce that spent it, it is answered with the same code if
+// it gave one (passReissuedCode), and one that renewed a Pass, which hands
+// over no code, is refused like any spent reissue code. One for a right that
+// moved, used while its Pass is being renewed, is refused for that and not
+// spent (claimResult.Renewing).
 func (a *App) redeemPassReissue(w http.ResponseWriter, r *http.Request, typed, nonce string) {
 	reissue, ok := parseReissueCode(typed)
 	if !ok {
@@ -1218,7 +1220,8 @@ type passReissueBody struct {
 // types it on the Pass page is given a new code for the Pass, and the old one
 // stops working. For a purchase or a renewal paid and never collected, it
 // collects it instead: a renewal's reissue code renews the Pass it was for
-// and hands over no code, or makes a new Pass if that one has gone.
+// and hands over no code, or makes a new Pass and hands over its code if
+// that one has gone.
 //
 // The owner never sees a Pass code, so reading Stripe's records beside the
 // Pass tables gives them nothing to post with. Only a Pass's origin, the
@@ -1910,16 +1913,17 @@ func renewalUnderWay(ctx context.Context, tx pgx.Tx, paymentHash []byte) (bool, 
 }
 
 // redeemPassReissue spends a reissue code. A paid order nobody collected is
-// collected, as claimPass would: a renewal renews its Pass, and anything else
-// makes a Pass under the code the reissue code and the nonce give, for the
-// order's own term. Otherwise the Pass the payment is the origin of is given
-// that code, which is what stops the old one working. A reissue code that is
-// unknown, used, past its deadline or for a refunded payment gives nothing,
-// unless a Pass is under that code already: the reissue code was spent by an
-// earlier request with the same nonce, whose answer never arrived, and it is
-// answered again. A Pass refunded away since, or given a new code by another
-// reissue, is under no such code, and nothing comes back for it; nor does a
-// renewal, which made no Pass under that code.
+// collected, as claimPass would: a renewal renews its Pass, and anything
+// else, or a renewal whose Pass is gone, makes a Pass under the code the
+// reissue code and the nonce give, for the order's own term. Otherwise the
+// Pass the payment is the origin of is given that code, which is what stops
+// the old one working. A reissue code that is unknown, used, past its
+// deadline or for a refunded payment gives nothing, unless a Pass is under
+// that code already: the reissue code was spent by an earlier request with
+// the same nonce, whose answer never arrived, and it is answered again. A
+// Pass refunded away since, or given a new code by another reissue, is under
+// no such code, and nothing comes back for it; nor does a renewal that
+// renewed its Pass, which made none under that code.
 //
 // A reissue code for a right that moved to a renewal (moveOrigin) is not used
 // while the Pass is being renewed, paid or not yet (renewalUnderWay): the

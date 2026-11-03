@@ -2668,12 +2668,12 @@ func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 
 // A claim or a reissue code asked again with a nonce kept from a try whose
 // answer never arrived may have renewed the Pass held, in that lost answer,
-// and a renewal hands over no code, so the server refuses the retry. The page
-// then checks the held code, as after a renewal it collects, and says a date
-// that moved on in words that claim nothing about where the time came from;
-// a reissue code refused then is not said to need replacing. A check turned
-// away by the per-address cooldown a campus shares is asked once more, after
-// the wait the server names.
+// and renewing it hands over no code, so the server refuses the retry. The
+// page then checks the held code, as after a renewal it collects, and says a
+// date that moved on in words that claim nothing about where the time came
+// from; a reissue code refused then is not said to need replacing. A check
+// turned away by the per-address cooldown a campus shares is asked once more,
+// after the wait the server names.
 func TestPassLostRenewalAnswerIsCheckedOnThePassHeld(t *testing.T) {
 	script := appScript(t)
 	for name, refused := range map[string]string{

@@ -396,10 +396,10 @@ more is waiting; the server keeps neither the nonce nor the code, only the
 code's HMAC. Neither half is worth anything alone: the nonce with any other
 cookie, or the cookie without its nonce, gets nothing that has been handed
 over already, and a Pass refunded away or given a new code by a reissue is
-under no code a retry can ask for. A renewal hands over no code, and nothing
-is kept to answer it again from, so a renewal's claim asked again answers
-`400`, as for a browser with nothing to collect; the renewal is on the Pass
-all the same. So when a claim the page asks again with a kept nonce is
+under no code a retry can ask for. A renewal that renews its Pass hands over
+no code, and nothing is kept to answer it again from, so its claim asked again
+answers `400`, as for a browser with nothing to collect; the renewal is on the
+Pass all the same. So when a claim the page asks again with a kept nonce is
 refused, the page checks the code it holds (`/api/pass/activate`), stores the
 date the server gives and, if it moved on, says the Pass is now good until
 then, without saying where the time came from, which it cannot know.
@@ -674,31 +674,32 @@ digits, grouped with dashes. Typed on the Pass page, a reissue code gives the
 Pass a new code, shown once, and the old one stops working. For a purchase or a
 renewal paid and never collected, it collects it instead: a purchase's reissue
 code makes the Pass, with its code shown once, and a renewal's renews the Pass
-it was for and shows no code, or makes a new Pass if that one has gone. It works
-once, until a deadline like an order's (a week, to the next midnight UTC); a
-newer reissue code for the same payment replaces it, and a refund or a dispute
-cancels it, as does a renewal that takes its payment's right to reissue away
-(below). It is never in an address, so no browser history, address bar or
-`Referer` holds it. The page sends it in the body of one claim, with a nonce of
-its own, and the new Pass code is derived from the two, so a reissue whose
-answer was lost is asked again and gives the same Pass code; the server keeps
-only the reissue code's SHA-256 hash. The page keeps that nonce until an answer
-says the code issued or renewed a Pass, or until Remove the Pass or Forget this
-browser, and never drops it on a refusal: an earlier try may have reached the
-server and its answer been lost, so the right code typed after a mistyped one
-still gets the same Pass code. A renewal's reissue code asked again is refused
-like any spent one, since a renewal hands over no code; the renewal is on the
-Pass all the same. So once a try has gone unanswered, which the page notes in
-`localStorage` (`educhan:pass-reissue-unanswered`) until the code issues or
-renews a Pass, or until Remove the Pass or Forget this browser, a refusal is
-followed by a check of the code the page holds, as for a claim, and the page
-says its new date. A Pass held here that the check finds no longer valid is what
-an earlier try that gave it a new code would leave, so the page removes it and
-says that the right reissue code, entered again, gets that code. With no Pass to
-check, or no later date, it says only what is known: an earlier try may have
-reached educhan and renewed the Pass already, and otherwise the code may be
-mistyped, used, run out or cancelled. With no try unanswered before it, a
-refusal only asks the reader to check the code.
+it was for and shows no code, or makes a new Pass, with its code shown once, if
+that one has gone. It works once, until a deadline like an order's (a week, to
+the next midnight UTC); a newer reissue code for the same payment replaces it,
+and a refund or a dispute cancels it, as does a renewal that takes its payment's
+right to reissue away (below). It is never in an address, so no browser history,
+address bar or `Referer` holds it. The page sends it in the body of one claim,
+with a nonce of its own, and the new Pass code is derived from the two, so a
+reissue whose answer was lost is asked again and gives the same Pass code; the
+server keeps only the reissue code's SHA-256 hash. The page keeps that nonce
+until an answer says the code issued or renewed a Pass, or until Remove the Pass
+or Forget this browser, and never drops it on a refusal: an earlier try may have
+reached the server and its answer been lost, so the right code typed after a
+mistyped one still gets the same Pass code. A renewal's reissue code that
+renewed its Pass is refused when asked again, like any spent one, since renewing
+hands over no code; the renewal is on the Pass all the same. So once a try has
+gone unanswered, which the page notes in `localStorage`
+(`educhan:pass-reissue-unanswered`) until the code issues or renews a Pass, or
+until Remove the Pass or Forget this browser, a refusal is followed by a check
+of the code the page holds, as for a claim, and the page says its new date. A
+Pass held here that the check finds no longer valid is what an earlier try that
+gave it a new code would leave, so the page removes it and says that the right
+reissue code, entered again, gets that code. With no Pass to check, or no later
+date, it says only what is known: an earlier try may have reached educhan and
+renewed the Pass already, and otherwise the code may be mistyped, used, run out
+or cancelled. With no try unanswered before it, a refusal only asks the reader
+to check the code.
 
 Only the payment that made a Pass, or a paid purchase or renewal nobody
 collected, can be reissued. The payment of a renewal that was collected
@@ -1468,10 +1469,10 @@ that overwrites the header with just the peer address are each a single hop.
 | `POST` | `/api/verify/confirm` | Exchange a code for a credential — `{"code"}`; returns `{"credential","label","expires_at"}` |
 | `GET` | `/api/pass` | Whether the Pass is on sale — `{"enabled","days","hourly_posts","price":{"amount","currency","exponent"},"tax","paused","claim"}`, or `{"enabled":false}` without it. `"amount"` is the Price's own, a whole number of the currency's smallest unit, and `"exponent"` the decimals that unit stands for in Stripe's own table, not the browser's: `0` for JPY, `3` for BHD, and `2` for most, ISK and UGX among them, so `{"amount":300000,"currency":"isk","exponent":2}` is 3,000 ISK. `"tax"` is there only beside the price and with `EDUCHAN_STRIPE_AUTOMATIC_TAX` on: `"included"` when the Price has the tax in its amount (`tax_behavior` `inclusive`), `"added"` when Stripe adds it at checkout (`exclusive`); `price` is left out when Stripe can't be asked for the Price, refuses the request for the Price (a key or Price ID it does not take, say), or answers with a Price that is archived, recurring, without a fixed amount, priced in other currencies too (its `currency_options`), or, with Stripe Tax on, neither `inclusive` nor `exclusive`, until Stripe is asked again a minute later, and while sales are paused; `"paused":true` only while they are; and `"claim":true` only when a claim cookie the browser sends has something under it to collect |
 | `POST` | `/api/pass/checkout` | Start a purchase — `{"adult","renew"}`; `"adult"` must be `true`, `"renew"` is an existing code to extend. Returns `{"url","order"}`, a page on `checkout.stripe.com` and the order's name, a hash of the claim that collects nothing, signed with `EDUCHAN_PASS_SECRET`, and sets a new claim cookie with only this order under it; `400` without `"adult": true`; `403 {"pass":"invalid"}` when the code to renew is not a Pass code, is unknown or is past its month of grace, before any cooldown starts; `403 {"error":"the Pass is not on sale right now"}` while sales are paused; `503 {"error":"the Pass can't be bought right now"}` when the Price is archived, recurring, without a fixed amount or priced in other currencies too, or, with Stripe Tax on, neither `inclusive` nor `exclusive`, or when Stripe refuses the request for the Price (a key or Price ID it does not take, say), and `502` while Stripe is out of reach or failing when asked for the Price, with Stripe Tax on or off, each before any cooldown starts or anything is opened in Stripe; `429` with `Retry-After` inside `EDUCHAN_PASS_COOLDOWN`; `502` when Stripe fails to open the session, after the cooldown has started, so asking again at once gets `429`; `409 {"pass":"invalid"}` when the Pass to renew was refunded, lapsed or given another code by a reissue meanwhile |
-| `POST` | `/api/pass/claim` | Collect the order under the claim cookie once it is paid, one order an answer under each claim cookie the browser sends — `{"nonce"}`, 16 random bytes in base64url that the page draws for each collection and sends with every claim until an answer says nothing more is waiting (`"claim":false`); the code is derived from the cookie and the nonce together. Answers `{"status":"issued","pass","expires_at","claim"}` when a Pass was made, and the same code again when asked again with the same cookie and nonce; else `{"status":"renewed","expires_at","claim"}`, else `202 {"status":"pending","claim":true}` while the order waits for Stripe; `400` when nothing is left, which is also the answer to a renewal's claim asked again, since a renewal hands over no code. `"claim"` says whether anything still waits. With `{"reissue":"…","nonce"}`, a reissue code (`REISSUE-…`, in either case, with or without the word and the dashes), it redeems the reissue code instead, answering the same way, with the same Pass code when asked again with the same nonce, or `403 {"pass":"invalid"}` for one used, run out or cancelled, a renewal's asked again included, or `409` for one whose right moved, while its Pass is being renewed, which leaves it unspent. With `{"forget":true}` it drops what is under every claim cookie the browser sends and clears the one the server set — `{"status":"forgotten","claim":false}`; with `{"forget":true,"order"}`, the name a checkout's answer gave its order, it drops what is under that checkout's claim alone, reading no cookie and clearing none — `{"status":"forgotten"}` — and answers `400` for a name not shaped as one or not signed by the server, `200` for one with nothing under it, and `400` for an `"order"` without `"forget"` |
+| `POST` | `/api/pass/claim` | Collect the order under the claim cookie once it is paid, one order an answer under each claim cookie the browser sends — `{"nonce"}`, 16 random bytes in base64url that the page draws for each collection and sends with every claim until an answer says nothing more is waiting (`"claim":false`); the code is derived from the cookie and the nonce together. Answers `{"status":"issued","pass","expires_at","claim"}` when a Pass was made, and the same code again when asked again with the same cookie and nonce; else `{"status":"renewed","expires_at","claim"}`, else `202 {"status":"pending","claim":true}` while the order waits for Stripe; `400` when nothing is left, which is also the answer to a renewal's claim asked again after renewing its Pass, since renewing hands over no code. `"claim"` says whether anything still waits. With `{"reissue":"…","nonce"}`, a reissue code (`REISSUE-…`, in either case, with or without the word and the dashes), it redeems the reissue code instead, answering the same way, with the same Pass code when asked again with the same nonce, or `403 {"pass":"invalid"}` for one used, run out or cancelled, which a renewal's is when asked again after renewing its Pass, or `409` for one whose right moved, while its Pass is being renewed, which leaves it unspent. With `{"forget":true}` it drops what is under every claim cookie the browser sends and clears the one the server set — `{"status":"forgotten","claim":false}`; with `{"forget":true,"order"}`, the name a checkout's answer gave its order, it drops what is under that checkout's claim alone, reading no cookie and clearing none — `{"status":"forgotten"}` — and answers `400` for a name not shaped as one or not signed by the server, `200` for one with nothing under it, and `400` for an `"order"` without `"forget"` |
 | `POST` | `/api/pass/activate` | Check a code — `{"pass"}`; returns `{"pass","expires_at"}`. A code that has run out is refused with `403 {"pass":"expired","code","expires_at"}` until it is pruned a month on, and an unknown one with `403 {"pass":"invalid"}`. One check per address every 2 seconds, `429` otherwise |
 | `POST` | `/api/pass/stripe-webhook` | Stripe's signed events: `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `checkout.session.expired`, `charge.refunded`, `charge.dispute.created` |
-| `POST` | `/api/pass/reissue` | Moderation key: a one-time reissue code that gives a lost Pass a new code — `{"payment_intent":"pi_…"}`; returns `{"code","expires_at"}`, the code being `REISSUE` and seven groups of four letters and digits, for the owner to send on; `404` for a payment that bought nothing or was refunded or disputed; `409` for a collected renewal's payment (use the purchase's, or, if that was refunded or disputed, the one renewal that then paid for all the time left, until the Pass is renewed again), and for any payment of a Pass that cannot be reissued, because its purchase was refunded or disputed and no one payment left pays for all its time, or because a renewal of the Pass is under way when the right has moved. A purchase or a renewal paid and never collected is reissued too, and its reissue code collects it: a renewal's renews the Pass it was for, with no code |
+| `POST` | `/api/pass/reissue` | Moderation key: a one-time reissue code that gives a lost Pass a new code — `{"payment_intent":"pi_…"}`; returns `{"code","expires_at"}`, the code being `REISSUE` and seven groups of four letters and digits, for the owner to send on; `404` for a payment that bought nothing or was refunded or disputed; `409` for a collected renewal's payment (use the purchase's, or, if that was refunded or disputed, the one renewal that then paid for all the time left, until the Pass is renewed again), and for any payment of a Pass that cannot be reissued, because its purchase was refunded or disputed and no one payment left pays for all its time, or because a renewal of the Pass is under way when the right has moved. A purchase or a renewal paid and never collected is reissued too, and its reissue code collects it: a renewal's renews the Pass it was for, with no code, or makes a new Pass and hands over its code if that one has gone (refunded or disputed away, or pruned) |
 | `GET` | `/media/original/{path}` | Full-size attachment |
 | `GET` | `/media/thumb/{path}` | Thumbnail |
 
