@@ -865,15 +865,16 @@ not be sent. The one exception is a spend the database applied but whose reply
 was lost: the answer is spent, though the response, a `500` saying the server
 could not check the captcha, carries no header. The page keeps its answer
 through any other refusal without that header (the captcha's own refusals carry
-none, and drop it), though only while it is good and only when the page holds no
-other answer by then, one a puzzle started meanwhile has solved say, so the next
-press goes straight out; and it starts the next puzzle as soon as a refusal with
-the header arrives, while its form is on screen in a browser not forgotten since
-the press. A request that brought no response at all puts its answer back on the
-same terms, though it may have been spent: then, as after that `500`, the first
-request to reach the captcha check with it is refused as used and solves a fresh
-one, while one refused before that check, such as a reply to a thread locked
-meanwhile or an image whose header does not read, keeps it again.
+none, and drop it), though only while it is good and until another answer takes
+its place, one a puzzle started meanwhile solves, before the refusal or after
+it, say, so the next press goes straight out; and it starts the next puzzle as
+soon as a refusal with the header arrives, while its form is on screen in a
+browser not forgotten since the press. A request that brought no response at all
+puts its answer back on the same terms, though it may have been spent: then, as
+after that `500`, the first request to reach the captcha check with it is
+refused as used and solves a fresh one, while one refused before that check,
+such as a reply to a thread locked meanwhile or an image whose header does not
+read, keeps it again.
 
 While a post or a code request waits for its puzzle and its answer, its form is
 held: its boxes and buttons are switched off, and look it, so what is sent is
@@ -883,10 +884,14 @@ never put into a form on the page they went to, even after a double click; the
 answer is put back for the next press, on the same terms, and a request that had
 already gone is not reported on that page either. A post link that leads back
 into the form's own thread (`>>>/board/N` naming a post there, which the page
-looks up) takes the form off the screen only while the post is looked up: the
-form goes back into the thread, emptied if its post went, and a post refused, or
-not sent, while the lookup loaded is told then what it would have been told on
-screen, a post not sent that nothing was posted and to post again, with its
+looks up) takes the form off the screen while the post is looked up and, if the
+page blanks meanwhile, until the thread is drawn again. The lookup then puts the
+form back into the thread that it draws, emptied if its post went, or, if the
+thread will not load and the page has not blanked yet, leaves the page as it
+was, form and all, with a notice saying why. Either way, a post refused, or not
+sent, while the form was off the screen is told then what it would have been
+told on screen, such as the refusal or, for a post that was not sent, that
+nothing was posted, ahead of any reason the thread did not load, and with its
 button given the focus as after a refusal. Update, pressed meanwhile, redraws
 the thread around the same form, still held, and the post goes ahead and is
 answered there: the form is cleared and the thread shows the post when it went,

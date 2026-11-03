@@ -451,11 +451,13 @@ before the test changes.
   with its answer put back, on the same terms, and, sent or not, is not navigated from
   and says nothing on the page the reader went to; a post that did go still empties and
   releases its form, wherever it is. A post's form keeps instead what it would have been
-  told on screen (`unsaidNotices`): the refusal, or for a post not sent that nothing was
-  posted and to post again (`errorMessage`), with whether it had the focus at the press.
-  A redraw that carried it held and puts its values back into its own page, after a post
-  link's lookup into its thread say, says that notice and gives the focus as `release`
-  would (`restoreDraft`); a form that does not come back takes it with it. From the
+  told on screen, until its next press (`unsaidNotices`), such as the refusal or, for a
+  post not sent, that nothing was posted (`errorMessage`, or `FORGOTTEN_BEFORE_SENDING`
+  after a forget since the press), with whether it had the focus at the press. A redraw
+  that carried it held says that notice once and gives the focus as `release` would, as
+  it puts its values back into its own page, after a post link's lookup into its thread
+  say (`restoreDraft`), or keeps that page, form and all, when it will not load, saying
+  it ahead of why (`render`); a form that does not come back takes it with it. From the
   press to the answer the form is held (`holdForm`: controls switched off once the form
   has been read and checked, straight into the `try` whose catch releases them, and
   switched back on after a refusal, with the focus on the button, without scrolling to
@@ -685,7 +687,8 @@ before the test changes.
   form on screen; one off the screen, while a post link's lookup loads say, is noted,
   starting nothing, and keeps that notice: a redraw that carried it held says the notice
   as it puts the form's values back into its own page, noting nothing on the form it
-  draws, and one that reads the form only once it is released carries the note, so the
+  draws, or keeps that page, form and all, when it will not load, dropping the note,
+  and one that reads the form only once it is released carries the note, so the
   form it draws refuses its next press once. When storage holds another badge, verified
   since in this browser (in another tab, or in this one by a confirmation answered after
   the reader left /verify), and the browser was not forgotten since the press (a badge

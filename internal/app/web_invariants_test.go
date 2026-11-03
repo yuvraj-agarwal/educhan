@@ -979,12 +979,12 @@ func TestCaptchaIsNotWorkedOnForNothing(t *testing.T) {
 // would leave the page on the address step while the code went out.
 // Sent or not, a request whose form has left the screen is not navigated from
 // and says nothing on the page the reader went to, while a post that did go
-// still empties and releases its form, wherever it is. A post's form keeps
-// what it would have been told instead, and is told it, with the focus it
-// would have had, if a redraw that carried it held puts its values back into
-// its own page, as after a post link's lookup into its thread: a post not
-// sent, which on screen would have gone, that nothing was posted and to post
-// again, and a refusal as on screen.
+// still empties and releases its form, wherever it is. A post's form keeps what
+// it would have been told instead, and is told it once, with the focus it would
+// have had, by a redraw that carried it held, as it puts its values back into
+// its own page, after a post link's lookup into its thread say, or keeps that
+// page when it will not load: a refusal as on screen, say, or for a post not
+// sent, which on screen would have gone, that nothing was posted.
 func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 	script := appScript(t)
 	if on := squash(withoutComments(jsFunction(t, script, "formOnScreen"))); !strings.Contains(on,
@@ -1071,24 +1071,31 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 			}
 		}
 	}
-	// What a post's form off the screen would have been told is said by
-	// restoreDraft, as a redraw that carried the form held puts its values back
-	// into its own page, after a post link's lookup into its thread say: before
-	// it words that notice again for a picker the new page drew switched off,
-	// so that ends as it would have on screen. The focus goes to the new form's
-	// button as release gives it on screen: if the form had it at the press,
-	// noted as holdForm notes it, and it is lost now. A refusal of the badge is
-	// said in place of the note the catch left on the form, which would refuse
-	// the next press for the badge again. A form that does not come back takes
-	// what it was not told with it.
+	// What a post's form off the screen would have been told is said once, by a
+	// redraw that carried the form held: by restoreDraft, as it puts the form's
+	// values back into its own page, after a post link's lookup into its thread
+	// say, before it words that notice again for a picker the new page drew
+	// switched off, so that ends as it would have on screen; or by render, ahead
+	// of why, when the redraw will not load and keeps the page, form and all
+	// (TestAHeldFormSurvivesARedrawOfItsPage). The focus goes to the form's button
+	// as release gives it on screen: if the form had it at the press, noted as
+	// holdForm notes it, and it is lost now. A refusal of the badge is said in
+	// place of the note the catch left on the form, which would refuse the next
+	// press for the badge again. Each press drops what an earlier one left unsaid,
+	// so a form is told only of the press it is answering, and a form that does
+	// not come back takes what it was not told with it.
 	inOrder(t, "the submit handler", submit,
-		"const focused = form.contains(document.activeElement); const release = holdForm(form);",
+		"unsaidNotices.delete(form); const focused = form.contains(document.activeElement); const release = holdForm(form);",
 		"} catch (err) {", `const box = field(form, "body");`, "const said = (off) =>", "const notice = (off) =>", awayFromScreen)
+	if take := squash(withoutComments(jsFunction(t, script, "takeUnsaidNotice"))); take != "function takeUnsaidNotice(form) { "+
+		"const unsaid = unsaidNotices.get(form); unsaidNotices.delete(form); return unsaid; }" {
+		t.Errorf("takeUnsaidNotice no longer takes what a form was not told out as it reads it: %s", take)
+	}
 	restored := squash(withoutComments(jsFunction(t, script, "restoreDraft")))
 	inOrder(t, "restoreDraft", restored,
 		"answered = heldForms.has(held) ? null : held;",
 		"if (!form) { keepUnsentDraft(draft); return; } "+
-			"const unsaid = answered ? unsaidNotices.get(answered) : undefined; if (unsaid) { showNotice(unsaid.notice); }",
+			"const unsaid = answered ? takeUnsaidNotice(answered) : undefined; if (unsaid) { showNotice(unsaid.notice); }",
 		"const ticked = forgotten || (unsaid && unsaid.badgeRefused) ? null : draft.badge;",
 		`const refusal = answered && draft.file ? pickerRefusal(form) : "";`,
 		"if (details && (draft.open || draft.body || draft.file)) { details.open = true; } "+
@@ -1096,14 +1103,16 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 			`form.querySelector('button[type="submit"]')?.focus({ preventScroll: true }); } }`,
 	)
 	if code := withoutComments(script); !strings.Contains(code, "\nconst unsaidNotices = new WeakMap();\n") ||
-		strings.Count(code, "unsaidNotices") != 3 || strings.Count(restored, "unsaid") != 8 ||
-		strings.Count(code, "focused,") != 1 {
-		t.Error("unsaidNotices is no longer only declared, kept by the submit handler for a form off the screen and read " +
-			"by restoreDraft, or restoreDraft reads it for something besides the notice, the badge and the focus")
+		strings.Count(code, "unsaidNotices") != 5 || strings.Count(code, "takeUnsaidNotice(") != 3 ||
+		strings.Count(restored, "unsaid") != 7 || strings.Count(code, "focused,") != 1 {
+		t.Error("unsaidNotices is no longer only declared, kept by the submit handler for a form off the screen, dropped " +
+			"at its next press, and taken out by restoreDraft and a kept page's failed redraw, or restoreDraft reads it for " +
+			"something besides the notice, the badge and the focus")
 	}
 	// A post not sent because its form had left the screen would have gone on
-	// screen, so it is told that nothing was posted and to post again, worded
-	// for what the form still holds; one the forget stopped is told that.
+	// screen, so it is told that nothing was posted and, unless release left it
+	// nothing to post, to post again, worded for what the form still holds; one
+	// the forget stopped is told that.
 	notSent := jsBraced(t, squash(withoutComments(jsFunction(t, script, "errorMessage"))), "if (err.notSent) {")
 	m := regexp.MustCompile(`^if \(err\.notSent\) \{ if \(nothingLeft\) \{ return "([^"]*)"; \} ` +
 		`return hasText \? "([^"]*)" : "([^"]*)"; \}$`).FindStringSubmatch(notSent)
@@ -1675,10 +1684,10 @@ func TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
 	if !strings.Contains(code, "\nconst badgeWithdrawn = new WeakMap();\n") ||
-		strings.Count(code, "badgeWithdrawn.set(") != 2 || strings.Count(code, "badgeWithdrawn.delete(") != 5 {
+		strings.Count(code, "badgeWithdrawn.set(") != 2 || strings.Count(code, "badgeWithdrawn.delete(") != 6 {
 		t.Error("badgeWithdrawn is no longer a WeakMap noted only by withdrawBadgeOption and restoreDraft, and " +
 			"forgotten only by the press it refuses, a post that goes, a refusal that says its badge was replaced, " +
-			"the badge box changed and a forget")
+			"the badge box changed, a forget and a kept page's failed redraw that says its form's badge was refused")
 	}
 	// The puzzle it then starts is TestCaptchaIsAskedForOnlyWhenSomeoneWrites'.
 	withdraw := squash(withoutComments(jsFunction(t, script, "withdrawBadgeOption")))
@@ -1760,17 +1769,18 @@ func TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress(t *testing.T) {
 	// refusal's notice. One off the screen, which the refusal tells nothing
 	// then (TestARequestGoesOnlyFromAFormOnScreen), keeps that notice, which a
 	// redraw that carried it held says as it puts its values back into its
-	// page, and is noted, starting nothing, for a redraw that reads it once it
-	// is released, so the form that redraw draws in its place refuses its next
-	// press once: without either, that press posts the reply without its
-	// badge, unsaid, under the ID the reader's other posts there without one
-	// share. A form on screen whose badge storage has replaced since the
-	// press, the browser not forgotten meanwhile, is told so in place of the
-	// server's wording, which says to verify again, and a note left on it while
-	// the post was on its way goes, whatever left it (a change of badge in
-	// another tab, a confirmation answered in this one, another badged post's
-	// refusal in this one, /verify loading over the form, or a redraw that puts
-	// it back), so that notice is its one refusal for the badge.
+	// page or keeps that page, and is noted, starting nothing, for a redraw
+	// that reads it once it is released, so the form that redraw draws in its
+	// place refuses its next press once: without either, that press posts the
+	// reply without its badge, unsaid, under the ID the reader's other posts
+	// there without one share. A form on screen whose badge storage has
+	// replaced since the press, the browser not forgotten meanwhile, is told so
+	// in place of the server's wording, which says to verify again, and a note
+	// left on it while the post was on its way goes, whatever left it (a change
+	// of badge in another tab, a confirmation answered in this one, another
+	// badged post's refusal in this one, /verify loading over the form, or a
+	// redraw that puts it back), so that notice is its one refusal for the
+	// badge.
 	refused := submit[max(strings.Index(submit, "} catch (err) {"), 0):]
 	if !strings.Contains(refused, `if (held && (reason === "expired" || reason === "revoked")) { `+
 		"if (forgets === browserForgets && storedCredential() === held.token) { const pageBadge = state.verification.badge; "+
@@ -2145,17 +2155,18 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 	// image open there. A render a newer one has overtaken draws nothing, loaded
 	// or not, and one that draws notes what the page was drawn for (drawnFor),
 	// which a kept page whose redraw will not load gets back, with the error
-	// as a notice, never in place of the page: after two redraws that fail, the
-	// page is still the one drawn, not the first redraw's half-begun one. The
-	// address bar goes back to that page's address too, the history entry the
-	// reader is on replaced, or a jump within the page afterwards would find
-	// an address the page was not drawn for and draw the page that failed.
-	// Every render begun, the age screen's and the rules' included, ends the
-	// loading state of any before it (below). A post link's lookup goes on to
-	// the thread unless the reader went somewhere else meanwhile, which a jump
-	// within the page, moving only the fragment, is not: the address is
-	// compared less its fragment, or a skip link pressed during the lookup
-	// would leave the skeleton on screen for good.
+	// as a notice, after what its form, answered off the screen meanwhile, was not
+	// told (TestARequestGoesOnlyFromAFormOnScreen), never in place of the page:
+	// after two redraws that fail, the page is still the one drawn, not the first
+	// redraw's half-begun one. The address bar goes back to that page's address
+	// too, the history entry the reader is on replaced, or a jump within the page
+	// afterwards would find an address the page was not drawn for and draw the
+	// page that failed. Every render begun, the age screen's and the rules'
+	// included, ends the loading state of any before it (below). A post link's
+	// lookup goes on to the thread unless the reader went somewhere else
+	// meanwhile, which a jump within the page, moving only the fragment, is not:
+	// the address is compared less its fragment, or a skip link pressed during the
+	// lookup would leave the skeleton on screen for good.
 	render := squash(withoutComments(jsFunction(t, script, "render")))
 	inOrder(t, "render", render,
 		"async function render({ draft = captureDraft() } = {}) {",
@@ -2171,8 +2182,12 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 		"if (keepPage && draft.held.isConnected) { renderedPath = drawnFor.path; "+
 			`window.history.replaceState(window.history.state, "", drawnFor.path + window.location.hash); `+
 			"state.route = drawnFor.route; "+
-			`state.thread = drawnFor.thread; const said = el.notice.hidden ? "" : el.notice.querySelector(".notice-text").textContent; `+
-			"showNotice(said ? `${said} ${message}` : message); return; }",
+			"state.thread = drawnFor.thread; const unsaid = takeUnsaidNotice(draft.held); "+
+			"if (unsaid && unsaid.badgeRefused) { badgeWithdrawn.delete(draft.held); } "+
+			`const said = el.notice.hidden ? "" : el.notice.querySelector(".notice-text").textContent; `+
+			`showNotice([unsaid ? unsaid.notice : "", said, message].filter(Boolean).join(" ")); `+
+			"if (unsaid && unsaid.focused && (!document.activeElement || document.activeElement === document.body)) { "+
+			`draft.held.querySelector('button[type="submit"]')?.focus({ preventScroll: true }); } return; }`,
 		"leavePage(); el.main.innerHTML = emptyStateHTML(message, board);",
 		"} finally {",
 		"if (!overtaken(route) && window.location.pathname + window.location.search === requested) { "+
