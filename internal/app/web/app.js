@@ -4068,10 +4068,10 @@ async function confirmRenewal(renewed, reissued = false) {
 
 // passAfterLostAnswer checks the Pass this browser holds once a claim or a
 // reissue code, asked again with a nonce kept from a try whose answer never
-// arrived, is refused: that try may have renewed it, and a renewal hands over
-// no code, so the server has nothing to answer it again with. What the server
-// says of the held code is stored (recheckPass), and a date that moved on is
-// said in words that do not say where the time came from, which the page
+// arrived, is refused: that try may have renewed it, and renewing it hands
+// over no code, so the server has nothing to answer it again with. What the
+// server says of the held code is stored (recheckPass), and a date that moved
+// on is said in words that do not say where the time came from, which the page
 // cannot know. It resolves to that notice, to gone for a held Pass that is no
 // longer valid, or to "" when there is none.
 async function passAfterLostAnswer(gone = "The Pass that was in this browser is no longer valid, so it has been removed.") {
@@ -4315,16 +4315,16 @@ function canonicalCode(typed) {
 // after a lost answer and then a mistyped retry, still ask with the nonce of
 // the try whose answer was lost. Whether a try may have gone unanswered is
 // marked beside it (PASS_REISSUE_UNANSWERED_STORAGE_KEY), and only then is a
-// refusal taken for what may follow a code spent here. A renewal, which hands
-// over no code, is refused when asked again, so the Pass held is checked then
-// (passAfterLostAnswer). Asked for while a forget is on its way, it is sent
-// once that is done (passForgetsSettled), and not at all if Remove the Pass or
-// Forget this browser was pressed meanwhile, or Stop in a tab that had given up
-// waiting for it, or the reader left the document meanwhile (pagehide); an
-// answer that arrives after Remove or Forget, here or in another tab, is
-// dropped unstored (passForgotten). What it comes to is said in view
-// (showPassNotice). Stop collecting it here leaves it alone otherwise, but for
-// what it says about the claim Stop dropped (passForgets).
+// refusal taken for what may follow a code spent here. A reissue code that
+// renewed a Pass hands over no code, and is refused when asked again, so the
+// Pass held is checked then (passAfterLostAnswer). Asked for while a forget is
+// on its way, it is sent once that is done (passForgetsSettled), and not at all
+// if Remove the Pass or Forget this browser was pressed meanwhile, or Stop in a
+// tab that had given up waiting for it, or the reader left the document
+// meanwhile (pagehide); an answer that arrives after Remove or Forget, here or
+// in another tab, is dropped unstored (passForgotten). What it comes to is said
+// in view (showPassNotice). Stop collecting it here leaves it alone otherwise,
+// but for what it says about the claim Stop dropped (passForgets).
 async function redeemPassReissue(typed) {
   let res = null;
   let failed = null;

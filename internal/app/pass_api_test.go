@@ -1987,9 +1987,13 @@ func TestPassThatIsGoneIsNamedByNoOrder(t *testing.T) {
 				t.Fatalf("the other Pass's xmin and xmax went from %s to %s", before, after)
 			}
 
-			status, made := p.claim()
+			claimNonce := p.collectNonce()
+			status, made := p.claimWith(claimNonce)
 			if status != http.StatusOK || made.Status != "issued" || !passCodeShape(made.Pass) || made.Pass == issued.Pass {
 				t.Fatalf("a renewal of the Pass %s, collected: status %d, %+v; want a new Pass", gone.name, status, made)
+			}
+			if status, again := p.claimWith(claimNonce); status != http.StatusOK || again.Status != "issued" || again.Pass != made.Pass {
+				t.Fatalf("that renewal's claim asked again with the same nonce: status %d, %+v; want the same code", status, again)
 			}
 			finder := p.otherBrowser()
 			nonce := finder.collectNonce()
@@ -4991,10 +4995,10 @@ func TestPassRevocationIsDayRounded(t *testing.T) {
 }
 
 // TestPassRevocationRunsFromTheLatest holds the record of a refunded or
-// disputed payment to a month from its latest refund or dispute, as the
-// README says: a dispute that follows a refund of the same payment, or the
-// refund delivered again, starts the month again rather than leaving the
-// first one's date.
+// disputed payment to a month from the last refund or dispute Stripe reports
+// for it, as the README says: a dispute that follows a refund of the same
+// payment, or the refund delivered again, starts the month again rather than
+// leaving the first one's date.
 func TestPassRevocationRunsFromTheLatest(t *testing.T) {
 	for _, later := range []struct {
 		name   string
@@ -5072,9 +5076,9 @@ func TestPassRefundCancelsAPassInItsGraceMonth(t *testing.T) {
 // a renewal never arrives. A renewal that renews its Pass hands over no code,
 // so nothing is kept to answer it again from: asked again with the cookie and
 // the nonce, the claim answers 400 as for a browser with nothing to collect,
-// and a reissue code that collected a renewal answers 403 like any spent one.
-// The renewal is on the Pass all the same, and checking the code held shows
-// its new date, which is how the page tells the reader.
+// and a reissue code that collected such a renewal answers 403 like any spent
+// one. The renewal is on the Pass all the same, and checking the code held
+// shows its new date, which is how the page tells the reader.
 func TestPassLostRenewalAnswer(t *testing.T) {
 	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
 	issued := p.buy("pi_lost_bought")

@@ -71,8 +71,8 @@ const (
 	// (passClaimCookieUntil).
 	stripeCheckoutTTL = 24 * time.Hour
 	// passRevocationTTL is how long a refunded or disputed payment is
-	// remembered after its latest refund or dispute, longer than Stripe goes on
-	// retrying an event.
+	// remembered after the last refund or dispute Stripe reports for it, a
+	// repeated delivery included, longer than Stripe goes on retrying an event.
 	passRevocationTTL = 30 * 24 * time.Hour
 	// passExpiredGrace is how long an expired Pass is kept, so it can still be
 	// renewed rather than bought again, and so a post with it is told it has
