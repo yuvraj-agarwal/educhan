@@ -387,17 +387,17 @@ needs a browser check before the test changes.
   browser's "Failed to fetch". So does an answer to a post that is not the post it made
   (`isCreatedPost`, `err.unconfirmed`): it is checked before the form is reset, so an
   empty `200` never clears a draft (`TestThePostFormIsClearedOnlyForAPostMade`). A held
-  post's `202` is a post made, though it has no number until it is approved: taken for
-  an unconfirmed one, it kept the draft for the poster to send again. A `429`
-  is worded for what was refused: `/verify` passes `errorMessage` `{ action: "code" }`, so
-  a code request is told to wait and request a code again, never to post again. A `503`
-  with `retry_after` is a post the server was too busy to take, worded as that and not as
-  flood control; the form keeps the post, image included, and nothing was charged for it.
-  A not-found page names and links a board only when it is in `state.boards`: the slug
-  comes from the address, and echoing any slug would let a crafted link write the page's
-  copy. A history change that keeps the rendered path (a same-thread quote link) only
-  calls `focusHash()`, so revealed spoilers stay revealed. A disabled file input is left
-  out of `FormData`, and `submit` posts as JSON when it is.
+  post's `202` is a post made, though it has no number until it is approved: taken for an
+  unconfirmed one, it kept the draft for the poster to send again. A `429` is worded for
+  what was refused: `/verify` passes `errorMessage` `{ action: "code" }`, so a code
+  request is told to wait and request a code again, never to post again. A `503` with
+  `retry_after` is a post the server was too busy to take, worded as that and not as flood
+  control; the form keeps the post, image included, and nothing was charged for it. A
+  not-found page names and links a board only when it is in `state.boards`: the slug comes
+  from the address, and echoing any slug would let a crafted link write the page's copy. A
+  history change that keeps the rendered path (a same-thread quote link) only calls
+  `focusHash()`, so revealed spoilers stay revealed. A disabled file input is left out of
+  `FormData`, and `submit` posts as JSON when it is.
 - **A server that takes no images.** `loadSite` reads `GET /api/site`
   (`{"uploads","max_upload_bytes"}`) into `state.site`. With `uploads` false, `formHTML`
   draws no image field at all — no picker, no drop hint, no Spoiler image box — a file
