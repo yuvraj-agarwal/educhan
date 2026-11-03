@@ -8074,17 +8074,19 @@ var payRuns = runsOf(`will|wil|gonna|gunna all|finally|definitely|really|surely|
 
 // payCheck reads "will pay" (payRuns) as a reckoning promised: from a group
 // picked out by who it is ("everyone who bullied me", "the people who bullied
-// me", "10B") or said to the reader ("you will pay tomorrow after school"),
-// or from them all or at last ("they will all pay", "they'll finally pay"),
-// with nothing paid after it but "for it" or "for this": "they will all pay
-// tomorrow at school", "10B will pay for it on monday". Money, a fee, a bill,
-// a treat or attention paid ("will pay for the trip", "will pay 500 rs",
-// "will pay attention"), a thing bought, ordered or signed up for by the
-// payer (purchasePaid), a thing broken that is no one's body, unless the
-// sentence sets a fight ("the guys who broke the window will pay for it",
-// not "the guys who broke my glasses will pay tomorrow behind the school"),
-// a question about the paying ("you'll pay tomorrow?"), the poster's own
-// group ("we will pay"), and what threatCheck turns down, are no threat.
+// me", "10B", "whoever broke my phone": whoeverWronged) or said to the reader
+// ("you will pay tomorrow after school"), or from them all or at last ("they
+// will all pay", "they'll finally pay"), with nothing paid after it but "for
+// it" or "for this": "they will all pay tomorrow at school", "10B will pay
+// for it on monday". Money, a fee, a bill, a receipt, a treat or attention
+// paid ("will pay for the trip", "will pay 500 rs", "will pay attention"), a
+// thing bought, ordered or signed up for (purchasePaid), a thing broken that
+// is no one's body, unless the sentence sets a fight (fightSet, which counts
+// a fight's time only for the poster's own thing and with nothing paid "for
+// it": "the guys who broke the window will pay tomorrow after school", not
+// "the guys who broke my glasses will pay tomorrow behind the school"), a
+// question about the paying ("you'll pay tomorrow?"), the poster's own group
+// ("we will pay"), and what threatCheck turns down, are no threat.
 func (f *scannedField) payCheck(v *view, m []int) bool {
 	text := v.text
 	ws := wordsIn(text[m[0]:m[1]])
@@ -8101,9 +8103,10 @@ func (f *scannedField) payCheck(v *view, m []int) bool {
 	}
 	around := sentenceAround(text, m[0], m[1])
 	sentence := wordsIn(around)
+	damaged, own := damagePaid(sentence)
 	if anyIn(sentence, moneyWords) ||
 		purchasePaid(wordsIn(sentenceBefore(text, m[0])), sentenceAfter(text, m[1])) ||
-		damagePaid(sentence) && !fightSet(sentence, forIt) {
+		damaged && !fightSet(sentence, forIt || !own) {
 		return false
 	}
 	// A question about paying, asked in the clause the promise is in, is
@@ -8118,6 +8121,9 @@ func (f *scannedField) payCheck(v *view, m []int) bool {
 		return (is(who, "you") || is(who, "u") || is(who, "y'all") || is(who, "everyone") || reckoning) &&
 			f.threatCheck(v, m)
 	}
+	if whoeverWronged(wordsIn(subjectClause(text, m[0]))) {
+		return f.threatCheck(v, m) // "whoever broke my phone will pay tomorrow after school"
+	}
 	subject := threatSubject(text, m[0])
 	switch {
 	case subject.mine || !subject.people(false):
@@ -8127,6 +8133,16 @@ func (f *scannedField) payCheck(v *view, m []int) bool {
 		return f.threatCheck(v, m)
 	}
 	return false
+}
+
+// whoeverWronged reports a subject clause that picks out whoever wronged the
+// poster: "whoever broke my phone", "whoever snitched", "whoever stole my
+// bag", not "whoever wants a hoodie".
+func whoeverWronged(ws []string) bool {
+	for len(ws) > 0 && subjectFillers[ws[0]] {
+		ws = ws[1:]
+	}
+	return len(ws) > 1 && (is(ws[0], "whoever") || is(ws[0], "whomever")) && anyIn(ws[1:min(len(ws), 3)], wrongVerbs)
 }
 
 var (
@@ -8143,28 +8159,37 @@ var (
 	// hoodies will pay on monday", "you'll pay tomorrow when you come to
 	// collect it".
 	moneyWords = canonSetOf(`rs rupees inr dollars bucks cash fee fees money bill bills upi gpay paytm card online
-		price amount rent fine deposit ticket tickets treat`)
-	purchaseWords = canonSetOf(`signed sign ordered order orders bought buy buying booked collect collecting
+		price amount rent fine deposit ticket tickets treat receipt receipts`)
+	purchaseWords = canonSetOf(`signed sign ordered order orders bought buy buying booked book collect collecting
 		registered enrolled subscribed`)
 	// damageVerbs, before a thing that is no one's body, make paying for it
 	// paying for the damage (damagePaid), and unbroken are what is broken
 	// in a reckoning: "broke my heart".
 	damageVerbs = canonSetOf(`broke broken smashed damaged cracked scratched`)
 	unbroken    = canonSetOf(`heart hearts trust promise promises spirit`)
+	// wrongVerbs, after "whoever", pick out whoever wronged the poster
+	// (whoeverWronged); prepWords, bought by the poster, are a threat's
+	// preparation besides a weapon (purchaseArmed).
+	wrongVerbs = canonSetOf(`broke smashed damaged cracked scratched stole took snitched ratted touched hit pushed
+		bullied hurt tripped`)
+	prepWords = canonSetOf(`something somethin smth surprise revenge rope ropes lighter lighters poison bleach
+		balaclava`)
 )
 
 // purchasePaid reports a thing bought, ordered or signed up for that "will
 // pay" pays for, read in the words before the promise (before) and the text
 // after it in the sentence (after): in a relative clause before it, which is
 // the payer's ("everyone who signed up for the trip will pay", "the people
-// who ordered hoodies"), or in a clause after it that is not the poster's
-// own ("you'll pay tomorrow when you come to collect the book"), unless the
-// poster's purchase is the reader's ("i ordered your hoodie"). The poster's
-// own purchase after the promise is a threat's preparation ("you will pay
-// tomorrow after school, i bought a bat", "i ordered something special",
-// "i've booked the hall for it"), and "buy your way out", "in order of" and
-// "signed" opening a clause, a sign-off ("signed the kid you bullied"), are
-// no purchase.
+// who ordered hoodies"), or in a clause after it, someone else's ("you'll
+// pay tomorrow when you come to collect the book") or the poster's own, for
+// the reader ("i ordered your hoodie") or for anyone, unless purchaseArmed
+// finds a threat's preparation in it: "i already ordered the pizza", "i
+// booked the turf", "i signed us up for the quiz", not "you will pay
+// tomorrow after school, i bought a bat", "i ordered something special" or
+// "i've booked the hall for it". "Book" is a purchase only before a
+// determiner ("book the hall", not "ripped my book"); "buy your way out",
+// "in order of" and "signed" opening a clause, a sign-off ("signed the kid
+// you bullied"), are no purchase.
 func purchasePaid(before []string, after string) bool {
 	for i, w := range before {
 		if !purchaseWords[w] {
@@ -8189,13 +8214,16 @@ func purchasePaid(before []string, after string) bool {
 			if i+1 < len(ws) {
 				next = ws[i+1]
 			}
+			if is(w, "book") && !determiners[next] {
+				continue // "book the hall", not "ripped my book"
+			}
 			switch {
 			case i == 0 && (is(w, "signed") || is(w, "sign")),
 				i > 0 && is(ws[i-1], "in") && is(w, "order"),
 				i+2 < len(ws) && ownerWords[next] && is(ws[i+2], "way"):
 			case anyIn(ws[:i], firstPerson):
-				if is(next, "your") || is(next, "ur") {
-					return true
+				if is(next, "your") || is(next, "ur") || !purchaseArmed(ws[i+1:]) {
+					return true // "i ordered your hoodie", "i already ordered the pizza"
 				}
 			default:
 				return true
@@ -8205,12 +8233,37 @@ func purchasePaid(before []string, after string) bool {
 	return false
 }
 
+// purchaseArmed reports, in the words after the poster's own purchase, a
+// threat's preparation: a weapon, something to hurt or burn with
+// (prepWords), something left vague ("something special", "a surprise",
+// "my revenge"), or what is bought aimed at the payers ("for you", "for
+// them", "for it"). Food, tickets, clothes, a booking or "signed us up" are
+// none of these.
+func purchaseArmed(ws []string) bool {
+	for i, w := range ws {
+		var next string
+		if i+1 < len(ws) {
+			next = ws[i+1]
+		}
+		switch {
+		case i >= 6:
+			return false
+		case weaponHeads[w] || bluntHeads[w] || fuelHeads[w] || prepWords[w],
+			is(w, "for") && (objectWords[next] || payForWhat[next] || is(next, "em")):
+			return true
+		}
+	}
+	return false
+}
+
 // fightSet reports a fight's place, a weapon or a death in ws, or a fight's
-// time when nothing is said to be paid for (forIt), which make a thing broken
-// no payment's: "the guys who broke my glasses will pay tomorrow behind the
-// school", "whoever broke my phone will pay tomorrow after school", "whoever
-// broke my phone will pay, they're dead"; not "the guys who broke the window
-// will pay for it after school".
+// time unless the time may be the payment's (forIt), which make a thing
+// broken no payment's: "the guys who broke my glasses will pay tomorrow
+// behind the school", "whoever broke my phone will pay tomorrow after
+// school"; not "the guys who broke the window will pay for it after school".
+// It only refuses payCheck's let-off: the promise is held only when
+// threatCheck then finds a time or a place near it, which "whoever broke my
+// phone will pay, they're dead" does not have.
 func fightSet(ws []string, forIt bool) bool {
 	if anyIn(ws, weaponHeads) || hasWord(ws, "dead") {
 		return true
@@ -8233,16 +8286,18 @@ func fightSet(ws []string, forIt bool) bool {
 
 // damagePaid reports a thing broken or damaged in ws, which is what "will
 // pay" or "will pay for it" pays for: "the guys who broke the window will pay
-// for it tomorrow". A body, a person or a heart broken is a reckoning's
-// ("whoever broke my nose will pay"), and so is breaking with no thing named
-// ("broke into my locker").
-func damagePaid(ws []string) bool {
+// for it tomorrow", and whether it is the poster's own (own: "my phone"). A
+// body, a person or a heart broken is a reckoning's ("whoever broke my nose
+// will pay"), and so is breaking with no thing named ("broke into my
+// locker").
+func damagePaid(ws []string) (damaged, own bool) {
 	for i, w := range ws {
 		if !damageVerbs[w] {
 			continue
 		}
 		k := i + 1
 		for k < len(ws) && k < i+3 && (determiners[ws[k]] || ownerWord(ws[k])) {
+			own = own || myWords[ws[k]]
 			k++
 		}
 		if k == i+1 || k >= len(ws) {
@@ -8250,10 +8305,10 @@ func damagePaid(ws []string) bool {
 		}
 		if t := ws[k]; !bodyHeads[t] && !unbroken[t] && headKind(t) != nounPerson && headKind(t) != nounKin &&
 			!objectWords[t] {
-			return true
+			return true, own
 		}
 	}
-	return false
+	return false, false
 }
 
 // prognosis reports an illness, a hospital or a leaving in sentence or just
