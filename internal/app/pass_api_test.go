@@ -1683,10 +1683,14 @@ func TestPassSlowPaymentIsWaitedFor(t *testing.T) {
 	if !dayRoundedAfter(held, before, after, passPendingPaymentTTL) {
 		t.Fatalf("a checkout waiting on its payment is held until %v, want the first UTC midnight %v on", held.UTC(), passPendingPaymentTTL)
 	}
-	// The cookie set at checkout outlives the hold, counted from before the
-	// checkout was asked for, and asking after the purchase neither sets nor
-	// clears it.
-	if started.Add(time.Duration(cookie.MaxAge) * time.Second).Before(held) {
+	// The cookie set at checkout lasts to a UTC midnight no earlier than the
+	// hold's, and asking after the purchase neither sets nor clears it.
+	// Counted from before the checkout was asked for, it runs out short of
+	// that midnight by the moment the checkout took and the part of a second
+	// its max age is cut to, so it is compared by the day: the hold may fall
+	// on that same midnight when one passed between the checkout and the
+	// webhook.
+	if dayCeil(started.Add(time.Duration(cookie.MaxAge) * time.Second)).Before(held) {
 		t.Fatalf("the claim cookie lapses before the order it holds (%v)", held.UTC())
 	}
 	if status, set := p.claimSetCookie(); status != http.StatusAccepted || set != nil {
@@ -1868,7 +1872,7 @@ func TestPassRenewalOfAPassThatIsGone(t *testing.T) {
 		t.Fatalf("a renewal of a lapsed Pass left %d orders", n)
 	}
 
-	// No order is left naming a Pass that has gone
+	// No order is left naming a deleted Pass
 	// (TestPassThatIsGoneIsNamedByNoOrder), but one naming a Pass that is not
 	// there is a renewal of nothing all the same: paid, it makes a new Pass,
 	// as one whose Pass is refunded after its order does

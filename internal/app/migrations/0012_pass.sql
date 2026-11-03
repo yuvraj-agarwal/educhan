@@ -97,14 +97,16 @@ CREATE TABLE IF NOT EXISTS pass_orders (
     -- buyer has not paid yet, or the webhook has not arrived.
     payment_hash  BYTEA UNIQUE,
     -- The Pass this purchase renews, when the checkout was sent its code. NULL
-    -- buys a new Pass, and so does a renewal whose Pass has gone since, which
-    -- names no Pass any more: the transaction that deletes a Pass (a refund or
-    -- a dispute that leaves it no paid time to come, or the prune a month past
-    -- its expiry) sets this to NULL in every order naming it, so a paid order
-    -- kept for its owner to reissue names no Pass that has gone (the README
-    -- says what the database files still show of it). It is not a foreign key,
-    -- whose check would lock the Pass's row and leave the checkout's
-    -- transaction id on it (above); clearing it writes to this table alone.
+    -- buys a new Pass, and so does a renewal whose Pass has gone since: the
+    -- transaction that deletes a Pass (a refund or a dispute that leaves it no
+    -- paid time to come, or the prune a month past its expiry) sets this to
+    -- NULL in every order naming it, so a paid order kept for its owner to
+    -- reissue names no deleted Pass (the README says what the database files
+    -- still show of it), and one still naming a Pass a month past its expiry,
+    -- until the prune deletes it, is collected as one naming none. It is not a
+    -- foreign key, whose check would lock the Pass's row and leave the
+    -- checkout's transaction id on it (above); clearing it writes to this
+    -- table alone.
     renew_pass_id BIGINT,
     -- The term the order buys, in days: EDUCHAN_PASS_DAYS when the checkout
     -- started. Collecting, renewing and pruning the order all use this, so a

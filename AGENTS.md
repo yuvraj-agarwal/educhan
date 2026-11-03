@@ -882,15 +882,19 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   in code instead: every transaction that deletes a Pass (today a refund or dispute that
   leaves it no paid time to come, and the prune a month past its expiry) clears it from
   every order that renews it, writing to `pass_orders` alone, so no order, paid or not,
-  names a Pass that has gone (`TestPassThatIsGoneIsNamedByNoOrder`); anything new that
-  deletes a Pass must do the same. A Pass a month past its expiry has gone for every
-  purpose, pruned yet or not: every lookup of a Pass takes only one whose `expires_at` is
-  after `passCutoff(now)`, through `passByToken` and `passWithToken` or in its own query
-  (`renewPass` and `createPassReissue`, for example), so whatever reaches it (a check, a
-  post, a renewal, a claim, a reissue code, a refund) finds it gone, and the prune just
-  deletes its rows (`TestPassPastItsGraceMonthIsGone`); anything new that looks a Pass up
-  must do the same. `TestPassIsNeverStoredOrLogged`, `TestPassTablesCannotBeJoinedToPosts`
-  and `TestPassSharesOneHourlyBudget` hold it there.
+  names a deleted Pass (`TestPassThatIsGoneIsNamedByNoOrder`); anything new that deletes
+  a Pass must do the same. A Pass a month past its expiry has gone for every purpose,
+  pruned yet or not: every lookup of a Pass but `moveOrigin`'s takes only one whose
+  `expires_at` is after `passCutoff(now)`, through `passByToken` and `passWithToken` or
+  in its own query (`renewPass` and `createPassReissue`, for example), so whatever
+  reaches it (such as a check, a post, a renewal, a claim, a reissue code or a refund)
+  finds it gone, and the prune just deletes its rows (`TestPassPastItsGraceMonthIsGone`);
+  anything new that looks a Pass up must do the same. Until the prune, an order still
+  naming such a Pass is collected or refunded as one naming none: `renewPass` and
+  `renewalUnderWay` find no Pass, and `moveOrigin`, which a refund of the order calls on
+  it, finds none of its terms still running. `TestPassIsNeverStoredOrLogged`,
+  `TestPassTablesCannotBeJoinedToPosts` and `TestPassSharesOneHourlyBudget` hold it
+  there.
 - **Bump order only.** The index and the catalog list stickies, then threads by their
   last bump, and nothing else moves a thread: no "popular", "trending" or "hot", and no
   ranking by views, likes, replies or images, because ranking by popularity is what

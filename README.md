@@ -581,11 +581,11 @@ the `pass_revocations` row it writes dates it instead. One that leaves the Pass
 no paid time to come, as one of any of its terms does in the month after it runs
 out, deletes the row, as the prune a month past its expiry does. The transaction
 that deletes a Pass also clears it from every order that renews it, paid or not,
-so no order names a Pass that has gone; that writes only those orders, and each
-then holds that transaction's id, as does the row a refund or dispute writes
-beside them in `pass_revocations`, so whoever holds those files can still tell
-which orders one deletion cleared and, while that row is kept and nothing later
-has written it again (a full refund or dispute of the payment, or the same one
+so no order names a deleted Pass; that writes only those orders, and each then
+holds that transaction's id, as does the row a refund or dispute writes beside
+them in `pass_revocations`, so whoever holds those files can still tell which
+orders one deletion cleared and, while that row is kept and nothing later has
+written it again (a full refund or dispute of the payment, or the same one
 delivered again), which payment's refund or dispute it followed. Those files
 also hold the row versions a write or a deletion left behind until Postgres
 reuses their space, as does a physical backup that copied them, so a gone Pass's

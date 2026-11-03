@@ -1357,12 +1357,16 @@ func (a *App) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if outcome == paidUnmatched {
-			// A checkout of something else sold on the same Stripe account, or
-			// an unpaid order pruned after its deadline and paid after all.
-			// Nothing here can tell which, and neither should become a Pass;
-			// the owner checks the payment against the receipt before refunding
-			// it. A repeated delivery after the Pass was collected, or one for
-			// a payment refunded first, is no news, and is not logged.
+			// Neither an order kept nor a Pass still there has this payment: a
+			// checkout of something else sold on the same Stripe account, say,
+			// an unpaid order pruned after its deadline and paid after all, or
+			// a delivery repeated after the Pass it bought has gone (a month
+			// past its expiry, or ended by a refund or dispute of another of
+			// its payments). Nothing here can tell which, and none should
+			// become a Pass; the owner checks the payment against the receipt
+			// before refunding it. A repeated delivery while its order or the
+			// Pass it bought is still there, or one for a payment refunded
+			// first, is no news, and is not logged.
 			a.log.Warn("a paid Stripe checkout matched no open Pass order")
 		}
 	case stripeCheckoutExpired, stripeCheckoutAsyncFailure:
@@ -1473,8 +1477,9 @@ var errPassGone = errors.New("the Pass to renew is gone")
 // prunePasses): that transaction clears the Pass from every order naming it,
 // and it takes the lock too, so it comes either before the lookup above,
 // which then finds no Pass, or after the order is written, which it then
-// clears. No order is left naming a Pass that has gone, and collecting one
-// cleared makes a new Pass (collectPassOrder).
+// clears. No order is left naming a deleted Pass, and collecting one cleared
+// makes a new Pass (collectPassOrder), as does collecting one whose Pass has
+// since gone a month past its expiry, before the prune clears it (renewPass).
 func (s *Store) createPassOrder(ctx context.Context, o passOrder, now time.Time) error {
 	return s.passTx(ctx, func(tx pgx.Tx) error {
 		var renewID *int64
@@ -1624,13 +1629,17 @@ func paymentRevoked(ctx context.Context, tx pgx.Tx, paymentHash []byte) (bool, e
 // as gone for every purpose from then on, exactly as if prunePasses, which
 // deletes it by the same bound, had run already, so the prune only frees its
 // rows. Every lookup of a Pass, by its code (passWithToken), by its id or
-// through one of its payments, holds it to expires_at > passCutoff(now), and
-// anything new that looks one up must too; what a transaction then reads or
-// writes of the Pass it found, under the lock, follows from that lookup
-// (revokeTerm after revokePassPayment's, for example). So checking it, posting
-// with it, renewing it, collecting a renewal of it, reissuing it and refunding
-// one of its payments, for example, each find no Pass, as they would once it
-// was pruned.
+// through one of its payments, holds it to expires_at > passCutoff(now), but
+// for moveOrigin's (below), and anything new that looks one up must too; what a
+// transaction then reads or writes of the Pass it found, under the lock,
+// follows from that lookup (revokeTerm after revokePassPayment's, for example).
+// So checking it, posting with it, renewing it, collecting a renewal of it,
+// reissuing it and refunding one of its payments, for example, each find no
+// Pass, as they would once it was pruned. An order names the Pass it renews
+// until that Pass is deleted (revokeTerm, prunePasses), and moveOrigin, which
+// revokePassPayment calls on that Pass when it takes such an order back, reads
+// it by its id without the bound, which moves nothing for one past its month,
+// since none of its terms still runs.
 func passCutoff(now time.Time) time.Time { return now.Add(-passExpiredGrace) }
 
 // passByToken returns the Pass a code hash belongs to at now, run out or not,
@@ -2081,8 +2090,11 @@ func (s *Store) revokePassPayment(ctx context.Context, paymentHash []byte, now t
 			res = revokedOrder
 			// A paid renewal not collected yet counts as a term to come of
 			// the Pass it renews, so taking it back is applied as a payment
-			// of that Pass would be. An order whose Pass has gone since names
-			// none (revokeTerm, prunePasses), and nothing moves.
+			// of that Pass would be. An order whose Pass was deleted since
+			// names none (revokeTerm, prunePasses), and nothing moves; nor
+			// does anything for one whose Pass has gone a month past its
+			// expiry, before the prune clears it, since none of that Pass's
+			// terms still runs (moveOrigin).
 			if renewID != nil {
 				if err := moveOrigin(ctx, tx, *renewID, now); err != nil {
 					return err
@@ -2138,7 +2150,7 @@ type revokedPayment struct {
 // it: one whose only time left is the rest of a day a refunded term stopped
 // at goes as one with none would. The same statement clears it from every
 // order that renews it, paid or not, writing to pass_orders alone, so none
-// names a Pass that has gone (0012), and collecting one makes a new Pass.
+// names the deleted Pass (0012), and collecting one makes a new Pass.
 //
 // A Pass that goes on without its origin, the refunded payment having been
 // it, could no longer be reissued; moveOrigin decides whether another payment
@@ -2218,10 +2230,9 @@ func moveOrigin(ctx context.Context, tx pgx.Tx, passID int64, now time.Time) err
 // Passes a month past expiry, which can no longer be renewed and are bought
 // anew instead, and which count as gone from that moment (passCutoff), so this
 // only frees their rows. A Pass that goes is cleared from every order that
-// renews it, as revokeTerm clears one, so no order kept names a Pass that has
-// gone, and collecting one makes a new Pass. Checkout runs it, and so does the
-// daily sweep, which needs no Pass setting for it: every order carries its own
-// term.
+// renews it, as revokeTerm clears one, so no order kept names a deleted Pass,
+// and collecting one makes a new Pass. Checkout runs it, and so does the daily
+// sweep, which needs no Pass setting for it: every order carries its own term.
 func (s *Store) prunePasses(ctx context.Context, now time.Time) error {
 	return s.passTx(ctx, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
