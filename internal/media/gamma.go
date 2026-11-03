@@ -3,7 +3,9 @@ package media
 import (
 	"bytes"
 	"compress/zlib"
+	"context"
 	"encoding/binary"
+	"errors"
 	"image"
 	"image/color"
 	"io"
@@ -42,8 +44,9 @@ import (
 // are, whatever follows it, and an iCCP chunk when it holds a profile
 // Chromium uses (pngProfileUsable). Chromium reads every sRGB chunk until
 // one will do but only the first iCCP that is not empty, so a profile that
-// will not do keeps a later one from being read.
-func pngGamma(data []byte) (gamma float64, ok bool) {
+// will not do keeps a later one from being read. The profile is read under
+// ctx, and only ctx's error is returned, once it has ended.
+func pngGamma(ctx context.Context, data []byte) (gamma float64, ok bool, err error) {
 	var (
 		value   uint32
 		tagged  bool   // a gAMA chunk has been read
@@ -77,16 +80,19 @@ func pngGamma(data []byte) (gamma float64, ok bool) {
 		i += 12 + int(n)
 	}
 	if !tagged || srgb || value == 0 {
-		return 0, false
+		return 0, false, nil
 	}
 	gamma = float64(value) / 100000
 	if math.Abs(gamma*2.2-1) <= 0.05 {
-		return 0, false
+		return 0, false, nil
 	}
-	if profile != nil && pngProfileUsable(profile) {
-		return 0, false
+	if profile != nil {
+		used, err := pngProfileUsable(ctx, profile)
+		if err != nil || used {
+			return 0, false, err
+		}
 	}
-	return gamma, true
+	return gamma, true, nil
 }
 
 // maxICCProfile is the most a PNG's ICC profile may inflate to here for
@@ -110,27 +116,53 @@ const maxICCProfile = 64 << 20
 // one larger than this is read only as far as its header.
 const iccProfileRead = 256 << 10
 
+// iccStreamRead is how much of an iCCP chunk's compressed stream
+// pngProfileUsable inflates. What inflating costs follows the stream's
+// length, not the profile's: a stream of empty blocks, each with codes that
+// compress/flate builds tables for afresh, inflates to nothing at about three
+// quarters of a second of CPU on one core for every MiB, and read whole, an
+// upload of one pixel and 8 MiB of such blocks took 6 to 7 s to process, one
+// of 31 MiB 20 to 24 s, and went on after its context had ended. A profile's
+// stream is a few hundred bytes to a few dozen kilobytes (a stream of 64 MiB
+// of zeros, more than a profile Chromium uses may be, is 81 KB), and this
+// much of the costliest blocks takes about a fifth of a second
+// (TestALongProfileStreamCostsNoMoreThanItsStart,
+// TestAProfilesStreamIsReadNoFurtherThanIccStreamRead).
+const iccStreamRead = 256 << 10
+
 // pngProfileUsable reports whether the data of an iCCP chunk holds a profile
 // Chromium uses, as its PNG decoder and skcms read one: a name of one to 80
 // bytes and its NUL, compression method 0, and a zlib stream that inflates
 // whole, checksum and all, to no more than maxICCProfile, holding a profile
 // iccProfileUsable takes. Chromium's inflater refuses a stream whose header
-// asks for a preset dictionary, which compress/zlib takes when the
-// dictionary it names is the empty one, so that is looked for first; one
-// that asks for a window over 32 KiB, which both refuse, is left to
-// compress/zlib. The stream is inflated to its end, so whatever it holds
-// past what is kept is counted and let go.
-func pngProfileUsable(chunk []byte) bool {
+// asks for a preset dictionary, which compress/zlib takes when the dictionary
+// it names is the empty one, so that is looked for first; one that asks for a
+// window over 32 KiB, which both refuse, is left to compress/zlib. The stream
+// is inflated to its end, so whatever it holds past what is kept is counted
+// and let go — but no further than its first iccStreamRead bytes. A longer
+// stream is judged by what those inflate to, and taken as inflating whole,
+// checksum and all, to no more than maxICCProfile: a profile whose header
+// iccProfileUsable takes from them is taken as used, though Chromium, reading
+// on, might find the stream broken or too long and apply the gAMA, and one
+// whose header does not inflate from them is not, though Chromium might use
+// it. The stream is read through ctx, and the error is ctx's once it has
+// ended, which stops the inflating.
+func pngProfileUsable(ctx context.Context, chunk []byte) (bool, error) {
 	name := bytes.IndexByte(chunk[:min(len(chunk), 81)], 0)
 	if name < 1 || name+3 >= len(chunk) || chunk[name+1] != 0 {
-		return false
+		return false, nil
 	}
 	if chunk[name+3]&0x20 != 0 { // FDICT, in the stream's second byte
-		return false
+		return false, nil
 	}
-	z, err := zlib.NewReader(bytes.NewReader(chunk[name+2:]))
+	stream := chunk[name+2:]
+	cut := len(stream) > iccStreamRead
+	if cut {
+		stream = stream[:iccStreamRead]
+	}
+	z, err := zlib.NewReader(ctxReader{ctx, bytes.NewReader(stream)})
 	if err != nil {
-		return false
+		return false, ctx.Err()
 	}
 	p, k := make([]byte, iccProfileRead), 0
 	for k < len(p) && err == nil {
@@ -144,10 +176,17 @@ func pngProfileUsable(chunk []byte) bool {
 		n, err = io.Copy(io.Discard, io.LimitReader(z, maxICCProfile-n+1))
 		n += int64(k)
 	}
-	if err != nil && err != io.EOF || n > maxICCProfile {
-		return false
+	if e := ctx.Err(); e != nil {
+		return false, e
 	}
-	return iccProfileUsable(p[:k], n)
+	if cut && errors.Is(err, io.ErrUnexpectedEOF) && n <= maxICCProfile {
+		// The stream goes on past what is read of it.
+		err, n = io.EOF, maxICCProfile
+	}
+	if err != nil && err != io.EOF || n > maxICCProfile {
+		return false, nil
+	}
+	return iccProfileUsable(p[:k], n), nil
 }
 
 // iccProfileUsable reports whether skcms_Parse, which is how Chromium reads

@@ -1052,19 +1052,26 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   profile from a 64 MiB budget its own buffers share, which left about 480 KiB less for a
   291 KB chunk and 7 to 8 MiB less for a 6.5 MB upload of random bytes, so a profile
   within that of 64 MiB is taken as used here, where Chromium applies the `gAMA` or does
-  not show the picture (`maxICCProfile`). An `sRGB` or `iCCP` chunk Chromium cannot read
-  takes nothing's place there, and the `gAMA` beside it is applied; a `cICP` chunk, which
-  Chromium reads before them all, is not read here. `applyPNGGamma` converts the colour
-  samples, never alpha, to the sRGB values that show the same light, at the picture's own
-  depth, before `reduceHiddenColour`. `TestPNGGammaIsShownAsBrowsersShowIt` holds a stored
-  grey ramp to within a level of what Chromium 141 drew for each tag, and has a case for
-  each of those rules, for a profile broken in each way `iccProfileUsable` refuses one
-  (the one whose tag table runs past it is refused by its tags' bounds as well, so
-  `TestICCTagTableMustFitTheProfile` has one only the table's length refuses), and for the
-  sound grey, RGB and `cicp`-tagged profiles those differ from; none has a lookup table
-  (`A2B0` or `A2B1`), which stands in here for the curves and colourants without being
-  read. `TestPNGGammaConvertsColourOnly` covers every picture type `image/png` decodes to.
-  A change there needs the same browser comparison.
+  not show the picture (`maxICCProfile`). Only the first 256 KiB of a profile's stream is
+  inflated (`iccStreamRead`), through the request's context: a profile's stream is a few
+  dozen kilobytes at most, and empty deflate blocks slow to inflate cost about three
+  quarters of a second of CPU a MiB, which read whole went on past the deadline. A longer
+  stream is taken as inflating whole, so a profile whose header is in what those bytes
+  inflate to is taken as used, its checksum unread, and one after them is not, where
+  Chromium reads on (`TestAProfilesStreamIsReadNoFurtherThanIccStreamRead`,
+  `TestReadingAProfileStopsWhenTheContextEndsPartway`). An `sRGB` or `iCCP` chunk Chromium
+  cannot read takes nothing's place there, and the `gAMA` beside it is applied; a `cICP`
+  chunk, which Chromium reads before them all, is not read here. `applyPNGGamma` converts
+  the colour samples, never alpha, to the sRGB values that show the same light, at the
+  picture's own depth, before `reduceHiddenColour`. `TestPNGGammaIsShownAsBrowsersShowIt`
+  holds a stored grey ramp to within a level of what Chromium 141 drew for each tag, and
+  has a case for each of those rules, for a profile broken in each way `iccProfileUsable`
+  refuses one (the one whose tag table runs past it is refused by its tags' bounds as
+  well, so `TestICCTagTableMustFitTheProfile` has one only the table's length refuses),
+  and for the sound grey, RGB and `cicp`-tagged profiles those differ from; none has a
+  lookup table (`A2B0` or `A2B1`), which stands in here for the curves and colourants
+  without being read. `TestPNGGammaConvertsColourOnly` covers every picture type
+  `image/png` decodes to. A change there needs the same browser comparison.
 - **Memory.** `MaxPixels` is 25 megapixels, so that the 24-megapixel photos phones and
   cameras save are taken whole (an iPhone's are 5712×4284, 24.5 million pixels;
   `TestTwentyFourMegapixelPhotosAreAccepted`), and a GIF's frames together may not be

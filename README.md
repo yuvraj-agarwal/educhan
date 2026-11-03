@@ -1048,10 +1048,12 @@ server that would refuse what it sends.
   more than 64 MiB is taken as read here, with no gamma applied, so the two disagree over
   a profile that inflates to within about the upload's own size of 64 MiB, a band of tens
   of MiB for an upload near the 31 MiB limit: see `maxICCProfile` in
-  `internal/media/gamma.go`), or the gamma is within 5% of the usual 1/2.2, which browsers
-  leave alone. The checksum recorded for an attachment is of the stored file, so it does
-  not depend on the metadata an upload arrived with, beyond an orientation that turns the
-  picture.
+  `internal/media/gamma.go`; and only the first 256 KiB of a profile's compressed stream
+  is read here, far more than a profile's needs, so a stream padded past that to keep the
+  server busy is judged by what those bytes hold, see `iccStreamRead`), or the gamma is
+  within 5% of the usual 1/2.2, which browsers leave alone. The checksum recorded for an
+  attachment is of the stored file, so it does not depend on the metadata an upload
+  arrived with, beyond an orientation that turns the picture.
 - **Files stored before this** keep their metadata: a server that took uploads before
   it rewrote them kept them as they came, and nothing rewrites them now, so they are
   served that way until their posts are deleted. The deployment in `deploy/` has kept

@@ -399,7 +399,11 @@ func sanitizePNG(ctx context.Context, data []byte, limit int64) (sanitized, erro
 	if err := ctx.Err(); err != nil {
 		return sanitized{}, err
 	}
-	if gamma, ok := pngGamma(data); ok {
+	gamma, ok, err := pngGamma(ctx, data)
+	if err != nil {
+		return sanitized{}, err
+	}
+	if ok {
 		applyPNGGamma(src, gamma)
 	}
 	reduceHiddenColour(src)

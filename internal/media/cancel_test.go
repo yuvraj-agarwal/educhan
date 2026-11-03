@@ -18,15 +18,20 @@ import (
 	"github.com/yuvraj-agarwal/educhan/internal/media/jpegenc"
 )
 
-// Processing stops once its context is done at five places: the decode reads
-// through a ctxReader, each format checks once its decode is done, the encode
-// writes into a storedBuffer — and the JPEG encoder stops working, not only
-// writing, once a write is refused — playGIF checks before each frame, and
-// processHeld checks before the thumbnail, or sanitizeGIF before a GIF's,
-// which it makes itself. These tests pin each of them on its own, by ending
-// the context at the moment that one asks (askedContext) and holding the work
-// to stopping right there. None depends on timing: where the context ends is
-// fixed by the code's own calls, not by how fast the machine is.
+// Processing stops once its context is done wherever it asks: the decode
+// reads through a ctxReader, and so does the inflating of a PNG's ICC profile
+// after it (pngProfileUsable); each format checks once its decode is done;
+// the encode writes into a storedBuffer — and the JPEG encoder stops working,
+// not only writing, once a write is refused; playGIF checks before each
+// frame, and within one every haltEvery pixels of the rows it looks at for
+// the frame's table (ownTable), looks at again for a frame of 256 colours
+// that does not draw them all (undrawnInTable) and writes (frame), and stops
+// at once when a write is refused; and processHeld checks before the
+// thumbnail, or sanitizeGIF before a GIF's, which it makes itself. These
+// tests pin each of them on its own, by ending the context at the moment that
+// one asks (askedContext) and holding the work to stopping right there. None
+// depends on timing: where the context ends is fixed by the code's own calls,
+// not by how fast the machine is.
 
 // askedContext is a context that ends — Err returns context.Canceled and
 // Done is closed — the moment it is asked, through Err, for the after-th time
@@ -289,6 +294,45 @@ func TestDecodingStopsWhenTheContextEndsPartway(t *testing.T) {
 		if n, _ := ctx.asked(askWrite); n != 0 {
 			t.Errorf("%s: the encode wrote %d times after the decode was cut short", name, n)
 		}
+	}
+}
+
+// TestReadingAProfileStopsWhenTheContextEndsPartway holds that inflating a
+// PNG's ICC profile to see whether a browser uses it (pngProfileUsable),
+// which comes after the decode, stops at the first read of the profile's
+// stream after the context ends, with the context's error, and that nothing
+// is encoded: the profile's own ctxReader, on its own. The stream is a
+// profile after empty blocks that compress/flate takes long to inflate
+// (costlyStream), as an upload made to keep a core busy would hold; read to
+// its end, which once nothing stopped, a stream of 31 MiB of such blocks took
+// over 20 s.
+func TestReadingAProfileStopsWhenTheContextEndsPartway(t *testing.T) {
+	const at = 2
+	stream := costlyStream(iccStreamRead/4, sRGBProfile(nil))
+	data := withPNGChunks(photoPNG(t), gAMAChunk(100000), iCCPChunk("x", 0, stream))
+	// The decode's reads are those before sanitizePNG asks, once it is done;
+	// the profile's, those after.
+	decode, profile, decoded := 0, 0, false
+	for _, a := range sanitizeLive(t, "PNG", data).asks {
+		switch {
+		case a.fn == "sanitizePNG":
+			decoded = true
+		case a.fn == askRead && decoded:
+			profile++
+		case a.fn == askRead:
+			decode++
+		}
+	}
+	if profile <= at {
+		t.Fatalf("the profile's stream is read %d times; the fixture must read it more than %d for the context to end part way", profile, at)
+	}
+	ctx := newAskedContext(askRead, decode+at)
+	sanitizeUnder(t, "PNG", ctx, data)
+	if n, late := ctx.asked(askRead); n != decode+at || late != 0 {
+		t.Errorf("read %d times (%d after the context ended), want the decode's %d and %d of the %d of the profile's, and none after", n, late, decode, at, profile)
+	}
+	if n, _ := ctx.asked(askWrite); n != 0 {
+		t.Errorf("the encode wrote %d times after the profile's reading was cut short", n)
 	}
 }
 
