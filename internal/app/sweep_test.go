@@ -613,13 +613,15 @@ func TestSweepStoppedWhileItPrunesEndsAsIfNotStopped(t *testing.T) {
 // Cloud Run kills it; the process's part, the close, is cmd/server's
 // (TestStoppedSweepExitsWhenTheDatabaseStopsAnswering).
 //
-// The bound is the prune's alone, so the upper side is timed from when the
-// prune is seen waiting, and close enough that twice the bound shows: the
-// steps before the prune, the credential rewrite and the vacuum, which tries
-// again while something holds it off, such as a transaction older than the
-// rewrite anywhere on the instance, take what they take. The prune starts
-// after the sweep does and before it is seen, so the lower side is timed from
-// the sweep's start.
+// The bound is the prune's alone, so it is timed from when the prune is seen
+// waiting, closely enough that half or twice the bound shows: the steps before
+// the prune, among them the credential rewrite and its vacuum, which tries
+// again while something holds it off (a transaction older than the rewrite
+// anywhere on the instance, say), take what they take. The prune sets its
+// deadline as it starts, just before it is seen waiting, which is looked for
+// every five milliseconds, so it gives up a little under its bound after it is
+// seen; the lower side, at three quarters of the bound, leaves room for a look
+// that comes late.
 func TestSweepsPruneGivesUpAtItsBound(t *testing.T) {
 	var logs syncBuffer
 	const bound = time.Second
@@ -632,20 +634,18 @@ func TestSweepsPruneGivesUpAtItsBound(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	before := len(logs.String())
-	started := time.Now()
 	done := sweepInBackground(h, ctx)
 	h.waitForSpends(pid, 1)
 	seen := time.Now()
 	cancel()
 	report, err := sweepEnded(t, done, bound+5*time.Second)
-	took, waited := time.Since(started), time.Since(seen)
+	waited := time.Since(seen)
 	release()
 	if !errors.Is(err, context.DeadlineExceeded) || !strings.HasPrefix(err.Error(), "sweep spent captchas: ") {
 		t.Errorf("a prune held past its bound returned %v, want the prune running out of time", err)
 	}
-	if took < bound || waited > bound+bound/2 {
-		t.Errorf("the prune gave up %v after it was seen waiting, %v into the sweep, want about its bound of %v",
-			waited, took, bound)
+	if waited < bound*3/4 || waited > bound+bound/2 {
+		t.Errorf("the prune gave up %v after it was seen waiting, want about its bound of %v", waited, bound)
 	}
 	if report != (SweepReport{}) {
 		t.Errorf("sweep report = %+v, want nothing done", report)

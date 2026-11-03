@@ -105,12 +105,15 @@ func sweepEnv(t *testing.T) *pgxpool.Pool {
 }
 
 // sweepsOwnTime is what a whole sweep can take of its own, past anything a
-// test holds it up with: it waits a minute and five seconds after its
-// credential rewrite to read the verification tables a last time
-// (statsHandOver in internal/app), and its vacuum tries again for up to a
+// test holds it up with: it waits until a minute and five seconds after its
+// credential rewrite committed to read the verification tables a last time
+// (statsHandOver in internal/app). Its vacuum, which tries again for up to a
 // minute (vacuumPatience) while something holds it off, such as a transaction
 // older than the rewrite, which another test's can be, anywhere on the
-// instance. A test that waits for a sweep to exit gives it that and more.
+// instance, runs within that wait, and one that gives up ends it, so a sweep
+// takes about 65 seconds of its own. The minute added is slack, for an
+// instance slowed by other tests, and a test that waits for a sweep to exit
+// gives it more again.
 const sweepsOwnTime = 65*time.Second + time.Minute
 
 // migrateSchema applies every migration to the schema sweepEnv set up, as the
@@ -750,8 +753,8 @@ func TestASlowCommitIsWaitedOnWithoutAStop(t *testing.T) {
 //
 // That shows in the exit status, the warning's time and the log's fatal line
 // and missing sweep record, so the exit itself is not timed: what comes after
-// an unlock given up in time is the sweep's own, its wait after the
-// credential rewrite and the vacuum's tries, which no unlock changes.
+// an unlock given up in time is the sweep's own, such as its wait after the
+// credential rewrite, within which the vacuum tries, and no unlock changes it.
 func TestAnUnansweredUnlockIsGivenUpWithoutAStop(t *testing.T) {
 	// The two seconds from the unlock, and some to spare.
 	const quickly = 3 * time.Second
