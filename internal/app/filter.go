@@ -7706,6 +7706,10 @@ func labOccupied(after []string) bool {
 				labClauseVerbs[after[j+1]] {
 				np, named = nounPhrase{kind: nounKin, head: after[j], n: 1}, true
 			}
+			if !np.place() && !np.people(true) && labPronouns[after[j]] && j+1 < len(after) &&
+				(labClauseVerbs[after[j+1]] || labTails[after[j+1]]) {
+				np = nounPhrase{kind: nounPerson, head: after[j], n: 1} // "and they will all have to suffer"
+			}
 			rest := after[min(j+np.n, len(after)):]
 			if len(rest) > 1 && is(rest[0], "s") {
 				// The words come apart at an apostrophe: "the
@@ -7784,9 +7788,14 @@ func labTrapped(rest []string) bool {
 // "will have to stay back"), staying back ("will make everyone stay back")
 // or a new lab ("will need a new lab"). What menaces them is none of these,
 // wherever it comes (labMenace, "too late", "what hit", or "pay" with
-// nothing paid for but what they did): "won't know what hit her", "will
-// regret failing me", "will run but it'll be too late", "will pay for
-// failing me", "will be sorry".
+// nothing paid for but what they did, though "have to pay for it" is a
+// chore): "won't know what hit her", "will regret failing me", "will run but
+// it'll be too late", "will pay for failing me", "will be sorry"; nor is
+// what speaks of death or harm (labDeaths, "in hell", "who i am", hung
+// "from" one of labHangPoints, a chore done to someone's body or life):
+// "will have to clean up the bodies", "will get detention in hell", "will
+// finally know who i am", "will be suspended from the ceiling", "will have
+// to fix her face".
 func labReaction(rest []string) bool {
 	for i, w := range rest {
 		var prev, next string
@@ -7796,10 +7805,14 @@ func labReaction(rest []string) bool {
 		if i+1 < len(rest) {
 			next = rest[i+1]
 		}
+		haveTo := i > 1 && is(prev, "to") && (is(rest[i-2], "have") || is(rest[i-2], "has") || is(rest[i-2], "had"))
 		switch {
-		case labMenace[w], is(w, "late") && is(prev, "too"), is(w, "hit") && is(prev, "what"),
+		case labMenace[w], labDeaths[w], is(w, "late") && is(prev, "too"), is(w, "hit") && is(prev, "what"),
+			is(w, "hell") && is(prev, "in"), is(w, "am") && is(prev, "i") && i > 1 && is(rest[i-2], "who"),
+			is(w, "from") && labHung[prev] && labHangs(rest[i+1:]),
+			labChores[w] && ownerWord(next) && i+2 < len(rest) && (bodyHeads[rest[i+2]] || labLives[rest[i+2]]),
 			labPays[w] && (next == "" || is(next, "for") && (i+2 >= len(rest) ||
-				strings.HasSuffix(rest[i+2], "ing") || labDeeds[rest[i+2]])):
+				strings.HasSuffix(rest[i+2], "ing") || labDeeds[rest[i+2]] && !haveTo)):
 			return false
 		}
 	}
@@ -7819,6 +7832,16 @@ func labReaction(rest []string) bool {
 	return false
 }
 
+// labHangs reports one of labHangPoints after "from", past a determiner:
+// "from the ceiling", not "from school".
+func labHangs(ws []string) bool {
+	k := 0
+	if k < len(ws) && (determiners[ws[k]] || ownerWord(ws[k])) {
+		k++
+	}
+	return k < len(ws) && labHangPoints[ws[k]]
+}
+
 var (
 	// labInsides, after "in", put someone in the lab: "with Priya in it";
 	// labSelves, after "while", are the poster ("while I'm in there");
@@ -7826,7 +7849,13 @@ var (
 	// it").
 	labInsides = canonSetOf(`it there here`)
 	labSelves  = canonSetOf(`i i'm im we we're were`)
-	labStuff   = canonSetOf(`water alcohol ethanol gas sodium potassium magnesium everything nothing smoke fire`)
+	// labPronouns before one of labClauseVerbs, or one of labTails (the
+	// words come apart at an apostrophe), are people opening a clause of
+	// their own after "and": "and they will laugh", "and they'll all have to
+	// suffer".
+	labPronouns = canonSetOf(`they he she`)
+	labTails    = canonSetOf(`ll re s d ve`)
+	labStuff    = canonSetOf(`water alcohol ethanol gas sodium potassium magnesium everything nothing smoke fire`)
 	// labClauseVerbs are the nounEnds that are verbs, and after people
 	// joined to the lab by "and" open a clause of their own ("and the
 	// teacher will kill me"); labHarmed in that clause say the people are
@@ -7852,11 +7881,20 @@ var (
 		screaming yell yells sigh sighs panic freak priceless ground grounds disown disowns call calls report
 		complain evacuate run heart`)
 	labPenalties = canonSetOf(`detention detentions fail fails suspend suspends suspended suspension expel expelled
-		complaint complaints zero zeros mark marks punish punishes punished punishment scold scolds scolded`)
+		complaint complaints zero zeros mark marks punish punishes punished punishment scold scolds scolded homework
+		blame blames blamed`)
 	labChores = canonSetOf(`redo do clean repeat stay write rebuild fix explain pay`)
 	labMenace = canonSetOf(`regret regrets regretted sorry deserve deserves deserved capable`)
-	labPays   = canonSetOf(`pay pays`)
-	labDeeds  = canonSetOf(`what this that everything it`)
+	// labDeaths speak of death or harm in the clause, and so does hanging
+	// (labHung) "from" one of labHangPoints, and a chore done to someone's
+	// body (bodyHeads) or labLives (labReaction).
+	labDeaths = canonSetOf(`body bodies corpse corpses dead die dies died dying blood bloody bleed bleeding hospital
+		hospitals police cops ambulance survive survives surviving survived survival funeral grave`)
+	labHung       = canonSetOf(`suspended hung hanging hang hangs`)
+	labHangPoints = canonSetOf(`ceiling ceilings fan fans roof tree trees beam beams rafters`)
+	labLives      = canonSetOf(`life lives`)
+	labPays       = canonSetOf(`pay pays`)
+	labDeeds      = canonSetOf(`what this that everything it`)
 )
 
 // shootingRange reports a range for shooting in ws: "the shooting range".
