@@ -471,23 +471,24 @@ runs out. If educhan cannot be reached to drop it, the tab says so on whatever
 page it is on, and says how to drop it once back online with no more than the
 forget that was pressed: Stop collecting it here again after a Stop, Stop
 collecting it here after Remove the Pass, which leaves no Pass to remove, and
-Forget this browser again after a Forget. That warning stays, on whatever page
-the tab shows, until the tab learns that nothing is left to collect as of a
-time after the drop went: a forget pressed since, here or in another tab, that
-educhan answers by dropping the claims, or the tab's own collecting, or loading
-of the Pass page, asked since and finding nothing left; and it is not said once
-the tab has learned so. The name is kept in memory for that one request and
-nowhere else, and the drop sets no mark and stops nothing in any tab, since it
-reaches no other claim. Every checkout's answer puts its cookie in the place of
-the one before, whichever checkout started first, so the browser's checkouts go
-one at a time: while one is on its way its tab keeps a mark in `localStorage`
-(`educhan:pass-checkout:` and a random token, holding the time it was set), and
-a checkout waits to go until no other's mark is left, in any tab, each for 30
-seconds at most from the time it holds. A tab that leaves educhan, for another
-site say, calls off a checkout not yet answered and takes its mark off, and a
-press still waiting to go then (Buy, Renew, a code or Check it again) sends
-nothing. A mark left by a tab that crashed or was killed before its answer is
-taken off once its 30 seconds are over, by the next page to load, and Forget
+Forget this browser again after a Forget. Besides what takes any notice off, the
+reader dismissing it, moving to another page or a later notice put in its place,
+say, that warning stays until the tab learns that nothing is left to collect as
+of a time after the drop went: a forget pressed since, here or in another tab,
+that educhan answers by dropping the claims, or the tab's own collecting, or
+loading of the Pass page, asked since and finding nothing left; and it is not
+said once the tab has learned so. The name is kept in memory for that one
+request and nowhere else, and the drop sets no mark and stops nothing in any
+tab, since it reaches no other claim. Every checkout's answer puts its cookie in
+the place of the one before, whichever checkout started first, so the browser's
+checkouts go one at a time: while one is on its way its tab keeps a mark in
+`localStorage` (`educhan:pass-checkout:` and a random token, holding the time it
+was set), and a checkout waits to go until no other's mark is left, in any tab,
+each for 30 seconds at most from the time it holds. A tab that leaves educhan,
+for another site say, calls off a checkout not yet answered and takes its mark
+off, and a press still waiting to go then (Buy, Renew, a code or Check it again)
+sends nothing. A mark left by a tab that crashed or was killed before its answer
+is taken off once its 30 seconds are over, by the next page to load, and Forget
 this browser takes every mark off; a tab whose checkout is still on its way puts
 its own back. A checkout whose answer reaches its tab in the moment before that
 tab hears of a forget pressed in another is followed to Stripe, as one answered
@@ -1216,19 +1217,29 @@ not-found view.
   Pass, Forget this browser or Stop collecting it here, is said on whatever page this
   tab shows, since it asks for a step, except Stop collecting it here's, said only on
   the Pass page, which goes on collecting with Stop offered again. Besides what takes
-  any notice off, the reader dismissing it or moving to another page, say, it goes,
-  whatever page this tab shows, once this tab learns that nothing is left to collect as
-  of a time after its own forget went: a forget pressed after it, here or in another tab,
-  that educhan answers by dropping the checkouts, or this tab's own collecting, or loading
-  of the Pass page, asked after it and finding nothing left. A forget pressed and not
-  yet answered, one that could not reach educhan either, one whose tab was closed before
-  its answer, and any change to the Pass in another tab leave it, since dropping a true
-  warning costs the next person at the computer a Pass, and keeping a stale one an extra
-  press. None is said once such an answer has come, and Forget this browser then says
-  only what it took; a forget pressed since and not yet answered leaves it to be said,
-  and takes it off if its answer drops the checkouts. Remove's and Forget's, which also
-  say the browser holds no Pass, give way to the warning about the checkout alone whenever
-  the rest of what they say would go, as when another tab stores or removes a Pass, or
+  any notice off, the reader dismissing it, moving to another page or a later notice
+  put in its place, say, it goes, whatever page this tab shows, once this tab learns
+  that nothing is left to collect as of a time after its own forget went: a forget
+  pressed after it, here or in another tab, that educhan answers by dropping the
+  checkouts, or this tab's own collecting, or loading of the Pass page, asked after it
+  and finding nothing left. Back from another site keeps it on the page brought back,
+  but for the Pass page, which is drawn afresh then, without it. A forget pressed and
+  not yet answered, one that could not reach educhan either, one whose tab was closed
+  before its answer, and any change to the Pass in another tab leave it, since
+  dropping a true warning costs the next person at the computer a Pass, and keeping a
+  stale one an extra press. None is said once such an answer has come: Remove the Pass
+  then says nothing beyond what its press said, and Forget this browser, while the
+  reader is still on the Verify page its press drew, says what it took, unless Remove
+  the Pass or Forget this browser was pressed since, here or in another tab, or
+  another tab removed the Pass, while it waited, when it says nothing. Such an answer
+  can come before theirs only from a forget pressed after it, since this tab's own
+  collecting and loading of the Pass page wait for its forget: Remove the Pass or
+  Forget this browser, here or in another tab, or Stop collecting it here in another
+  tab, which can be pressed there once that tab's 30-second wait on this forget is
+  over. A forget pressed since and not yet answered leaves it to be said, and takes it
+  off if its answer drops the checkouts. Remove's and Forget's, which also say the
+  browser holds no Pass, give way to the warning about the checkout alone whenever the
+  rest of what they say would go, as when another tab stores or removes a Pass, or
   presses Remove the Pass or Forget this browser. Remove the Pass or Forget this browser
   pressed in another tab, or any other removal of the Pass there, takes any other notice
   on this tab's Pass page off at once, and off any other page a notice that says what

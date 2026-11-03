@@ -3706,12 +3706,18 @@ func TestPassRunOutIsSaidForThePageBesideIt(t *testing.T) {
 // changes nothing. A claim notice says a claim of this browser may still be
 // collected and what to press: forgetPassOrder's, and Remove's, Forget this
 // browser's and Stop collecting it here's when educhan could not be reached.
-// Each is noted with when its own forget went, and only an answer showing the
-// claim gone takes it off, on whatever page this tab is on: a forget pressed
-// after its own went, here or in another tab, answered with the claim dropped
-// (read from that forget's mark as it goes), or this tab's own collection or
-// GET /api/pass, sent after it, finding nothing left. None is put up once this
-// tab has learned that already; a forget pressed since and not yet answered
+// Each is noted with when its own forget went, and, besides what takes any
+// notice off (the reader dismissing it, moving to another page or a later
+// notice put in its place, say), only an answer showing the claim gone takes it
+// off, on whatever page this tab is on: a forget pressed after its own went,
+// here or in another tab, answered with the claim dropped (read from that
+// forget's mark as it goes), or this tab's own collection or GET /api/pass,
+// sent after it, finding nothing left. None is put up once this tab has learned
+// that already: forgetPassOrder and Stop collecting it here then say nothing,
+// Remove the Pass nothing beyond what its press said, and Forget this browser,
+// over the Verify page its press drew, only what it took, or nothing once a
+// Remove or Forget pressed since, here or in another tab, or another tab's
+// removal of the Pass, has come; a forget pressed since and not yet answered
 // leaves it to be put up. A forget pressed and not yet answered, one answered
 // with the claim kept, one whose tab closed first, and a Pass stored, changed
 // or removed in another tab leave it; Remove's and Forget's, which also say the
@@ -3903,11 +3909,32 @@ func TestPassNoticeGoesWithWhatItSaid(t *testing.T) {
 			"or after a forget that takes held notices off came meanwhile, or no longer says on whatever page that educhan " +
 			"could not be reached")
 	}
+	// Like any notice, a Pass notice goes when this tab draws a page afresh:
+	// render clears it before it draws the page the reader moves to, and the
+	// pageshow listener has render draw afresh only the Pass page brought back
+	// from the back-forward cache, so a tab brought back on any other page
+	// keeps its notice, a claim notice's warning included, as the docs say
+	// wherever they say a claim notice stays.
+	render := withoutComments(jsFunction(t, script, "render"))
+	if strings.Count(render, "clearNotice();") != 1 || !strings.Contains(render, "  renderNav(route);\n  clearNotice();\n") ||
+		strings.Index(render, "clearNotice();") > strings.Index(render, "const age = ageStatus();") {
+		t.Error("render no longer takes the notice off before it draws the page the reader moves to")
+	}
+	show := withoutComments(jsBlock(t, script, `window.addEventListener("pageshow", (event) => {`, "});"))
+	if strings.Count(show, "render()") != 1 || strings.Contains(show, "Notice") ||
+		!strings.Contains(show, "  if (event.persisted && state.route.view === \"pass\") {\n    if (storedPass()) {\n"+
+			"      passLost = \"\";\n    }\n    render();\n  }\n") {
+		t.Error("a tab brought back from the back-forward cache keeps its notice on the Pass page, which it draws afresh, " +
+			"or loses it on another page")
+	}
 	// No claim notice is put up once this tab has learned that nothing is
 	// left to collect as of a time after its own forget went (passClaimGone,
-	// compared with at, when that forget went): Remove then says nothing more,
-	// Forget this browser only what it took (above), and forgetPassOrder and
-	// Stop collecting it here nothing. A forget pressed since and not yet
+	// compared with at, when that forget went): forgetPassOrder and Stop
+	// collecting it here then say nothing, Remove the Pass nothing beyond what
+	// its press said, and Forget this browser, over the Verify page its press
+	// drew, only what it took, or nothing once a Remove or Forget pressed
+	// since, here or in another tab, or another tab's removal of the Pass, has
+	// moved passNoticeForgets (above). A forget pressed since and not yet
 	// answered no longer stops it.
 	for name, gate := range map[string][2]string{
 		"forgetPassOrder": {withoutComments(jsFunction(t, script, "forgetPassOrder")),
