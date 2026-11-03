@@ -4048,6 +4048,7 @@ var supportRuns = func() checkedRuns {
 		`having|have|had|get|getting|got these|the|some|serious|constant|bad|dark? thoughts of|about `+suicide,
 		`having|have|had|get|getting|got sh|selfharm urges|urge`, `having|have|had|get|getting|got self harm urges|urge`,
 		`i'm|im|i am|m? `+suicide, `i|i've|ive|i'd have|had? tried|attempted to commit|do suicide`,
+		`i|i've|ive|i'd have|had? tried|attempted `+suicide,
 		`i|i'll|ill will|wil|shall|might|may|could? just? do suicide`,
 		want+`do suicide`, want+`off|neck myself`, want+`rope`, want+`sh`,
 		plan+`do|doing suicide`, plan+`off|neck myself`, plan+`rope`, plan+pills,

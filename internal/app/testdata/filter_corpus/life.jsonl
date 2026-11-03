@@ -506,3 +506,6 @@
 {"id": "life-740", "body": "i need to sh!t so bad", "subject": "", "name": "", "expect": "publish", "why": "censored swearing, needing the toilet (V4-SH-CENSORED-SWEAR)"}
 {"id": "life-741", "body": "i sh'd have studied more lol", "subject": "", "name": "", "expect": "publish", "why": "\"sh'd have\" is \"should have\", not \"self harmed\" (V4-SH-CENSORED-SWEAR)"}
 {"id": "life-742", "body": "i sh'd again after the fight", "subject": "", "name": "", "expect": "support", "why": "\"sh'd\" with no \"have\" after it is still \"self harmed\" (V4-SH-CENSORED-SWEAR control)"}
+{"id": "life-743", "body": "i tried committing suicide in class 10", "subject": "", "name": "", "expect": "support", "why": "a past attempt in the poster's own voice, said with the gerund (V4-DOC-TRIED-COMMITTING)"}
+{"id": "life-744", "body": "i tried doing suicide last year", "subject": "", "name": "", "expect": "support", "why": "a past attempt, \"tried doing suicide\" (V4-DOC-TRIED-COMMITTING)"}
+{"id": "life-745", "body": "i tried committing to a study schedule", "subject": "", "name": "", "expect": "publish", "why": "committing to a schedule (V4-DOC-TRIED-COMMITTING control)"}
