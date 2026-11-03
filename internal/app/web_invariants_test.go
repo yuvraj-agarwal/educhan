@@ -381,13 +381,14 @@ func TestOnlyThePostingRequestCarriesThePass(t *testing.T) {
 			"storePass, markPassExpired, forgetPass and followPassStorage", n, keyUsers)
 	}
 	// followPassStorage only compares the key of a storage event with it, and
-	// reads the Pass itself through storedPass, but for the code another tab
-	// removed, which it reads from the event's old value through passCodeIn,
-	// only for that removal, to compare with a code just handed over.
+	// reads the Pass itself through storedPass, but for the code that was
+	// stored before the other tab's change, which it reads from the event's
+	// old value through passCodeIn, once, to compare with a code just handed
+	// over, for a removal, and with a code this tab copied.
 	if follow := withoutComments(jsFunction(t, script, "followPassStorage")); strings.Count(follow, "PASS_STORAGE_KEY") != 2 ||
 		!strings.Contains(follow, "if (event.key !== PASS_STORAGE_KEY && event.key !== null) {") ||
-		!strings.Contains(follow, "if (event.key === PASS_STORAGE_KEY && event.newValue === null) {\n"+
-			"    const removed = passCodeIn(event.oldValue);") ||
+		!strings.Contains(follow, "const was = passCodeIn(event.oldValue);\n"+
+			"  if (event.key === PASS_STORAGE_KEY && event.newValue === null && was) {") ||
 		strings.Count(follow, "oldValue") != 1 || strings.Count(follow, "newValue") != 1 ||
 		strings.Count(code, "passCodeIn(") != 2 {
 		t.Error("followPassStorage reads the stored Pass other than through storedPass")
@@ -1539,6 +1540,39 @@ func TestPassPageDetails(t *testing.T) {
 			t.Errorf("the page says a Pass has gone in %d places; want a check, a renewal's check, Renew and a post's answer", said)
 		}
 	})
+	t.Run("Renew found no longer valid points to no Buy form", func(t *testing.T) {
+		// The server refuses Renew for a Pass it no longer knows with "buy a
+		// new one", but the page that follows may draw no Buy form: a
+		// purchase being collected, or a code the browser could not keep,
+		// holds it back. So Renew's notice is in the page's own words, saying
+		// why the Pass went, as what it says of the Pass gone does, before any
+		// refusal is said in the server's words; and no notice the page words
+		// itself, on the Pass page or for a post, points to buying.
+		submit := withoutComments(jsFunction(t, script, "submitPass"))
+		renew := strings.Index(submit, "if (kind === \"renew\" && refusal === \"invalid\") {\n    drawPass(lastPassInfo);")
+		if renew < 0 || !strings.Contains(submit[renew:], "passFocus(\"form[data-pass] input\");\n"+
+			"    showPassNotice(`This Pass is no longer valid, so it has been removed from this browser. ${PASS_GONE_REASONS}`);\n"+
+			"    return;\n  }") ||
+			strings.Count(submit, "passErrorText(") != 1 || strings.Index(submit, "passErrorText(") < renew {
+			t.Error("Renew answered that the Pass is no longer valid says so in the server's words, which say to buy a new one")
+		}
+		said := regexp.MustCompile(`(?:showPassNotice|showNotice)\((.*?)\);|passNotice = (.*?);`)
+		for name, text := range map[string]string{
+			"the Pass page":   words(withoutComments(passSection(t, script))),
+			"a post's answer": words(withoutComments(submitHandler(t, script))),
+		} {
+			found := 0
+			for _, notice := range said.FindAllStringSubmatch(text, -1) {
+				found++
+				if regexp.MustCompile(`(?i)\bbuy\b`).MatchString(notice[1] + notice[2]) {
+					t.Errorf("%s says, in its own words, to buy a Pass, where no Buy form may be drawn: %s", name, notice[0])
+				}
+			}
+			if found == 0 {
+				t.Errorf("no notice found in %s; this test reads them", name)
+			}
+		}
+	})
 	t.Run("a panel drawn already filled is focused", func(t *testing.T) {
 		if !strings.Contains(withoutComments(jsFunction(t, script, "showClaimed")), `focusPassPanel("pass-issued");`) ||
 			!strings.Contains(jsFunction(t, script, "passIssuedHTML"), `id="pass-issued" tabindex="-1"`) {
@@ -2063,8 +2097,8 @@ func TestPassPageKeepsACodeJustHandedOver(t *testing.T) {
 	// until it is drawn again, so the code's panel goes with it, kept or not.
 	// One the page has not drawn yet is drawn there. A panel on the page goes
 	// even when its code has gone already, dropped by another tab's Remove or
-	// Forget whose drawing still waits on the forget, which would otherwise
-	// leave it in the page the back-forward cache keeps.
+	// Forget that found no Pass to remove, whose drawing waits on the forget,
+	// which would otherwise leave it in the page the back-forward cache keeps.
 	shown := withoutComments(jsFunction(t, script, "forgetShownCode"))
 	if shown != "function forgetShownCode() {\n  if (passJustIssued && passJustIssued.shown) {\n    passJustIssued = null;\n  }\n"+
 		"  const panel = document.getElementById(\"pass-issued\");\n  if (panel) {\n    panel.remove();\n  }\n}" {
@@ -2093,12 +2127,14 @@ func TestPassPageKeepsACodeJustHandedOver(t *testing.T) {
 // it with posts, and says it won't be shown again once the reader leaves the
 // page, as it won't; a code held that has run out is neither ready nor sent
 // with posts until it is renewed, whether it came so or a post's answer marked
-// it so since; and Buy is held back only by a Pass held or a code shown that
-// the browser could not keep, so it is offered beside the code of a Pass it no
-// longer holds. A code educhan says is no longer valid, as the Pass held here,
-// is worth nothing to write down, so it goes, and the panel keeps only the
-// code of a different Pass it took the place of, if any, which may still work
-// and be nowhere else, said to be in this browser again once it is.
+// it so since; and a code shown, not kept, holds Buy back as a Pass held does,
+// while the code of a Pass the browser no longer holds does not, so Buy is
+// offered beside it once no other Pass is held. A code educhan says is no
+// longer valid, as the Pass held here, is worth nothing to write down, so it
+// goes, and the panel keeps the other codes beside it, the code of a different
+// Pass it took the place of and those carried from an earlier panel
+// (TestPassCodesShownEarlierAreCarried), which may still work and be nowhere
+// else, each said to be in this browser again once it is.
 func TestPassIssuedPanelSaysWhatThisBrowserHolds(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -2131,28 +2167,47 @@ func TestPassIssuedPanelSaysWhatThisBrowserHolds(t *testing.T) {
 	if !strings.Contains(gone, "status = \"This browser no longer has this code.\";") ||
 		!strings.Contains(words(gone), `said = held ? "Another code has taken its place here, so it isn't sent with your posts." : "It isn't sent with your posts.";`) ||
 		!strings.Contains(gone, "write = \"Write this code down or save it somewhere safe now if you still need it.\";") ||
-		!strings.Contains(words(gone), `again = "educhan keeps no copy of it, and this browser no longer has it, so it won't be shown again once you leave this page.";`) {
+		!strings.Contains(words(gone), `again = "educhan keeps no copy of it, and this browser no longer has it, so it won't be shown again once you leave this page.";`) ||
+		!strings.Contains(gone, "need = \"You need it to use its Pass again, here or on another device.\";") {
 		t.Error("the panel of a code this browser kept and no longer holds says it has it, or not that it won't be shown again")
 	}
-	// Buy is held back only by a Pass held here, or one shown that the browser
-	// could not keep, not by the code of one it no longer holds.
-	if !strings.Contains(view, "const has = Boolean(held || (issued && !issued.kept));") {
-		t.Error("the Pass page holds back Buy for a code just handed over that this browser no longer holds")
+	// The code it took the place of is said to be taken now while the code is
+	// held here, and to have been taken once it is not.
+	if !strings.Contains(issued, "\n  const took = here ? \"takes\" : \"took\";\n") || strings.Count(issued, "${took}") != 2 {
+		t.Error("the panel of a code just handed over no longer says whether it takes or took the place of the code beside it")
+	}
+	// The code held here is shown by the held Pass's panel, so it offers Show
+	// the code for every code but the one this panel shows, kept as it came or
+	// typed back in since.
+	if !strings.Contains(view, "\n  const shown = Boolean(held && issued && issued.code === held.code);\n") ||
+		strings.Count(view, "passHeldHTML(") != 2 || strings.Count(view, ", held, shown));") != 2 {
+		t.Error("the held Pass's panel offers Show the code for the code a panel above it shows, or none for one it does not")
+	}
+	// Buy is held back by a Pass held here, or a code shown that the browser
+	// could not keep, the panel's own or one carried from an earlier panel, not
+	// by the code of one it no longer holds, nor one found no longer valid.
+	if !strings.Contains(view, "\n  const unkept = Boolean(issued && ((issued.code && !issued.kept) || issued.earlier.some((old) => !old.kept)));\n"+
+		"  const has = Boolean(held || unkept);\n") {
+		t.Error("the Pass page holds back Buy for a code just handed over that this browser no longer holds, " +
+			"or offers it beside a code carried that the browser could not keep")
 	}
 	// Found no longer valid as the Pass held here, by Check it again, the check
 	// after a reissue code or a renewal, Renew or a post's answer, here or in
 	// another tab (TestPassRemovedInAnotherTabLeavesThisOne), the code goes,
-	// and the code it took the place of stays, if there is one, unless that is
-	// the code found no longer valid, typed back in say, which goes too: a code
-	// worth nothing is never left on the panel to be written down. With
-	// neither code left, the panel goes.
+	// and the code it took the place of stays, if there is one, and so does
+	// each code carried from an earlier panel, unless it is the code found no
+	// longer valid, typed back in say, which goes too: a code worth nothing is
+	// never left on the panel to be written down, and no other code goes with
+	// it. With no code left, the panel goes.
 	forget := withoutComments(jsFunction(t, script, "forgetInvalidCode"))
 	if forget != "function forgetInvalidCode(code) {\n  if (!passJustIssued) {\n    return;\n  }\n"+
 		"  if (passJustIssued.code === code) {\n    passJustIssued.code = \"\";\n  }\n"+
 		"  if (passJustIssued.replaced === code) {\n    passJustIssued.replaced = \"\";\n  }\n"+
-		"  if (!passJustIssued.code && !passJustIssued.replaced) {\n    passJustIssued = null;\n  }\n}" {
+		"  const carried = passJustIssued.earlier.findIndex((earlier) => earlier.code === code);\n"+
+		"  if (carried >= 0) {\n    passJustIssued.earlier.splice(carried, 1);\n  }\n"+
+		"  if (!passJustIssued.code && !passJustIssued.replaced && !passJustIssued.earlier.length) {\n    passJustIssued = null;\n  }\n}" {
 		t.Errorf("forgetInvalidCode no longer takes every code found no longer valid off its panel, "+
-			"keeping only a code it replaced that is not:\n%s", forget)
+			"keeping every code beside it that is not:\n%s", forget)
 	}
 	for name, want := range map[string]string{
 		"recheckPass":   "if (reason === \"invalid\") {\n    forgetPass();\n    forgetInvalidCode(held.code);",
@@ -2170,8 +2225,9 @@ func TestPassIssuedPanelSaysWhatThisBrowserHolds(t *testing.T) {
 		t.Errorf("forgetInvalidCode( appears %d times; want its definition, the four answers that say a Pass held here is "+
 			"no longer valid, and another tab's removal of the Pass (followPassStorage)", n)
 	}
-	// With its code gone, the panel shows only the code it took the place of,
-	// with its words, and no Copy the code, which would find no code to copy.
+	// With its code gone, the panel says so, and shows only the codes beside
+	// it, the code it took the place of and those carried, with their words,
+	// and no Copy the code, which would find no code to copy.
 	start = strings.Index(issued, "if (!issued.code) {")
 	if start < 0 {
 		t.Fatal("passIssuedHTML no longer draws a panel whose code was found no longer valid apart")
@@ -2179,22 +2235,91 @@ func TestPassIssuedPanelSaysWhatThisBrowserHolds(t *testing.T) {
 	left := issued[start:]
 	left = left[:strings.Index(left, "\n  }\n")]
 	if !strings.Contains(left, "${replaced}") || strings.Contains(left, "class=\"pass-code\"") || strings.Contains(left, "copy-pass") ||
+		!strings.Contains(left, "\n      <p><strong>The new code handed over here is no longer valid, so this browser no longer has it.</strong></p>\n") ||
 		!strings.Contains(words(left), "Write that code down now if you still need it.") ||
 		!strings.Contains(words(left), "so it won't be shown again once you leave this page.") {
-		t.Error("the panel of a code found no longer valid shows that code, or leaves out the code it took the place of")
+		t.Error("the panel of a code found no longer valid shows that code, or does not say it is gone, " +
+			"or leaves out the code it took the place of")
 	}
 	// That code is worded for what this browser holds as it is drawn too:
 	// typed back in here, or stored by another tab, it is not said to be gone
 	// from the browser, whose held Pass's panel can show it again.
-	again := strings.Index(left, "const keep = back\n      ? `")
-	other := strings.Index(left, "\n      : `")
+	again := strings.Index(left, "let keep = \"\";\n    if (back) {\n      keep = `")
+	other := strings.Index(left, "\n    } else if (issued.replaced) {\n      keep = `")
 	if !strings.Contains(left, "const back = Boolean(held && held.code === issued.replaced);") || again < 0 || other < again ||
 		!strings.Contains(words(left[again:other]), "<strong>This browser has that code again.</strong> educhan keeps no copy of it, "+
 			"and this browser can show it below only until its data is cleared") ||
 		strings.Contains(left[again:other], "no longer has it") || !strings.Contains(left[other:], "this browser no longer has it") ||
-		!strings.Contains(left, "\n      ${replaced}\n      ${keep}\n    </div>`;") {
+		!strings.Contains(left, "\n      ${replaced}\n      ${keep}\n      ${earlier}\n    </div>`;") {
 		t.Error("the panel of a code found no longer valid says the code it took the place of is gone from this browser, " +
-			"even when the browser holds it again")
+			"even when the browser holds it again, or leaves out the codes carried from an earlier panel")
+	}
+}
+
+// A second code handed over on the same visit, by a claim or a reissue code,
+// takes the place of the first's panel, which may show codes this browser
+// does not hold and the server will not show again: the first code, kept and
+// since displaced, or never kept, and the code of the Pass it took the place
+// of. Each is carried onto the new panel, with words of its own, so none is
+// lost before the reader leaves the page, Remove the Pass or Forget this
+// browser takes it, or educhan finds it no longer valid
+// (TestPassIssuedPanelSaysWhatThisBrowserHolds). The new code and the one held
+// as it comes, which the new panel or the held Pass's panel shows, are not
+// carried, and no code is carried twice, so none is drawn twice and no id is
+// either.
+func TestPassCodesShownEarlierAreCarried(t *testing.T) {
+	script := appScript(t)
+	keep := withoutComments(jsFunction(t, script, "keepClaimed"))
+	if !strings.Contains(keep, "      replaced: kept && held ? held.code : \"\",\n"+
+		"      earlier: passCodesCarried(passJustIssued, res.pass, held),\n      reissued,\n") {
+		t.Error("a code handed over on the visit of an earlier one no longer carries the codes the earlier panel showed")
+	}
+	carry := withoutComments(jsFunction(t, script, "passCodesCarried"))
+	if carry != "function passCodesCarried(old, code, held) {\n  const carried = [];\n  if (!old) {\n    return carried;\n  }\n"+
+		"  const shown = [\n    { code: old.code, kept: old.kept, was: \"issued\" },\n"+
+		"    { code: old.replaced, kept: true, was: old.reissued ? \"reissued\" : \"replaced\" },\n    ...old.earlier,\n  ];\n"+
+		"  for (const earlier of shown) {\n    const drawn = earlier.code === code || (held && earlier.code === held.code);\n"+
+		"    if (earlier.code && !drawn && !carried.some((other) => other.code === earlier.code)) {\n      carried.push(earlier);\n    }\n  }\n"+
+		"  return carried;\n}" {
+		t.Errorf("passCodesCarried no longer carries every code an earlier panel showed but the new code, the code held "+
+			"and a code carried already:\n%s", carry)
+	}
+	// Each is drawn on the new panel, whether its own code is there or found
+	// no longer valid, and only there.
+	issued := withoutComments(jsFunction(t, script, "passIssuedHTML"))
+	if !strings.Contains(issued, "\n  const earlier = issued.earlier.map((old) => passEarlierHTML(old, held)).join(\"\");\n") ||
+		strings.Count(issued, "${earlier}") != 2 || !strings.Contains(issued, "\n      ${replaced}\n      ${earlier}\n      <div class=\"actions\">") ||
+		strings.Count(withoutComments(script), "passEarlierHTML(") != 2 {
+		t.Error("the panel of a code just handed over no longer draws the codes carried from an earlier panel")
+	}
+	// Worded for what it was there, and for whether this browser holds it as
+	// it is drawn: not held, it won't be shown again once the reader leaves;
+	// held, typed back in say, the held Pass's panel can show it again.
+	earlier := words(withoutComments(jsFunction(t, script, "passEarlierHTML")))
+	for _, want := range []string{
+		"function passEarlierHTML(old, held) { const code = `<span class=\"pass-code-old\">${esc(old.code)}</span>`; " +
+			"const here = Boolean(held && held.code === old.code); if (old.was === \"issued\") {",
+		"const keep = here ? `<strong>This browser has it now.</strong> educhan keeps no copy of it, and this browser can " +
+			"show it below only until its data is cleared, so write it down if you still need it.` " +
+			": `<strong>Write it down now if you still need it.</strong> educhan keeps no copy of it, and this browser " +
+			"doesn't have it, so it won't be shown again once you leave this page.`; " +
+			"return ` <p>Earlier on this page, the code ${code} was handed over here. ${keep}</p>`; }",
+		"const was = old.was === \"reissued\" ? `Earlier on this page, a reissue code's new code took the place of the code " +
+			"this browser had, ${code}. If that code was for another Pass, that Pass isn't affected: write its code down to " +
+			"go on using it. If it was for the Pass that reissue code was for, it no longer works.` " +
+			": `Earlier on this page, a code handed over here took the place of the Pass this browser had, whose code is " +
+			"${code}. That Pass isn't affected: write its code down to go on using it.`;",
+		"const keep = here ? ` <strong>This browser has that code again.</strong> educhan keeps no copy of it, and this " +
+			"browser can show it below only until its data is cleared, so write it down if you still need it.` : \"\"; " +
+			"return ` <p>${was}${keep}</p>`; }",
+	} {
+		if !strings.Contains(earlier, want) {
+			t.Errorf("a code carried from an earlier panel is no longer worded for what it was there and whether this "+
+				"browser holds it, wanting:\n%s", want)
+		}
+	}
+	if strings.Contains(earlier, "id=") || strings.Contains(earlier, "copy-pass") {
+		t.Error("a code carried from an earlier panel gives an id or a Copy the code of its own, which a second carried code would repeat")
 	}
 }
 
@@ -2636,11 +2761,13 @@ func TestPassCopiedHereIsEmptiedFromTheClipboard(t *testing.T) {
 		t.Error("Copy the code no longer notes the code this tab put on the clipboard, or notes it when it did not")
 	}
 	// Set only there, and otherwise only ever cleared: by emptying the
-	// clipboard, by anything copied or cut in this tab since, and when the
-	// browser no longer holds the code copied.
+	// clipboard, by anything copied or cut in this tab since, and when
+	// another tab takes the code copied out of storage
+	// (TestPassRemovedInAnotherTabLeavesThisOne).
 	if n := len(regexp.MustCompile(`\bpassCodeCopied = `).FindAllString(code, -1)); n != 5 ||
 		!strings.Contains(code, "\nlet passCodeCopied = \"\";\n") ||
-		!strings.Contains(withoutComments(jsFunction(t, script, "followPassStorage")), "if (!now || now.code !== passCodeCopied) {\n    passCodeCopied = \"\";\n  }") ||
+		!strings.Contains(withoutComments(jsFunction(t, script, "followPassStorage")),
+			"if ((event.key === null || was === passCodeCopied) && (!now || now.code !== passCodeCopied)) {\n    passCodeCopied = \"\";\n  }") ||
 		!strings.Contains(withoutComments(jsFunction(t, script, "forgetCopiedPassCode")),
 			"if (selected && (event.type === \"copy\" || editable)) {\n    passCodeCopied = \"\";\n  }") {
 		t.Errorf("passCodeCopied is set in %d places; want its declaration, Copy the code, emptying the clipboard, "+
@@ -2758,8 +2885,8 @@ func TestPassRemovedInAnotherTabLeavesThisOne(t *testing.T) {
 	// never the Pass it holds, and may be a spent reissue code's only copy.
 	// Each stays until the reader leaves the page.
 	follow := withoutComments(jsFunction(t, script, "followPassStorage"))
-	if !strings.Contains(follow, "const now = storedPass();\n  if (event.key === PASS_STORAGE_KEY && event.newValue === null) {\n"+
-		"    const removed = passCodeIn(event.oldValue);\n    if (removed) {\n      forgetInvalidCode(removed);\n    }\n  }") ||
+	if !strings.Contains(follow, "const now = storedPass();\n  const was = passCodeIn(event.oldValue);\n"+
+		"  if (event.key === PASS_STORAGE_KEY && event.newValue === null && was) {\n    forgetInvalidCode(was);\n  }") ||
 		strings.Contains(follow, "passJustIssued") || strings.Count(follow, "forgetInvalidCode(") != 1 ||
 		!strings.Contains(follow, `if (passPageShown() && el.main.querySelector("[data-pass-page]")) {`+
 			"\n    redrawPass(lastPassInfo, \"#pass-held\", \"form[data-pass] input\");") {
@@ -2791,10 +2918,18 @@ func TestPassRemovedInAnotherTabLeavesThisOne(t *testing.T) {
 			"so another tab hears the removal first")
 	}
 	// A code this tab copied stops counting as its to empty from the
-	// clipboard once the browser no longer holds that code, whether or not
-	// a code just handed over is on screen.
-	if !strings.Contains(follow, "if (!now || now.code !== passCodeCopied) {\n    passCodeCopied = \"\";\n  }") {
-		t.Error("a code this tab copied still counts as its to empty after another tab removed or replaced it")
+	// clipboard once another tab takes that code itself out of storage,
+	// removed or replaced by another (the event's old value held it, and the
+	// browser no longer holds it), or storage is cleared and the browser no
+	// longer holds it, whether or not a code just handed over is on screen.
+	// Another tab storing the same code again, renewed or with a new date, or
+	// changing a Pass whose code is not the one copied (a code copied from the
+	// panel of one the browser no longer holds, say), leaves it counted, so
+	// Remove and Forget still empty the clipboard, as the page promises.
+	if !strings.Contains(follow, "if ((event.key === null || was === passCodeCopied) && (!now || now.code !== passCodeCopied)) {\n"+
+		"    passCodeCopied = \"\";\n  }") {
+		t.Error("a code this tab copied still counts as its to empty after another tab removed or replaced it, " +
+			"or stops counting when another tab renews or re-dates the Pass held, or changes one that is not the code copied")
 	}
 	if !strings.Contains(withoutComments(jsFunction(t, script, "passViewHTML")), "<div class=\"board-head\" data-pass-page>") {
 		t.Error("the Pass page no longer marks itself, so another tab's change can draw over the age screen")
@@ -3311,8 +3446,8 @@ func TestPassCopyMatchesWhatTheServerDoes(t *testing.T) {
 	if got := jsString(t, script, "PASS_GONE_REASONS"); got != "It may have run out more than a month ago, or been refunded or replaced." {
 		t.Errorf("PASS_GONE_REASONS says %q", got)
 	}
-	if n := strings.Count(withoutComments(script), "${PASS_GONE_REASONS}"); n != 5 {
-		t.Errorf("the reasons a Pass may have gone are given in %d places; want a check, a renewal's check, Renew, "+
-			"a post's answer and its notice", n)
+	if n := strings.Count(withoutComments(script), "${PASS_GONE_REASONS}"); n != 6 {
+		t.Errorf("the reasons a Pass may have gone are given in %d places; want a check, a renewal's check, Renew "+
+			"and its notice, a post's answer and its notice", n)
 	}
 }
