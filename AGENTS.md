@@ -527,7 +527,15 @@ needs a browser check before the test changes.
   deleted a badge the server cannot hand out again. Either way the refusal is said
   once: the badge box it unticks is not said to be unticked in the page's `#notice` as
   well (`offerHeldBadge`'s `quiet`), which put a second message about the one refusal
-  at the top of the page.
+  at the top of the page. The box sits among the form's own buttons, which the support
+  panel hides while it is open, so a form whose ticked box is drawn again, or whose
+  badged post is refused for its badge, closes its panel (`closeSupport`): left open, it
+  told the reader to tick a box out of sight, and Post anyway sent without a badge a
+  post written to carry one. The reader posts again with the form's own button, and the
+  content rules ask again. A badge just issued that closes a panel says why in that
+  form's notice, where the panel was (`sayBadgeUnticked`'s `form`), not the page's. A
+  panel over a box that was not ticked stays open: that post goes out without a badge
+  either way (`TestPostingFormSendsOnlyTheBadgeItNames`).
 - The poster key lives in `localStorage` under `educhan:poster-key`: 16 random bytes as
   22 characters of unpadded base64url, made by `posterKey()` on the first post rather
   than the first visit. `submit` sends it in `X-Educhan-Poster-Key` on thread-create and

@@ -1533,7 +1533,7 @@ func TestOnlyKnownPlacesTellWhetherABadgeIsHeld(t *testing.T) {
 		"function badgeOptionHTML(held) {":                                 1,
 		"function badgeOffered(form) {":                                    2,
 		"function offerHeldBadge({ quiet = false } = {}) {":                5,
-		"function sayBadgeUnticked() {":                                    2,
+		"function sayBadgeUnticked(form) {":                                2,
 		"function captureDraft() {":                                        6,
 		"function restoreDraft(draft) {":                                   7,
 		`el.main.addEventListener("change", (event) => {`:                  1,
@@ -3230,31 +3230,75 @@ func TestPostingFormSendsOnlyTheBadgeItNames(t *testing.T) {
 	}
 
 	// What brings a form on screen into line, held whole: it reads no Verify
-	// step and draws nothing but posting forms' badge slots, which is why it
-	// may run in the badge's answer. The focus a redrawn box had goes to the
-	// box drawn in its place, or the form's button, not to the page. A box
-	// that was ticked is said to have been unticked, unless the caller says
-	// what became of the badge itself (quiet, below).
+	// step and draws nothing but posting forms' badge slots, and the support
+	// panel of a form whose ticked box it draws again, which is why it may run
+	// in the badge's answer. The focus a redrawn box had goes to the box drawn
+	// in its place, or the form's button, not to the page. A box that was
+	// ticked is said to have been unticked, unless the caller says what became
+	// of the badge itself (quiet, below).
+	//
+	// The slot sits among the form's own buttons, which the support panel
+	// hides while it is open (showSupport). A ticked box drawn again under an
+	// open panel was out of sight: the reader was told to tick a box they
+	// could not see, and Post anyway, the one way on, sent without a badge a
+	// post written to carry one. So the panel goes, and a focus in it goes
+	// where the box's would. One over a box that was not ticked stays, since
+	// that post goes out without a badge either way.
+	actions := strings.Index(form, `<div class="actions">`)
+	if slot := strings.Index(form, "${badge}"); actions < 0 || slot < actions ||
+		!strings.Contains(withoutComments(jsFunction(t, script, "showSupport")), "actions.hidden = true;") {
+		t.Errorf("formHTML no longer draws the badge slot among the buttons the support panel hides, which is "+
+			"why offerHeldBadge closes the panel; this test reads it:\n%s", form)
+	}
 	if got, want := jsLines(jsFunction(t, script, "offerHeldBadge")), []string{
 		"function offerHeldBadge({ quiet = false } = {}) {",
 		"const held = state.verification.badge;",
 		`const number = held ? held.number : "";`,
 		"let unticked = false;",
+		"let shut = null;",
 		`for (const slot of el.main.querySelectorAll("[data-badge-option]")) {`,
 		"if (slot.dataset.badgeOption === number) continue;",
+		`const form = slot.closest("form");`,
 		`const box = slot.querySelector('input[name="badge"]');`,
+		`const panel = box && box.checked ? form.querySelector("[data-support]") : null;`,
 		"if (box && box.checked) unticked = true;",
-		"const focused = slot.contains(document.activeElement);",
+		"const focused = slot.contains(document.activeElement) || Boolean(panel && panel.contains(document.activeElement));",
+		"if (panel) {",
+		"closeSupport(form);",
+		"shut = form;",
+		"}",
 		"slot.dataset.badgeOption = number;",
 		"slot.innerHTML = badgeOptionHTML(held);",
-		`const next = slot.querySelector('input[name="badge"]') || slot.closest("form").querySelector('button[type="submit"]');`,
+		`const next = slot.querySelector('input[name="badge"]') || form.querySelector('button[type="submit"]');`,
 		"if (focused && next) next.focus({ preventScroll: true });",
 		"}",
-		"if (unticked && !quiet) sayBadgeUnticked();",
+		"if (unticked && !quiet) sayBadgeUnticked(shut);",
 		"}",
 	}; !slices.Equal(got, want) {
 		t.Errorf("offerHeldBadge runs\n\t%s\nwant it to draw again, unticked, every badge box naming a badge no longer "+
-			"held, and nothing else:\n\t%s", strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
+			"held, the support panel hiding a ticked one closed, and nothing else:\n\t%s",
+			strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
+	}
+	// Why is said where the panel was, in that form's notice, and in the
+	// page's notice otherwise, as before.
+	if got, want := jsLines(jsFunction(t, script, "sayBadgeUnticked")), []string{
+		"function sayBadgeUnticked(form) {",
+		"const held = state.verification.badge;",
+		"const message = held",
+		"? `Your badge in this browser is now Verified: ${held.label}, not the one you ticked, so the box is unticked. " +
+			"Tick it again to post with this badge.`",
+		`: "Your badge is no longer available in this browser — verify again to post with it.";`,
+		`const notice = form && form.querySelector("[data-form-notice]");`,
+		"if (!notice) {",
+		"showNotice(message);",
+		"return;",
+		"}",
+		"showFormNotice(form, esc(message));",
+		`notice.scrollIntoView({ block: "nearest" });`,
+		"}",
+	}; !slices.Equal(got, want) {
+		t.Errorf("sayBadgeUnticked runs\n\t%s\nwant it to say why in the form whose support panel was closed, "+
+			"and in the page's notice otherwise:\n\t%s", strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
 	}
 	if n := len(regexp.MustCompile(`\.dataset\.badgeOption\s*=[^=]`).FindAllString(code, -1)); n != 1 {
 		t.Errorf("app.js sets a slot's badge %d times; want once, in offerHeldBadge, which draws the box with it", n)
@@ -3280,7 +3324,10 @@ func TestPostingFormSendsOnlyTheBadgeItNames(t *testing.T) {
 	// server hands out once and cannot show again. So the form is brought into
 	// line with the badge held now instead (offerHeldBadge), and the notice
 	// says that badge is offered (badgeReplacedMessage) rather than repeating
-	// the server's words, which send the reader to verify again.
+	// the server's words, which send the reader to verify again. Either way a
+	// support panel open on the form goes, whether or not the box is still
+	// ticked: the box the notice names, or its absence, is among the buttons
+	// the panel hides, and Post anyway sent the post again with no badge.
 	holdLines(t, "a post refused for the badge it carried", jsLines(submit),
 		"const reason = err.payload && err.payload.credential;",
 		"if (err.status === 403 && err.message === IMAGE_LIMIT_REACHED) {", []string{
@@ -3297,6 +3344,7 @@ func TestPostingFormSendsOnlyTheBadgeItNames(t *testing.T) {
 			"replacedBy = state.verification.badge;",
 			"}",
 			"offerHeldBadge({ quiet: true });",
+			"closeSupport(live);",
 			"}",
 		})
 	if n := strings.Count(submit, "forgetCredential("); n != 1 {

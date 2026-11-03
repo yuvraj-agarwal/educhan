@@ -1502,32 +1502,57 @@ function badgeOffered(form) {
 // form's button when there is none, rather than dropping it to the page. The
 // Name field is left as it is too: a remembered name or tripcode put back on a
 // post written to go out badged would tie it to the reader's unbadged posts.
+//
+// A form whose ticked box is drawn again loses its support panel, if one is
+// open (closeSupport). The panel hides the form's own buttons while it is
+// open, and the box is among them: the box said to be unticked could not be
+// seen, and Post anyway, the panel's way on, sent without a badge a post
+// written to carry one. A focus in the panel goes where the box's would, and
+// the form is the one told why (sayBadgeUnticked), where the reader was
+// looking; posting again with the form's own button meets the content rules
+// again. A box that was not ticked leaves the panel open, since the post it
+// asks about goes out without a badge either way.
 function offerHeldBadge({ quiet = false } = {}) {
   const held = state.verification.badge;
   const number = held ? held.number : "";
   let unticked = false;
+  let shut = null;
   for (const slot of el.main.querySelectorAll("[data-badge-option]")) {
     if (slot.dataset.badgeOption === number) continue;
+    const form = slot.closest("form");
     const box = slot.querySelector('input[name="badge"]');
+    const panel = box && box.checked ? form.querySelector("[data-support]") : null;
     if (box && box.checked) unticked = true;
-    const focused = slot.contains(document.activeElement);
+    const focused = slot.contains(document.activeElement) || Boolean(panel && panel.contains(document.activeElement));
+    if (panel) {
+      closeSupport(form);
+      shut = form;
+    }
     slot.dataset.badgeOption = number;
     slot.innerHTML = badgeOptionHTML(held);
-    const next = slot.querySelector('input[name="badge"]') || slot.closest("form").querySelector('button[type="submit"]');
+    const next = slot.querySelector('input[name="badge"]') || form.querySelector('button[type="submit"]');
     if (focused && next) next.focus({ preventScroll: true });
   }
-  if (unticked && !quiet) sayBadgeUnticked();
+  if (unticked && !quiet) sayBadgeUnticked(shut);
 }
 
 // sayBadgeUnticked says why a badge box the reader ticked is ticked no longer:
-// the badge it named is not the one this browser holds now.
-function sayBadgeUnticked() {
+// the badge it named is not the one this browser holds now. It is said in the
+// page's notice, or in the form's own when offerHeldBadge closed the support
+// panel there (form): the reader was looking at the panel, and the page's
+// notice is at the top, out of sight below a long thread.
+function sayBadgeUnticked(form) {
   const held = state.verification.badge;
-  showNotice(
-    held
-      ? `Your badge in this browser is now Verified: ${held.label}, not the one you ticked, so the box is unticked. Tick it again to post with this badge.`
-      : "Your badge is no longer available in this browser — verify again to post with it.",
-  );
+  const message = held
+    ? `Your badge in this browser is now Verified: ${held.label}, not the one you ticked, so the box is unticked. Tick it again to post with this badge.`
+    : "Your badge is no longer available in this browser — verify again to post with it.";
+  const notice = form && form.querySelector("[data-form-notice]");
+  if (!notice) {
+    showNotice(message);
+    return;
+  }
+  showFormNotice(form, esc(message));
+  notice.scrollIntoView({ block: "nearest" });
 }
 
 // badgeReplacedMessage says why a badged post was not sent when the badge it
@@ -4484,6 +4509,14 @@ el.main.addEventListener("submit", async (event) => {
     // deleted that badge, which the server hands out once and cannot show
     // again. The form is brought into line with the badge held now instead,
     // and the notice says that one is offered (badgeReplacedMessage).
+    //
+    // A support panel open on the form goes too (closeSupport), as
+    // offerHeldBadge takes it off a form whose ticked box it draws again, and
+    // here whether or not the box is still ticked: the post the panel asked
+    // about was to carry a badge, and the box the notice names, or its
+    // absence, is among the form's own buttons, which the panel hides. Left
+    // open, it said "Tick its box" of a box out of sight, and Post anyway sent
+    // the post again without a badge.
     const reason = err.payload && err.payload.credential;
     let replacedBy = null;
     if (held && (reason === "expired" || reason === "revoked")) {
@@ -4498,6 +4531,7 @@ el.main.addEventListener("submit", async (event) => {
         replacedBy = state.verification.badge;
       }
       offerHeldBadge({ quiet: true });
+      closeSupport(live);
     }
     // The cap was reached after this form was drawn: take the image off and
     // switch the picker off, so the next press posts the text that is left.
@@ -4552,7 +4586,7 @@ el.main.addEventListener("submit", async (event) => {
       // the button that was pressed, rather than in the page's notice: that is
       // at the top, out of sight below a long thread, and after "Post anyway"
       // the support panel is all the poster is looking at. The panel stays
-      // open, so they can try again.
+      // open, so they can try again, unless the badge was refused (above).
       showFormNotice(live, esc(refused));
       notice.scrollIntoView({ block: "nearest" });
       // The pressed button was switched off while the post was on its way,
