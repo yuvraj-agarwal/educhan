@@ -462,14 +462,19 @@ var storedPNG = png.Encoder{CompressionLevel: png.BestSpeed}
 // transparent. image/gif takes such an index only up to a transparent index
 // that is itself past the table: a frame whose pixels index past their table
 // otherwise is refused here (ErrCorruptImage), as the decoder refuses it,
-// though Chromium shows those pixels black. So is a frame with more data
-// after its LZW end code than image/gif takes, which is the rest of the
-// sub-block the code ends in and, when the code ends a sub-block, one more
-// sub-block of one byte, though Chromium shows the frame and reads on from
-// its terminator (TestGIFsImageGIFRefusesAreRefusedOnceDecoded). Two kinds
-// of file image/gif refuses and browsers show are read as browsers read them
-// as well. A file that ends after its last block without a trailer plays in
-// a browser, and is decoded with one put after it; a frame after the first
+// though Chromium shows those pixels black. So is a frame whose LZW data goes
+// on after its last pixel, before its end code, with another pixel or a code
+// that is not valid, though Chromium stops reading a frame's codes once it
+// has its pixels and shows the frame; and a frame with more data after its
+// LZW end code than image/gif takes, which is the rest of the sub-block the
+// code ends in and, when the code ends a sub-block, one more sub-block of one
+// byte, though Chromium shows the frame and reads on from its terminator
+// (TestGIFsImageGIFRefusesAreRefusedOnceDecoded). Those are the kinds found
+// so far that only decoding shows; a frame with no colour table at all, which
+// image/gif also refuses, gifFramePixels refuses from its descriptor. Two
+// kinds of file image/gif refuses and browsers show are read as browsers read
+// them as well. A file that ends after its last block without a trailer plays
+// in a browser, and is decoded with one put after it; a frame after the first
 // that reaches past the canvas is drawn by a browser only where it overlaps
 // the canvas, which is all playGIF plays of it, and image/gif, which refuses
 // the whole file, is told the logical screen takes in every frame
@@ -1050,6 +1055,11 @@ type gifFrames struct {
 // because browsers disagree on what to show for it (Chromium widens the
 // canvas to hold it, Firefox moves it to the corner and makes the canvas its
 // size), and so is a frame reaching past the 65,535 pixels a header can say.
+// A frame with no colour table at all, neither its own nor a global one, is
+// refused as image/gif refuses it, though Chromium shows its pixels opaque
+// black: the walk sees it in the frame's descriptor, so the file is refused
+// here, before anything is decoded, rather than by the decoder once it has
+// decoded the frames before it.
 //
 // It returns ErrImageTooCostly as soon as the charge passes limit, and
 // ErrCorruptImage when the walk does not end at the trailer or at the end of
@@ -1071,8 +1081,8 @@ type gifFrameHead struct {
 	transparent bool // whether it names a transparent index,
 	ti          byte // which is this
 	// table is the colour table the frame's pixels index, three bytes an
-	// entry: its own, or the global one; nil when there is neither, which
-	// image/gif refuses.
+	// entry: its own, or the global one. The walk refuses a frame with
+	// neither before it makes the frame's head.
 	table []byte
 }
 
@@ -1216,6 +1226,10 @@ func walkGIF(data []byte, limit int64, frame func(gifFrameHead)) (gifFrames, err
 				i += 3 << (1 + flags&0x07)
 				head.table = data[at:min(i, len(data))]
 				gather(head.table, head.transparent, head.ti)
+			} else if global == nil {
+				// No colour table at all, which image/gif refuses once it
+				// has made the frame.
+				return f, ErrCorruptImage
 			} else if g := b2i(head.transparent) * (1 + int(head.ti)); !gathered[g] {
 				gathered[g] = true
 				gather(global, head.transparent, head.ti)

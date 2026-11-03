@@ -1788,6 +1788,35 @@ func TestGIFFramePixelsReadsWhatTheDecoderReads(t *testing.T) {
 			t.Errorf("%s: Inspect = %v, want ErrCorruptImage", name, err)
 		}
 	}
+
+	// A frame with no colour table at all, neither its own nor a global one,
+	// image/gif refuses once it has decoded the frames before it, and
+	// Chromium (141's ImageDecoder) shows its pixels opaque black, and a
+	// frame of no pixels as nothing. The walk refuses it from its
+	// descriptor, before anything is decoded and before flood control. The
+	// same frames with a global table are taken.
+	table := [][3]byte{{0, 0, 0}, {255, 0, 0}, {0, 255, 0}, {0, 0, 255}}
+	tabled := rawFrame{local: table, at: image.Rect(0, 0, 4, 1), pix: []uint8{1, 1, 1, 1}}
+	bare := rawFrame{at: image.Rect(1, 0, 3, 1), pix: []uint8{2, 3}}
+	for name, frames := range map[string][]rawFrame{
+		"a still with no colour table":              {{at: image.Rect(0, 0, 4, 1), pix: []uint8{0, 1, 2, 3}}},
+		"a later frame with no colour table":        {tabled, bare},
+		"a frame of no pixels with no colour table": {tabled, {at: image.Rect(1, 0, 1, 0)}, tabled},
+	} {
+		data := rawGIF{w: 4, h: 1, frames: frames}.bytes()
+		if _, err := gif.DecodeAll(bytes.NewReader(data)); err == nil || !strings.Contains(err.Error(), "no color table") {
+			t.Fatalf("%s: image/gif reads the fixture with %v, want no color table: the case would prove nothing", name, err)
+		}
+		if _, err := gifFramePixels(data, math.MaxInt64); !errors.Is(err, ErrCorruptImage) {
+			t.Errorf("%s: gifFramePixels error = %v, want ErrCorruptImage", name, err)
+		}
+		if _, err := Inspect(data); !errors.Is(err, ErrCorruptImage) {
+			t.Errorf("%s: Inspect = %v, want ErrCorruptImage before any cooldown", name, err)
+		}
+		if _, err := Inspect(rawGIF{w: 4, h: 1, global: table, frames: frames}.bytes()); err != nil {
+			t.Errorf("%s: Inspect of the frames with a global table = %v, want nil", name, err)
+		}
+	}
 }
 
 // FuzzGIFFramePixels holds the count to the decoder: whatever image/gif

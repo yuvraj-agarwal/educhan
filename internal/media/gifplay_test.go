@@ -178,7 +178,7 @@ func pictureRows(pic *image.NRGBA) []string {
 // cannot make: frames with no graphic control extension or with two, a
 // transparent index past the colour table, a table with its colours in any
 // order or repeated, extensions between a frame's control and its pixels,
-// data after a frame's end code.
+// data after a frame's end code, LZW codes of the writer's choosing.
 type rawGIF struct {
 	w, h      int
 	global    [][3]byte // the global colour table, or none
@@ -212,11 +212,41 @@ type rawFrame struct {
 	local     [][3]byte // its own colour table, or none
 	interlace bool
 	pix       []uint8 // at.Dx()×at.Dy() indices, row by row
+	// codes, when there are any, are its LZW data in place of what
+	// compress/lzw writes of pix, each code at the width given; pix is
+	// still what chromiumReads shows of the frame.
+	codes []lzwCode
 	// Bytes after its LZW data, which ends with the end code: tail in the
 	// sub-block the end code ends (the data is short enough to share it),
 	// and then sub-blocks of their own before the terminator.
 	tail  []byte
 	after [][]byte
+}
+
+// lzwCode is an LZW code and the width it is written at, for LZW data
+// written code by code (rawFrame.codes).
+type lzwCode struct {
+	code  uint16
+	width uint
+}
+
+// packLZW is LZW data of the codes given, packed as a GIF packs them, least
+// significant bit first.
+func packLZW(codes []lzwCode) []byte {
+	var out []byte
+	var bits uint32
+	var n uint
+	for _, c := range codes {
+		bits |= uint32(c.code) << n
+		for n += c.width; n >= 8; n -= 8 {
+			out = append(out, byte(bits))
+			bits >>= 8
+		}
+	}
+	if n > 0 {
+		out = append(out, byte(bits))
+	}
+	return out
 }
 
 // rawTable appends a colour table, padded with black to a power of two, and
@@ -306,9 +336,13 @@ func (g rawGIF) bytes() []byte {
 			}
 		}
 		var lzwData bytes.Buffer
-		lw := lzw.NewWriter(&lzwData, lzw.LSB, lit)
-		lw.Write(pix)
-		lw.Close()
+		if f.codes != nil {
+			lzwData.Write(packLZW(f.codes))
+		} else {
+			lw := lzw.NewWriter(&lzwData, lzw.LSB, lit)
+			lw.Write(pix)
+			lw.Close()
+		}
 		out = append(out, byte(lit))
 		for d := append(lzwData.Bytes(), f.tail...); len(d) > 0; {
 			n := min(255, len(d))
@@ -537,18 +571,26 @@ func TestGIFIsReadAsChromiumReadsIt(t *testing.T) {
 	}
 }
 
-// Two kinds of GIF that browsers show image/gif refuses, and so they are
-// refused once decoded, after flood control (`image could not be decoded`),
-// as README.md and AGENTS.md say. One has more data after a frame's LZW end
-// code than image/gif takes: the rest of the sub-block the end code ends in,
-// and, when it ends one, one more sub-block of a single byte
-// (golang.org/issue/16146); past that image/gif reports too much image data,
-// where Chromium shows the frame and reads on from its terminator (a reviewer
-// had it show such a file). The other has pixels on an index past the end of
-// their colour table, which Chromium shows black, and image/gif refuses but
-// for indices up to a transparent index that is itself past the table
+// The kinds of GIF found that browsers show, image/gif refuses, and the walk
+// cannot tell from their blocks are refused once decoded, after flood control
+// (`image could not be decoded`), as README.md and AGENTS.md say. One has
+// more data after a frame's LZW end code than image/gif takes: the rest of
+// the sub-block the end code ends in, and, when it ends one, one more
+// sub-block of a single byte (golang.org/issue/16146); past that image/gif
+// reports too much image data, where Chromium shows the frame and reads on
+// from its terminator (a reviewer had it show such a file). One has LZW data
+// that goes on after a frame's last pixel, before its end code: another
+// pixel, or a code that is not valid. image/gif reports too much image data
+// or an invalid code, where Chromium stops reading the frame's codes once it
+// has its pixels (each case below was seen in Chromium 141's ImageDecoder to
+// play as the plain file does). And one has pixels on an index past the end
+// of their colour table, which Chromium shows black, and image/gif refuses
+// but for indices up to a transparent index that is itself past the table
 // (TestGIFTransparentIndexPastItsTable). Each case is the two-frame GIF the
-// controls are stored as when the data image/gif takes is left out.
+// controls are stored as when what image/gif refuses is left out. A frame
+// with no colour table at all, which image/gif refuses too, the walk can tell
+// from its descriptor, and refuses before anything is decoded
+// (TestGIFFramePixelsReadsWhatTheDecoderReads).
 func TestGIFsImageGIFRefusesAreRefusedOnceDecoded(t *testing.T) {
 	table := [][3]byte{{0, 0, 0}, {255, 0, 0}, {0, 255, 0}, {0, 0, 255}}
 	upload := func(first func(*rawFrame)) rawGIF {
@@ -569,6 +611,23 @@ func TestGIFsImageGIFRefusesAreRefusedOnceDecoded(t *testing.T) {
 		upload(func(f *rawFrame) { f.after = [][]byte{filler(1)} }),
 	)
 
+	// The red frame's four pixels code by code, at the width image/gif reads
+	// each at (a 2-bit minimum: clear is 4, the end code 5, and the width
+	// grows to 4 bits as the fourth code is read); then image/gif has made
+	// codes up to 8, and 9 is the one it makes next. The codes it takes after
+	// the last pixel, the end code, a clear code and then the end code, or
+	// none at all, are stored as the plain file, which shows the codes are
+	// read as written here.
+	redCodes := []lzwCode{{4, 3}, {1, 3}, {1, 3}, {1, 3}, {1, 4}}
+	coded := func(after ...lzwCode) func(*rawFrame) {
+		return func(f *rawFrame) { f.codes = append(slices.Clone(redCodes), after...) }
+	}
+	requireStoredAlike(t, "codes image/gif takes after the last pixel", upload(nil),
+		upload(coded(lzwCode{5, 4})),
+		upload(coded(lzwCode{4, 4}, lzwCode{5, 3})),
+		upload(coded()),
+	)
+
 	for _, tc := range []struct {
 		name  string
 		first func(*rawFrame)
@@ -582,6 +641,14 @@ func TestGIFsImageGIFRefusesAreRefusedOnceDecoded(t *testing.T) {
 			func(f *rawFrame) { f.after = [][]byte{filler(1), filler(1)} }, "too much image data"},
 		{"a sub-block of one byte after an end code within its sub-block",
 			func(f *rawFrame) { f.tail, f.after = filler(1), [][]byte{filler(1)} }, "too much image data"},
+		{"more pixels than the frame holds, then the end code",
+			func(f *rawFrame) { f.pix = []uint8{1, 1, 1, 1, 2, 2} }, "too much image data"},
+		{"a pixel after the last pixel, then the end code",
+			coded(lzwCode{2, 4}, lzwCode{5, 4}), "too much image data"},
+		{"a clear code and a pixel after the last pixel, then the end code",
+			coded(lzwCode{4, 4}, lzwCode{2, 3}, lzwCode{5, 3}), "too much image data"},
+		{"a code that is not valid after the last pixel, then the end code",
+			coded(lzwCode{15, 4}, lzwCode{5, 4}), "lzw: invalid code"},
 		{"a pixel past the colour table, with no transparent index past it",
 			func(f *rawFrame) { f.pix = []uint8{1, 5, 1, 1} }, "invalid pixel value"},
 	} {
