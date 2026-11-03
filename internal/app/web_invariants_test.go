@@ -1207,9 +1207,11 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 		t.Errorf("the submit handler does something besides return for a form off the screen, or keeping what it would have "+
 			"been told: %s", away)
 	}
-	// Before it or in it, a refused badge is taken out of the forms on the page
-	// the reader went to, and /verify there showing its panel is drawn again,
-	// as for any change of the page's badge (TestAFormSendsOnlyTheBadgeItWasDrawnFor).
+	// Before it or in it, the other posting forms on the page the reader went
+	// to are brought into line with the badge held now, their box drawn again
+	// for it or taken out when there is none (offerHeldBadge), and /verify
+	// there showing the refused badge's panel is drawn again, as for any change
+	// of the page's badge (TestAFormSendsOnlyTheBadgeItWasDrawnFor).
 	before := catch[:max(strings.Index(catch, "if (!shown) {"), 0)] + away
 	before = strings.Replace(before, panelRedrawn, "", 1)
 	for _, banned := range []string{"showNotice(", "navigate(", "reset(", "el.main", "redrawThreadCounts(", "state.thread", "blockFileField("} {
@@ -2571,7 +2573,9 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 // The FAQ's account of the check is the page's: the puzzle starts when focus
 // moves into a box to write in, which quoting a post does too, and a press
 // before it is solved waits with the button saying what the FAQ says it says,
-// on /verify in the address step drawn again meanwhile too.
+// on /verify in the address step drawn again meanwhile too, which reads it from
+// the mark submitVerification sets on the step while the puzzle is solved and
+// takes off as the request goes.
 func TestTheCaptchaFAQSaysWhatThePageDoes(t *testing.T) {
 	script := appScript(t)
 	at := strings.Index(script, `id: "faq-check",`)
@@ -2597,10 +2601,11 @@ func TestTheCaptchaFAQSaysWhatThePageDoes(t *testing.T) {
 	}
 	code := withoutComments(script)
 	if !strings.Contains(code, "\nconst VERIFY_SOLVING = \"Checking…\";\n") ||
-		!strings.Contains(jsFunction(t, script, "submitVerification"), "button.textContent = solving ? VERIFY_SOLVING : VERIFY_SENDING;") ||
+		!strings.Contains(squash(withoutComments(jsFunction(t, script, "submitVerification"))),
+			"(solving) => { sentFrom.solving = solving; button.textContent = solving ? VERIFY_SOLVING : VERIFY_SENDING; },") ||
 		!strings.Contains(code, `${busy ? (verifyStep.solving ? VERIFY_SOLVING : VERIFY_SENDING) : "Send code"}`) {
 		t.Error("submitVerification, or the address step drawn again while it waits, no longer says Checking… on its " +
-			"button while it waits for the puzzle")
+			"button while it waits for the puzzle, and Sending… once the request goes")
 	}
 }
 
@@ -3612,8 +3617,8 @@ func TestOnlyKnownPlacesTellWhetherABadgeIsHeld(t *testing.T) {
 		"const badgeNumbers = new Map();":                      1,
 		"function badgeNumber(token) {":                        5,
 		// What else the browser keeps: the age answer, the post key, and
-		// forgetting the browser, which empties the credential before it removes
-		// it, so that every other tab hears the badge go as the browser
+		// forgetting the browser, which empties the credential before it
+		// removes it, so that every other tab hears the badge go as the browser
 		// forgotten (followCredentialStorage).
 		"function storageGet(key) {":        1,
 		"function storageSet(key, value) {": 1,
@@ -3627,8 +3632,8 @@ func TestOnlyKnownPlacesTellWhetherABadgeIsHeld(t *testing.T) {
 		// what it offers, the box drawn again for the badge held now, the
 		// notices a form whose ticked badge went is told, a draft carried
 		// across a re-render, the badge box ticked, whether the form needs the
-		// anti-spam puzzle (a Verify form is answered by its data-verify, before
-		// any badge box is read), and the post sent.
+		// anti-spam puzzle (a Verify form is answered by its data-verify,
+		// before any badge box is read), and the post sent.
 		"function formHTML({ kind, slug, thread = null, open = false }) {": 5,
 		"function badgeOptionHTML(held) {":                                 1,
 		"function badgeOffered(form) {":                                    2,

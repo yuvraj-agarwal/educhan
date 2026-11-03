@@ -885,12 +885,13 @@ properties and needs a browser check before the test changes.
   (`VERIFY_SOLVING`, the step's `solving`), and "Sending…" once the request goes. A code
   request whose form has left the screen by the time its puzzle is solved, the reader
   gone to another page or `/verify` drawn again, is not sent (`notSent`), and its answer
-  is kept for the next press; the step drawn again is let go, saying nothing. That wait
-  ends: each Verify request — the address, the code, and the `GET /api/verify` that
-  `renderVerify` asks before an issued badge is drawn — goes with `verifyDeadline()`'s
-  signal and is given up once `VERIFY_TIMEOUT_MS` has passed from when it is sent, which
-  `api()` turns into the unreachable refusal; a code request's puzzle is not counted,
-  since its challenge is asked for within the same time and its workers give up after
+  is kept for the next press while it is still good and the page holds no other
+  (`keepCaptcha`); the step drawn again is let go, saying nothing. That wait ends: each
+  Verify request — the address, the code, and the `GET /api/verify` that `renderVerify`
+  asks before an issued badge is drawn — goes with `verifyDeadline()`'s signal and is
+  given up once `VERIFY_TIMEOUT_MS` has passed from when it is sent, which `api()` turns
+  into the unreachable refusal; a code request's puzzle is not counted, since its
+  challenge is asked for within the same time and its workers give up after
   `CAPTCHA_TIMEOUT_MS`. Send code and Verify say it on their own step and drop it on any
   other. The GET only asks whether verification is on, and `loadVerification` takes
   nothing from a request that got no answer, given up, unreachable or refused: what the

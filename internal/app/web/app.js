@@ -5887,10 +5887,11 @@ el.main.addEventListener("submit", async (event) => {
 // request goes; its time is counted from then, not from the press. A request
 // whose form has left the screen by the time its puzzle is solved, the reader
 // gone to another page or /verify drawn again, is not sent, and its answer is
-// kept for the next press; the step drawn again is let go. A forget moves the
-// page to a new step, so a request still waiting on its puzzle or its turn is
-// not sent either. The form's fields wait with its buttons (holdForm), so what
-// it shows meanwhile is what is sent.
+// kept for the next press while it is still good and the page holds no other
+// (keepCaptcha); the step drawn again is let go. A forget moves the page to a
+// new step, so a request still waiting on its puzzle or its turn is not sent
+// either. The form's fields wait with its buttons (holdForm), so what it shows
+// meanwhile is what is sent.
 //
 // What an answer draws is brought into view clear of the sticky header — the
 // code box with the sentence above it, the badge now held (revealClearOfHeader)
