@@ -3007,13 +3007,18 @@ function verifyViewHTML() {
 // judged on that page (submitVerification) whatever the drawing replaced: the
 // page a render of /verify still loading has yet to replace, say, or, for a
 // drawing after a forget, the error of a /verify that would not load, which
-// notes nothing.
+// notes nothing. It notes that only while the Verify page is the one on screen
+// (onVerifyPage), as every caller draws it: a step drawn over a page the
+// reader is leaving, still on screen while the next loads, would have its
+// press judged on the page they went to, and sent from there.
 function drawVerifyStep() {
   el.main.innerHTML = verifyViewHTML();
   verifyShown = { step: verifyStep, node: el.main.firstElementChild, at: performance.now() };
   state.thread = null;
   expandedLink = null;
-  drawnFor = { path: renderedPath, route: state.route, thread: null };
+  if (onVerifyPage()) {
+    drawnFor = { path: renderedPath, route: state.route, thread: null };
+  }
   badgeLost = "";
 }
 
@@ -4021,13 +4026,17 @@ async function render({ draft = captureDraft() } = {}) {
 
   // The Verify page has no posts to finish and no posting form to give a
   // draft back to, so once it is drawn the jump to a fragment is all that
-  // runs on it: the FAQ links to /verify#forget-browser. What runs on a
-  // pending code's box once it is drawn is held whole
-  // (TestVerifyCodeBoxShowsWhileACodeIsPending), and the rest of render()
+  // runs on it: the FAQ links to /verify#forget-browser. A render a newer one
+  // overtook while it loaded drew nothing (renderVerify), and runs nothing
+  // either, as on every other page (below): the jump would move the page the
+  // reader went to. What runs on a pending code's box once it is drawn is held
+  // whole (TestVerifyCodeBoxShowsWhileACodeIsPending), and the rest of render()
   // serves every page: a gate on a held badge there could take the box away
   // from a badge holder coming back to the page with every check passing.
   if (route.view === "verify") {
-    focusHash();
+    if (!overtaken(route)) {
+      focusHash();
+    }
     return;
   }
   if (resolved !== null) {
@@ -4656,8 +4665,12 @@ document.addEventListener("click", (event) => {
   // gone by, and went on being offered on posting forms for the server to
   // refuse. A badge that has gone leaves the address step, which opens by
   // saying why (badgeLost), and showHeldBadge shows and focuses that instead.
+  // Pressed on a Verify page the reader has just left, still on screen while
+  // the next page loads, it does nothing, as the forget buttons draw nothing
+  // there (renderVerify): the page is the one they went to.
   if (event.target.closest('[data-action="verify-keep"]')) {
     event.preventDefault();
+    if (!onVerifyPage()) return;
     clearNotice();
     state.verification.badge = readBadge();
     if (!state.verification.badge && !badgeLost) badgeLost = CREDENTIAL_FORGOTTEN;
@@ -4670,10 +4683,14 @@ document.addEventListener("click", (event) => {
   // Verifying again from here means starting at the address field, with the
   // badge already held staying valid until the new one replaces it. Whatever
   // was said was about the step being left, so it goes with it: a refusal in
-  // that step's form goes with the form, and the notice is put away.
+  // that step's form goes with the form, and the notice is put away. Pressed on
+  // a Verify page the reader has just left, it does nothing, as Keep my badge
+  // does: a Send code pressed on the step it drew would go from the page they
+  // went to.
   const restart = event.target.closest('[data-action="verify-again"], [data-action="verify-restart"]');
   if (restart) {
     event.preventDefault();
+    if (!onVerifyPage()) return;
     clearNotice();
     // replacing shows the address form over a badge that is still held and
     // still usable — it is retired by the new one, not by asking for one.

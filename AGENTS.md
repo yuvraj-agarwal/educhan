@@ -955,7 +955,7 @@ properties and needs a browser check before the test changes.
   returns, so that is held line for line too, up to where the browser takes over: the
   page's submit listener to the end of its Verify branch (the one listener a Verify
   form's submit reaches), the forget buttons' callbacks, and `render()` from its
-  `finally` on, which leaves the Verify page with `focusHash` alone run on it, not the
+  `finally` on, which leaves the Verify page with at most `focusHash` run on it, not the
   posts and drafts every other page gets; `beginLoading`, whose `finish` that `finally`
   calls, and `navigate`, which waits on `render()`, are held whole, and every other call
   of either is a statement nothing waits on. A gate in the submit listener after

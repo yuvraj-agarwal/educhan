@@ -1226,13 +1226,15 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 	// code request answered before the page a link went to drew would draw its
 	// code step over the page being left. drawnFor names /verify however it
 	// was drawn, by its render or by a side path (drawVerifyStep, every Verify
-	// step's one drawing), one Forget this browser draws over the error of a
-	// /verify that would not load say, which noted nothing: naming the page
-	// before, it would have every press of the form judged off the screen. Its
-	// form is on screen only while the page is on the step it was sent from.
+	// step's one drawing, which notes it only while /verify is the page on
+	// screen, where every caller draws it), one Forget this browser draws over
+	// the error of a /verify that would not load say, which noted nothing:
+	// naming the page before, it would have every press of the form judged off
+	// the screen. Its form is on screen only while the page is on the step it
+	// was sent from.
 	if drawn := squash(withoutComments(jsFunction(t, script, "drawVerifyStep"))); !strings.Contains(drawn,
 		"el.main.innerHTML = verifyViewHTML(); verifyShown = { step: verifyStep, node: el.main.firstElementChild, at: performance.now() }; "+
-			"state.thread = null; expandedLink = null; drawnFor = { path: renderedPath, route: state.route, thread: null };") ||
+			"state.thread = null; expandedLink = null; if (onVerifyPage()) { drawnFor = { path: renderedPath, route: state.route, thread: null }; }") ||
 		strings.Count(withoutComments(script), "verifyViewHTML()") != 2 {
 		t.Error("drawVerifyStep no longer notes what the /verify it draws was drawn for, or /verify is drawn elsewhere, so a " +
 			"press of its form, drawn after a forget over another page, would be judged on that page")
@@ -2535,8 +2537,10 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 	}
 	if draw := squash(withoutComments(jsFunction(t, script, "drawVerifyStep"))); draw != "function drawVerifyStep() { "+
 		"el.main.innerHTML = verifyViewHTML(); verifyShown = { step: verifyStep, node: el.main.firstElementChild, at: performance.now() }; "+
-		`state.thread = null; expandedLink = null; drawnFor = { path: renderedPath, route: state.route, thread: null }; badgeLost = ""; }` {
-		t.Errorf("drawVerifyStep no longer forgets the page's thread and its open image, or notes what it drew for: %s", draw)
+		"state.thread = null; expandedLink = null; "+
+		`if (onVerifyPage()) { drawnFor = { path: renderedPath, route: state.route, thread: null }; } badgeLost = ""; }` {
+		t.Errorf("drawVerifyStep no longer forgets the page's thread and its open image, or notes what it drew for, "+
+			"and only on the Verify page: %s", draw)
 	}
 	// /verify is drawn for the page on screen as renderVerify is called, once
 	// the server has answered, only while /verify is still that page and no
@@ -3438,21 +3442,26 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 	}
 
 	// render() leaves the Verify page once it is drawn, with focusHash alone
-	// run on it, after finish, which beginLoading hands it; both are held
-	// whole, and so is the skeleton's timer beginLoading sets, which can fire
-	// once the page is drawn: it draws nothing over a page drawn since the load
-	// began, and asks render's skeleton (whether a held form keeps the page)
-	// only of the page that was there then. What finish runs, endLoading, is
-	// held whole by TestAHeldFormSurvivesARedrawOfItsPage. What render() runs
-	// after drawing any other page — enhancePosts, restoreDraft and what they
-	// reach — serves every page, so it is not run on this one.
+	// run on it, and only when no newer render has overtaken it, after finish,
+	// which beginLoading hands it; both are held whole, and so is the
+	// skeleton's timer beginLoading sets, which can fire once the page is
+	// drawn: it draws nothing over a page drawn since the load began, and asks
+	// render's skeleton (whether a held form keeps the page) only of the page
+	// that was there then. What finish runs, endLoading, is held whole by
+	// TestAHeldFormSurvivesARedrawOfItsPage. What render() runs after drawing
+	// any other page — enhancePosts, restoreDraft and what they reach — serves
+	// every page, so it is not run on this one. An overtaken render drew
+	// nothing, and its jump to a fragment would move the page the reader went
+	// to.
 	renderLines := jsLines(jsFunction(t, script, "render"))
 	holdLines(t, "render() once the Verify page is drawn", renderLines, "} finally {", "if (resolved !== null) {",
 		[]string{
 			"finish();",
 			"}",
 			`if (route.view === "verify") {`,
+			"if (!overtaken(route)) {",
 			"focusHash();",
+			"}",
 			"return;",
 			"}",
 		})
@@ -4080,7 +4089,9 @@ func TestReplacingABadgeCanGoBackToIt(t *testing.T) {
 // the one on screen (onVerifyPage); otherwise it only sets verifyStep, so that
 // coming back shows the step it left. Drawing regardless once put the Verify
 // address form over the board list a reader had gone to, under that page's
-// address and title.
+// address and title. The step buttons ask it too: one pressed on a Verify page
+// the reader has just left, still on screen while the next page loads, does
+// nothing.
 //
 // onVerifyPage asks that and nothing else, and is held whole: every answer
 // and renderVerify draw only when it says yes, so a held badge weighed in it
@@ -4135,6 +4146,29 @@ func TestVerifyAnswersDrawOnlyOnTheVerifyPage(t *testing.T) {
 	// confirmation after forgetting the browser waits on what it says.
 	if !strings.Contains(withoutComments(script), "renderVerify().then((drawn) => {\n      if (drawn) confirmBrowserForgotten();") {
 		t.Error("forgetting the browser confirms it whether or not the Verify page was drawn")
+	}
+
+	// The step buttons draw only on the Verify page too. Keep my badge, Use a
+	// different address and Verify another address, pressed on a Verify page
+	// the reader has just left, still on screen while the next page loads, do
+	// nothing, as the forget buttons draw nothing there (renderVerify): a step
+	// drawn there would cover the page they went to, and a Send code pressed
+	// on it would go from that page. Every drawing of a step is one of these,
+	// renderVerify's or an answer's, and asks first.
+	code := withoutComments(script)
+	for name, body := range map[string]string{
+		"Keep my badge": verifyClickHandler(t, script, `if (event.target.closest('[data-action="verify-keep"]')) {`),
+		"Verify another address and Use a different address": verifyClickHandler(t, script, `if (restart) {`),
+	} {
+		if !strings.HasPrefix(body, "\n    event.preventDefault();\n    if (!onVerifyPage()) return;\n") ||
+			strings.Count(body, "drawVerifyStep();") != 1 {
+			t.Errorf("%s draws a Verify step without first checking that the Verify page is on screen:%s", name, body)
+		}
+	}
+	if strings.Count(code, "drawVerifyStep();") != 5 || strings.Count(submit, "drawVerifyStep();") != 2 ||
+		strings.Count(withoutComments(jsFunction(t, script, "renderVerify")), "drawVerifyStep();") != 1 {
+		t.Error("a Verify step is drawn somewhere besides renderVerify, the two answers of submitVerification that " +
+			"draw one, Keep my badge and the two buttons that start again, which this test reads")
 	}
 }
 
@@ -4198,12 +4232,15 @@ func TestVerifyStepIsDrawnForAReaderArriving(t *testing.T) {
 		"verifyShown = { step: verifyStep, node: el.main.firstElementChild, at: performance.now() };",
 		"state.thread = null;",
 		"expandedLink = null;",
+		"if (onVerifyPage()) {",
 		"drawnFor = { path: renderedPath, route: state.route, thread: null };",
+		"}",
 		`badgeLost = "";`,
 		"}",
 	}; !slices.Equal(got, want) {
 		t.Errorf("drawVerifyStep runs\n\t%s\nwant it to draw the step, note the step, the drawing and when, forget the "+
-			"page it replaced and note what it drew for, and put away what the step said about a badge gone:\n\t%s",
+			"page it replaced and note what it drew for while the Verify page is on screen, and put away what the step "+
+			"said about a badge gone:\n\t%s",
 			strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
 	}
 	if got, want := jsLines(jsFunction(t, script, "verifyStepOnScreen")), []string{
