@@ -13912,29 +13912,41 @@ func quoteSpeaker(text string, open, end int) speaker {
 
 // posterDisowns reports, in the words after a quotation and the poster as
 // their subject (ws, after the subject), the words given as someone
-// else's: come to the poster, seen or read ("i keep getting messages saying
-// this", "i found this written on my desk", "i'm tired of reading this in
-// the comments", "i've had this sent to me"); refused before a verb of
-// saying ("i'd never tell anyone this", "i'm not going to reply to this")
-// or appealed against ("we need to stop saying this"); said of someone in a
-// clause of "if" or "when" ("i'd report it if someone posted this"); or
-// passed on to someone who can help ("i'll show this text to my mum", "i'd
-// tell a teacher", "we've told the mods about people posting this"). "I
-// won't stop saying this" refuses nothing.
+// else's: come to the poster, seen or read, with where, from whom or how
+// often ("i keep getting messages saying this", "i found this written on my
+// desk", "i got this from an unknown number", "i've been getting this every
+// day", "i woke up to this"); refused before a verb of saying ("i'd never
+// tell anyone this", "i'm not going to reply to this") or appealed against
+// ("we need to stop saying this"); said by someone else ("people keep
+// writing this") or of someone in a clause of "if" or "when" ("i'd report
+// it if someone posted this"); passed on to someone who can help ("i'll
+// show this text to my mum", "i'd tell a teacher", "we've told the mods
+// about people posting this"); or asked for help with ("i don't know what to
+// do about this"). Words the poster owns are never disowned (posterOwns:
+// "for you", "i meant it", "if anyone asks"), and neither is "i'll see it
+// through", "we'll stop at nothing", "i have it written down in my plans"
+// or "i got this sent to his whole class". "I won't stop saying this"
+// refuses nothing.
 func posterDisowns(subject string, ws []string) bool {
+	if posterOwns(ws) {
+		return false
+	}
 	negated := false
 	modal := strings.HasSuffix(subject, "'d") || strings.HasSuffix(subject, "'ll")
 	for j, w := range ws {
 		w = bare(w)
-		var next string
+		var next, prev string
 		if j+1 < len(ws) {
 			next = bare(ws[j+1])
+		}
+		if j > 0 {
+			prev = bare(ws[j-1])
 		}
 		switch {
 		case refusalWords[w]:
 			negated = true
-		case is(w, "stop") || is(w, "quit"):
-			return !negated
+		case (is(w, "stop") || is(w, "quit")) && sayingVerbs[next]:
+			return !negated // "stop saying this", not "stop at nothing"
 		case disownModals[w]:
 			modal = true
 		case (is(w, "if") || is(w, "when") || is(w, "whenever")) && sayersAfterIf[next]:
@@ -13943,23 +13955,108 @@ func posterDisowns(subject string, ws []string) bool {
 			return true
 		case (is(w, "tell") || is(w, "telling") || is(w, "told")) && anyIn(ws[j+1:min(len(ws), j+4)], helperWords):
 			return modal || hasWord(ws[j+1:], "about")
-		case receiptVerbs[w] && (quoteRefs[next] || messageNouns[next]):
-			return true
-		case holdVerbs[w] && messageNouns[next]:
-			return true
-		case holdVerbs[w] && quoteRefs[next]:
-			// "getting this texted to me", "had this sent to me"; not "i
-			// have this planned" or "i got this".
-			for _, x := range ws[j+2 : min(len(ws), j+5)] {
-				if x = bare(x); participles[x] || sayingVerbs[x] {
-					return true
-				}
+		case receiptVerbs[w] && messageNouns[next], holdVerbs[w] && (messageNouns[next] || receivedNouns[next]):
+			return true // "i keep getting messages saying this", "getting threats like this"
+		case receiptVerbs[w] && quoteRefs[next]:
+			if receiptAfter(ws[j+2:], true, true) {
+				return true // "found this written on my desk", "heard this in the corridor"
 			}
+		case holdVerbs[w] && quoteRefs[next]:
+			if keepWords[prev] || receiptAfter(ws[j+2:], false, gotWords[w]) {
+				return true // "i keep getting this", "had this sent to me", "got this from an unknown number"
+			}
+		case wokeWords[w] && is(next, "up") && j+3 < len(ws) && is(ws[j+2], "to") && quoteRefs[bare(ws[j+3])]:
+			return true // "i woke up to this"
+		case quoteRefs[w] && (is(next, "was") || is(next, "is") || is(next, "were")) &&
+			receiptAfter(ws[j+2:], false, true):
+			return true // "this was in my locker"
+		case sayingVerbs[w] && (otherSpeakers[prev] || keepWords[prev] && j > 1 && otherSpeakers[bare(ws[j-2])]):
+			return true // "people keep writing this"
 		case sayingVerbs[w] && !sayingNoun(ws, j):
 			return negated
 		}
 	}
+	return helpAsked(ws) // "i don't know what to do about this"
+}
+
+// receiptAfter reports, in the words after "this" got, had, found or seen,
+// that it came to the poster: from or by someone ("from an unknown
+// number", "from my ex"), again and again ("every day", "all the time", "5
+// times"), or sent to the poster ("sent to me"); or, when it was got or
+// found (placed), somewhere words are left or sent (receiptPlaces: "on my
+// desk", "in my dms", "under my post", "on the class gc"). A participle of
+// writing or sending is enough after a verb of finding or seeing (found,
+// "found this written"). Sent on to someone else, it is the poster's doing:
+// "got this sent to his whole class".
+func receiptAfter(ws []string, found, placed bool) bool {
+	for i := 0; i < len(ws) && i < 6; i++ {
+		w := bare(ws[i])
+		var next string
+		if i+1 < len(ws) {
+			next = bare(ws[i+1])
+		}
+		switch {
+		case is(w, "and") || is(w, "but") || is(w, "so"):
+			return false
+		case is(w, "to"):
+			return receivers[next]
+		case is(w, "from") || is(w, "by"):
+			for k := i + 1; k < len(ws) && k < i+4; k++ {
+				if x := bare(ws[k]); otherSpeakers[x] || receiptSenders[x] {
+					return true
+				}
+			}
+		case receiptFrequency[w], is(w, "all") && is(next, "the"), is(w, "times") && i > 0:
+			return true
+		case placed && receiptPrepositions[w]:
+			for k := i + 1; k < len(ws) && k < i+4; k++ {
+				if receiptPlaces[bare(ws[k])] {
+					return true
+				}
+			}
+		case found && participles[w]:
+			return !(is(next, "to") && i+2 < len(ws) && !receivers[bare(ws[i+2])])
+		}
+	}
 	return false
+}
+
+// posterOwns reports, in the words after a quotation and the poster as their
+// subject, the words owned: aimed at someone ("i see this as good advice
+// for you"), meant ("i read this out to him and i meant it"), or covered up
+// ("i never said this if anyone asks").
+func posterOwns(ws []string) bool {
+	for j, w := range ws {
+		w = bare(w)
+		var next string
+		if j+1 < len(ws) {
+			next = bare(ws[j+1])
+		}
+		switch {
+		case is(w, "for") && ownedFor[next],
+			(is(w, "meant") || is(w, "mean")) && (is(next, "it") || is(next, "every")),
+			is(w, "if") && (is(next, "anyone") || is(next, "anybody")) && j+2 < len(ws) && is(bare(ws[j+2]), "asks"):
+			return true
+		}
+	}
+	return false
+}
+
+// helpAsked reports the poster asking for help with the words: "i need
+// help", "what do i do", "i don't know what to do about this", with "this",
+// "these", "that" or "it" among ws.
+func helpAsked(ws []string) bool {
+	help := false
+	for j, w := range ws {
+		w = bare(w)
+		switch {
+		case is(w, "help") && j > 0 && (is(bare(ws[j-1]), "need") || is(bare(ws[j-1]), "want")),
+			is(w, "what") && j+2 < len(ws) && (is(bare(ws[j+1]), "do") && is(bare(ws[j+2]), "i") ||
+				is(bare(ws[j+1]), "to") && is(bare(ws[j+2]), "do") || is(bare(ws[j+1]), "should")):
+			help = true
+		}
+	}
+	return help && anyIn(ws, quoteRefs)
 }
 
 var (
@@ -13985,6 +14082,30 @@ var (
 		hears hearing heard find finds finding found notice noticing noticed`)
 	holdVerbs = canonSetOf(`get gets getting got have has having had`)
 	quoteRefs = canonSetOf(`this these that it`)
+	// receivedNouns, after holdVerbs, are words someone else sent ("getting
+	// threats like this"); keepWords before holdVerbs or a verb of saying
+	// make it something that keeps happening ("i keep getting this", "people
+	// keep writing this"); wokeWords before "up to this" found it waiting.
+	receivedNouns = canonSetOf(`threat threats abuse hate`)
+	keepWords     = canonSetOf(`keep keeps kept always still`)
+	wokeWords     = canonSetOf(`woke wake wakes waking`)
+	// receiptPrepositions before one of receiptPlaces put the words where
+	// they were left or sent to the poster ("on my desk", "in my dms",
+	// "under my reel"); receiptFrequency say they keep coming ("every day",
+	// "again"); ownedFor, after "for", are who the poster aims them at.
+	receiptPrepositions = canonSetOf(`on in under at inside onto`)
+	receiptPlaces       = canonSetOf(`comments comment dms dm inbox chat chats gc gcs group groups post posts reel reels
+		story stories desk locker lockers wall walls bathroom toilet toilets washroom corridor corridors hallway board
+		notebook bench phone mail email messages texts whatsapp insta instagram snap snapchat page profile feed
+		account discord server door`)
+	receiptFrequency = canonSetOf(`every again daily constantly nightly weekly`)
+	ownedFor         = canonSetOf(`you u ya him her them yall y'all`)
+	// receiptSenders, after "from" or "by", send words as people do;
+	// gotWords are the holdVerbs of getting, which a place can follow ("got
+	// this in my dms"), where "i have this in my notebook" is the poster's.
+	receiptSenders = canonSetOf(`number numbers account accounts anon anonymous unknown id profile page someone
+		somebody random`)
+	gotWords = canonSetOf(`get gets getting got`)
 )
 
 // quotationBreak is where the stretch before a quotation stops being about
