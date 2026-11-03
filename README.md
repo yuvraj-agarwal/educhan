@@ -1487,7 +1487,7 @@ room for upload bodies, or one of which already waits for room, answers `429` th
 way, at once, with a `Retry-After` and `retry_after` of 10 seconds and no cooldown
 started. A post whose body sends nothing within 5 seconds, takes longer than 30 seconds to
 arrive, counted from when there was room to read it, or falls further behind the even pace
-that would bring it in by then than its 1 to 5 seconds to spare, answers `400` with
+that would bring it in by then than the 5 seconds it has to spare, answers `400` with
 `{"error":"upload too slow"}` and no `Retry-After`, since waiting does not make a
 connection faster — one turned away as busy or over its share included, whose body is
 still read past at that pace — and, with uploads on, a form sent without a
@@ -1627,7 +1627,7 @@ turned away because the server is too busy (`503`) add `retry_after` plus a `Ret
 header; the other `429` and `503`, too many wrong verification codes and `/healthz` with
 the database down, carry neither. An image post whose body sends nothing within 5 seconds,
 does not arrive within 30 seconds of there being room to read it, or falls further behind
-the even pace that would bring it in by then than its 1 to 5 seconds to spare, answers
+the even pace that would bring it in by then than the 5 seconds it has to spare, answers
 `400` (`upload too slow`), not `408`, which Chromium answers on a reused connection by
 sending the post again. With uploads on, a `multipart/form-data` post has to send a
 `Content-Length`, as browsers do: one sent without (chunked) answers `411`
