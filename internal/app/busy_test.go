@@ -1105,16 +1105,19 @@ func TestIdleBodiesDoNotHoldUpOtherImagePosts(t *testing.T) {
 // 8.3 MB image sent at 375 KB/s, faster than its pace asks, over a round trip
 // of 0.65 s within two seconds, and over one of a second within 1.3. The whole
 // grace holds from the first byte (pacedBody), and such a body is taken. Here
-// the round trip is a fifth of the grace, as a second is of the 5 s grace, the
-// body a megabyte, and the window as long as it needs and no longer.
+// the round trip is that 0.65 s, the grace five round trips and the window
+// eight, and the body 1.5 MB, so that each byte is as much of the window as
+// one of the 8.3 MB body is of 30 s: the body falls as far behind its pace in
+// its first two seconds, and the grace that began at a second refused it
+// there, at its third or fourth burst.
 func TestABodyOverALongRoundTripIsTaken(t *testing.T) {
 	h := testServer(t, nil)
 	h.addBoard("general")
-	const rtt = 500 * time.Millisecond
+	const rtt = 650 * time.Millisecond
 	h.app.uploadPaceGrace = 5 * rtt
 	h.app.uploadReadTimeout = 8 * rtt
 	drainShares(t, h, "127.0.0.1")
-	body := boundForm(t, 1_100_000, "over a long round trip", pngBytes(t, 32, 32))
+	body := boundForm(t, 1_500_000, "over a long round trip", pngBytes(t, 32, 32))
 	b := rawUpload(t, h.base, "", int64(len(body)), false)
 	const firstBurst, linkBurst = 14_600, 375_000 // TCP's first window; what the link carries in a round trip
 	start := time.Now()
