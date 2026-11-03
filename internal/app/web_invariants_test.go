@@ -1136,7 +1136,8 @@ func TestPassAnswerAboutAPassThatLeftIsDropped(t *testing.T) {
 			"pressed, and how to drop it once back online with no more than that")
 	}
 	if !strings.Contains(code, "\nlet passForgetHeardLast = \"\";\n") || strings.Count(code, "passForgetHeardLast") != 3 ||
-		!strings.Contains(withoutComments(jsFunction(t, script, "stopForPassForget")), "passForgetHeardLast = mark.slice(0, mark.indexOf(\":\"));") {
+		!strings.Contains(withoutComments(jsFunction(t, script, "stopForPassForget")),
+			"const pressed = mark.slice(0, mark.indexOf(\":\"));\n  const code = pressed !== \"stop\";\n  passForgetHeardLast = pressed;\n") {
 		t.Error("forgetPassOrder is no longer told which forget was pressed in the other tab, as its mark has it")
 	}
 	// What offers Remove the Pass, Forget this browser and Stop collecting it
@@ -1173,8 +1174,10 @@ func TestPassAnswerAboutAPassThatLeftIsDropped(t *testing.T) {
 // still right to store stored. Each drawing after an await, or in a .then,
 // is preceded by that check since the wait; the async functions make it once,
 // at their own level, after their last wait, so no branch goes without it.
-// The one exception is the notice that a checkout's claim could not be
-// dropped by its order's name, said wherever the reader is (forgetPassOrder).
+// The exceptions are the claim notices, said wherever the reader is, since
+// they ask for a step: that a checkout's claim could not be dropped by its
+// order's name (forgetPassOrder), and that Remove the Pass could not reach
+// educhan to drop this browser's claims.
 func TestPassAnswersDrawOnlyOnThePassPage(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -1244,22 +1247,33 @@ func TestPassAnswersDrawOnlyOnThePassPage(t *testing.T) {
 			}
 		}
 	}
-	// The reader who pressed the forget in another tab was told it was done,
-	// so a claim it left that could not be dropped is said on whatever page
-	// this tab is on, and that notice is all forgetPassOrder draws. On the
-	// Pass page it answers this tab's own Buy or Renew, so it is said there as
-	// every other answer to a press there is, brought into view
-	// (showPassNotice); on any other page it moves nothing (showNotice). It is
-	// noted as a claim's notice either way, for another tab's Remove or Forget
-	// to take off (TestPassNoticeGoesWithWhatItSaid).
+	// A claim notice asks the reader for a step, so it is said on whatever
+	// page this tab is on: the reader who pressed the forget in another tab
+	// was told it was done, and the reader who pressed Remove here may have
+	// moved on before educhan failed to answer. That notice is all
+	// forgetPassOrder draws, and all Remove draws once its forget is answered.
+	// On the Pass page it answers a press there, this tab's own Buy, Renew or
+	// Remove, so it is said there as every other answer to a press there is,
+	// brought into view (showPassNotice); on any other page it moves nothing
+	// (showNotice). It is noted as a claim notice either way, for another
+	// tab's forget to take off, and Remove's as a held notice too
+	// (TestPassNoticeGoesWithWhatItSaid).
 	order := withoutComments(jsFunction(t, script, "forgetPassOrder"))
 	said := regexp.MustCompile(`\.catch\(\(err\) => \{\s*if \(err\.status !== 403\) \{\s*` +
 		`const notice = PASS_ORDER_KEPT\[pressed\] \|\| PASS_ORDER_KEPT\.browser;\s*` +
 		`if \(passPageShown\(\)\) \{\s*showPassNotice\(notice\);\s*\} else \{\s*showNotice\(notice\);\s*\}\s*` +
-		`passClaimNotices\.add\(el\.notice\.querySelector\("\.notice-text"\)\);\s*\}\s*\}\);`)
+		`noteClaimNotice\(\);\s*\}\s*\}\);`)
 	if len(draws.FindAllString(order, -1)) != 2 || strings.Count(order, "passPageShown()") != 1 || !said.MatchString(order) {
 		t.Error("forgetPassOrder no longer says, on whatever page this tab is on, that a claim it could not drop is still collected, " +
 			"in view on the Pass page and moving nothing elsewhere, or says or draws something else")
+	}
+	removed := bodies["Remove the Pass"]
+	unreached := regexp.MustCompile(`dropped\.then\(\(done\) => \{\s*if \(done\) \{\s*return;\s*\}\s*` +
+		`if \(passPageShown\(\)\) \{\s*showPassNotice\(PASS_CLAIM_KEPT\.remove\.said\);\s*\} else \{\s*` +
+		`showNotice\(PASS_CLAIM_KEPT\.remove\.said\);\s*\}\s*notePassHeld\(said, PASS_CLAIM_KEPT\.remove\.alone\);\s*\}\);$`)
+	if !unreached.MatchString(removed) || len(draws.FindAllString(removed[strings.Index(removed, "dropped.then("):], -1)) != 2 {
+		t.Error("Remove the Pass no longer says, on whatever page this tab is on, that educhan could not be reached to drop " +
+			"this browser's claims, in view on the Pass page and moving nothing elsewhere, or says or draws something else then")
 	}
 	// The async functions ask once, at their own level, after their last
 	// wait: a check inside one branch would leave the others drawing over
@@ -1351,6 +1365,14 @@ func TestPassNoticesFromAPressAreBroughtIntoView(t *testing.T) {
 		"Stop collecting":   block(`const stopClaim = event.target.closest('[data-action="stop-pass-claim"]');`),
 		"Copy the code":     block(`if (event.target.closest('[data-action="copy-pass"]')) {`),
 	}
+	// Remove's claim notice, said once its forget could not reach educhan, is
+	// said in view on the Pass page and moves nothing on any other page the
+	// reader has gone to (TestPassAnswersDrawOnlyOnThePassPage).
+	elsewhere := "} else {\n        showNotice(PASS_CLAIM_KEPT.remove.said);\n      }"
+	if strings.Count(presses["Remove the Pass"], elsewhere) != 1 {
+		t.Error("Remove the Pass no longer says its claim notice, off the Pass page, where showNotice puts it")
+	}
+	presses["Remove the Pass"] = strings.Replace(presses["Remove the Pass"], elsewhere, "}", 1)
 	said := 0
 	for name, body := range presses {
 		if strings.Contains(body, "showNotice(") || !strings.Contains(body, "showPassNotice(") {
@@ -3087,13 +3109,13 @@ func TestPassRemovedInAnotherTabLeavesThisOne(t *testing.T) {
 	// never the Pass it holds, and may be a spent reissue code's only copy.
 	// Each stays until the reader leaves the page. A removal with a code to
 	// read also takes the notice off the Pass page, whatever it says, and off
-	// any other page one that says what this browser holds, as a Remove or
-	// Forget mark does, since it may be one whose mark the browser would not
-	// store (TestPassNoticeGoesWithWhatItSaid).
+	// any other page a held notice, as a Remove or Forget mark does, since it
+	// may be one whose mark the browser would not store; but not a claim
+	// notice, since a removal drops no claim (TestPassNoticeGoesWithWhatItSaid).
 	follow := withoutComments(jsFunction(t, script, "followPassStorage"))
 	if !strings.Contains(follow, "const now = storedPass();\n  const was = passCodeIn(event.oldValue);\n"+
 		"  if (event.key === PASS_STORAGE_KEY && event.newValue === null && was) {\n    forgetInvalidCode(was);\n"+
-		"    if (passNoticeForgotten()) {\n      takePassNoticeOff();\n    }\n  }\n"+
+		"    if (passNoticeForgotten(\"\")) {\n      takePassNoticeOff();\n    }\n  }\n"+
 		"  dropStalePassNotice();\n  showPassLink();\n  if (now) {") ||
 		strings.Contains(follow, "passJustIssued") || strings.Count(follow, "forgetInvalidCode(") != 1 ||
 		!strings.Contains(follow, `if (passPageShown() && el.main.querySelector("[data-pass-page]")) {`+
@@ -3205,11 +3227,12 @@ func TestPassForgottenInAnotherTabStopsThisOne(t *testing.T) {
 		t.Error("followPassForget no longer stops this tab for a forget it hears of, once and only once")
 	}
 	stopping := withoutComments(jsFunction(t, script, "stopForPassForget"))
-	steps := []string{"const code = !mark.startsWith(\"stop:\");", "passForgetHeardLast = mark.slice(0, mark.indexOf(\":\"));", "passVisit += 1;", "passForgets += 1;",
+	steps := []string{"const pressed = mark.slice(0, mark.indexOf(\":\"));", "const code = pressed !== \"stop\";", "passForgetHeardLast = pressed;",
+		"passVisit += 1;", "passForgets += 1;",
 		"dropPassNonce(PASS_NONCE_STORAGE_KEY);",
 		"if (code) {\n    passCodeForgets += 1;\n    dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);\n" +
-			"    dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);\n    forgetTypedCode();\n    passLost = \"\";\n    passJustIssued = null;\n" +
-			"    if (passNoticeForgotten()) {\n      takePassNoticeOff();\n    }\n  }",
+			"    dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);\n    forgetTypedCode();\n    passLost = \"\";\n    passJustIssued = null;\n  }\n" +
+			"  if (passNoticeForgotten(pressed)) {\n    takePassNoticeOff();\n  }",
 		"const waited = heedPassForget(key, mark);",
 		"for (const button of el.main.querySelectorAll(PASS_COLLECT_BUTTONS)) {\n    button.disabled = true;", "return waited;\n}"}
 	for at, step := 0, 0; step < len(steps); step++ {
@@ -3520,13 +3543,14 @@ func TestPassRunOutIsSaidForThePageBesideIt(t *testing.T) {
 	// are in, so a later press's notice in the same words, a second run-out
 	// code typed in say, is left as it is; and it is taken off, as at any
 	// drawing, once the Pass it was said beside is no longer stored as it was
-	// (TestPassNoticeGoesWithWhatItSaid).
+	// (TestPassNoticeGoesWithWhatItSaid). Said again, it is noted beside the
+	// record taken as the run-out was stored, not after the wait.
 	run := withoutComments(jsFunction(t, script, "showPassRunOut"))
 	if run != "function showPassRunOut(...selectors) {\n  const said = passRunOutText();\n"+
-		"  showPassNotice(said);\n  const text = notePassHeld();\n"+
+		"  const record = passHeldRecord();\n  showPassNotice(said);\n  const text = notePassHeld(record);\n"+
 		"  refreshFailedPass(...selectors).then(() => {\n    if (!passPageShown()) {\n      return;\n    }\n"+
 		"    dropStalePassNotice();\n    const now = passRunOutText();\n"+
-		"    if (now !== said && noticeShows(text)) {\n      showNotice(now);\n      notePassHeld();\n    }\n  });\n}" {
+		"    if (now !== said && noticeShows(text)) {\n      showNotice(now);\n      notePassHeld(record);\n    }\n  });\n}" {
 		t.Errorf("showPassRunOut no longer says the run-out notice again for the page drawn after it, once and where it "+
 			"is, only while its own notice is on screen, or no longer takes it off once the Pass it is about is not held "+
 			"as it was:\n%s", run)
@@ -3563,37 +3587,59 @@ func TestPassRunOutIsSaidForThePageBesideIt(t *testing.T) {
 }
 
 // A notice about the Pass this browser holds is true of it for as long as it
-// stays, on whatever page it is shown. Each one that says what the browser
-// holds (a Pass taken on, good until a date, renewed or run out, one the
-// browser could not store, or none) is noted beside the Pass stored as it was
-// said, by the node its words are in: on the Pass page, beside a post whose
-// answer says its Pass has run out or is no longer valid, and on the Verify
-// page after Forget this browser. It goes at the next drawing of the Pass page,
-// whatever set it off, and at another tab's change to the Pass, on whatever
-// page this tab is on, once the browser no longer holds that as stored. That is
-// decided by the stored record, never by a clock, so a Pass the server said has
-// run out is still the one the notice spoke of on a computer whose clock is
-// slow. Another tab's Remove or Forget this browser takes every notice off the
-// Pass page here, and such a notice off any other page, as it does one that a
-// checkout's claim this tab could not drop may still be collected, by its mark
-// or, if the browser would not store that, by the removal itself; a Stop leaves
-// the notice be (TestPassForgottenInAnotherTabStopsThisOne,
+// stays, on whatever page it is shown. Each held notice, one that says what
+// the browser holds (a Pass taken on, good until a date, renewed or run out,
+// one the browser could not store, or none), is noted beside the Pass stored
+// as it was when the press or the answer set what it says, by the node its
+// words are in: on the Pass page, beside a post whose answer says its Pass has
+// run out or is no longer valid, and on the Verify page the press of Forget
+// this browser drew, and no other. One put up after an await, the post's once its thread is drawn,
+// Forget this browser's and Remove's once their forget is answered, takes that
+// record before the await, and every one is checked as it is noted, so a
+// change another tab made meanwhile, a renewal say, takes it off at once. It
+// goes at the next drawing of the Pass page, whatever set it off, and at
+// another tab's change to the Pass, on whatever page this tab is on, once the
+// browser no longer holds that as stored. That is decided by the stored record,
+// never by a clock, so a Pass the server said has run out is still the one the
+// notice spoke of on a computer whose clock is slow, and the server's date
+// added to the same run-out mark changes nothing. A claim notice says a claim
+// of this browser may still be collected and what to press: forgetPassOrder's,
+// and Remove's and Forget this browser's when educhan could not be reached. A
+// Pass stored or changed in another tab leaves it; Remove's and Forget's, which
+// also say the browser holds no Pass, give way to the claim's warning alone
+// then. Another tab's forget takes a claim notice off by its mark, Stop's
+// included, and its removal of the Pass, which drops no claim, leaves it; Remove
+// and Forget this browser in another tab take every other notice off the Pass
+// page here, and a held notice off any other page, by the mark or, if the
+// browser would not store that, by the removal itself, and a Stop leaves them
+// be (TestPassForgottenInAnotherTabStopsThisOne,
 // TestPassRemovedInAnotherTabLeavesThisOne). A late follow-up acts on its own
 // notice alone (TestPassRunOutIsSaidForThePageBesideIt).
 func TestPassNoticeGoesWithWhatItSaid(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
+	// A run-out mark stands for the Pass whatever date is stored beside it, so
+	// Check it again in another tab, giving the same mark the server's date,
+	// leaves a post's notice that the Pass has run out.
 	if got := withoutComments(jsFunction(t, script, "passHeldRecord")); got != "function passHeldRecord() {\n"+
 		"  const held = storedPass();\n  if (!held) {\n    return \"\";\n  }\n"+
-		"  const until = held.expires ? ` ${held.expires.getTime()}` : \"\";\n"+
-		"  return `${held.code}${until}${held.marked ? \" run out\" : \"\"}`;\n}" {
-		t.Errorf("passHeldRecord no longer gives the Pass as it is stored, code and expiry or run-out mark or both, "+
+		"  return held.marked ? `${held.code} run out` : `${held.code} ${held.expires.getTime()}`;\n}" {
+		t.Errorf("passHeldRecord no longer gives the Pass as it is stored, code and expiry or the run-out mark alone, "+
 			"without reading the clock:\n%s", got)
 	}
-	if got := withoutComments(jsFunction(t, script, "notePassHeld")); got != "function notePassHeld() {\n"+
-		"  const text = el.notice.querySelector(\".notice-text\");\n  passNoticesHeld.set(text, passHeldRecord());\n"+
+	if got := withoutComments(jsFunction(t, script, "notePassHeld")); got != "function notePassHeld(said = passHeldRecord(), alone = \"\") {\n"+
+		"  const text = el.notice.querySelector(\".notice-text\");\n  passNoticesHeld.set(text, said);\n"+
+		"  if (alone) {\n    passClaimNotices.set(text, alone);\n  }\n  dropStalePassNotice();\n"+
 		"  return text;\n}" || !strings.Contains(code, "\nconst passNoticesHeld = new WeakMap();\n") {
-		t.Errorf("notePassHeld no longer notes the notice just put up, by its node, beside the Pass stored now:\n%s", got)
+		t.Errorf("notePassHeld no longer notes the notice just put up, by its node, beside the record it is given, "+
+			"as a claim notice too when given the claim's warning alone, and checks it at once:\n%s", got)
+	}
+	if got := withoutComments(jsFunction(t, script, "noteClaimNotice")); got != "function noteClaimNotice() {\n"+
+		"  const text = el.notice.querySelector(\".notice-text\");\n  passClaimNotices.set(text, text.textContent);\n}" ||
+		!strings.Contains(code, "\nconst passClaimNotices = new WeakMap();\n") || strings.Count(code, "passClaimNotices.") != 4 ||
+		strings.Count(code, "noteClaimNotice()") != 3 || strings.Count(withoutComments(jsFunction(t, script, "forgetPassOrder")), "noteClaimNotice();") != 1 {
+		t.Errorf("a claim notice is no longer noted by its node with its own words as the claim's warning, by forgetPassOrder "+
+			"and in place of Remove's and Forget's, or is noted somewhere else:\n%s", got)
 	}
 	if got := withoutComments(jsFunction(t, script, "passNoticeHeld")); got != "function passNoticeHeld() {\n"+
 		"  const text = el.notice.querySelector(\".notice-text\");\n"+
@@ -3601,88 +3647,157 @@ func TestPassNoticeGoesWithWhatItSaid(t *testing.T) {
 		t.Errorf("passNoticeHeld no longer gives what the notice on screen said this browser holds, and nothing for "+
 			"another notice:\n%s", got)
 	}
+	// A held notice found no longer true goes, unless it is a claim notice too:
+	// then the claim's warning alone takes its place, through showNotice, which
+	// keeps focus that was on it (TestNoticeReplacedKeepsFocusOnIt), noted as a
+	// claim notice only, so a Pass stored in another tab leaves it.
 	if got := withoutComments(jsFunction(t, script, "dropStalePassNotice")); got != "function dropStalePassNotice() {\n"+
 		"  const said = passNoticeHeld();\n"+
-		"  if (said !== undefined && said !== passHeldRecord()) {\n"+
-		"    takePassNoticeOff();\n  }\n}" {
-		t.Errorf("dropStalePassNotice no longer takes off a notice about a Pass this browser no longer holds as it was "+
-			"stored, or takes off another notice:\n%s", got)
+		"  if (said === undefined || said === passHeldRecord()) {\n    return;\n  }\n"+
+		"  const alone = passClaimNotices.get(el.notice.querySelector(\".notice-text\"));\n"+
+		"  if (alone) {\n    showNotice(alone);\n    noteClaimNotice();\n  } else {\n    takePassNoticeOff();\n  }\n}" {
+		t.Errorf("dropStalePassNotice no longer takes off a held notice about a Pass this browser no longer holds as it was "+
+			"stored, or puts the claim's warning alone in place of one that is a claim notice too, or touches another notice:\n%s", got)
+	}
+	// What Remove and Forget this browser say when educhan could not be
+	// reached: what they took, then the claim's warning, which alone takes the
+	// notice's place once the rest is no longer true; each says what to press
+	// once back online, on whatever page it is read.
+	for _, want := range []string{
+		"\nconst PASS_CLAIM_KEPT = {\n  remove: {\n    said:\n      \"This browser no longer has a Pass, but educhan couldn't be reached to stop it " +
+			"collecting anything bought here that hasn't arrived yet. Use Forget this browser on the Verify page when you're back online.\",\n" +
+			"    alone:\n      \"educhan couldn't be reached to stop this browser collecting anything bought here that hasn't arrived yet. " +
+			"Use Forget this browser on the Verify page when you're back online.\",\n  },\n",
+		"\n  browser: {\n    said:\n      \"This browser no longer holds your post key, your name, a badge or a Pass. educhan couldn't be " +
+			"reached to stop it collecting a Pass bought here that hasn't arrived yet, if there is one, so press Forget this browser on the " +
+			"Verify page again when you're back online.\",\n    alone:\n      \"educhan couldn't be reached to stop this browser collecting " +
+			"a Pass bought here that hasn't arrived yet, if there is one, so press Forget this browser on the Verify page again when " +
+			"you're back online.\",\n  },\n};\n",
+	} {
+		if !strings.Contains(code, want) {
+			t.Errorf("Remove's or Forget this browser's notice when educhan could not be reached, or the claim's warning alone, "+
+				"no longer says %q", want)
+		}
+	}
+	if strings.Count(code, "PASS_CLAIM_KEPT.") != 5 {
+		t.Error("the notices Remove and Forget this browser give when educhan could not be reached are said somewhere else")
 	}
 	// Every drawing of the Pass page asks first, before it takes lastPassInfo
 	// or the page's code box: redrawPass, renderPass and refreshFailedPass
 	// draw through drawPass, as does the drawing another tab's change sets off.
 	// That change asks on whatever page this tab is on (followPassStorage,
 	// pinned in TestPassRemovedInAnotherTabLeavesThisOne), so a post's notice
-	// goes once another tab renews or replaces the Pass it spoke of; and
-	// showPassRunOut asks again once its own drawing has landed.
+	// goes once another tab renews or replaces the Pass it spoke of; noting a
+	// held notice asks at once (notePassHeld, above); and showPassRunOut asks
+	// again once its own drawing has landed.
 	if draw := withoutComments(jsFunction(t, script, "drawPass")); !strings.HasPrefix(draw, "function drawPass(info) {\n  dropStalePassNotice();\n") ||
-		strings.Count(code, "dropStalePassNotice()") != 4 ||
+		strings.Count(code, "dropStalePassNotice()") != 5 ||
 		strings.Count(withoutComments(jsFunction(t, script, "followPassStorage")), "dropStalePassNotice();") != 1 {
 		t.Error("a drawing of the Pass page, or another tab's change to the Pass, no longer takes off a notice about a " +
 			"Pass this browser no longer holds as it was stored")
 	}
-	// Each notice that says what this browser holds is noted at once, after it
-	// is put up and before anything is awaited: here, and in showClaimed and
-	// showPassRunOut (TestPassNoticesFromAPressAreBroughtIntoView,
-	// TestPassRunOutIsSaidForThePageBesideIt).
-	for name, notice := range map[string]string{
-		"Check it again":            "showPassNotice(kept ? `Your Pass is good until ${passUntilText(res.expires_at)}.` : PASS_NOT_KEPT);",
-		"a code taken on":           "showPassNotice(kept ? `This browser now has your Pass, good until ${passUntilText(res.expires_at)}.` : PASS_NOT_KEPT);",
-		"a run-out code not stored": "showPassNotice(PASS_RUN_OUT_NOT_KEPT);",
-		"a good Pass held":          `showPassNotice("This browser has a Pass already. To use another one here, write this one's code down, then remove it.");`,
-		"a renewal's Pass gone":     `showPassNotice("The Pass you meant to renew is no longer in this browser. Enter its code below to renew it here.");`,
-		"a renewal refused":         "showPassNotice(`This Pass is no longer valid, so it has been removed from this browser. ${PASS_GONE_REASONS}`);",
-		"a reissue code's answer":   "if (notice) {\n      showPassNotice(notice);",
-		"Remove the Pass":           `showPassNotice("This browser no longer has a Pass.");`,
-		"Remove, unreached":         "\"This browser no longer has a Pass, but educhan couldn't be reached to stop it collecting anything bought here that hasn't arrived yet. Use Forget this browser on the Verify page when you're back online.\"\n        );",
-		"a post's Pass":             "if (passNotice) {\n      showNotice(passNotice);",
-		"Forget this browser":       "so press Forget this browser again when you're back online.\"\n      );",
+	// Each held notice is noted once it is put up. One put up in the same turn
+	// as what it says, here and in showClaimed and showPassRunOut
+	// (TestPassNoticesFromAPressAreBroughtIntoView,
+	// TestPassRunOutIsSaidForThePageBesideIt), is noted beside what the browser
+	// holds then; one put up after an await is noted beside the record taken
+	// before it (said, below).
+	for name, notice := range map[string][2]string{
+		"Check it again":                 {"showPassNotice(kept ? `Your Pass is good until ${passUntilText(res.expires_at)}.` : PASS_NOT_KEPT);", "notePassHeld();"},
+		"a code taken on":                {"showPassNotice(kept ? `This browser now has your Pass, good until ${passUntilText(res.expires_at)}.` : PASS_NOT_KEPT);", "notePassHeld();"},
+		"a run-out code not stored":      {"showPassNotice(PASS_RUN_OUT_NOT_KEPT);", "notePassHeld();"},
+		"a good Pass held":               {`showPassNotice("This browser has a Pass already. To use another one here, write this one's code down, then remove it.");`, "notePassHeld();"},
+		"a renewal's Pass gone":          {`showPassNotice("The Pass you meant to renew is no longer in this browser. Enter its code below to renew it here.");`, "notePassHeld();"},
+		"a renewal refused":              {"showPassNotice(`This Pass is no longer valid, so it has been removed from this browser. ${PASS_GONE_REASONS}`);", "notePassHeld();"},
+		"a reissue code's answer":        {"if (notice) {\n      showPassNotice(notice);", "notePassHeld();"},
+		"Remove the Pass":                {`showPassNotice("This browser no longer has a Pass.");`, "notePassHeld(said);"},
+		"Remove, unreached":              {"} else {\n        showNotice(PASS_CLAIM_KEPT.remove.said);\n      }", "notePassHeld(said, PASS_CLAIM_KEPT.remove.alone);"},
+		"a post's Pass":                  {"if (passNotice) {\n      showNotice(passNotice);", "notePassHeld(said);"},
+		"Forget this browser, unreached": {"showNotice(PASS_CLAIM_KEPT.browser.said);", "notePassHeld(said, PASS_CLAIM_KEPT.browser.alone);"},
+		"Forget this browser": {"\"This browser no longer holds your post key, your name, a badge, a Pass or a Pass bought here and still being collected.\"\n        );",
+			"notePassHeld(said);"},
 	} {
-		at := strings.Index(code, notice)
-		if at < 0 || strings.Count(code, notice) != 1 || !strings.HasPrefix(strings.TrimSpace(code[at+len(notice):]), "notePassHeld();") {
-			t.Errorf("the notice for %s is no longer noted as said beside the Pass this browser holds", name)
+		at := strings.Index(code, notice[0])
+		if at < 0 || strings.Count(code, notice[0]) != 1 || !strings.HasPrefix(strings.TrimSpace(code[at+len(notice[0]):]), notice[1]) {
+			t.Errorf("the notice for %s is no longer noted as said beside the Pass this browser holds (%s)", name, notice[1])
 		}
 	}
-	if n := strings.Count(code, "notePassHeld()"); n != 15 {
-		t.Errorf("notePassHeld() appears %d times; want its definition, the eleven notices above, showClaimed's and "+
+	if n := strings.Count(code, "notePassHeld("); n != 16 {
+		t.Errorf("notePassHeld( appears %d times; want its definition, the twelve notices above, showClaimed's and "+
 			"showPassRunOut's two", n)
 	}
-	// A post's notice is the one its answer set: that its Pass has run out, or
-	// is no longer valid and was removed. It is noted once the thread is drawn,
-	// after the navigation, since a drawing takes any notice off (render).
+	// A notice put up after an await is noted beside the record taken straight
+	// after what it says was set, before the await, so another tab's renewal,
+	// or a Pass stored there, while the thread loads, the Verify page is drawn
+	// or the forget is answered counts against it: a post's, once its answer
+	// has marked the Pass run out or removed it and before the thread is
+	// fetched; Remove's, once the Pass is removed; Forget this browser's, once
+	// the browser is forgotten. Remove's first notice, put up at once, is noted
+	// beside the same record.
 	submit := withoutComments(submitHandler(t, script))
-	navigated := strings.Index(submit, "await navigate(`${threadPath(created.board, created.thread_no)}#p${created.no}`);\n"+
-		"    if (passNotice) {\n      showNotice(passNotice);\n      notePassHeld();\n    }")
-	if navigated < 0 || strings.Count(submit, "notePassHeld()") != 1 {
-		t.Error("a post's notice that its Pass has run out or is no longer valid is no longer noted as said beside " +
-			"the Pass this browser holds once the thread is drawn")
+	marked := strings.Index(submit, "markPassExpired(sent.code);")
+	taken := strings.Index(submit, "const said = passHeldRecord();\n    await navigate(`${threadPath(created.board, created.thread_no)}#p${created.no}`);\n"+
+		"    if (passNotice) {\n      showNotice(passNotice);\n      notePassHeld(said);\n    }")
+	if marked < 0 || taken < marked || strings.Count(submit, "notePassHeld(") != 1 || strings.Count(submit, "passHeldRecord()") != 1 {
+		t.Error("a post's notice that its Pass has run out or is no longer valid is no longer noted, once the thread is drawn, " +
+			"beside the Pass this browser held as the answer was acted on")
 	}
-	// Another tab's Remove or Forget takes the notice off here whatever it
-	// says, on the Pass page, and on any other page one that says what this
-	// browser holds, or that a checkout's claim this tab could not drop may
-	// still be collected (forgetPassOrder, which notes its notice, pinned in
-	// TestPassForgottenInAnotherTabStopsThisOne), since that Remove or Forget
-	// asks for every claim of the browser to be dropped; nothing else in
-	// those two places does.
-	if got := withoutComments(jsFunction(t, script, "passNoticeForgotten")); got != "function passNoticeForgotten() {\n"+
-		"  if (passPageShown() || passNoticeHeld() !== undefined) {\n    return true;\n  }\n"+
+	handler := func(opener string) string {
+		block := code[strings.Index(code, opener):]
+		return block[:strings.Index(block, "\n    return;\n  }")]
+	}
+	remove := handler(`if (event.target.closest('[data-action="forget-pass"]')) {`)
+	if !strings.Contains(remove, "forgetPass();\n    const said = passHeldRecord();\n    drawPass(") ||
+		strings.Count(remove, "passHeldRecord()") != 1 || strings.Index(remove, "const said = ") > strings.Index(remove, "dropped.then(") {
+		t.Error("Remove the Pass's notices are no longer noted beside what the browser held once the Pass was removed")
+	}
+	forget := handler(`if (event.target.closest('[data-action="forget-browser"]')) {`)
+	if !strings.Contains(forget, "const dropped = forgetBrowser();\n    const said = passHeldRecord();\n") ||
+		strings.Count(forget, "passHeldRecord()") != 1 || strings.Index(forget, "const said = ") > strings.Index(forget, "renderVerify()") {
+		t.Error("Forget this browser's notice is no longer noted beside what the browser held once it was forgotten")
+	}
+	// That the forget is done is said only over the Verify page the press
+	// drew: its Forget block, taken once that drawing lands with the reader
+	// still under the Verify address, still on the page, and the address still
+	// the Verify page's, once the forget is answered too. That educhan could
+	// not be reached is a claim notice, said on whatever page the reader is on.
+	if !strings.Contains(forget, "const drawn = renderVerify().then(() =>\n"+
+		"      state.route.view === \"verify\" ? document.getElementById(\"forget-browser\") : null\n    );\n"+
+		"    Promise.all([drawn, dropped]).then(([forgotten, done]) => {\n      if (!done) {\n"+
+		"        showNotice(PASS_CLAIM_KEPT.browser.said);\n        notePassHeld(said, PASS_CLAIM_KEPT.browser.alone);\n"+
+		"      } else if (forgotten && forgotten.isConnected && state.route.view === \"verify\") {\n        showNotice(") ||
+		strings.Count(forget, "showNotice(") != 2 || strings.Count(forget, "renderVerify()") != 1 {
+		t.Error("Forget this browser says the forget is done over a page the reader went to, or a Verify page drawn since, " +
+			"or no longer says on whatever page that educhan could not be reached")
+	}
+	// Another tab's forget takes a notice off here by what was pressed there,
+	// from its mark, or by its removal of the Pass, with nothing pressed. A
+	// claim notice goes on every mark, Stop's included, since each asks educhan
+	// to drop every claim of the browser, and stays on a removal, which drops
+	// none; any other notice goes on Remove's or Forget's mark, or on a
+	// removal, on the Pass page whatever it says and on any other page a held
+	// notice, and stays on Stop's mark. Nothing else in those two places takes
+	// a notice off.
+	if got := withoutComments(jsFunction(t, script, "passNoticeForgotten")); got != "function passNoticeForgotten(pressed) {\n"+
 		"  const text = el.notice.querySelector(\".notice-text\");\n"+
-		"  return Boolean(text) && noticeShows(text) && passClaimNotices.has(text);\n}" ||
-		!strings.Contains(code, "\nconst passClaimNotices = new WeakSet();\n") || strings.Count(code, "passClaimNotices.") != 2 ||
-		strings.Count(withoutComments(jsFunction(t, script, "forgetPassOrder")), "passClaimNotices.add(") != 1 {
-		t.Errorf("another tab's Remove or Forget no longer takes off a notice on another page that says what this browser "+
-			"holds, or that a checkout's claim may still be collected, or takes off another notice there:\n%s", got)
+		"  if (!text || !noticeShows(text)) {\n    return false;\n  }\n"+
+		"  if (passClaimNotices.has(text)) {\n    return pressed !== \"\";\n  }\n"+
+		"  return pressed !== \"stop\" && (passPageShown() || passNoticesHeld.has(text));\n}" {
+		t.Errorf("another tab's forget no longer takes a claim notice off on every mark and leaves it on a removal, or no "+
+			"longer takes another notice off on Remove's or Forget's mark or a removal, on the Pass page or a held one, "+
+			"leaving it on Stop's:\n%s", got)
 	}
-	for _, name := range []string{"stopForPassForget", "followPassStorage"} {
+	for name, call := range map[string]string{
+		"stopForPassForget": "\n  if (passNoticeForgotten(pressed)) {\n    takePassNoticeOff();\n  }\n",
+		"followPassStorage": "\n    if (passNoticeForgotten(\"\")) {\n      takePassNoticeOff();\n    }\n",
+	} {
 		body := withoutComments(jsFunction(t, script, name))
-		if strings.Count(body, "if (passNoticeForgotten()) {\n      takePassNoticeOff();\n    }") != 1 ||
-			strings.Count(body, "takePassNoticeOff()") != 1 || strings.Contains(body, "clearNotice()") {
-			t.Errorf("%s: another tab's Stop or change of the Pass takes a notice off this tab's Pass page that is "+
-				"still true, or takes one off another way", name)
+		if strings.Count(body, call) != 1 || strings.Count(body, "takePassNoticeOff()") != 1 || strings.Contains(body, "clearNotice()") {
+			t.Errorf("%s no longer takes a notice off by what was pressed in the other tab, or takes one off another way", name)
 		}
 	}
-	if strings.Count(code, "passNoticeForgotten()") != 3 {
-		t.Error("something else takes a notice off by passNoticeForgotten, which only another tab's Remove or Forget does")
+	if strings.Count(code, "passNoticeForgotten(") != 3 {
+		t.Error("something else takes a notice off by passNoticeForgotten, which only another tab's forget or removal does")
 	}
 	// Taken off by something other than the reader, the notice does not take
 	// focus on its dismiss button to the top of the document with it: focus

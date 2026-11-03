@@ -2732,9 +2732,9 @@ function forgetPassClaim(pressed) {
 // and stops nothing, since it reaches no other claim. A server that gave no
 // name is asked nothing: a forget without one is a forget of every claim. What
 // it says when educhan cannot be reached is worded for the forget pressed in
-// the other tab (pressed, from its mark; PASS_ORDER_KEPT), and noted as a
-// claim's notice (passClaimNotices), for another tab's Remove or Forget to take
-// off.
+// the other tab (pressed, from its mark; PASS_ORDER_KEPT), and is a claim
+// notice (noteClaimNotice), said and taken off by the rules for those
+// (passClaimNotices).
 function forgetPassOrder(order, pressed) {
   if (typeof order !== "string" || !order) {
     return;
@@ -2742,11 +2742,11 @@ function forgetPassOrder(order, pressed) {
   api("/api/pass/claim", { method: "POST", body: JSON.stringify({ forget: true, order }) }).catch((err) => {
     // The claim is still this browser's, unless the server sells no Pass now,
     // and the Pass page offers to stop collecting it once it is drawn again.
-    // Said on whatever page this tab is on, since the reader who pressed the
-    // forget, in another tab, was told it was done: the one exception to
-    // passPageShown in the Pass section. On the Pass page it answers this
-    // tab's own Buy or Renew, pressed there, so it is brought into view
-    // (showPassNotice) like any other answer to a press there.
+    // Said on whatever page this tab is on, as every claim notice is, and the
+    // reader who pressed the forget, in another tab, was told it was done. On
+    // the Pass page it answers this tab's own Buy or Renew, pressed there, so
+    // it is brought into view (showPassNotice) like any other answer to a
+    // press there.
     if (err.status !== 403) {
       const notice = PASS_ORDER_KEPT[pressed] || PASS_ORDER_KEPT.browser;
       if (passPageShown()) {
@@ -2754,35 +2754,9 @@ function forgetPassOrder(order, pressed) {
       } else {
         showNotice(notice);
       }
-      passClaimNotices.add(el.notice.querySelector(".notice-text"));
+      noteClaimNotice();
     }
   });
-}
-
-// passClaimNotices holds, by the node its words are in, each notice
-// forgetPassOrder puts up, on whatever page: that a checkout's claim this tab
-// could not drop may still be collected. Another tab's Remove or Forget asks
-// educhan to drop every claim of the browser, which is what the notice asks
-// the reader to do, so it takes such a notice off any page here
-// (passNoticeForgotten), as it does a notice that says what this browser
-// holds; a Stop leaves it, as it leaves every notice, and so does a Pass
-// stored or changed in another tab, which leaves the claim where it was. Kept
-// by the node, it goes with the notice.
-const passClaimNotices = new WeakSet();
-
-// passNoticeForgotten says whether another tab's Remove or Forget, by its mark
-// (stopForPassForget) or by the Pass's removal (followPassStorage), takes the
-// notice on screen here off: any notice on the Pass page, whatever it says,
-// and on any other page one that says what this browser holds
-// (passNoticeHeld), a post's that its Pass has run out say, or one that a
-// checkout's claim may still be collected (passClaimNotices). Any other notice
-// there, a refusal or a copy say, stays.
-function passNoticeForgotten() {
-  if (passPageShown() || passNoticeHeld() !== undefined) {
-    return true;
-  }
-  const text = el.notice.querySelector(".notice-text");
-  return Boolean(text) && noticeShows(text) && passClaimNotices.has(text);
 }
 
 // What forgetPassOrder says when educhan cannot be reached to drop a
@@ -2801,6 +2775,30 @@ const PASS_ORDER_KEPT = {
     "educhan couldn't be reached to drop the checkout that was still opening when the Pass was removed, so this browser may still be collecting it. Open the Pass page when you're back online and press Stop collecting it here.",
   browser:
     "educhan couldn't be reached to drop the checkout that was still opening when this browser was forgotten, so the browser may still be collecting it. Press Forget this browser on the Verify page again when you're back online.",
+};
+
+// What Remove the Pass and Forget this browser say when educhan cannot be
+// reached to drop this browser's claims, by what was pressed: that what they
+// took has gone, which says what this browser holds, then the claim's warning,
+// with what to press once back online. That warning alone (alone) takes the
+// notice's place once the rest is no longer true, a Pass stored in another tab
+// say (dropStalePassNotice). After Remove, which leaves no Pass to remove, it
+// points to Forget this browser, not to Stop collecting it here as
+// PASS_ORDER_KEPT does: what is left may be paid for, and the Pass page
+// collects it as soon as it is opened, before Stop can be pressed.
+const PASS_CLAIM_KEPT = {
+  remove: {
+    said:
+      "This browser no longer has a Pass, but educhan couldn't be reached to stop it collecting anything bought here that hasn't arrived yet. Use Forget this browser on the Verify page when you're back online.",
+    alone:
+      "educhan couldn't be reached to stop this browser collecting anything bought here that hasn't arrived yet. Use Forget this browser on the Verify page when you're back online.",
+  },
+  browser: {
+    said:
+      "This browser no longer holds your post key, your name, a badge or a Pass. educhan couldn't be reached to stop it collecting a Pass bought here that hasn't arrived yet, if there is one, so press Forget this browser on the Verify page again when you're back online.",
+    alone:
+      "educhan couldn't be reached to stop this browser collecting a Pass bought here that hasn't arrived yet, if there is one, so press Forget this browser on the Verify page again when you're back online.",
+  },
 };
 
 // waitOnPassForget notes a forget on its way under its mark's key, one that
@@ -2966,29 +2964,28 @@ function heedPassForget(key, mark) {
 // and Forget ("remove:" and "browser:") also drop a reissue code's nonce and
 // its mark, and any answer about a Pass on its way or arriving while the mark
 // is there (passCodeForgets, passCodeForgetting), and empty the code box here,
-// take the notice off the Pass page here at once, whatever it says (a Pass
-// taken on, good until a date or run out, a refusal or a copy, say), and off
-// any other page here one that says what this browser holds (passNoticeHeld),
-// a post's that its Pass has run out or is no longer valid, say, or that a
-// checkout's claim may still be collected (passClaimNotices), keeping focus
-// that was on it on the page (passNoticeForgotten, takePassNoticeOff), and drop
-// what this tab would say about a Pass found gone (passLost) and a code just
-// handed over here (passJustIssued), kept or not, which the next drawing leaves
-// off: the one the Pass's removal sets off (followPassStorage), which Remove
-// and Forget send just after the mark, or, with no Pass left to remove, the one
-// once the wait is over; until then, or until the reader leaves the page or the
-// document (forgetShownCode), its panel stays on the page. So neither a reissue
-// code typed in this tab nor the last holder's news or code is left for the
-// next person at the computer; Stop ("stop:") leaves a reissue code alone, a
-// code just handed over and the notice too. Check now and Stop go off, as in
-// the tab Stop was pressed in, and in a tab that hears of the forget
-// (followPassForget), focus on one of them stays on its panel until the page is
-// drawn again once the wait is over, so the drawing gives it to what took its
-// place; a page brought back from the back-forward cache is drawn afresh by
-// render.
+// and drop what this tab would say about a Pass found gone (passLost) and a
+// code just handed over here (passJustIssued), kept or not, which the next
+// drawing leaves off: the one the Pass's removal sets off (followPassStorage),
+// which Remove and Forget send just after the mark, or, with no Pass left to
+// remove, the one once the wait is over; until then, or until the reader
+// leaves the page or the document (forgetShownCode), its panel stays on the
+// page. So neither a reissue code typed in this tab nor the last holder's news
+// or code is left for the next person at the computer; Stop ("stop:") leaves a
+// reissue code alone, and a code just handed over too. Every mark takes the
+// notice on screen here off by the rules for Pass notices
+// (passNoticeForgotten, takePassNoticeOff, which keeps focus that was on it on
+// the page): a claim notice on any mark, Stop's included, and for Remove's and
+// Forget's any other notice on the Pass page and a held notice on any page.
+// Check now and Stop go off, as in the tab Stop was pressed in, and in a tab
+// that hears of the forget (followPassForget), focus on one of them stays on
+// its panel until the page is drawn again once the wait is over, so the
+// drawing gives it to what took its place; a page brought back from the
+// back-forward cache is drawn afresh by render.
 function stopForPassForget(key, mark) {
-  const code = !mark.startsWith("stop:");
-  passForgetHeardLast = mark.slice(0, mark.indexOf(":"));
+  const pressed = mark.slice(0, mark.indexOf(":"));
+  const code = pressed !== "stop";
+  passForgetHeardLast = pressed;
   passVisit += 1;
   passForgets += 1;
   dropPassNonce(PASS_NONCE_STORAGE_KEY);
@@ -2999,9 +2996,9 @@ function stopForPassForget(key, mark) {
     forgetTypedCode();
     passLost = "";
     passJustIssued = null;
-    if (passNoticeForgotten()) {
-      takePassNoticeOff();
-    }
+  }
+  if (passNoticeForgotten(pressed)) {
+    takePassNoticeOff();
   }
   const waited = heedPassForget(key, mark);
   const focused = document.activeElement;
@@ -3113,7 +3110,10 @@ async function passForgetsSettled(checkout = false) {
 // every drawing of it after a wait asks first: an answer that arrives once
 // they have moved on, to a board or the Verify page, stores what it is still
 // right to store, and draws, focuses and says nothing over the page they are
-// on. The Pass page shows what was stored when they come back.
+// on. The Pass page shows what was stored when they come back. A claim notice
+// is the exception, said on whatever page they are on, since it asks for a
+// step (Pass notices): Remove's, when educhan could not be reached for its
+// forget, and forgetPassOrder's.
 function passPageShown() {
   return state.route.view === "pass";
 }
@@ -3300,74 +3300,154 @@ function passRunOutText() {
     : "This Pass has run out.";
 }
 
-// passNoticesHeld holds, for each notice that says what this browser holds
-// (notePassHeld), on whatever page it is shown, by the node its words are in,
-// the Pass stored as it was said (passHeldRecord): a Pass taken on, good until a
-// date, renewed or run out, one this browser could not store, or none, removed
-// say; on the Pass page, and beside a post, whose answer says its Pass has run
-// out or is no longer valid, or on the Verify page, after Forget this browser.
-// Kept by the node, it goes with the notice.
+// Pass notices. Some of what the page says about the Pass is noted, by the node
+// its words are in, so the note goes with the notice, as one of two kinds or
+// both; besides what takes any notice off (the reader dismissing it, a later
+// notice put up in its place, or leaving the page), these rules take one off,
+// for something other than the reader (takePassNoticeOff):
+//
+// - A held notice says what this browser holds (notePassHeld): a Pass taken on,
+//   good until a date, renewed or run out, one this browser could not store,
+//   or none, removed say; on the Pass page, beside a post whose answer says its
+//   Pass has run out or is no longer valid, or on the Verify page that a press
+//   of Forget this browser drew, while the reader is still on it. It is noted
+//   beside the Pass as stored straight after the press or the answer set what
+//   it says (passHeldRecord), before anything is awaited, so a change another
+//   tab makes while it waits to be put up counts against it, and it is checked
+//   as soon as it is noted. It goes once the browser no longer holds that
+//   (dropStalePassNotice): checked then, at every drawing of the Pass page, and
+//   at every change another tab makes to the Pass, on whatever page this tab is
+//   on.
+// - A claim notice says a claim of this browser may still be collected, since
+//   educhan could not be reached to drop it, and what to press once back online
+//   (noteClaimNotice): forgetPassOrder's, and Remove the Pass's and Forget this
+//   browser's when educhan could not be reached for their forget
+//   (PASS_CLAIM_KEPT). It is said on whatever page this tab is on, since it asks
+//   the reader for a step, and a Pass stored or changed in another tab leaves
+//   it, since that leaves the claim where it was. Remove's and Forget's are held
+//   notices too, saying this browser holds no Pass: once that is no longer
+//   true, a Pass stored in another tab say, the claim's warning alone takes the
+//   notice's place, a claim notice still (dropStalePassNotice).
+// - Another tab's forget takes a notice off by its mark (stopForPassForget), and
+//   another tab's removal of the Pass by the removal (followPassStorage), each
+//   by what was pressed there (passNoticeForgotten). A claim notice goes on
+//   every mark, Remove's, Forget's and Stop's, since each asks educhan to drop
+//   every claim of the browser, which is what the notice asks for, and that tab
+//   says itself whether educhan could be reached; a removal drops no claim, an
+//   invalid code found there say, or a Remove whose mark this tab missed, and
+//   leaves it. Any other notice goes on Remove's or Forget's mark, or on a
+//   removal: on the Pass page whatever it says, and on any other page a held
+//   notice; Stop's mark leaves it.
+//
+// passNoticesHeld holds, for each held notice, the record it was noted beside.
 const passNoticesHeld = new WeakMap();
 
+// passClaimNotices holds, for each claim notice, the claim's warning alone: its
+// own words, or, for Remove's and Forget's, the words that take its place once
+// the rest is no longer true.
+const passClaimNotices = new WeakMap();
+
 // passHeldRecord is the Pass this browser holds as it is stored: its code with
-// its expiry, the server's mark that it has run out, or both, or "" for none.
-// It reads no clock: a date the server gave stays the same record whichever
-// side of it any clock, a slow one say, puts now.
+// its expiry, or, while the server's mark that it has run out is on it, its
+// code with that mark alone, whatever date is stored beside it, so a check that
+// gives the same mark a date leaves a notice said beside it; or "" for none. It
+// reads no clock: a date the server gave stays the same record whichever side
+// of it any clock, a slow one say, puts now.
 function passHeldRecord() {
   const held = storedPass();
   if (!held) {
     return "";
   }
-  const until = held.expires ? ` ${held.expires.getTime()}` : "";
-  return `${held.code}${until}${held.marked ? " run out" : ""}`;
+  return held.marked ? `${held.code} run out` : `${held.code} ${held.expires.getTime()}`;
 }
 
-// notePassHeld notes the notice just put up as one that says what this browser
-// holds, beside what it holds now (passNoticesHeld), and returns the node its
-// words are in, which tells it apart from a later notice in the same words.
-function notePassHeld() {
+// notePassHeld notes the notice just put up as a held notice, beside said: the
+// record passHeldRecord gave straight after what the notice says was set,
+// taken before the await by a notice put up after one, and by default what
+// this browser holds now, for a notice put up in the same turn as the change.
+// Given the claim's warning alone (alone), it notes a claim notice too. It
+// then checks the notice at once (dropStalePassNotice), and returns the node
+// its words are in, which tells it apart from a later notice in the same
+// words.
+function notePassHeld(said = passHeldRecord(), alone = "") {
   const text = el.notice.querySelector(".notice-text");
-  passNoticesHeld.set(text, passHeldRecord());
+  passNoticesHeld.set(text, said);
+  if (alone) {
+    passClaimNotices.set(text, alone);
+  }
+  dropStalePassNotice();
   return text;
 }
 
+// noteClaimNotice notes the notice just put up as a claim notice whose own
+// words are the claim's warning alone.
+function noteClaimNotice() {
+  const text = el.notice.querySelector(".notice-text");
+  passClaimNotices.set(text, text.textContent);
+}
+
 // passNoticeHeld is what this browser held as the notice on screen was said
-// (passNoticesHeld), if that notice says what it holds, on whatever page: the
-// record passHeldRecord gave then, "" for none. It is undefined for any other
-// notice, and when none is on screen.
+// (passNoticesHeld), if it is a held notice, on whatever page: the record
+// passHeldRecord gave then, "" for none. It is undefined for any other notice,
+// and when none is on screen.
 function passNoticeHeld() {
   const text = el.notice.querySelector(".notice-text");
   return text && noticeShows(text) ? passNoticesHeld.get(text) : undefined;
 }
 
-// dropStalePassNotice takes off the notice on screen if it says what this
-// browser holds (notePassHeld) and the browser no longer holds that as stored:
-// the Pass removed, replaced, renewed, given a new date or marked run out, here
-// or in another tab, or a Pass stored where there was none. It decides by the
-// stored record alone (passHeldRecord), never by a clock. Every drawing of the
-// Pass page asks, whatever set it off (drawPass), and so does another tab's
-// change to the Pass, on whatever page this tab is on (followPassStorage). A
-// notice about anything else, a refusal or a copy say, stays. Something other
-// than the reader takes it off, so focus on it is kept on the page
-// (takePassNoticeOff).
+// dropStalePassNotice takes off the notice on screen if it is a held notice and
+// the browser no longer holds what it was noted beside: the Pass removed,
+// replaced, renewed, given a new date or marked run out, here or in another
+// tab, or a Pass stored where there was none. It decides by the stored record
+// alone (passHeldRecord), never by a clock. A held notice that is a claim
+// notice too has the claim's warning alone put in its place instead, noted as
+// a claim notice only, and showNotice keeps focus that was on the old one on
+// the new one. Every held notice is checked as it is noted (notePassHeld),
+// every drawing of the Pass page checks, whatever set it off (drawPass), and so
+// does another tab's change to the Pass, on whatever page this tab is on
+// (followPassStorage). Any other notice, a claim notice alone, a refusal or a
+// copy say, stays. Something other than the reader takes it off, so focus on
+// it is kept on the page (takePassNoticeOff).
 function dropStalePassNotice() {
   const said = passNoticeHeld();
-  if (said !== undefined && said !== passHeldRecord()) {
+  if (said === undefined || said === passHeldRecord()) {
+    return;
+  }
+  const alone = passClaimNotices.get(el.notice.querySelector(".notice-text"));
+  if (alone) {
+    showNotice(alone);
+    noteClaimNotice();
+  } else {
     takePassNoticeOff();
   }
 }
 
-// takePassNoticeOff takes the notice off for something other than the reader:
-// a drawing of the Pass page, or another tab's change to the Pass, that finds
-// it no longer true (dropStalePassNotice), or another tab's Remove or Forget,
-// by its mark (stopForPassForget) or by the removal itself (followPassStorage),
-// which takes any notice off the Pass page, and off any other page a notice
-// that says what this browser holds (passNoticeHeld), a post's that its Pass
-// has run out, say, or that a checkout's claim may still be collected
-// (passNoticeForgotten). Focus on its dismiss button would fall to the top of
-// the document with it, so it goes to the page just below (el.main), from where
-// a keyboard goes on as it would have from the button, without scrolling the
-// page; a drawing of the Pass page that follows keeps it there (redrawPass).
+// passNoticeForgotten says whether another tab's forget takes the notice on
+// screen here off, by what was pressed there (pressed): "remove", "browser" or
+// "stop", from its mark (stopForPassForget), or "" for its removal of the Pass
+// (followPassStorage). A claim notice goes on every mark and stays on a
+// removal; any other notice goes on Remove's or Forget's mark, or on a
+// removal, on the Pass page whatever it says and on any other page a held
+// notice, and stays on Stop's mark (Pass notices, above).
+function passNoticeForgotten(pressed) {
+  const text = el.notice.querySelector(".notice-text");
+  if (!text || !noticeShows(text)) {
+    return false;
+  }
+  if (passClaimNotices.has(text)) {
+    return pressed !== "";
+  }
+  return pressed !== "stop" && (passPageShown() || passNoticesHeld.has(text));
+}
+
+// takePassNoticeOff takes the notice off for something other than the reader,
+// by the rules for Pass notices (above): a held notice found no longer true
+// (dropStalePassNotice), or a notice another tab's forget or removal of the
+// Pass takes off (passNoticeForgotten). Focus on its dismiss button would fall
+// to the top of the document with it, so it goes to the page just below
+// (el.main), from where a keyboard goes on as it would have from the button,
+// without scrolling the page; a drawing of the Pass page that follows keeps it
+// there (redrawPass).
 function takePassNoticeOff() {
   const focused = el.notice.contains(document.activeElement);
   clearNotice();
@@ -3388,11 +3468,13 @@ function takePassNoticeOff() {
 // have scrolled away since the press, and focus stays where that drawing left
 // it. If this browser no longer holds that Pass as it was stored beside the
 // notice by then, removed, replaced or renewed meanwhile, say, here or in
-// another tab, the notice goes (dropStalePassNotice), as with any drawing.
+// another tab, the notice goes (dropStalePassNotice), as with any drawing; said
+// again, it is noted beside the same record, taken as the run-out was stored.
 function showPassRunOut(...selectors) {
   const said = passRunOutText();
+  const record = passHeldRecord();
   showPassNotice(said);
-  const text = notePassHeld();
+  const text = notePassHeld(record);
   refreshFailedPass(...selectors).then(() => {
     if (!passPageShown()) {
       return;
@@ -3401,7 +3483,7 @@ function showPassRunOut(...selectors) {
     const now = passRunOutText();
     if (now !== said && noticeShows(text)) {
       showNotice(now);
-      notePassHeld();
+      notePassHeld(record);
     }
   });
 }
@@ -3998,9 +4080,10 @@ const PASS_COLLECT_BUTTONS = '[data-action="collect-pass"], [data-action="stop-p
 // another tab's change to the Pass). Drawn while this browser is stopping
 // collecting (passForgetting), here or in another tab, a panel of what is
 // being collected has Check now and Stop off, as Stop's own click leaves them,
-// until that is settled and says what is left. A notice on screen that says
-// what this browser holds goes once it no longer holds that, whatever set the
-// drawing off (dropStalePassNotice).
+// until that is settled and says what is left. A held notice on screen goes
+// once this browser no longer holds what it was noted beside, or gives way to
+// the claim's warning alone, whatever set the drawing off
+// (dropStalePassNotice).
 function drawPass(info) {
   dropStalePassNotice();
   lastPassInfo = info;
@@ -6193,10 +6276,12 @@ document.addEventListener("click", (event) => {
   // (emptyCopiedHeldCode). What is still being collected here is dropped too,
   // which only the server can do. Its mark goes into storage before the Pass
   // leaves it, so the browser's other tabs take every code just handed over off
-  // their screens (forgetPassClaim). If educhan can't be reached for that, the
-  // notice points to Forget this browser, not to Stop collecting it here as
-  // PASS_ORDER_KEPT does: what is left may be paid for, and the Pass page
-  // collects it as soon as it is opened, before Stop can be pressed.
+  // their screens (forgetPassClaim). Its notice is a held notice, noted beside
+  // what the browser holds straight after the Pass goes (said), and so is the
+  // one it gives if educhan can't be reached for the forget, which is a claim
+  // notice too (PASS_CLAIM_KEPT), said on whatever page the reader is on by
+  // then, as every claim notice is: in view on the Pass page, as an answer to
+  // the press there, and moving nothing on any other.
   if (event.target.closest('[data-action="forget-pass"]')) {
     event.preventDefault();
     passJustIssued = null;
@@ -6205,17 +6290,21 @@ document.addEventListener("click", (event) => {
     emptyCopiedHeldCode();
     const dropped = forgetPassClaim("remove");
     forgetPass();
+    const said = passHeldRecord();
     drawPass({ ...lastPassInfo, claim: false });
     passFocus("form[data-pass] input");
     showPassNotice("This browser no longer has a Pass.");
-    notePassHeld();
+    notePassHeld(said);
     dropped.then((done) => {
-      if (!done && passPageShown()) {
-        showPassNotice(
-          "This browser no longer has a Pass, but educhan couldn't be reached to stop it collecting anything bought here that hasn't arrived yet. Use Forget this browser on the Verify page when you're back online."
-        );
-        notePassHeld();
+      if (done) {
+        return;
       }
+      if (passPageShown()) {
+        showPassNotice(PASS_CLAIM_KEPT.remove.said);
+      } else {
+        showNotice(PASS_CLAIM_KEPT.remove.said);
+      }
+      notePassHeld(said, PASS_CLAIM_KEPT.remove.alone);
     });
     return;
   }
@@ -6331,18 +6420,34 @@ document.addEventListener("click", (event) => {
   }
 
   // Its notice says, among the rest, that this browser holds no Pass, so it is
-  // noted beside that (notePassHeld), and goes if another tab stores one.
+  // a held notice, noted beside what the browser holds straight after the
+  // forget (said), before the drawing and the claim's drop are awaited, and it
+  // goes, or gives way to the claim's warning alone, if another tab stores a
+  // Pass meanwhile or since. It is said once both have settled. That the
+  // forget is done is said only if the reader is still on the Verify page the
+  // press drew (forgotten, its Forget block, still on the page under the
+  // Verify address), not over a page they went to or the Verify page drawn
+  // again since. That educhan couldn't be reached is a claim notice too
+  // (PASS_CLAIM_KEPT), said on whatever page the reader is on, as every claim
+  // notice is, since it asks for a step.
   if (event.target.closest('[data-action="forget-browser"]')) {
     event.preventDefault();
     const dropped = forgetBrowser();
+    const said = passHeldRecord();
     verifyStep = { step: "email", label: "" };
-    Promise.all([renderVerify(), dropped]).then(([, done]) => {
-      showNotice(
-        done
-          ? "This browser no longer holds your post key, your name, a badge, a Pass or a Pass bought here and still being collected."
-          : "This browser no longer holds your post key, your name, a badge or a Pass. educhan couldn't be reached to stop it collecting a Pass bought here that hasn't arrived yet, if there is one, so press Forget this browser again when you're back online."
-      );
-      notePassHeld();
+    const drawn = renderVerify().then(() =>
+      state.route.view === "verify" ? document.getElementById("forget-browser") : null
+    );
+    Promise.all([drawn, dropped]).then(([forgotten, done]) => {
+      if (!done) {
+        showNotice(PASS_CLAIM_KEPT.browser.said);
+        notePassHeld(said, PASS_CLAIM_KEPT.browser.alone);
+      } else if (forgotten && forgotten.isConnected && state.route.view === "verify") {
+        showNotice(
+          "This browser no longer holds your post key, your name, a badge, a Pass or a Pass bought here and still being collected."
+        );
+        notePassHeld(said);
+      }
     });
     return;
   }
@@ -6451,38 +6556,37 @@ document.addEventListener("cut", forgetCopiedPassCode);
 // (passIssuedHTML), and any other code carried, since each may still work and
 // be nowhere else. A Remove or Forget whose mark the browser would not store,
 // its storage being full say, though it let the Pass go, is followed that way
-// too. A removal with a code to read, whatever made it, also takes the notice
-// off the Pass page here, whatever it says, and off any other page here one
-// that says what this browser holds (passNoticeHeld), a post's that its Pass
-// has run out, say, or that a checkout's claim may still be collected
-// (passClaimNotices), as the mark of a Remove or Forget does
-// (stopForPassForget, through passNoticeForgotten and takePassNoticeOff), since
-// this tab cannot tell one whose mark it missed from the rest. A removal with
-// no code to read, or the browser's storage cleared (a key of null), takes no
-// code off the screen: the panel says what the browser holds. Whatever the
-// change, a notice that says what this browser holds goes at once, on whatever
-// page this tab is on, once the browser no longer holds that
-// (dropStalePassNotice): a post's that its Pass has run out, once another tab
-// stores that Pass renewed, say; short of such a removal, any other notice
-// stays. The header's Pass link follows what the browser holds now
-// (showPassLink). Another code stored there leaves a code just handed over be,
-// kept or not: one this browser kept is drawn as no longer here, beside any
-// code it took the place of, until the reader leaves the Pass page, and one it
-// could not keep was never the Pass it holds. A code on the panel that the
-// other tab stored counts as kept from then on (keepShownCode), however it
-// came. A browser that stores nothing at all tells this tab nothing, and a code
-// here then stays until the reader leaves the Pass page. Once this browser
-// holds a Pass again, what the page said of one that went goes (passLost). A
-// code this tab copied no longer counts as its to empty from the clipboard once
-// the other tab has taken that code itself out of storage, removed or another
-// stored in its place: what the event says was stored (was) held it, and the
-// browser no longer holds it. Storage cleared (a key of null) counts too, once
-// the browser no longer holds it. The same code stored again, renewed or with a
-// new date say, or a change to a Pass whose code is not the one copied, leaves
-// it counted, so Forget still empties the clipboard, and Remove does while that
-// code is the Pass held (emptyCopiedHeldCode). The Pass page, if it is on
-// screen here, is drawn again from what this browser holds now, which also
-// hides a code shown on it.
+// too. A removal with a code to read, whatever made it, also takes a notice off
+// here by the rules for Pass notices (passNoticeForgotten, with nothing
+// pressed, and takePassNoticeOff): any notice on the Pass page and a held
+// notice on any page, a post's that its Pass has run out, say, as the mark of a
+// Remove or Forget does, since this tab cannot tell one whose mark it missed
+// from the rest; but not a claim notice, since a removal drops no claim. A
+// removal with no code to read, or the browser's storage cleared (a key of
+// null), takes no code off the screen: the panel says what the browser holds.
+// Whatever the change, a held notice goes at once, on whatever page this tab is
+// on, once the browser no longer holds what it was noted beside, or gives way
+// to the claim's warning alone (dropStalePassNotice): a post's that its Pass
+// has run out, once another tab stores that Pass renewed, say; short of such a
+// removal, any other notice stays, a claim notice included. The header's Pass
+// link follows what the browser holds now (showPassLink). Another code stored
+// there leaves a code just handed over be, kept or not: one this browser kept
+// is drawn as no longer here, beside any code it took the place of, until the
+// reader leaves the Pass page, and one it could not keep was never the Pass it
+// holds. A code on the panel that the other tab stored counts as kept from then
+// on (keepShownCode), however it came. A browser that stores nothing at all
+// tells this tab nothing, and a code here then stays until the reader leaves
+// the Pass page. Once this browser holds a Pass again, what the page said of
+// one that went goes (passLost). A code this tab copied no longer counts as its
+// to empty from the clipboard once the other tab has taken that code itself out
+// of storage, removed or another stored in its place: what the event says was
+// stored (was) held it, and the browser no longer holds it. Storage cleared (a
+// key of null) counts too, once the browser no longer holds it. The same code
+// stored again, renewed or with a new date say, or a change to a Pass whose
+// code is not the one copied, leaves it counted, so Forget still empties the
+// clipboard, and Remove does while that code is the Pass held
+// (emptyCopiedHeldCode). The Pass page, if it is on screen here, is drawn again
+// from what this browser holds now, which also hides a code shown on it.
 function followPassStorage(event) {
   if (event.key !== PASS_STORAGE_KEY && event.key !== null) {
     return;
@@ -6491,7 +6595,7 @@ function followPassStorage(event) {
   const was = passCodeIn(event.oldValue);
   if (event.key === PASS_STORAGE_KEY && event.newValue === null && was) {
     forgetInvalidCode(was);
-    if (passNoticeForgotten()) {
+    if (passNoticeForgotten("")) {
       takePassNoticeOff();
     }
   }
@@ -6807,10 +6911,11 @@ el.main.addEventListener("submit", async (event) => {
     // page can still offer to renew it or check it again, and says it has run
     // out. The post itself went out as any other. Only the Pass that went with
     // the post is acted on: one removed since, or replaced by another code,
-    // here or in another tab, is left as it is now. The notice says what this
-    // browser holds, so it is noted beside that (notePassHeld): it goes once
-    // the browser no longer holds that, renewed or removed in another tab, say,
-    // or another tab removes the Pass or forgets the browser
+    // here or in another tab, is left as it is now. The notice is a held
+    // notice, noted beside what the browser holds straight after the answer is
+    // acted on (said), before the thread is awaited: it goes once the browser
+    // no longer holds that, renewed or removed in another tab, say, even while
+    // the thread loads, or another tab removes the Pass or forgets the browser
     // (followPassStorage, stopForPassForget), unless the reader has left the
     // page first, which takes any notice off (render).
     let passNotice = "";
@@ -6824,10 +6929,11 @@ el.main.addEventListener("submit", async (event) => {
       markPassExpired(sent.code);
       passNotice = "Your post was sent, but the Pass in this browser has run out. The Pass page says whether it can be renewed.";
     }
+    const said = passHeldRecord();
     await navigate(`${threadPath(created.board, created.thread_no)}#p${created.no}`);
     if (passNotice) {
       showNotice(passNotice);
-      notePassHeld();
+      notePassHeld(said);
     }
   } catch (err) {
     // A credential the server will not honour again is dropped rather than

@@ -1178,18 +1178,30 @@ not-found view.
   it can be renewed once the page loads. That page is asked for again; the notice, while
   it is still the one that press put up (a later press's in the same words is another),
   is then said again from what comes back if its words change, without moving the page.
-  A notice that says what the browser holds (a Pass taken on, good until a date, run out
-  or renewed, one the browser could not store, or none), on the Pass page, beside a post
-  whose Pass has run out or is no longer valid, or on the Verify page after Forget this
-  browser, goes once the browser no longer holds that Pass as it was stored when the
-  notice was said: the same code with the same date, and with the mark that it has run
-  out if it had one, judged by what is stored and never by a clock, so a slow clock does
-  not take off a true notice. It goes when the Pass page is drawn again, whatever sets
-  that off, or at once when another tab changes the Pass, whatever page this tab shows.
-  Remove the Pass or Forget this browser pressed in another tab, or any other removal of
-  the Pass there, takes whatever notice is on this tab's Pass page off at once, and off
-  any other page such a notice, or one saying this browser may still be collecting a
-  checkout this tab could not drop; Stop collecting it here leaves it. A renewal the page
+  A notice that says what the browser holds (a Pass taken on, good until a date, run
+  out or renewed, one the browser could not store, or none), on the Pass page, beside a
+  post whose Pass has run out or is no longer valid, or on the Verify page that a press
+  of Forget this browser drew, said there only while the reader is still on it, goes
+  once the browser no longer holds that Pass as it was stored when the press or the
+  answer set what the notice says, before the thread, the Verify page or the forget's
+  answer was waited for: the same code with the same date, or, while educhan's mark
+  that it has run out is on it, the same code with that mark, whatever date is stored
+  beside it, judged by what is stored and never by a clock, so a slow clock does not
+  take off a true notice. It is checked as it is put up, so a renewal stored in another
+  tab while the thread loads takes it off at once; it goes when the Pass page is drawn
+  again, whatever sets that off, or at once when another tab changes the Pass, whatever
+  page this tab shows. A notice that this browser may still be collecting a checkout
+  because educhan could not be reached to drop it, after a checkout answered once a
+  forget was pressed, Remove the Pass or Forget this browser, is said on whatever page
+  this tab shows, since it asks for a step, and stays when another tab stores or
+  changes a Pass; Remove's and Forget's, which also say the browser holds no Pass, then
+  give way to the warning about the checkout alone. Remove the Pass, Forget this
+  browser or Stop collecting it here pressed in another tab takes such a notice off at
+  once, since each asks educhan to drop every checkout, and any other removal of the
+  Pass there, which drops none, leaves it. Remove the Pass or Forget this browser
+  pressed in another tab, or any other removal of the Pass there, takes any other
+  notice on this tab's Pass page off at once, and off any other page a notice that says
+  what the browser holds; Stop collecting it here leaves those. A renewal the page
   collects is checked against the Pass it holds (`/api/pass/activate`) before it says
   that Pass is renewed; one it cannot match to the Pass it holds is reported as a renewal
   of a Pass, by a payment from this browser or by the reissue code that brought it, with
