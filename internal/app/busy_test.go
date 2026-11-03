@@ -886,9 +886,9 @@ func awaitBudgetFree(t *testing.T, want int64) {
 // queue until its first bytes had arrived, and held its declared size for a
 // second if it stopped there; but a hundred /64s of one /48, each with its
 // one post in the queue, sending a boundary line a post, still kept an honest
-// image post waiting ten seconds. A body now holds room for what it has sent,
-// a piece at a time, until an eighth of it has arrived, and only then its
-// declared size (admitBody).
+// image post waiting ten seconds. A body now holds room for twice what it has
+// sent at most, or uploadHeadBytes, a piece at a time, until an eighth of it
+// has arrived, and only then its declared size (admitBody).
 func TestIdleBodiesDoNotHoldUpOtherImagePosts(t *testing.T) {
 	const declared = 8<<20 + multipartOverhead // the most a body may be, at the default limit
 	perClient := int(clientUploadShare / declared)

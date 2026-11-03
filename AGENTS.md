@@ -1152,15 +1152,15 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   without preconditions never makes (`TestGCSPutAllocatesNoBufferOfItsOwn`). The uploads'
   own bytes have a budget of their own, `media.UploadBudget` (64 MiB), which
   `parseSubmission` takes from (`media.ReserveUpload`) as it reads a multipart body, for
-  what has arrived until an eighth of it has and then for as much as the request's
-  `Content-Length` says, up to the most a body may be (`admitBody`, below), and which the
-  handler gives back when the post is answered (`submission.release`). For that to be what
-  the body costs, `readMultipart` reads the body itself rather than through
-  `ParseMultipartForm`, which keeps a file over its memory limit in a temporary file
-  (memory again on Cloud Run) and then hands it over to be copied: the image is read once
-  into a buffer the size of what is left of the body (`TestAnUploadIsReadOnce`). Its text
-  fields may come to `maxRequestBytes` between them, as a JSON post may, the first value
-  of each name is the one read, and parts past `maxFormParts` refuse the form
+  twice what has arrived at most, or 4 KiB, until an eighth of it has, then for as much as
+  the request's `Content-Length` says, up to the most a body may be (`admitBody`, below),
+  and which the handler gives back when the post is answered (`submission.release`). For
+  that to be what the body costs, `readMultipart` reads the body itself rather than
+  through `ParseMultipartForm`, which keeps a file over its memory limit in a temporary
+  file (memory again on Cloud Run) and then hands it over to be copied: the image is read
+  once into a buffer the size of what is left of the body (`TestAnUploadIsReadOnce`). Its
+  text fields may come to `maxRequestBytes` between them, as a JSON post may, the first
+  value of each name is the one read, and parts past `maxFormParts` refuse the form
   (`TestMultipartPostsAreReadAsTheFormSendsThem`). A body held its room in the upload
   budget from before it was read, and a post whose body never arrives never reaches flood
   control, so before the share one client's eight connections declaring 8 MiB bodies and

@@ -24,22 +24,22 @@ import (
 const multipartOverhead = 1 << 20
 
 // clientUploadShare is the most of the upload budget (media.UploadBudget) the
-// bodies of one client's posts may hold at once: half of it. A body holds
-// room for about what it has sent until an eighth of it has arrived, then for
-// all of it, from before most of it is read until its post is answered
-// (admitBody), and a post whose body never arrives whole never reaches flood
-// control, so without a share one client could hold the whole budget with a
-// few connections that send an eighth of large bodies and stop, turn every
-// other image post away as busy, and be charged nothing for it but those
-// bytes. Half is one upload of the largest size the server may be configured
-// to take (maxUploadLimit and its multipartOverhead), and three at the
-// default limit: more than one client can post at once, the upload cooldown
-// being per client across the server. The share counts a body once, though
-// the budget holds its first eighth a second time until the form has been
-// read (bodyRoom.takeRest): nine eighths of a body, so that the budget reads
-// seven bodies at once at the default limit, and one at the largest, beside
-// which a second waits for room for all of itself until the first has been
-// answered.
+// bodies of one client's posts may hold at once: half of it. A body holds room
+// for at most twice what it has sent, or uploadHeadBytes, until an eighth of
+// it has arrived, then for all of it, from before most of it is read until its
+// post is answered (admitBody), and a post whose body never arrives whole
+// never reaches flood control, so without a share one client could hold the
+// whole budget with a few connections that send an eighth of large bodies and
+// stop, turn every other image post away as busy, and be charged nothing for
+// it but those bytes. Half is one upload of the largest size the server may be
+// configured to take (maxUploadLimit and its multipartOverhead), and three at
+// the default limit: more than one client can post at once, the upload
+// cooldown being per client across the server. The share counts a body once,
+// though the budget holds its first eighth a second time until the form has
+// been read (bodyRoom.takeRest): nine eighths of a body, so that the budget
+// reads seven bodies at once at the default limit, and one at the largest,
+// beside which a second waits for room for all of itself until the first has
+// been answered.
 const clientUploadShare = media.UploadBudget / 2
 
 // errUploadShare is a post refused because its client's other posts hold
@@ -161,9 +161,9 @@ const uploadPaceGrace = 5 * time.Second
 // that began at a second and grew only as the body arrived refused an 8 MB
 // image sent over a round trip of 0.65 s or more, a satellite link's or a busy
 // mobile network's, within two seconds, where the link would have brought it
-// in inside the window. What a body that stops holds is what it has sent
-// (admitBody), so the grace need not be short to keep the budget from bodies
-// that stop.
+// in inside the window. What a body that stops before it is under way holds is
+// at most twice what it has sent, or uploadHeadBytes (admitBody), so the grace
+// need not be short to keep the budget from bodies that stop.
 //
 // Every body that holds room in the upload budget has a length, so its pace
 // is its own: with uploads on, a multipart post without a Content-Length is
@@ -366,13 +366,14 @@ func (h *bodyRoom) release() {
 // or uploadHeadBytes if that is more.
 //
 // Room taken for the whole of a body that has sent only its first bytes cost
-// the sender nothing to hold: answered upload too slow once its grace ran
-// out, before flood control, it came straight back. A few hundred addresses,
-// as one IPv6 /48 gives, each with its one post in the queue for room
-// (reserveUpload), kept the budget full and the queue long with a few
-// hundred bytes a post, and an honest image post waited ten seconds behind
-// them. Now holding a body's declared size costs an eighth of it sent, and
-// holding less costs half of it.
+// the sender nothing to hold: answered upload too slow once its grace ran out,
+// before flood control, it came straight back. A few hundred addresses, as one
+// IPv6 /48 gives, each with its one post in the queue for room
+// (reserveUpload), kept the budget full and the queue long with a few hundred
+// bytes a post, and an honest image post waited ten seconds behind them. Now
+// holding room for a body under way, nine eighths of its declared size, costs
+// an eighth of it sent, and a body holds at most twice what it has sent, or
+// uploadHeadBytes, until then.
 //
 // It reports, as away, the error a take of room failed with
 // (reserveUpload), the body read no further, to be read past and the post
@@ -526,9 +527,10 @@ type submissionForm interface {
 //
 // A multipart body, with uploads on, holds room in the upload budget
 // (media.ReserveUpload), which counts the bodies being read and held until
-// their posts are answered, for what it has sent until it is under way, and
-// then for as much as the request says it is (admitBody): its first bytes
-// come before any (startBody), a body that sends none within uploadPaceGrace
+// their posts are answered, for at most twice what it has sent, or
+// uploadHeadBytes, until it is under way, and then for as much as the request
+// says it is and its start a second time (admitBody): its first bytes come
+// before any (startBody), a body that sends none within uploadPaceGrace
 // answered upload too slow having held nothing, neither room nor a place in
 // the queue for room; room is then taken a piece at a time, each before it is
 // read into, until an eighth of the body has arrived; and then room for the
