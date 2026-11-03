@@ -738,18 +738,18 @@ another board holds the upload cooldown that two image threads need.
 
 A refused request answers `429` with a `Retry-After` header in seconds and a
 `retry_after` field in the body. Set a cooldown to `0` to switch it off. A
-request rejected for a reason that can be known up front — an empty body, an
-oversized image, a file that is not an accepted image or whose header claims too
-many pixels, a reply to a missing, locked or archived thread or an image past a
-thread's cap — is turned away before flood control and does not start a
-cooldown, so a typo never costs a wait. A refusal that can be known only once
-flood control has let a post through comes after its cooldowns have started: an
-image whose header reads but whose pixels do not decode, which only decoding it
-can find, and decoding is the cost the upload cooldown is there for; or a thread
-that changed while the reply was on its way, locked, archived or deleted
-meanwhile, or given its last image slot by another reply racing it (see the HTTP
-API). The loser of two posts racing with one [captcha](#captcha) answer is
-refused before its cooldowns start.
+request rejected for a reason that can be known up front — such as an empty
+body, an oversized image, a file that is not an accepted image or whose header
+claims too many pixels, a reply to a missing, locked or archived thread or an
+image past a thread's cap — is turned away before flood control and does not
+start a cooldown, so a typo never costs a wait. A refusal that can be known only
+once flood control has let a post through comes after its cooldowns have
+started, for example for an image whose header reads but whose pixels do not
+decode, which only decoding it can find, and decoding is the cost the upload
+cooldown is there for; or for a thread that changed while the reply was on its
+way, locked, archived or deleted meanwhile, or given its last image slot by
+another reply racing it (see the HTTP API). The loser of two posts racing with
+one [captcha](#captcha) answer is refused before its cooldowns start.
 
 The cooldowns are keyed on client addresses, and so is the [captcha](#captcha)'s
 count of challenges, which works like a one-minute cooldown; they are the only
@@ -833,79 +833,83 @@ address, under that address's flood control.
 The answer is checked, the lookup included, before flood control. It is spent
 once flood control has found no cooldown to wait out, and flood control then
 checks again as it starts the post's cooldowns. So a post refused by the captcha
-starts no cooldown, and a post refused by a cooldown keeps its answer for when
-it is let through, unless another post from the same address started that
-cooldown between the two checks: of several sent at once, the one let through
-starts it; those that had already passed the first check have spent their
-answers, and those that reach it afterwards keep theirs. Two posts racing with
-one answer can both pass the lookup; the spend lets one through and refuses the
-other as used, with no cooldown started for it, so one answer sent to many
-boards at once starts only what the one let through starts, as it would alone:
-its board's thread or reply cooldown and, with an image, its address's upload
-cooldown, or, for a code request, its client's and its email address's. The page
-never hands one answer to two requests at once: each request takes its answer
-out of the page, so a post sent while another is on its way solves a puzzle of
-its own. A request refused for the answer itself is answered `403` with
-`"captcha": "required" | "invalid" | "expired" | "used"` beside the message; the
-page solves a fresh puzzle and sends the post once more, so the reader presses
-the button once (unless they have left the form meanwhile, or this browser was
-forgotten since the press: a request goes only from a form still on screen, in a
-browser not forgotten since, and a post the forget stopped says "This browser
-was forgotten before the post went through, so nothing was posted."). A `used`
-answer was spent by an earlier request, which, like others from the same
-address, may have started cooldowns, so the resend can meet one of them; the
-page then says how long to wait and keeps the fresh answer for the next press.
-Every response written after a request's answer is spent carries
-`Educhan-Captcha: spent`, whatever its status, a refusal included, such as one
-for a cooldown another request started meanwhile (one from the same address or,
-for a code request, one for the same email address from anywhere), an image
-whose pixels fail to decode, a thread that filled up or was archived, locked or
-deleted meanwhile, or, for a code request, a code that could not be sent. The
-one exception is a spend the database applied but whose reply was lost: the
-answer is spent, though the response, a `500` saying the server could not check
-the captcha, carries no header. The page keeps its answer, while it is good,
+starts no cooldown, and a post refused by a cooldown leaves its answer unspent
+for when it is let through, unless another post from the same address started
+that cooldown between the two checks: of several sent at once, the one let
+through starts it; those that had already passed the first check have spent
+their answers, and those that reach it afterwards leave theirs unspent. Two
+posts racing with one answer can both pass the lookup; the spend lets one
+through and refuses the other as used, with no cooldown started for it, so one
+answer sent to many boards at once starts only what the one let through starts,
+as it would alone: its board's thread or reply cooldown and, with an image, its
+address's upload cooldown, or, for a code request, its client's and its email
+address's. The page never hands one answer to two requests at once: each request
+takes its answer out of the page, so a post sent while another is on its way
+solves a puzzle of its own. A request refused for the answer itself is answered
+`403` with `"captcha": "required" | "invalid" | "expired" | "used"` beside the
+message; the page solves a fresh puzzle and sends the post once more, so the
+reader presses the button once (unless they have left the form meanwhile, or
+this browser was forgotten since the press: a request goes only from a form
+still on screen, in a browser not forgotten since, and a post the forget stopped
+says "This browser was forgotten before the post went through, so nothing was
+posted."). A `used` answer was spent by an earlier request, which, like others
+from the same address, may have started cooldowns, so the resend can meet one of
+them; the page then says how long to wait and keeps the fresh answer for the
+next press, on the terms below. Every response written after a request's answer
+is spent carries `Educhan-Captcha: spent`, whatever its status, a refusal
+included, such as one for a cooldown another request started meanwhile (one from
+the same address or, for a code request, one for the same email address from
+anywhere), an image whose pixels fail to decode, a thread that filled up or was
+archived, locked or deleted meanwhile, or, for a code request, a code that could
+not be sent. The one exception is a spend the database applied but whose reply
+was lost: the answer is spent, though the response, a `500` saying the server
+could not check the captcha, carries no header. The page keeps its answer
 through any other refusal without that header (the captcha's own refusals carry
-none, and drop it), so the next press goes straight out, and starts the next
-puzzle as soon as one with it arrives, while its form is on screen in a browser
-not forgotten since the press. A request that brought no response at all puts
-its answer back too, which may have been spent, so the next press can be told it
-was used and solve a fresh one, as after that `500`.
+none, and drop it), though only while it is good and only when the page holds no
+other answer by then, one a puzzle started meanwhile has solved say, so the next
+press goes straight out; and it starts the next puzzle as soon as a refusal with
+the header arrives, while its form is on screen in a browser not forgotten since
+the press. A request that brought no response at all puts its answer back on the
+same terms, though it may have been spent: then, as after that `500`, the first
+request to reach the captcha check with it is refused as used and solves a fresh
+one, while one refused before that check, such as a reply to a thread locked
+meanwhile or an image whose header does not read, keeps it again.
 
 While a post or a code request waits for its puzzle and its answer, its form is
 held: its boxes and buttons are switched off, and look it, so what is sent is
 what the form shows. A reader who goes to another page before the answer is
 ready sends nothing, and what they wrote is dropped with the page they left,
 never put into a form on the page they went to, even after a double click; the
-answer is put back for the next press, and a request that had already gone is
-not reported on that page either. A post link that leads back into the form's
-own thread (`>>>/board/N` naming a post there, which the page looks up) takes
-the form off the screen only while the post is looked up: the form goes back
-into the thread, emptied if its post went, and
-a post refused, or not sent, while the lookup loaded is told then what it would
-have been told on screen, a post not sent that nothing was posted and to post
-again, with its button given the focus as after a refusal. Update, pressed
-meanwhile, redraws the thread around the same form, still held, and the post
-goes ahead and is answered there: the form is cleared and the thread shows the
-post when it went, and the form is switched back on with the reason when it was
-refused. If the thread will not load, the page stays as it was, form and all,
-with a notice saying why, and the post is answered on it just the same. A post
-answered after a redraw, or while one loads, success or refusal, has its image
-picker left as the redraw draws it: switched off if the thread takes no more
-images, taking off the image a refused post still held, and back on if it takes
-them again; a refusal of the image itself then switches it off. Where the image
-was taken off, any other notice about the post says so and, unless the thread
-takes no posts at all (archived, locked or gone), says why and tells a post left
-with nothing to send to write something instead. Every page of a board's index
-carries the same new-thread form, so going to another page of the index keeps a
-new thread going as Update does: the page is drawn around the held form, and the
-thread is posted from there or, if that page will not load, from the page still
-on screen, whose address goes back into the address bar, in the history entry
-the reader is on. With nothing pressed while the new page loads, that is the
-entry the link, Back or Forward led to: after a link the history then holds the
-page kept twice, so one Back press stays on it, and after Back or Forward the
-entry gone to now holds the page kept. A link pressed during the load, the same
-one again or a jump within the page, adds an entry of its own, which then holds
-the page kept, and Back from it loads the page that failed again.
+answer is put back for the next press, on the same terms, and a request that had
+already gone is not reported on that page either. A post link that leads back
+into the form's own thread (`>>>/board/N` naming a post there, which the page
+looks up) takes the form off the screen only while the post is looked up: the
+form goes back into the thread, emptied if its post went, and a post refused, or
+not sent, while the lookup loaded is told then what it would have been told on
+screen, a post not sent that nothing was posted and to post again, with its
+button given the focus as after a refusal. Update, pressed meanwhile, redraws
+the thread around the same form, still held, and the post goes ahead and is
+answered there: the form is cleared and the thread shows the post when it went,
+and the form is switched back on with the reason when it was refused. If the
+thread will not load, the page stays as it was, form and all, with a notice
+saying why, and the post is answered on it just the same. A post answered after
+a redraw, or while one loads, success or refusal, has its image picker left as
+the redraw draws it: switched off if the thread takes no more images, taking off
+the image a refused post still held, and back on if it takes them again; a
+refusal of the image itself then switches it off. Where the image was taken off,
+any other notice about the post says so and, unless the thread takes no posts at
+all (archived, locked or gone), says why and tells a post left with nothing to
+send to write something instead. Every page of a board's index carries the same
+new-thread form, so going to another page of the index keeps a new thread going
+as Update does: the page is drawn around the held form, and the thread is posted
+from there or, if that page will not load, from the page still on screen, whose
+address goes back into the address bar, in the history entry the reader is on.
+With nothing pressed while the new page loads, that is the entry the link, Back
+or Forward led to: after a link the history then holds the page kept twice, so
+one Back press stays on it, and after Back or Forward the entry gone to now
+holds the page kept. A link pressed during the load, the same one again or a
+jump within the page, adds an entry of its own, which then holds the page kept,
+and Back from it loads the page that failed again.
 
 An address that asks for challenges faster than people post gets harder ones: up
 to 60 a minute at the base work, then twice the work for each further 60, to at

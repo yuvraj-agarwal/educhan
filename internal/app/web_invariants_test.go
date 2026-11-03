@@ -482,7 +482,8 @@ var captchaFunctions = []string{
 // storage, a cookie or a draft, where it would outlive the page or be found by
 // the next person at a shared computer. It is set where it is solved, taken out
 // where a request takes it, put back where a request left it unspent, or may
-// have spent it without saying so, and read nowhere else.
+// have spent it without saying so, while it is good and into an empty place,
+// and read nowhere else.
 func TestCaptchaAnswerStaysInMemory(t *testing.T) {
 	script := appScript(t)
 	banned := []string{"storageSet", "storageGet", "localStorage", "sessionStorage", "indexedDB", "document.cookie"}
@@ -857,9 +858,10 @@ func TestClientAndServerAgreeOnTheCaptcha(t *testing.T) {
 		!strings.Contains(send, "if (retried || !needsIt()) {") {
 		t.Error("sendWithCaptcha no longer drops a refused answer and resends exactly once")
 	}
-	// Any other refusal keeps the answer unless the server says it spent it,
-	// and then, while its form is on screen and the browser not forgotten since
-	// the press, the next puzzle starts at once.
+	// Any other refusal puts the answer back, on keepCaptcha's terms
+	// (TestEachCaptchaAnswerGoesOnOneRequest), unless the server says it spent
+	// it, and then, while its form is on screen and the browser not forgotten
+	// since the press, the next puzzle starts at once.
 	if !strings.Contains(code, `const CAPTCHA_SPENT_HEADER = "`+captchaSpentHeader+`";`) ||
 		!strings.Contains(send, `err.headers.get(CAPTCHA_SPENT_HEADER) === "spent"`) ||
 		!strings.Contains(withoutComments(jsFunction(t, script, "api")), "err.headers = res.headers;") {
@@ -968,13 +970,13 @@ func TestCaptchaIsNotWorkedOnForNothing(t *testing.T) {
 // A post or a code request may wait seconds on its puzzle, and the reader can
 // leave meanwhile, for another page. A request whose form has gone by the time
 // its answer is ready is not sent, and its answer is put back for the next
-// press. A posting form stays on screen across a redraw of its own page, by
-// route key, while it is held: the redraw puts it in place of the form the
-// new page draws, or keeps the page around it when the new one will not load
-// (TestAHeldFormSurvivesARedrawOfItsPage). No redraw carries a /verify form,
-// so one leaves the screen at the next render, of /verify too: a code request
-// sent from the form a redraw was replacing would leave the page on the
-// address step while the code went out.
+// press, while it is good, into an empty place. A posting form stays on screen
+// across a redraw of its own page, by route key, while it is held: the redraw
+// puts it in place of the form the new page draws, or keeps the page around it
+// when the new one will not load (TestAHeldFormSurvivesARedrawOfItsPage). No
+// redraw carries a /verify form, so one leaves the screen at the next render,
+// of /verify too: a code request sent from the form a redraw was replacing
+// would leave the page on the address step while the code went out.
 // Sent or not, a request whose form has left the screen is not navigated from
 // and says nothing on the page the reader went to, while a post that did go
 // still empties and releases its form, wherever it is. A post's form keeps
@@ -1154,8 +1156,10 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 // fresh puzzle. The answer goes back only when the request left it unspent, or
 // may have spent it without saying so (as when it brought no response, or the
 // 500 for a spend whose reply from the database was lost), and only into an
-// empty place while it is still good: if it was spent, the request that next
-// sends it is refused as used and solves a fresh one.
+// empty place while it is still good: if it was spent, the first request to
+// reach the server's captcha check with it is refused as used and solves a
+// fresh one, while one refused before that check, a reply to a thread locked
+// meanwhile say, puts it back again.
 func TestEachCaptchaAnswerGoesOnOneRequest(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)

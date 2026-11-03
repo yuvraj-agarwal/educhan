@@ -4562,9 +4562,10 @@ function runCaptchaWorkers(challenge, signal) {
 // The answer is taken out of the page for this request alone (takeCaptcha):
 // another press while this request is on its way, from a form on another page
 // say, solves a fresh puzzle rather than sending the same answer, which the
-// server would let only one of the two use. It is put back (keepCaptcha) only
-// when this request left it unspent, or may have, as when it brought no
-// response, or the one refusal that cannot say (below).
+// server would let only one of the two use. It is put back (keepCaptcha, while
+// it is good and only into an empty place) only when this request left it
+// unspent, or may have, as when it brought no response, or the one refusal that
+// cannot say (below).
 // A refusal of the answer itself, for being missing, out of date, used or
 // wrong, comes before anything is stored or sent, so the answer is dropped and
 // the request sent once more with a fresh one, and the reader presses the
@@ -4579,29 +4580,32 @@ function runCaptchaWorkers(challenge, signal) {
 // before the spend and its check after it, a 429 like the one for a cooldown
 // found before the spend. A refusal without the header, such as one of what was
 // written or for a cooldown found before the spend, leaves the answer held: it
-// is put back for the next press, which then goes straight out. With no answer
-// from the server at all the answer is put back too; if it had been spent, the
-// request that next sends it is refused as "used" and solves a fresh one here.
-// So it is after the one refusal that cannot say: a 500 for a spend the
-// database applied but whose reply was lost, which carries no header though the
-// answer is spent.
+// is put back for the next press, on keepCaptcha's terms, and that press goes
+// straight out. With no answer from the server at all the answer is put back
+// too; if it had been spent, the first request to reach the server's captcha
+// check with it is refused as "used" and solves a fresh one here, while one
+// refused before that check, a reply to a thread locked meanwhile or an image
+// whose header does not read say, puts it back again. So it is after the one
+// refusal that cannot say: a 500 for a spend the database applied but whose
+// reply was lost, which carries no header though the answer is spent.
 // solving(true) and solving(false) bracket the time spent on the puzzle.
 // onScreen() says whether the form the request came from is still on screen
 // (formOnScreen), and the browser not forgotten since the press. A request
-// whose form has gone, because the reader went to another page, or that
-// Forget this browser cancelled meanwhile, is not sent, the first time or once
-// more after a refused answer. That is asked when its answer is ready, which
-// then goes back for the next press, and again when a refusal of the answer
-// arrives, perhaps after a forget heard while the first send was on its way.
-// Either way sendWithCaptcha throws the error notSent makes, for a caller
-// that says nothing on a page the reader went to and, on a form still on
-// screen, which only the forget stops, says why. A post's form keeps what it
-// would have been told, for a redraw that puts its values back into its own
-// page to say (restoreDraft). Neither the second send nor the next puzzle is
-// started for one. Pressing Update while a post waits does not take its form
-// away: the redrawn page shows the same form, still held, as does another page
-// of the same board's index, drawn with the same new-thread form, and a redraw
-// that will not load leaves the page on screen, form and all.
+// whose form has gone, because the reader went to another page, or that Forget
+// this browser cancelled meanwhile, is not sent, the first time or once more
+// after a refused answer. That is asked when its answer is ready, which then
+// goes back for the next press, on keepCaptcha's terms, and again when a
+// refusal of the answer arrives, perhaps after a forget heard while the first
+// send was on its way. Either way sendWithCaptcha throws the error notSent
+// makes, for a caller that says nothing on a page the reader went to and, on a
+// form still on screen, which only the forget stops, says why. A post's form
+// keeps what it would have been told, for a redraw that puts its values back
+// into its own page to say (restoreDraft). Neither the second send nor the next
+// puzzle is started for one.
+// Pressing Update while a post waits does not take its form away: the redrawn
+// page shows the same form, still held, as does another page of the same
+// board's index, drawn with the same new-thread form, and a redraw that will
+// not load leaves the page on screen, form and all.
 async function sendWithCaptcha(needsIt, send, solving, onScreen) {
   for (let retried = false; ; retried = true) {
     let taken = null;
