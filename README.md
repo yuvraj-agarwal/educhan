@@ -159,9 +159,9 @@ actions, and says what forgetting costs — the server cannot show the credentia
 again, so it means verifying from the start. Pressed in one educhan tab, it
 takes the badge out of every other tab open in the browser too: each sees it go
 from storage, and any posting form it shows loses the option to post with it;
-one that had it ticked, unless its badged post was on its way and goes through,
-the badge with it, says so when next pressed, rather than posting without it,
-and the press after that posts without it. Beside it, in every state of the
+one that had it ticked, unless the badge is settled first, as by its badged post
+going through with it, says so when next pressed, rather than posting without
+it, and the press after that posts without it. Beside it, in every state of the
 page, **Forget this browser** removes the badge together with the poster key and
 the remembered name (see below), which are what would otherwise let the next
 person at a shared computer post under the same IDs and tripcode. A verification
@@ -862,13 +862,13 @@ whose pixels fail to decode, a thread that filled up or was archived, locked or
 deleted meanwhile, or, for a code request, a code that could not be sent. The
 one exception is a spend the database applied but whose reply was lost: the
 answer is spent, though the response, a `500` saying the server could not check
-the captcha, carries no header. The page keeps its answer through any other
-refusal without that header (the captcha's own refusals carry none, and drop
-it), so the next press goes straight out, and starts the next puzzle as soon as
-one with it arrives, while its form is on screen in a browser not forgotten
-since the press. A request that brought no response at all puts its answer back
-too, which may have been spent, so the next press can be told it was used and
-solve a fresh one, as after that `500`.
+the captcha, carries no header. The page keeps its answer, while it is good,
+through any other refusal without that header (the captcha's own refusals carry
+none, and drop it), so the next press goes straight out, and starts the next
+puzzle as soon as one with it arrives, while its form is on screen in a browser
+not forgotten since the press. A request that brought no response at all puts
+its answer back too, which may have been spent, so the next press can be told it
+was used and solve a fresh one, as after that `500`.
 
 While a post or a code request waits for its puzzle and its answer, its form
 is held: its boxes and buttons are switched off, and look it, so what is sent
@@ -1014,8 +1014,8 @@ locked one `{"error":"thread is locked"}`, and one bringing an image to a thread
 at its board's image limit `{"error":"image limit reached"}`. These refusals,
 and a reply to a thread that does not exist, come before flood control and
 before the image is stored, so they start no cooldown, and a reply refused at
-the image limit posts at once when sent again without the image. Only a thread
-that changes after these checks have let a reply through refuses it after its
+the image limit posts at once when sent again without the image. A thread that
+changes after these checks have let a reply through refuses it after its
 cooldowns have started, inside the transaction: one archived, locked or deleted
 meanwhile, or one whose last image slot another reply racing it took.
 

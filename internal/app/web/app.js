@@ -2172,11 +2172,11 @@ function forgetOnThisPage() {
 // the Name, drawn with the forgotten name, which would post under its tripcode,
 // and takes out the option to post with the badge, which names the institution
 // as well. Nothing is said at the form's next press, though the badge was
-// ticked or the form noted after another tab took a badge away
-// (badgeWithdrawn): that would tell whoever presses it that this browser held
-// a badge, and with the poster key gone too the post has an ID of its own,
-// shared with none of the posts made before the forget. It notes the forget it
-// did (forgottenAt).
+// ticked or the form noted (badgeWithdrawn), as after another tab took a badge
+// away: that would tell whoever presses it that this browser held a badge, and
+// with the poster key gone too the post has an ID of its own, shared with none
+// of the posts made before the forget. It notes the forget it did
+// (forgottenAt).
 function forgetForm(form) {
   const name = field(form, "name");
   if (name) {
@@ -4150,12 +4150,15 @@ document.addEventListener("drop", (event) => {
     return;
   }
   field.classList.remove("dragging");
-  // A file the form took is shown as a picked one is, in place of whatever
-  // was said before it. One it refused says why in its place (setFile), but
-  // a picker switched off only while its post is pending says nothing, and
-  // what is on screen stays. Only a file the form took starts the puzzle: a
-  // held form's own image is its pending post's, which already has its answer
-  // or is waiting on the puzzle being solved for it.
+  // A file the form took is shown as a picked one is, in place of whatever was
+  // said before it. setFile takes the file and says whether it did, and says
+  // why itself when it refuses one because the picker is blocked or the file is
+  // not an accepted image; any other refusal, such as a picker switched off
+  // only while its post is pending, no file, or a browser that cannot build a
+  // DataTransfer or set input.files, says nothing, and what is on screen stays.
+  // Only a file the form took starts the puzzle: a held form's own image is its
+  // pending post's, which already has its answer or is waiting on the puzzle
+  // being solved for it.
   if (setFile(field, event.dataTransfer.files[0])) {
     clearNotice();
     updateFileField(field);
@@ -4397,9 +4400,10 @@ function takeCaptcha(answer) {
 
 // keepCaptcha puts back an answer a request took and did not spend, or that may
 // have spent it without saying so: it was not sent, the server refused the
-// request without using it, nothing came back, or what came back was the 500
-// for a spend whose reply from the database was lost. It goes back only while
-// the page holds no other answer, and only while it is still good.
+// request without using it, or what came back did not say, as when nothing came
+// back at all or what came was the 500 for a spend whose reply from the
+// database was lost. It goes back only while the page holds no other answer,
+// and only while it is still good.
 function keepCaptcha(taken) {
   if (taken && !captcha.answer && Date.now() < taken.goodUntil) {
     captcha.answer = taken.answer;
@@ -4524,8 +4528,8 @@ function runCaptchaWorkers(challenge, signal) {
 // another press while this request is on its way, from a form on another page
 // say, solves a fresh puzzle rather than sending the same answer, which the
 // server would let only one of the two use. It is put back (keepCaptcha) only
-// when this request left it unspent, or may have: it brought no response, or
-// the one refusal that cannot say, as below.
+// when this request left it unspent, or may have, as when it brought no
+// response, or the one refusal that cannot say (below).
 // A refusal of the answer itself, for being missing, out of date, used or
 // wrong, comes before anything is stored or sent, so the answer is dropped and
 // the request sent once more with a fresh one, and the reader presses the
@@ -4915,8 +4919,12 @@ el.main.addEventListener("submit", async (event) => {
     // not forgotten meanwhile, a form on screen is told so in its own words
     // (badgeReplacedNotice), not the server's, and that notice is its one
     // refusal for the badge: a note left on it while the post was on its way
-    // goes, whatever left it (followCredentialStorage, submitVerification,
-    // restoreDraft), so the next press is not refused for the badge again.
+    // goes, whatever left it, so the next press is not refused for the badge
+    // again. What can leave one then is a change of badge in another tab
+    // (followCredentialStorage), a confirmation answered in this one
+    // (submitVerification), another badged post's refusal in this one (below),
+    // /verify loading over the form (loadVerification), or a redraw that puts
+    // it back (restoreDraft).
     const reason = err.payload && err.payload.credential;
     let replaced = false;
     if (held && (reason === "expired" || reason === "revoked")) {

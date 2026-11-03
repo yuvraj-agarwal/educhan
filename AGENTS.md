@@ -444,8 +444,8 @@ before the test changes.
   while one is on its way solves a fresh puzzle, and puts it back (`keepCaptcha`: only
   into an empty place, only while good) only when it left it unspent, or may have spent
   it without saying so, as when it brought no response, or the `500` for a spend whose
-  reply from the database was lost: the next request is then refused as used and solves
-  a fresh one. One whose form has left the screen is dropped unsent with its answer put
+  database reply was lost: if spent, the next request is refused as used and solves a
+  fresh one. One whose form has left the screen is dropped unsent with its answer put
   back, and, sent or not, is not navigated from and says nothing on the page the reader
   went to; a post that did go still empties and releases its form, wherever it is. From
   the press to the answer the form is held (`holdForm`: controls switched off once the
@@ -636,10 +636,11 @@ before the test changes.
   answered, the cookie its answer sets holding the browser's verification from then on
   (`followCredentialStorage`, by the `storage` event,
   `TestForgettingTheBadgeReachesEveryTab`). A form that had the badge ticked, idle or
-  with its badged post on its way (unless that post goes through, the badge with it),
-  refuses its next press once, saying the badge has gone and that pressing again posts
-  without it, under the same ID as the reader's unbadged posts in a reply's thread while
-  the poster key is the one it had (`withdrawBadgeOption`, `badgeWithdrawn`,
+  with its badged post on its way (unless the badge is settled first, as when that post
+  goes through, the badge with it), refuses its next press once, saying the badge has
+  gone and that pressing again posts without it, under the same ID as the reader's
+  unbadged posts in a reply's thread while the poster key is the one it had
+  (`withdrawBadgeOption`, `badgeWithdrawn`,
   `TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress`): said nothing, the post would go
   out tied to those posts, which the badge's own ID is there to keep apart. With
   something written or attached, that form also starts the puzzle the post then needs,
@@ -682,8 +683,11 @@ before the test changes.
   `imageTakenOff`, to write something instead), pressing again posts without a badge,
   and Update, or the board's Index for a new thread, draws the form again offering the
   new one, unticked. That notice is its one refusal for the badge, so a note left on it
-  while the post was on its way goes, whatever left it (`followCredentialStorage`,
-  `submitVerification`, `restoreDraft`).
+  while the post was on its way goes, whatever left it: a change of badge in another tab
+  (`followCredentialStorage`), a confirmation answered in this one
+  (`submitVerification`), another badged post's refusal in this one (`submit`),
+  `/verify` loading over the form (`loadVerification`), or a redraw that puts it back
+  (`restoreDraft`).
 - The poster key lives in `localStorage` under `educhan:poster-key`: 16 random bytes as
   22 characters of unpadded base64url, made by `posterKey()` on the first post rather
   than the first visit. `submit` sends it in `X-Educhan-Poster-Key` on thread-create and
@@ -1073,7 +1077,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   both refused by the upload cooldown an image reply elsewhere started
   (`TestAllowAllRefusesOnlyForACooldownAnAdmittedRequestHolds`,
   `TestAllowAllAdmitsOneOfARace`). Nothing is refunded once an action is admitted, so
-  every refusal that can be known up front comes before `allow`: a malformed poster key,
+  every refusal knowable up front comes before `allow`, such as a malformed poster key,
   the body, a badge the poster cannot have, uploads switched off, a file its header shows
   to be unusable (`media.Inspect` in `parseSubmission`: not an accepted format, or more
   than `media.MaxPixels`), a reply the thread would refuse (`ReplyRefusal`), and a

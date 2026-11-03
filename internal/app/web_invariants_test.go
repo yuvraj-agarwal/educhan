@@ -1083,10 +1083,10 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 // one, its form gone, dropped without a word. So a request takes the answer
 // out of the page as it is handed over, in the same step, and a press
 // meanwhile solves a fresh puzzle. The answer goes back only when the request
-// left it unspent, or may have spent it without saying so (it brought no
-// response, or the 500 for a spend whose reply from the database was lost), and
-// only into an empty place while it is still good: the next request is then
-// refused as used and solves a fresh one.
+// left it unspent, or may have spent it without saying so (as when it brought
+// no response, or the 500 for a spend whose reply from the database was lost),
+// and only into an empty place while it is still good: if it was spent, the
+// request that next sends it is refused as used and solves a fresh one.
 func TestEachCaptchaAnswerGoesOnOneRequest(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -1683,9 +1683,10 @@ func TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress(t *testing.T) {
 	// whose badge storage has replaced since the press, the browser not
 	// forgotten meanwhile, is told so in place of the server's wording, which
 	// says to verify again, and a note left on it while the post was on its way
-	// goes, whatever left it (another tab's change, a confirmation answered in
-	// this one, or a redraw that put it back), so that notice is its one
-	// refusal for the badge.
+	// goes, whatever left it (a change of badge in another tab, a confirmation
+	// answered in this one, another badged post's refusal in this one, /verify
+	// loading over the form, or a redraw that puts it back), so that notice is
+	// its one refusal for the badge.
 	refused := submit[max(strings.Index(submit, "} catch (err) {"), 0):]
 	if !strings.Contains(refused, `if (held && (reason === "expired" || reason === "revoked")) { `+
 		"if (forgets === browserForgets && storedCredential() === held.token) { const pageBadge = state.verification.badge; "+
@@ -1915,11 +1916,15 @@ func TestAPendingFormIsHeld(t *testing.T) {
 		t.Error("setFile takes a file into a picker held while its post is pending, or says nothing for a blocked one")
 	}
 	// A drop clears what was said before it only once the form has taken the
-	// file, so a drop a held picker refuses, which says nothing, leaves the
-	// notice on screen, and one refused for a reason says it in its place.
-	// setFile takes the file and nothing else: the field is shown by the drop
-	// handler, as by the picker's own change, and by restoreDraft putting a
-	// draft's image back, neither of which clears a notice before the take.
+	// file. setFile takes it and says whether it did, and says why itself when
+	// it refuses one because the picker is blocked or the file is not an
+	// accepted image; any other refusal, such as a picker switched off only
+	// while its post is pending, no file, or a browser that cannot build a
+	// DataTransfer or set input.files, says nothing and leaves the notice on
+	// screen. setFile neither shows the field nor clears the notice: the field
+	// is shown by the drop handler, as by the picker's own change, and by
+	// restoreDraft putting a draft's image back, neither of which clears a
+	// notice before the take.
 	dropped := squash(withoutComments(jsBlock(t, script, `document.addEventListener("drop", (event) => {`, "});")))
 	inOrder(t, "the drop handler", dropped, `field.classList.remove("dragging");`,
 		`if (setFile(field, event.dataTransfer.files[0])) { clearNotice(); updateFileField(field); `)

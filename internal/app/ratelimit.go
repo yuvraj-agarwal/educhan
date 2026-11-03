@@ -91,7 +91,7 @@ var admission sync.Mutex
 // cooldownSweepThreshold, so requests barely wait for it.
 //
 // A handler that spends a captcha answer checks first with longestWait, which
-// starts nothing, so a request that has to wait keeps its answer, and calls
+// starts nothing, so a request it finds has to wait keeps its answer, and calls
 // allowAll only once the answer is spent, so a request refused for its answer
 // starts no cooldown.
 func allowAll(cooldowns ...cooldown) (retryAfter time.Duration, ok bool) {

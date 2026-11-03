@@ -348,7 +348,8 @@ func pngClaiming(t *testing.T, w, h uint32) []byte {
 // image or has too many pixels, is refused before flood control, so the poster
 // can send the text on its own at once. An image whose header is sound but
 // whose pixels do not decode is found only by decoding, after the cooldowns
-// have started, which is the one exception the README names.
+// have started: it is one of the refusals the README names as coming after the
+// cooldowns start.
 func TestImagesRefusedByTheirHeaderStartNoCooldown(t *testing.T) {
 	c := testServer(t, func(cfg *Config) {
 		cfg.TrustedProxyHops = 1
