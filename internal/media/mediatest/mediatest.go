@@ -42,12 +42,15 @@ func StartGCS(t *testing.T) string {
 	// succeed and every read answers "object not found".
 	//
 	// The listener is bound here and handed to the server still open. Choosing
-	// a free port, letting it go and having the emulator bind it again lost the
-	// port, now and then, to another test binary binding port 0 in between,
-	// since go test runs packages side by side: "bind: address already in use".
-	// NoListener stops the emulator binding a socket of its own, and
-	// ExternalURL stands in for the address it would otherwise have read off
-	// that socket, which it writes into a resumable upload's Location.
+	// a free port, letting it go and having the emulator bind it again failed
+	// about once in several thousand starts, even with one test binary
+	// running: the emulator's httptest server binds port 0 for itself before
+	// the emulator binds the port it was given, and Linux could hand that
+	// listener the very port just let go, so the second bind failed with
+	// "address already in use". NoListener stops the emulator binding any
+	// socket of its own, and ExternalURL stands in for the address it would
+	// otherwise have read off that socket, which it writes into a resumable
+	// upload's Location.
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen for the Cloud Storage emulator: %v", err)
