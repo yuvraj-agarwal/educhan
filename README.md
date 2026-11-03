@@ -507,8 +507,8 @@ for the owner to reissue. Checkout and the daily sweep (`educhan -sweep`)
 prune what is past all that, along with reissue codes past their deadline,
 refunds remembered for their month, and Passes a month past expiry. A Pass has
 gone from the moment it is a month past its expiry, pruned yet or not: every
-request treats it as deleted, whether it checks the code, posts with it,
-renews it, collects it or reissues it, so it can no longer be renewed and is
+request treats it as deleted (a check of its code, a post with it, a renewal,
+a claim or a reissue code, for example), so it can no longer be renewed and is
 bought anew, and the prune deletes its rows when it next runs. The sweep needs
 no Pass setting to do it, since every order carries its own term. A renewal
 whose Pass was refunded or ran past that month while Stripe was opening the
