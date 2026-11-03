@@ -340,8 +340,10 @@ func termDays(base, expiry time.Time) int {
 
 // passClaimDeadline is the deadline of an order started at now: a week on,
 // rounded up to a UTC midnight, so the stored deadline dates a checkout to the
-// day and not the microsecond. An unpaid order is nothing to collect from then
-// on, and a paid one is kept for its own term past it (passOrderEnd).
+// day and not the microsecond. From then on an unpaid order is no longer
+// waited for, and a claim deletes it (claimOne), though a payment Stripe
+// reports for it first still counts until its own term has passed since
+// (passOrderPayable); a paid one is kept for that term past it (passOrderEnd).
 func passClaimDeadline(now time.Time) time.Time {
 	return dayCeil(now.Add(passClaimTTL))
 }
@@ -448,9 +450,11 @@ const passNotOnSale = "the Pass is not on sale right now"
 // browser knows its own Pass and when it runs out. The one thing it reads off
 // the request is the claim cookie, which the page cannot see (it is HttpOnly),
 // so the page knows there is a purchase to collect. The claim is looked up for
-// that and nothing else: a cookie with nothing under it any more is no
-// purchase to collect. Every claim cookie the request carries is looked under
-// (passClaimTokens).
+// that and nothing else: a cookie is a purchase to collect while an order
+// under it can still bring a Pass, an unpaid one past its deadline included,
+// which the page's claim then deletes (passClaimWaiting), so one with none is
+// no purchase to collect, now or later. Every claim cookie the request carries
+// is looked under (passClaimTokens).
 func (a *App) handlePassStatus(w http.ResponseWriter, r *http.Request) {
 	if !a.passEnabled() {
 		writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
@@ -938,8 +942,10 @@ func (a *App) redeemPassReissue(w http.ResponseWriter, r *http.Request, typed, n
 		return
 	}
 	// Whether this browser also has a purchase to collect, so the page goes
-	// on to collect it, by the clock as it is read, not the one the reissue
-	// read before it waited for the lock. The reissue is committed by now, so
+	// on to collect it, as GET /api/pass would say (passClaimWaiting, an
+	// unpaid order past its deadline included, which that collecting
+	// deletes), by the clock as it is read, not the one the reissue read
+	// before it waited for the lock. The reissue is committed by now, so
 	// failing to read this does not fail the answer, which would tell the
 	// reader the code did not work after it had: the page also asks GET
 	// /api/pass on every visit.
@@ -1614,13 +1620,25 @@ func (s *Store) dropUnpaidPassOrder(ctx context.Context, sessionHash []byte) err
 }
 
 // passClaimWaiting reports whether any of a browser's claims has anything to
-// collect: an order still kept (passOrderKept), so a paid one until its own
-// term past its deadline, or an unpaid one still inside its deadline. It reads
-// without the lock, as passByToken does.
+// collect: an order that can still bring a Pass, since a payment Stripe
+// reports for it would still count (passOrderPayable). That is a paid order
+// while it is kept, until its own term past its deadline, and an unpaid one
+// until that term has passed too, whatever its deadline: inside its deadline a
+// claim is told to wait, and past it a claim deletes the order, so a payment
+// reported after that finds nothing (claimOne). So an answer that nothing is
+// waiting is final: no order under the claims can be paid any more, so nothing
+// can come under them later. It reads without the lock, as passByToken does.
 func (s *Store) passClaimWaiting(ctx context.Context, claimHashes [][]byte, now time.Time) (bool, error) {
+	return claimsWaiting(ctx, s.pool, claimHashes, now)
+}
+
+// claimsWaiting is passClaimWaiting's read, through q: the pool, or the
+// transaction of a claim, which answers with it whether anything is left to
+// collect (claimPass), so the two hold to one bound.
+func claimsWaiting(ctx context.Context, q rowReader, claimHashes [][]byte, now time.Time) (bool, error) {
 	var waiting bool
-	err := s.pool.QueryRow(ctx, `
-		SELECT EXISTS (SELECT 1 FROM pass_orders WHERE claim_hash = ANY($1) AND `+passOrderKept("", "$2")+`)`,
+	err := q.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM pass_orders WHERE claim_hash = ANY($1) AND `+passOrderPayable("", "$2")+`)`,
 		claimHashes, now).Scan(&waiting)
 	return waiting, err
 }
@@ -1698,10 +1716,16 @@ func passPaidOrderEnd(alias string) string {
 // at the time in the parameter now names still counts: until the end of the
 // keep it would have once paid (passPaidOrderEnd), whatever its deadline, and
 // so, for an order paid already, exactly while it is kept (passOrderKept). An
-// unpaid order past that bound has gone for every purpose, pruned yet or not,
-// as a paid one past its keep has, so the prune only frees its row: marking it
-// paid (markPassOrderPaid), holding it for a slow payment (holdPassOrder) and
-// counting it as a renewal under way (renewalUnderWay) each hold it to this,
+// unpaid order past its deadline is no longer waited for, and goes when
+// something deletes it first: the next prune (prunePasses) or a claim from its
+// own browser (claimOne), say, which the Pass page sends on a visit while the
+// order counts as something to collect (passClaimWaiting); a payment Stripe
+// reports for it after that finds nothing, and the owner is warned. An unpaid
+// order past this bound has gone for every purpose, pruned yet or not, as a
+// paid one past its keep has, so the prune only frees its row: marking it paid
+// (markPassOrderPaid), holding it for a slow payment (holdPassOrder), counting
+// it as a renewal under way (renewalUnderWay) and counting it as something for
+// its browser to collect (passClaimWaiting, claimPass) each hold it to this,
 // one bound, so none of them takes an order the others have let go, and
 // anything new that decides what to do with an unpaid order past its deadline
 // must too.
@@ -1713,25 +1737,28 @@ func passOrderPayable(alias, now string) string {
 // parameter now names ("$2", say). A paid order no longer kept has gone for
 // every purpose, exactly as if prunePasses, which deletes it by the same bound,
 // had run already, so the prune only frees its row. Every read of a paid order
-// that decides what to do holds it to this, and anything new that reads one
-// must too; a write that only moves its claim (dropPassClaims) or clears the
-// Pass it names (revokeTerm, prunePasses), and so decides nothing for it, need
-// not. So collecting it, by its claim (claimOne) or by a reissue code
+// that decides what to do holds it to this, or to passOrderPayable, the same
+// bound for a paid order, and anything new that reads one must too; a write
+// that only moves its claim (dropPassClaims) or clears the Pass it names
+// (revokeTerm, prunePasses), and so decides nothing for it, need not. So
+// collecting it, by its claim (claimOne) or by a reissue code
 // (redeemPassReissue), making a reissue code for it (createPassReissue), Stripe
 // reporting it paid again (markPassOrderPaid), a refund of it
 // (revokePassPayment), and counting it as something for a browser to collect
 // (passClaimWaiting, claimPass) or as a renewal waiting to land on its Pass
 // (moveOrigin, renewalUnderWay), for example, each find no order, as once it is
-// pruned. An unpaid order is nothing to collect from its deadline on (claimOne,
-// passClaimWaiting), but a payment Stripe reports for it still counts until it
-// is deleted, by the prune or by a claim from its own browser, say, and never
-// once its own term has passed since that deadline (passOrderPayable): so
-// marking it paid (markPassOrderPaid), holding it for a slow payment
-// (holdPassOrder) and counting it as a renewal under way (renewalUnderWay), for
-// example, take an unpaid order past its deadline until then and none after,
-// as once it is pruned. Deleting one, as dropUnpaidPassOrder does once Stripe
-// closes its checkout unpaid, decides nothing the prune would not, and takes
-// one of any age.
+// pruned. An unpaid order is no longer waited for from its deadline on, but a
+// payment Stripe reports for it still counts until it is deleted, by the prune
+// or by a claim from its own browser (claimOne), say, which the Pass page sends
+// while the order counts as something to collect, and never once its own term
+// has passed since that deadline (passOrderPayable): so marking it paid
+// (markPassOrderPaid), holding it for a slow payment (holdPassOrder), counting
+// it as a renewal under way (renewalUnderWay) and counting it as something for
+// its browser to collect (passClaimWaiting, claimPass), for example, take an
+// unpaid order past its deadline until then and none after, as once it is
+// pruned. Deleting one, as dropUnpaidPassOrder does once Stripe closes its
+// checkout unpaid, decides nothing the prune would not, and takes one of any
+// age.
 func passOrderKept(alias, now string) string {
 	return passOrderEnd(alias) + " > " + now
 }
@@ -1787,7 +1814,8 @@ type claimResult struct {
 	pass int64
 }
 
-// rowReader is what passWithToken reads with: the pool, or a transaction.
+// rowReader is what passWithToken and claimsWaiting read with: the pool, or a
+// transaction.
 type rowReader interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
@@ -1820,7 +1848,10 @@ type passClaimant struct {
 // the Pass an earlier ask made, whose answer was lost, the one made last of
 // several; failing that, the answer is to wait while any order is unpaid.
 // More says whether anything is left under any of them, so the page asks
-// again for the next.
+// again for the next, by the bound GET /api/pass answers by (claimsWaiting):
+// an unpaid order past its deadline under a claim the loop stopped before
+// counts, and the next ask deletes it, so an answer that nothing is left is
+// final.
 func (s *Store) claimPass(ctx context.Context, claims []passClaimant, now time.Time) (claimResult, error) {
 	var res claimResult
 	err := s.passTx(ctx, func(tx pgx.Tx) error {
@@ -1853,9 +1884,9 @@ func (s *Store) claimPass(ctx context.Context, claims []passClaimant, now time.T
 		for i, c := range claims {
 			hashes[i] = c.ClaimHash
 		}
-		return tx.QueryRow(ctx, `
-			SELECT EXISTS (SELECT 1 FROM pass_orders WHERE claim_hash = ANY($1) AND `+passOrderKept("", "$2")+`)`,
-			hashes, now).Scan(&res.More)
+		var err error
+		res.More, err = claimsWaiting(ctx, tx, hashes, now)
+		return err
 	})
 	return res, err
 }
@@ -1871,7 +1902,8 @@ func (s *Store) claimPass(ctx context.Context, claims []passClaimant, now time.T
 // nothing comes back for it.
 //
 // An order no longer kept (passOrderKept) is deleted, as prunePasses would,
-// and nothing comes of it: an unpaid one past its deadline, and a paid one its
+// and nothing comes of it, nor of a payment Stripe reports for it afterwards,
+// which finds no order: an unpaid one past its deadline, and a paid one its
 // own term past that. A paid order is collected past its deadline until then:
 // it was paid for.
 func claimOne(ctx context.Context, tx pgx.Tx, claimHash []byte, c passCompletion) (claimResult, error) {

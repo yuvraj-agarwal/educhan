@@ -1550,11 +1550,17 @@ func TestPassOrderDeadlineIsAMidnight(t *testing.T) {
 
 // TestPassPaidAfterItsDeadlineIsKept holds a paid order to its payment: paid
 // after its deadline, or paid in time and collected late, it is still a Pass,
-// and still more to come beside another claim's. Only an order nobody paid for
-// lapses, and once it has, neither GET /api/pass nor a claim's answer counts
-// it as waiting, though nothing has deleted it yet.
+// and still more to come beside another claim's. An order nobody paid for is
+// no longer waited for past its deadline, but while a payment Stripe reports
+// for it would still count (passOrderPayable), GET /api/pass and a claim's
+// answer beside another claim's count it as something to collect, so the page
+// collects, and the claim that reaches it deletes it: a payment reported after
+// that brings nothing, and the browser is never told of one. Past that bound
+// neither counts it, though nothing has deleted it yet.
 func TestPassPaidAfterItsDeadlineIsKept(t *testing.T) {
-	p := passServer(t, nil)
+	var logs syncBuffer
+	p := passServerLogging(t, nil, &logs)
+	warnings := func() int { return strings.Count(logs.String(), "a paid Stripe checkout matched no open Pass order") }
 	session := p.checkout("")
 	p.exec(`UPDATE pass_orders SET expires_at = $1`, time.Now().Add(-time.Hour))
 	p.paid(session, "pi_paid_late")
@@ -1575,15 +1581,18 @@ func TestPassPaidAfterItsDeadlineIsKept(t *testing.T) {
 		t.Fatalf("a paid order collected after its deadline: status %d, %+v", status, out)
 	}
 
-	// An unpaid order past its deadline is nothing to collect, even before a
-	// prune or a claim deletes it.
-	p.checkout("")
+	// An unpaid order past its deadline is no longer waited for, but Stripe
+	// can still report it paid, so it is something to collect until a claim
+	// deletes it. A payment reported after that matches nothing, the owner is
+	// warned, and the browser is told there is nothing to collect, then as
+	// later.
+	session = p.checkout("")
 	if !p.reportsClaim() {
 		t.Fatal("GET /api/pass does not tell the page to collect an order inside its deadline")
 	}
 	p.exec(`UPDATE pass_orders SET expires_at = $1`, time.Now().Add(-time.Hour))
-	if p.reportsClaim() {
-		t.Fatal("GET /api/pass tells the page to collect an unpaid order past its deadline")
+	if !p.reportsClaim() {
+		t.Fatal("GET /api/pass does not tell the page to collect an unpaid order past its deadline that can still be paid")
 	}
 	if status, out := p.claim(); status != http.StatusBadRequest || out.Claim {
 		t.Fatalf("an unpaid order past its deadline: status %d, %+v", status, out)
@@ -1591,10 +1600,39 @@ func TestPassPaidAfterItsDeadlineIsKept(t *testing.T) {
 	if n := p.count("pass_orders"); n != 0 {
 		t.Fatalf("a lapsed unpaid order was kept: %d rows", n)
 	}
+	if p.reportsClaim() {
+		t.Fatal("GET /api/pass tells the page to collect the lapsed order its claim deleted")
+	}
+	warned := warnings()
+	p.paid(session, "pi_paid_after_its_claim")
+	if got := warnings() - warned; got != 1 {
+		t.Fatalf("a payment reported after the claim deleted its order was warned about %d times, want once", got)
+	}
+	if p.reportsClaim() {
+		t.Fatal("GET /api/pass tells the page to collect a payment reported after the claim deleted its order")
+	}
+	if status, out := p.claim(); status != http.StatusBadRequest || out.Claim {
+		t.Fatalf("a claim after a payment reported for the order it deleted: status %d, %+v", status, out)
+	}
 
-	// Nor is it more to come beside a paid order under another claim cookie,
-	// which a claim collects first and stops at, before it reaches the lapsed
-	// one to delete it.
+	// Past the keep it would have once paid, no payment Stripe reports for it
+	// counts, so it is nothing to collect, though nothing has deleted it yet.
+	p.checkout("")
+	p.exec(`UPDATE pass_orders SET expires_at = $1::timestamptz - make_interval(hours => 24 * days)`, time.Now().Add(-time.Hour))
+	if p.reportsClaim() {
+		t.Fatal("GET /api/pass tells the page to collect an unpaid order past the keep it would have once paid")
+	}
+	if n := p.count("pass_orders"); n != 1 {
+		t.Fatalf("%d orders, want the one past its keep still there", n)
+	}
+	if status, out := p.claim(); status != http.StatusBadRequest || out.Claim {
+		t.Fatalf("an unpaid order past the keep it would have once paid: status %d, %+v", status, out)
+	}
+
+	// Beside a paid order under another claim cookie, which a claim collects
+	// first and stops at before it reaches the lapsed one, the lapsed one is
+	// more to come, as GET /api/pass says, and the next claim, with the same
+	// nonce, deletes it and is answered with the same Pass and nothing more.
 	paid := p.otherBrowser()
 	paid.paid(paid.checkout(""), "pi_beside_a_lapsed_order")
 	paidToken, _ := paid.claimCookie()
@@ -1602,17 +1640,43 @@ func TestPassPaidAfterItsDeadlineIsKept(t *testing.T) {
 	session = lapsed.checkout("")
 	lapsedToken, _ := lapsed.claimCookie()
 	p.exec(`UPDATE pass_orders SET expires_at = $1 WHERE session_hash = $2`, time.Now().Add(-time.Hour), p.app.passSessionHash(session))
-	status, out := paid.sendingClaimCookies(paidToken, lapsedToken).claim()
-	if status != http.StatusOK || out.Status != "issued" || out.Claim {
-		t.Fatalf("a paid claim beside a lapsed one: status %d, %+v; want the Pass and nothing more to come", status, out)
+	beside := paid.sendingClaimCookies(paidToken, lapsedToken)
+	besideNonce := beside.collectNonce()
+	status, collected := beside.claimWith(besideNonce)
+	if status != http.StatusOK || collected.Status != "issued" || !collected.Claim {
+		t.Fatalf("a paid claim beside a lapsed one: status %d, %+v; want the Pass and more to come", status, collected)
 	}
-	// The claim stopped at the paid order, so the lapsed one is still there,
-	// and only its deadline keeps it out of what is waiting.
 	if n := p.count("pass_orders"); n != 1 {
 		t.Fatalf("%d orders after the paid claim, want the lapsed one still there", n)
 	}
+	if !lapsed.reportsClaim() {
+		t.Fatal("GET /api/pass does not tell the page to collect the lapsed order that can still be paid")
+	}
+	status, out := beside.claimWith(besideNonce)
+	if status != http.StatusOK || out.Status != "issued" || out.Pass != collected.Pass || out.Claim {
+		t.Fatalf("the paid claim beside a lapsed one, asked again with the same nonce: status %d, %+v; want the same Pass and nothing more", status, out)
+	}
+	if n := p.count("pass_orders"); n != 0 {
+		t.Fatalf("%d orders after the claim asked again, want the lapsed one deleted", n)
+	}
 	if lapsed.reportsClaim() {
-		t.Fatal("GET /api/pass tells the page to collect the lapsed order")
+		t.Fatal("GET /api/pass tells the page to collect the lapsed order the claim deleted")
+	}
+
+	// Past the keep it would have once paid, the lapsed one is no more to
+	// come beside a paid one.
+	paid = p.otherBrowser()
+	paid.paid(paid.checkout(""), "pi_beside_a_gone_order")
+	paidToken, _ = paid.claimCookie()
+	gone := p.otherBrowser()
+	session = gone.checkout("")
+	goneToken, _ := gone.claimCookie()
+	p.exec(`UPDATE pass_orders SET expires_at = $1::timestamptz - make_interval(hours => 24 * days) WHERE session_hash = $2`,
+		time.Now().Add(-time.Hour), p.app.passSessionHash(session))
+	status, out = paid.sendingClaimCookies(paidToken, goneToken).claim()
+	if status != http.StatusOK || out.Status != "issued" || out.Claim {
+		t.Fatalf("a paid claim beside an unpaid one past the keep it would have once paid: status %d, %+v; want the Pass and nothing more to come",
+			status, out)
 	}
 
 	// A paid order past its deadline under another claim cookie is more to
@@ -5375,10 +5439,11 @@ func TestPassPastItsGraceMonthIsGone(t *testing.T) {
 // Pass, when the right to reissue that Pass moves and while it has moved, all
 // agree. So do orders left unpaid past their deadline that Stripe reports paid
 // late, whether or not it reported one completed first with its payment still
-// clearing: while the keep each would have once paid has not ended, one
-// reported completed is held for that payment through a prune, and each is
-// marked and collected; past that, none is held or matches anything, and the
-// owner is warned, whether the prune has run first or not.
+// clearing: while the keep each would have once paid has not ended, its browser
+// is told it has something to collect, one reported completed is held for that
+// payment through a prune, and each is marked and collected; past that, none
+// is waiting, held or matched by anything, and the owner is warned, whether the
+// prune has run first or not.
 func TestPassOrderPastItsKeepIsGone(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -5507,10 +5572,15 @@ func TestPassOrderPastItsKeepIsGone(t *testing.T) {
 				t.Errorf("reported paid again: %v, %v", outcome, err)
 			}
 
-			// Reported paid with nothing before, so held by nothing, the ninth
-			// is marked and collected inside the keep it would have once paid,
+			// Left unpaid, the ninth is something for its browser to collect
+			// inside the keep it would have once paid, since Stripe can still
+			// report it paid, and nothing past it. Reported paid with nothing
+			// before, so held by nothing, it is marked and collected inside,
 			// with no warning; past it, it matches nothing and the owner is
 			// warned.
+			if got := late.reportsClaim(); got == c.past {
+				t.Errorf("left unpaid past its deadline, GET /api/pass says there is something to collect: %v", got)
+			}
 			warned := warnings()
 			late.paid(lateSession, "pi_late")
 			if got := warnings() - warned; got != map[bool]int{false: 0, true: 1}[c.past] {
@@ -5616,8 +5686,9 @@ func TestPassOrderPastItsKeepIsGone(t *testing.T) {
 }
 
 // TestPassUnpaidOrderIsPayableUntilItsKeepEnds holds marking an unpaid order
-// paid (markPassOrderPaid), holding it for a slow payment (holdPassOrder) and
-// counting it as a renewal under way (renewalUnderWay) to their one bound
+// paid (markPassOrderPaid), holding it for a slow payment (holdPassOrder),
+// counting it as a renewal under way (renewalUnderWay) and counting it as
+// something for its browser to collect (passClaimWaiting) to their one bound
 // (passOrderPayable) to the microsecond, where TestPassOrderPastItsKeepIsGone
 // and TestPassReissueWaitsForARenewalUnderWay hold them to an hour either side
 // of it: each takes an unpaid order past its deadline a microsecond before the
@@ -5635,7 +5706,10 @@ func TestPassUnpaidOrderIsPayableUntilItsKeepEnds(t *testing.T) {
 		t.Fatalf("the onlooker's renewal is the origin %q, want moved", got)
 	}
 	renewal := p.app.passSessionHash(p.checkout(bought.Pass))
-	purchase := p.app.passSessionHash(p.otherBrowser().checkout(""))
+	buyer := p.otherBrowser()
+	purchase := p.app.passSessionHash(buyer.checkout(""))
+	buyerToken, _ := buyer.claimCookie()
+	buyerClaim := [][]byte{hashToken(buyerToken)}
 
 	// Both are past their deadline, with the keep each would have once paid
 	// ending in an hour, at end.
@@ -5675,6 +5749,9 @@ func TestPassUnpaidOrderIsPayableUntilItsKeepEnds(t *testing.T) {
 		}
 		if got, _ := kept(renewal); c.inside && !got.Equal(held) || !c.inside && !got.Equal(deadline) {
 			t.Errorf("held for a slow payment %s, the renewal's deadline is %v, from %v; want it held %v", c.name, got, deadline, c.inside)
+		}
+		if waiting, err := p.app.store.passClaimWaiting(ctx, buyerClaim, c.now); err != nil || waiting != c.inside {
+			t.Errorf("the purchase counted as something for its browser to collect %s: %v, %v; want %v", c.name, waiting, err, c.inside)
 		}
 		outcome, err := p.app.store.markPassOrderPaid(ctx, purchase, p.app.passPaymentHash("pi_purchase"), c.now)
 		if err != nil || outcome != map[bool]paidOutcome{false: paidUnmatched, true: paidRecorded}[c.inside] {
@@ -5868,30 +5945,43 @@ func TestPassReissueSurvivesAFailedClaimRead(t *testing.T) {
 }
 
 // TestPassReissueReadsTheClaimAfterIt holds the "claim" a reissue code's answer
-// carries to the clock as that is read, after the reissue, not to the one the
-// reissue read before it waited for the Pass lock: an unpaid order whose
-// deadline passes while the reissue waits is nothing to collect, as GET
-// /api/pass then says too.
+// carries to what GET /api/pass says (passClaimWaiting), by the clock as that
+// is read, after the reissue, not the one the reissue read before it waited
+// for the Pass lock: an unpaid order past its deadline is something to collect
+// while Stripe can still report it paid (passOrderPayable), and once the keep
+// it would have once paid ends while the reissue waits, it is nothing to
+// collect, as GET /api/pass then says too.
 func TestPassReissueReadsTheClaimAfterIt(t *testing.T) {
 	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
+	p.buy("pi_not_waited_for")
+	_, _, first := p.reissueCode("mod-key", "pi_not_waited_for")
 	p.buy("pi_waited_for")
 	_, _, code := p.reissueCode("mod-key", "pi_waited_for")
-	// The browser that types the code has a purchase of its own waiting,
-	// whose deadline passes while the reissue waits for the lock.
+	// The browser that types the codes has a purchase of its own left unpaid
+	// past its deadline, and the keep it would have once paid ends while the
+	// second reissue waits for the lock.
 	p.checkout("")
-	deadline := time.Now().Add(time.Second)
-	p.exec(`UPDATE pass_orders SET expires_at = $1`, deadline)
+	end := time.Now().Add(2 * time.Second)
+	p.exec(`UPDATE pass_orders SET expires_at = $1::timestamptz - make_interval(hours => 24 * days)`, end)
 	if !p.reportsClaim() {
 		t.Fatal("the browser has no purchase waiting; the test proves nothing")
+	}
+	nonce, err := randomToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, out := p.redeemWith(first, nonce); status != http.StatusOK || out.Status != "issued" || !passCodeShape(out.Pass) || !out.Claim {
+		t.Fatalf("a reissue beside a purchase left unpaid past its deadline that can still be paid: status %d, %+v; want the new code and the claim",
+			status, out)
 	}
 	lock := p.holdPassLock()
 	answer := p.fire(p.request("/api/pass/claim", map[string]any{"reissue": code, "nonce": p.collectNonce()}, nil))
 	lock.queued(1, "the reissue")
-	time.Sleep(time.Until(deadline) + 100*time.Millisecond)
+	time.Sleep(time.Until(end) + 100*time.Millisecond)
 	lock.release()
 	r := <-answer
 	if r.err != nil || r.status != http.StatusOK || r.body.Status != "issued" || !passCodeShape(r.body.Pass) || r.body.Claim {
-		t.Fatalf("a reissue that waited past the deadline of the purchase beside it: status %d, %v, %+v; want the new code and no claim",
+		t.Fatalf("a reissue that waited past the keep the purchase beside it would have once paid: status %d, %v, %+v; want the new code and no claim",
 			r.status, r.err, r.body)
 	}
 	if p.reportsClaim() {

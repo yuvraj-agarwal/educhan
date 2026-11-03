@@ -1002,20 +1002,27 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   decides what to do with it holds it to `passOrderKept` (a claim, a reissue code made or
   redeemed, a refund, Stripe reporting it paid again, and counting it as waiting or as a
   renewal under way, for example), so the prune only frees its row
-  (`TestPassOrderPastItsKeepIsGone`). An unpaid order has gone too once that term has
-  passed since its deadline, pruned yet or not: marking it paid, holding it for a slow
-  payment and counting it as a renewal under way all hold it to `passOrderPayable`, one
-  bound, which ends where a paid order's keep does, so none of them takes an order the
-  others have let go (`TestPassOrderPastItsKeepIsGone`,
+  (`TestPassOrderPastItsKeepIsGone`). An unpaid order is no longer waited for past its
+  deadline, and goes when something deletes it, the next prune or a claim from its own
+  browser (`claimOne`), say, which the Pass page sends while `GET /api/pass` counts the
+  order as something to collect; a payment Stripe reports after that finds nothing, and
+  the owner is warned. It has gone too once that term has passed since its deadline,
+  pruned yet or not: marking it paid, holding it for a slow payment, counting it as a
+  renewal under way and counting it as something for its browser to collect
+  (`passClaimWaiting`, and what `claimPass` answers is left) all hold it to
+  `passOrderPayable`, one bound, which ends where a paid order's keep does, so none of
+  them takes an order the others have let go, and once nothing is left to collect under a
+  claim, nothing can come under it later (`TestPassOrderPastItsKeepIsGone`,
   `TestPassReissueWaitsForARenewalUnderWay`,
-  `TestPassUnpaidOrderIsPayableUntilItsKeepEnds`). Anything new that reads a paid order,
-  or decides what to do with an unpaid one past its deadline, must do the same. A reissue
-  code's deadline never runs past what it is for as that stands when the code is made: a
-  week, the end of its order's keep, or the moment its Pass would be a month past its
-  expiry, whichever comes first; a renewal afterwards does not move it, and a Pass ended
-  sooner by a refund or dispute of another of its payments leaves the code giving nothing
-  (`TestPassReissueCodeOutlivesNothing`). `TestPassIsNeverStoredOrLogged`,
-  `TestPassTablesCannotBeJoinedToPosts` and `TestPassSharesOneHourlyBudget` hold it there.
+  `TestPassUnpaidOrderIsPayableUntilItsKeepEnds`, `TestPassPaidAfterItsDeadlineIsKept`).
+  Anything new that reads a paid order, or decides what to do with an unpaid one past its
+  deadline, must do the same. A reissue code's deadline never runs past what it is for as
+  that stands when the code is made: a week, the end of its order's keep, or the moment
+  its Pass would be a month past its expiry, whichever comes first; a renewal afterwards
+  does not move it, and a Pass ended sooner by a refund or dispute of another of its
+  payments leaves the code giving nothing (`TestPassReissueCodeOutlivesNothing`).
+  `TestPassIsNeverStoredOrLogged`, `TestPassTablesCannotBeJoinedToPosts` and
+  `TestPassSharesOneHourlyBudget` hold it there.
 - **Bump order only.** The index and the catalog list stickies, then threads by their
   last bump, and nothing else moves a thread: no "popular", "trending" or "hot", and no
   ranking by views, likes, replies or images, because ranking by popularity is what

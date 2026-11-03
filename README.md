@@ -386,23 +386,29 @@ its Pass by the order's own term, and anything else makes a new Pass, as does
 a renewal whose Pass has gone meanwhile. `GET /api/pass` says whether the
 claim has anything left to collect, which the page cannot see for itself (the
 cookie is `HttpOnly`), so the page collects on every visit until nothing is
-left under it. Collecting is safe to repeat: the page draws a random nonce for
-each collection and sends it with every claim, and the code is derived from
-the claim and the nonce together with the server's secret. A claim whose
-answer was lost after the server committed it, to a closed tab or a dropped
-connection, is asked again with the same cookie and nonce and given the same
-code. The page keeps the nonce in `localStorage` until an answer says nothing
-more is waiting; the server keeps neither the nonce nor the code, only the
-code's HMAC. Neither half is worth anything alone: the nonce with any other
-cookie, or the cookie without its nonce, gets nothing that has been handed
-over already, and a Pass refunded away or given a new code by a reissue is
-under no code a retry can ask for. A renewal that renews its Pass hands over
-no code, and nothing is kept to answer it again from, so its claim asked again
-answers `400`, as for a browser with nothing to collect; the renewal is on the
-Pass all the same. So when a claim the page asks again with a kept nonce is
-refused, the page checks the code it holds (`/api/pass/activate`), stores the
-date the server gives and, if it moved on, says the Pass is now good until
-then, without saying where the time came from, which it cannot know.
+left under it. An order is left to collect while it can still bring a Pass:
+paid, while it is kept, and unpaid, past its deadline too, while a payment
+Stripe reports for it would still count (below). A claim waits for an unpaid
+order inside its deadline and deletes one past it, so a payment reported after
+that finds nothing; so once `GET /api/pass` or a claim's answer finds nothing
+left, nothing can come under the claim later. Collecting is safe to repeat:
+the page draws a random nonce for each collection and sends it with every
+claim, and the code is derived from the claim and the nonce together with the
+server's secret. A claim whose answer was lost after the server committed it,
+to a closed tab or a dropped connection, is asked again with the same cookie
+and nonce and given the same code. The page keeps the nonce in `localStorage`
+until an answer says nothing more is waiting; the server keeps neither the
+nonce nor the code, only the code's HMAC. Neither half is worth anything
+alone: the nonce with any other cookie, or the cookie without its nonce, gets
+nothing that has been handed over already, and a Pass refunded away or given a
+new code by a reissue is under no code a retry can ask for. A renewal that
+renews its Pass hands over no code, and nothing is kept to answer it again
+from, so its claim asked again answers `400`, as for a browser with nothing to
+collect; the renewal is on the Pass all the same. So when a claim the page
+asks again with a kept nonce is refused, the page checks the code it holds
+(`/api/pass/activate`), stores the date the server gives and, if it moved on,
+says the Pass is now good until then, without saying where the time came from,
+which it cannot know.
 
 `POST /api/pass/claim` with `{"forget": true}` drops the browser's claim, for a
 shared computer: its order moves under a random hash nobody holds, and the
@@ -490,17 +496,19 @@ that forget's request went. Every other checkout answered after a forget pressed
 since its request went keeps no claim past it, and a checkout pressed after the
 forget holds the cookie and is never dropped for it.
 
-An order nobody paid for goes at its deadline, or as soon as Stripe reports its
-checkout expired or its payment failed, or reports it paid with a payment
-already refunded. A checkout completed with a payment that takes days to clear,
-a bank debit say, is held for 30 days from when Stripe's report of it arrives,
-to the next midnight UTC. The claim cookie lasts that long when the report
-arrives as the checkout completes; one Stripe delivers late, on a retry, can
-hold the order past the cookie, by at most as long as it was late, rounded up to
-whole days, and its buyer then collects it with a reissue code. A payment
-confirmed after its order's deadline still counts while the unpaid order is
-kept, which is only until the next prune (a checkout, the daily sweep, or a
-claim from its own browser), and never once the order's own term has passed
+An order nobody paid for is no longer waited for once its deadline has passed,
+and goes as soon as Stripe reports its checkout expired or its payment failed,
+or reports it paid with a payment already refunded. A checkout completed with a
+payment that takes days to clear, a bank debit say, is held for 30 days from
+when Stripe's report of it arrives, to the next midnight UTC. The claim cookie
+lasts that long when the report arrives as the checkout completes; one Stripe
+delivers late, on a retry, can hold the order past the cookie, by at most as
+long as it was late, rounded up to whole days, and its buyer then collects it
+with a reissue code. A payment confirmed after its order's deadline still counts
+while the unpaid order is there, which is only until the next prune (a checkout
+or the daily sweep) or a claim from its own browser, which the Pass page sends
+the next time it is opened there, since `GET /api/pass` counts the order as
+something to collect (above), and never once the order's own term has passed
 since its deadline, pruned yet or not, when a late report of a payment still
 clearing no longer holds it either. After that the "paid" event matches nothing,
 and the log warns that a paid Stripe checkout matched no open Pass order,
@@ -1584,9 +1592,9 @@ that overwrites the header with just the peer address are each a single hop.
 | `GET` | `/api/verify` | Whether verification is configured — `{"enabled"}`. It does not read your credential |
 | `POST` | `/api/verify/request` | Email a code — `{"email","adult"}`; `"adult"` must be `true` |
 | `POST` | `/api/verify/confirm` | Exchange a code for a credential — `{"code"}`; returns `{"credential","label","expires_at"}` |
-| `GET` | `/api/pass` | Whether the Pass is on sale — `{"enabled","days","hourly_posts","price":{"amount","currency","exponent"},"tax","paused","claim"}`, or `{"enabled":false}` without it. `"amount"` is the Price's own, a whole number of the currency's smallest unit, and `"exponent"` the decimals that unit stands for in Stripe's own table, not the browser's: `0` for JPY, `3` for BHD, and `2` for most, ISK and UGX among them, so `{"amount":300000,"currency":"isk","exponent":2}` is 3,000 ISK. `"tax"` is there only beside the price and with `EDUCHAN_STRIPE_AUTOMATIC_TAX` on: `"included"` when the Price has the tax in its amount (`tax_behavior` `inclusive`), `"added"` when Stripe adds it at checkout (`exclusive`); `price` is left out when Stripe can't be asked for the Price, refuses the request for the Price (a key or Price ID it does not take, say), or answers with a Price that is archived, recurring, without a fixed amount, priced in other currencies too (its `currency_options`), or, with Stripe Tax on, neither `inclusive` nor `exclusive`, until Stripe is asked again a minute later, and while sales are paused; `"paused":true` only while they are; and `"claim":true` only when a claim cookie the browser sends has something under it to collect |
+| `GET` | `/api/pass` | Whether the Pass is on sale — `{"enabled","days","hourly_posts","price":{"amount","currency","exponent"},"tax","paused","claim"}`, or `{"enabled":false}` without it. `"amount"` is the Price's own, a whole number of the currency's smallest unit, and `"exponent"` the decimals that unit stands for in Stripe's own table, not the browser's: `0` for JPY, `3` for BHD, and `2` for most, ISK and UGX among them, so `{"amount":300000,"currency":"isk","exponent":2}` is 3,000 ISK. `"tax"` is there only beside the price and with `EDUCHAN_STRIPE_AUTOMATIC_TAX` on: `"included"` when the Price has the tax in its amount (`tax_behavior` `inclusive`), `"added"` when Stripe adds it at checkout (`exclusive`); `price` is left out when Stripe can't be asked for the Price, refuses the request for the Price (a key or Price ID it does not take, say), or answers with a Price that is archived, recurring, without a fixed amount, priced in other currencies too (its `currency_options`), or, with Stripe Tax on, neither `inclusive` nor `exclusive`, until Stripe is asked again a minute later, and while sales are paused; `"paused":true` only while they are; and `"claim":true` only when a claim cookie the browser sends has something under it to collect: an order that can still bring a Pass, which an unpaid one past its deadline still can while a payment Stripe reports for it would count, until a claim deletes it, so without `"claim"` nothing can come under those cookies later |
 | `POST` | `/api/pass/checkout` | Start a purchase — `{"adult","renew"}`; `"adult"` must be `true`, `"renew"` is an existing code to extend. Returns `{"url","order"}`, a page on `checkout.stripe.com` and the order's name, a hash of the claim that collects nothing, signed with `EDUCHAN_PASS_SECRET`, and sets a new claim cookie with only this order under it; `400` without `"adult": true`; `403 {"pass":"invalid"}` when the code to renew is not a Pass code, is unknown or is past its month of grace, before any cooldown starts; `403 {"error":"the Pass is not on sale right now"}` while sales are paused; `503 {"error":"the Pass can't be bought right now"}` when the Price is archived, recurring, without a fixed amount or priced in other currencies too, or, with Stripe Tax on, neither `inclusive` nor `exclusive`, or when Stripe refuses the request for the Price (a key or Price ID it does not take, say), and `502` while Stripe is out of reach or failing when asked for the Price, with Stripe Tax on or off, each before any cooldown starts or anything is opened in Stripe; `429` with `Retry-After` inside `EDUCHAN_PASS_COOLDOWN`; `502` when Stripe fails to open the session, after the cooldown has started, so asking again at once gets `429`; `409 {"pass":"invalid"}` when the Pass to renew was refunded, ran a month past its expiry or was given another code by a reissue while Stripe was opening the session, which the order checks by the clock once Stripe has answered |
-| `POST` | `/api/pass/claim` | Collect the order under the claim cookie once it is paid, one order an answer under each claim cookie the browser sends — `{"nonce"}`, 16 random bytes in base64url that the page draws for each collection and sends with every claim until an answer says nothing more is waiting (`"claim":false`); the code is derived from the cookie and the nonce together. Answers `{"status":"issued","pass","expires_at","claim"}` when a Pass was made, and the same code again when asked again with the same cookie and nonce; else `{"status":"renewed","expires_at","claim"}`, else `202 {"status":"pending","claim":true}` while the order waits for Stripe; `400` when nothing is left, which is also the answer to a renewal's claim asked again after renewing its Pass, since renewing hands over no code. `"claim"` says whether anything still waits. With `{"reissue":"…","nonce"}`, a reissue code (`REISSUE-…`, in either case, with or without the word and the dashes), it redeems the reissue code instead, answering the same way, with the same Pass code when asked again with the same nonce, or `403 {"pass":"invalid"}` for one used, run out or cancelled, which a renewal's is when asked again after renewing its Pass, or `409` for one whose right moved, while its Pass is being renewed, which leaves it unspent. With `{"forget":true}` it drops what is under every claim cookie the browser sends and clears the one the server set — `{"status":"forgotten","claim":false}`; with `{"forget":true,"order"}`, the name a checkout's answer gave its order, it drops what is under that checkout's claim alone, reading no cookie and clearing none — `{"status":"forgotten"}` — and answers `400` for a name not shaped as one or not signed by the server, `200` for one with nothing under it, and `400` for an `"order"` without `"forget"` |
+| `POST` | `/api/pass/claim` | Collect the order under the claim cookie once it is paid, one order an answer under each claim cookie the browser sends — `{"nonce"}`, 16 random bytes in base64url that the page draws for each collection and sends with every claim until an answer says nothing more is waiting (`"claim":false`); the code is derived from the cookie and the nonce together. Answers `{"status":"issued","pass","expires_at","claim"}` when a Pass was made, and the same code again when asked again with the same cookie and nonce; else `{"status":"renewed","expires_at","claim"}`, else `202 {"status":"pending","claim":true}` while the order waits for Stripe; `400` when nothing is left, which is also the answer to a renewal's claim asked again after renewing its Pass, since renewing hands over no code. `"claim"` says whether anything still waits, counted as `GET /api/pass` counts it. With `{"reissue":"…","nonce"}`, a reissue code (`REISSUE-…`, in either case, with or without the word and the dashes), it redeems the reissue code instead, answering the same way, with the same Pass code when asked again with the same nonce, or `403 {"pass":"invalid"}` for one used, run out or cancelled, which a renewal's is when asked again after renewing its Pass, or `409` for one whose right moved, while its Pass is being renewed, which leaves it unspent. With `{"forget":true}` it drops what is under every claim cookie the browser sends and clears the one the server set — `{"status":"forgotten","claim":false}`; with `{"forget":true,"order"}`, the name a checkout's answer gave its order, it drops what is under that checkout's claim alone, reading no cookie and clearing none — `{"status":"forgotten"}` — and answers `400` for a name not shaped as one or not signed by the server, `200` for one with nothing under it, and `400` for an `"order"` without `"forget"` |
 | `POST` | `/api/pass/activate` | Check a code — `{"pass"}`; returns `{"pass","expires_at"}`. A code that has run out is refused with `403 {"pass":"expired","code","expires_at"}` until a month past its expiry, and from then on, like an unknown one, with `403 {"pass":"invalid"}`. One check per address every 2 seconds, `429` otherwise |
 | `POST` | `/api/pass/stripe-webhook` | Stripe's signed events: `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `checkout.session.expired`, `charge.refunded`, `charge.dispute.created` |
 | `POST` | `/api/pass/reissue` | Moderation key: a one-time reissue code that gives a lost Pass a new code — `{"payment_intent":"pi_…"}`; returns `{"code","expires_at"}`, the code being `REISSUE` and seven groups of four letters and digits, for the owner to send on, and `expires_at` its deadline: a week, to the next midnight UTC, or sooner if what it is for goes sooner (a paid order its own term past its deadline, a Pass a month past its expiry as it stands when the code is made, which a renewal afterwards does not move); `404` for a payment that has nothing left to reissue: it bought nothing, it was refunded or disputed, or what it bought has gone, such as a Pass a month past its expiry, one ended by a refund or dispute of another of its payments, or a paid order nobody collected for its own term past its deadline; `409` for a collected renewal's payment (use the purchase's, or, if that was refunded or disputed, the one renewal that then paid for all the time left, until the Pass is renewed again), and for any payment of a Pass that cannot be reissued, because its purchase was refunded or disputed and no one payment left pays for all its time, or because a renewal of the Pass is under way when the right has moved. A purchase or a renewal paid and never collected is reissued too, and its reissue code collects it: a renewal's renews the Pass it was for, with no code, or makes a new Pass and hands over its code if that one has gone (refunded or disputed away, or a month past its expiry) |
