@@ -1061,6 +1061,64 @@ func TestALostSpendStartsNoCooldown(t *testing.T) {
 	})
 }
 
+// A lookup or a spend of an answer that fails is the server's error, not a
+// refusal of the answer: either is answered 500 "could not check the captcha",
+// with no captcha reason and no spent header, and starts no cooldown, so the
+// client keeps its answer (captchaSpentHeader) and the same answer posts once
+// the database is back. The table renamed away fails the lookup, and a trigger
+// that raises fails the spend, which the lookup, now finding the answer
+// unspent, and flood control, which the failed lookup came before, let the
+// post through to.
+func TestAFailedCaptchaLookupOrSpendKeepsTheAnswer(t *testing.T) {
+	var logs syncBuffer
+	h := testServerLogging(t, withCaptcha(func(cfg *Config) { cfg.ThreadCooldown = time.Hour }), &logs)
+	h.addBoard("general")
+	path := "/api/boards/general/threads"
+	answer := h.solveCaptcha()
+	failed := func(what, logged string) {
+		t.Helper()
+		before := len(logs.String())
+		status, refused := h.attempt(path, map[string]any{"body": "held up", "captcha": answer})
+		if status != http.StatusInternalServerError || refused.Error != "could not check the captcha" || refused.Captcha != "" {
+			t.Fatalf("%s: status %d, captcha %q (%s), want 500 could not check the captcha, no reason",
+				what, status, refused.Captcha, refused.Error)
+		}
+		if got := h.lastHeader.Get(captchaSpentHeader); got != "" {
+			t.Errorf("%s: spent header %q, want none: the answer is kept", what, got)
+		}
+		if !strings.Contains(logs.String()[before:], logged) {
+			t.Errorf("%s: the log does not say %q failed:\n%s", what, logged, logs.String()[before:])
+		}
+	}
+
+	restore := func() { h.exec(`ALTER TABLE IF EXISTS captcha_spent_away RENAME TO captcha_spent`) }
+	t.Cleanup(restore)
+	h.exec(`ALTER TABLE captcha_spent RENAME TO captcha_spent_away`)
+	failed("a post whose lookup failed", "look up spent captcha")
+	restore()
+
+	h.exec(`CREATE FUNCTION refuse_spend() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN RAISE EXCEPTION 'no spend'; END $$`)
+	h.exec(`CREATE TRIGGER refuse_spend BEFORE INSERT ON captcha_spent FOR EACH ROW EXECUTE FUNCTION refuse_spend()`)
+	failed("a post whose spend failed", "spend captcha")
+	h.exec(`DROP TRIGGER refuse_spend ON captcha_spent`)
+	if n := h.countRows("captcha_spent"); n != 0 {
+		t.Fatalf("captcha_spent holds %d rows after the failed spend, want none", n)
+	}
+
+	var created createdPost
+	if status := h.post(path, map[string]any{"body": "through", "captcha": answer}, &created); status != http.StatusCreated ||
+		h.lastHeader.Get(captchaSpentHeader) != "spent" {
+		t.Fatalf("the kept answer once the database is back: status %d (%s), spent header %q; want 201 saying it was spent",
+			status, created.Error, h.lastHeader.Get(captchaSpentHeader))
+	}
+	// The cooldown neither failure started is real: the post that went
+	// through started it.
+	if status, refused := h.attempt(path, map[string]any{"body": "again", "captcha": h.solveCaptcha()}); status != http.StatusTooManyRequests {
+		t.Errorf("a fresh answer after the post: status %d (%s), want 429 from the cooldown it started", status, refused.Error)
+	}
+}
+
 func TestCaptchaRefusalReasons(t *testing.T) {
 	for _, tc := range []struct {
 		err    error
