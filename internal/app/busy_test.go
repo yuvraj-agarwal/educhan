@@ -1133,6 +1133,105 @@ func TestABodyOverALongRoundTripIsTaken(t *testing.T) {
 	}
 }
 
+// A body under way took room for the rest of itself in one ask and then, in
+// another, room for its start a second time, holding the first while it
+// waited for the second. Eight honest 8 MiB posts whose rests were granted
+// together, as room other uploads had held came free, then held the whole
+// budget between them, each waiting for its copy, and nothing was read until
+// the first of them gave up, ten seconds after its handler started: it was
+// answered 503, and every other image post on the server waited behind them.
+// The rest and the copy are one ask (bodyRoom.takeRest), so a body granted
+// room for them asks for none more and goes on.
+func TestBodiesUnderWayDoNotWaitOnEachOthersRoom(t *testing.T) {
+	h := testServer(t, func(cfg *Config) { cfg.TrustedProxyHops = 1 })
+	h.addBoard("general")
+	const (
+		declared = 8 << 20
+		bodies   = int(media.UploadBudget / declared)
+		other    = 50 << 20 // held by other uploads until the bodies are under way
+	)
+	admit := int(admitBytes(declared))
+	awaitBudgetFree(t, media.UploadBudget)
+	var clients []string
+	for i := 1; i <= bodies; i++ {
+		clients = append(clients, "203.0.113."+strconv.Itoa(i))
+	}
+	drainShares(t, h, clients...)
+	held, ok := media.TryReserveUpload(other)
+	if !ok {
+		t.Fatalf("hold %d bytes of a free upload budget: refused", other)
+	}
+	var once sync.Once
+	free := func() { once.Do(held) }
+	t.Cleanup(free)
+
+	// Each body sends all but the last byte of its first eighth, holding room
+	// for that eighth, and then that byte, under way: with the other uploads'
+	// room and the eighths held, too little is free for the rest of any of
+	// them, and each waits for it.
+	forms := make([][]byte, bodies)
+	conns := make([]*idleBody, bodies)
+	for i, client := range clients {
+		image := pngBytes(t, 32, 32)
+		probe := boundForm(t, 1000, client, image)
+		forms[i] = boundForm(t, 1000+declared-len(probe), client, image)
+		if len(forms[i]) != declared {
+			t.Fatalf("body %d is %d bytes, want %d", i, len(forms[i]), declared)
+		}
+		conns[i] = rawUpload(t, h.base, client, declared, false)
+		if _, err := conns[i].conn.Write(forms[i][:admit-1]); err != nil {
+			t.Fatalf("send the start of body %d: %v", i, err)
+		}
+		awaitShare(t, h, client, int64(admit))
+	}
+	for i := range conns {
+		if _, err := conns[i].conn.Write(forms[i][admit-1 : admit]); err != nil {
+			t.Fatalf("send the last byte of body %d's first eighth: %v", i, err)
+		}
+	}
+	waiting := func() int {
+		h.app.uploadShares.mu.Lock()
+		defer h.app.uploadShares.mu.Unlock()
+		return len(h.app.uploadShares.waiting)
+	}
+	for deadline := time.Now().Add(5 * time.Second); waiting() != bodies; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d of %d bodies under way wait for room, want all of them", waiting(), bodies)
+		}
+	}
+
+	// The other uploads are answered, and the bodies are sent on at full
+	// speed.
+	start := time.Now()
+	free()
+	for i := range conns {
+		go func(i int) { _, _ = conns[i].conn.Write(forms[i][admit:]) }(i)
+	}
+	type answer struct {
+		status int
+		text   string
+		took   time.Duration
+	}
+	answers := make([]answer, bodies)
+	var wg sync.WaitGroup
+	for i := range conns {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			status, text := conns[i].answer(t, 30*time.Second)
+			answers[i] = answer{status, text, time.Since(start)}
+		}(i)
+	}
+	wg.Wait()
+	for i, a := range answers {
+		if a.status != http.StatusCreated {
+			t.Errorf("body %d, once the other uploads' room came free: status %d (%s) after %v, want 201",
+				i, a.status, a.text, a.took)
+		}
+	}
+	awaitBudgetFree(t, media.UploadBudget)
+}
+
 // trickle sends body in pieces of at most size bytes with pause after each,
 // as chunks if the body was declared no length, leaving the body open, and
 // reports whether all of it went. It stops early once the server has answered

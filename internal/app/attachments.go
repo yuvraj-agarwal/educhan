@@ -23,8 +23,8 @@ import (
 // for MIME headers and the text fields sharing the request body.
 const multipartOverhead = 1 << 20
 
-// clientUploadShare is the most of the upload budget (media.UploadBudget)
-// the bodies of one client's posts may hold at once: half of it. A body holds
+// clientUploadShare is the most of the upload budget (media.UploadBudget) the
+// bodies of one client's posts may hold at once: half of it. A body holds
 // room for about what it has sent until an eighth of it has arrived, then for
 // all of it, from before most of it is read until its post is answered
 // (admitBody), and a post whose body never arrives whole never reaches flood
@@ -32,9 +32,14 @@ const multipartOverhead = 1 << 20
 // few connections that send an eighth of large bodies and stop, turn every
 // other image post away as busy, and be charged nothing for it but those
 // bytes. Half is one upload of the largest size the server may be configured
-// to take (maxUploadLimit and its multipartOverhead), and three at the default
-// limit: more than one client can post at once, the upload cooldown being per
-// client across the server.
+// to take (maxUploadLimit and its multipartOverhead), and three at the
+// default limit: more than one client can post at once, the upload cooldown
+// being per client across the server. The share counts a body once, though
+// the budget holds its first eighth a second time until the form has been
+// read (bodyRoom.takeRest): nine eighths of a body, so that the budget reads
+// seven bodies at once at the default limit, and one at the largest, beside
+// which a second waits for room for all of itself until the first has been
+// answered.
 const clientUploadShare = media.UploadBudget / 2
 
 // errUploadShare is a post refused because its client's other posts hold
@@ -284,14 +289,14 @@ type bodyRoom struct {
 	copy  func()   // gives back the room for the body's start a second time
 }
 
-// reserve takes shared bytes of the client's share and n of the upload
-// budget, as reserveUpload does, and moves the body's window on by as long as
-// that took.
-func (h *bodyRoom) reserve(shared, n int64) (func(), error) {
+// reserve takes n bytes of the client's share and of the upload budget, and
+// extra bytes more of the budget in the same ask, as reserveUpload does, and
+// moves the body's window on by as long as that took.
+func (h *bodyRoom) reserve(n, extra int64) (give, giveExtra func(), err error) {
 	asked := time.Now()
-	give, err := h.a.reserveUpload(h.ctx, h.r, shared, n)
+	give, giveExtra, err = h.a.reserveUpload(h.ctx, h.r, n, extra)
 	h.pace.pause(time.Since(asked))
-	return give, err
+	return give, giveExtra, err
 }
 
 // take takes n bytes more of room for the body.
@@ -299,7 +304,7 @@ func (h *bodyRoom) take(n int64) error {
 	if n <= 0 {
 		return nil
 	}
-	give, err := h.reserve(n, n)
+	give, _, err := h.reserve(n, 0)
 	if err != nil {
 		return err
 	}
@@ -308,21 +313,28 @@ func (h *bodyRoom) take(n int64) error {
 	return nil
 }
 
-// takeCopy takes n bytes of the upload budget, and none of the client's
-// share, for the start of the body that admitBody read into memory, which
-// the read of the form copies into the image's buffer (readMultipart): until
-// that read is over, the start is in memory twice, and the image's buffer
-// is what the rest of the body's room is for.
-func (h *bodyRoom) takeCopy(n int64) error {
-	give, err := h.reserve(0, n)
+// takeRest takes room for the rest of the body, rest bytes, and in the same
+// ask buffered bytes of the upload budget, and none of the client's share,
+// for the start of the body that admitBody read into memory, which the read
+// of the form copies into the image's buffer (readMultipart): until that read
+// is over, the start is in memory twice, and the image's buffer is what the
+// body's room is for. Once it has that room the body asks for none more, so
+// it never holds room while it waits for more: taken in an ask of its own
+// after the rest, the copy let bodies whose rests were granted together hold
+// the whole budget between them, each waiting for its copy, until the first
+// of them gave up.
+func (h *bodyRoom) takeRest(rest, buffered int64) error {
+	give, giveCopy, err := h.reserve(max(rest, 0), buffered)
 	if err != nil {
 		return err
 	}
-	h.copy = give
+	h.gives = append(h.gives, give)
+	h.held += max(rest, 0)
+	h.copy = giveCopy
 	return nil
 }
 
-// releaseCopy gives back the room takeCopy took, once the form has been read.
+// releaseCopy gives back the room for the copy, once the form has been read.
 func (h *bodyRoom) releaseCopy() {
 	if h.copy != nil {
 		h.copy()
@@ -339,15 +351,18 @@ func (h *bodyRoom) release() {
 	h.gives, h.held = nil, 0
 }
 
-// admitBody reads the start of a multipart post's body, with uploads on,
-// into memory, taking room for it in the upload budget as it comes (room),
-// until the body is under way, admitBytes of it, an eighth, having arrived;
-// then it takes room for the rest, the body's declared size (size) in all,
-// which the read of the form fills (readMultipart, whose buffer for the image
-// is the size of what is left of the body). It takes room a piece at a time,
-// each before it reads into it: first for the buffer the body's first read
-// began (startBody), uploadHeadBytes, and then each piece as large as all
-// before it, so a body that stops holds at most twice what it has sent.
+// admitBody reads the start of a multipart post's body, with uploads on, into
+// memory, taking room for it in the upload budget as it comes (room), until
+// the body is under way, admitBytes of it, an eighth, having arrived; then it
+// takes room for the rest, the body's declared size (size) in all, which the
+// read of the form fills (readMultipart, whose buffer for the image is the
+// size of what is left of the body), and in the same ask room for what it has
+// read into memory a second time, until the form has been read
+// (bodyRoom.takeRest), so that a body under way holds about nine eighths of
+// its size of the budget, and asks for no more. It takes room a piece at a
+// time, each before it reads into it: first for the buffer the body's first
+// read began (startBody), uploadHeadBytes, and then each piece as large as
+// all before it, so a body that stops holds at most twice what it has sent.
 //
 // Room taken for the whole of a body that has sent only its first bytes cost
 // the sender nothing to hold: answered upload too slow once its grace ran
@@ -394,11 +409,7 @@ func (a *App) admitBody(b *bufferedBody, room *bodyRoom, size int64) (away, fail
 	if b.err != nil && b.err != io.EOF {
 		return nil, b.err
 	}
-	buffered := room.held
-	if err := room.take(size - room.held); err != nil {
-		return err, nil
-	}
-	if err := room.takeCopy(buffered); err != nil {
+	if err := room.takeRest(size-room.held, room.held); err != nil {
 		return err, nil
 	}
 	return nil, nil
@@ -634,45 +645,45 @@ func (a *App) parseSubmission(ctx context.Context, w http.ResponseWriter, r *htt
 	return sub, true
 }
 
-// reserveUpload takes room for a multipart post's body: shared bytes of its
+// reserveUpload takes room for a multipart post's body: n bytes of its
 // client's share first (clientUploadShare, the client as shareKey counts it),
 // refused at once with errUploadShare when the client's other posts and what
 // this one holds already hold it, and then n bytes of the upload budget
-// itself, n being shared but for the room a body's start takes a second time
-// (bodyRoom.takeCopy): what is free now (media.TryReserveUpload), or else what
-// it waits for under ctx (media.ReserveUpload). One post of a client waits for room at a time:
+// itself and, in the same ask, extra bytes more of it, for the room a body's
+// start takes a second time (bodyRoom.takeRest): what is free now
+// (media.TryReserveUploadParts), or else what it waits for under ctx
+// (media.ReserveUploadParts). One post of a client waits for room at a time:
 // while one does, the client's next post that finds no room is refused at
 // once with errUploadShare too. The queue for room is in the order posts
 // asked, so without that a few clients, each within its share, could put
-// their bodies' worth of posts in it ahead of everyone else's, each to hold its
-// room for a while once it got it, and keep other image posts waiting; with
-// it, each such client has one post in the queue. The function it returns
-// gives back what it took.
-func (a *App) reserveUpload(ctx context.Context, r *http.Request, shared, n int64) (func(), error) {
+// their bodies' worth of posts in it ahead of everyone else's, each to hold
+// its room for a while once it got it, and keep other image posts waiting;
+// with it, each such client has one post in the queue. Of the functions it
+// returns, give gives back the n bytes of both, and giveExtra the extra.
+func (a *App) reserveUpload(ctx context.Context, r *http.Request, n, extra int64) (give, giveExtra func(), err error) {
 	client := shareKey(clientIP(r, a.cfg.TrustedProxyHops))
-	share, ok := a.uploadShares.take(client, shared)
+	share, ok := a.uploadShares.take(client, n)
 	if !ok {
-		return nil, errUploadShare
+		return nil, nil, errUploadShare
 	}
-	reserved, ok := media.TryReserveUpload(n)
+	reserved, ok := media.TryReserveUploadParts(n, extra)
 	if !ok {
 		waited, ok := a.uploadShares.wait(client)
 		if !ok {
 			share()
-			return nil, errUploadShare
+			return nil, nil, errUploadShare
 		}
-		var err error
-		reserved, err = media.ReserveUpload(ctx, n)
+		reserved, err = media.ReserveUploadParts(ctx, n, extra)
 		waited()
 		if err != nil {
 			share()
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	return func() {
-		reserved()
+		reserved[0]()
 		share()
-	}, nil
+	}, reserved[1], nil
 }
 
 // readMultipart reads a multipart post's text fields and its image, from a
@@ -686,9 +697,9 @@ func (a *App) reserveUpload(ctx context.Context, r *http.Request, shared, n int6
 // be copied whole: the image is read once, into a buffer the size of what is
 // left of the body, so what the upload budget reserved for it is what it
 // takes, with the start of the body that admitBody read into memory, which
-// has room of its own until it has been copied (bodyRoom.takeCopy). The text fields may come to what a whole JSON post may be
-// (maxRequestBytes) between them; the first of each name is the one read, as
-// FormValue would.
+// has room of its own until it has been copied (bodyRoom.takeRest). The text
+// fields may come to what a whole JSON post may be (maxRequestBytes) between
+// them; the first of each name is the one read, as FormValue would.
 func (a *App) readMultipart(r *http.Request, size int64) (*submission, int, string) {
 	body := &countingReader{r: r.Body}
 	refuse := func(err error) (*submission, int, string) {

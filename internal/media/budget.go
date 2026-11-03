@@ -18,13 +18,14 @@ var ErrBusy = errors.New("media: no room to take the image in time")
 // from before most of their bytes are read until their post has been answered
 // (ReserveUpload): the request bodies, which processingBudget does not count.
 // It holds about eight bodies carrying an image at the default size limit
-// (8 MiB), and more of smaller ones. Without it nothing bounded how many were
-// held at once: every request a host lets an instance take at once (Cloud
-// Run's containerConcurrency) could be holding one. A body is reserved whole,
-// so none may be larger than this: a reservation is capped at the budget, and
-// a body past it would be read beyond what was reserved. The server refuses
-// to start with an upload size limit that allows one, and with any over
-// MaxUploadBytes (cost.go), which is lower.
+// (8 MiB), seven as they are read, when the start of each is in memory twice
+// (ReserveUploadParts), and more of smaller ones. Without it nothing bounded
+// how many were held at once: every request a host lets an instance take at
+// once (Cloud Run's containerConcurrency) could be holding one. A body is
+// reserved whole, so none may be larger than this: a reservation is capped at
+// the budget, and a body past it would be read beyond what was reserved. The
+// server refuses to start with an upload size limit that allows one, and
+// with any over MaxUploadBytes (cost.go), which is lower.
 const UploadBudget int64 = 64 << 20
 
 // processingAllowance is how long before its deadline an upload stops waiting
@@ -153,6 +154,27 @@ func TryReserveUpload(n int64) (release func(), ok bool) {
 	return uploads.tryAcquire(n)
 }
 
+// ReserveUploadParts is ReserveUpload for room that is given back in parts:
+// it waits once, at one place in the queue, until all of the parts fit
+// together, and returns a function for each part that gives that part back.
+// Room an upload goes on to hold more of is taken so in one ask, rather than
+// in one ask after another, each waiting its turn while the upload holds what
+// the one before took: uploads that each held room and waited for more could
+// hold all of the budget between them, none of them able to go on until one
+// gave up. Over the whole budget, the parts are taken in order as far as it
+// goes.
+func ReserveUploadParts(ctx context.Context, parts ...int64) (releases []func(), err error) {
+	return uploads.acquireParts(ctx, parts)
+}
+
+// TryReserveUploadParts takes the parts together, as ReserveUploadParts does,
+// if they are free now and no upload waits for room ahead of them, and
+// returns a function for each part that gives it back; otherwise it takes
+// nothing and reports false. It never waits.
+func TryReserveUploadParts(parts ...int64) (releases []func(), ok bool) {
+	return uploads.tryAcquireParts(parts)
+}
+
 // acquireProcessing waits until cost fits in the processing budget and returns
 // the function that gives it back, as acquire does. A cost over the whole
 // budget is refused by Inspect before this is reached; here it is capped at
@@ -167,17 +189,26 @@ func acquireProcessing(ctx context.Context, cost int64) (func(), error) {
 // processingAllowance of it is left (ErrBusy). Room that is there when it
 // asks is taken whatever the time: only waiting is cut short.
 func (b *budget) acquire(ctx context.Context, n int64) (func(), error) {
-	if err := ctx.Err(); err != nil {
+	releases, err := b.acquireParts(ctx, []int64{n})
+	if err != nil {
 		return nil, err
 	}
-	n = min(max(n, 1), b.size)
-	release := func() { b.release(n) }
+	return releases[0], nil
+}
+
+// acquireParts takes the parts from the budget together, as acquire takes
+// their sum, and returns a function for each that gives it back (shares).
+func (b *budget) acquireParts(ctx context.Context, parts []int64) ([]func(), error) {
+	if err := ctx.Err(); err != nil || len(parts) == 0 {
+		return nil, err
+	}
+	n := b.whole(parts)
 
 	b.mu.Lock()
 	if b.waiters.Len() == 0 && b.used+n <= b.size {
 		b.used += n
 		b.mu.Unlock()
-		return release, nil
+		return b.shares(n, parts), nil
 	}
 	var giveUp <-chan time.Time
 	if deadline, ok := ctx.Deadline(); ok {
@@ -197,7 +228,7 @@ func (b *budget) acquire(ctx context.Context, n int64) (func(), error) {
 	var err error
 	select {
 	case <-w.ready:
-		return release, nil
+		return b.shares(n, parts), nil
 	case <-ctx.Done():
 		err = ctx.Err()
 	case <-giveUp:
@@ -225,14 +256,56 @@ func (b *budget) acquire(ctx context.Context, n int64) (func(), error) {
 // no queue, and returns the function that gives it back; or, with no room or
 // a queue, takes nothing and reports false.
 func (b *budget) tryAcquire(n int64) (func(), bool) {
-	n = min(max(n, 1), b.size)
+	releases, ok := b.tryAcquireParts([]int64{n})
+	if !ok {
+		return nil, false
+	}
+	return releases[0], true
+}
+
+// tryAcquireParts takes the parts together, as tryAcquire takes their sum.
+func (b *budget) tryAcquireParts(parts []int64) ([]func(), bool) {
+	if len(parts) == 0 {
+		return nil, true
+	}
+	n := b.whole(parts)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.waiters.Len() != 0 || b.used+n > b.size {
 		return nil, false
 	}
 	b.used += n
-	return func() { b.release(n) }, true
+	return b.shares(n, parts), true
+}
+
+// whole is what the budget takes for parts: their sum, but at least a byte
+// and at most the whole budget.
+func (b *budget) whole(parts []int64) int64 {
+	var n int64
+	for _, p := range parts {
+		n = min(n+min(max(p, 0), b.size), b.size)
+	}
+	return max(n, 1)
+}
+
+// shares returns a function for each of parts that gives back its share of n,
+// what the budget took for them (whole): each part its own, in order, as far
+// as n goes, and the first also the byte n holds when the parts come to none,
+// so that a part of none holds nothing whether it is given back or not.
+func (b *budget) shares(n int64, parts []int64) []func() {
+	releases := make([]func(), len(parts))
+	k := make([]int64, len(parts))
+	left := n
+	for i, p := range parts {
+		k[i] = min(max(p, 0), left)
+		left -= k[i]
+	}
+	k[0] += left
+	for i := range parts {
+		share := k[i]
+		releases[i] = func() { b.release(share) }
+	}
+	return releases
 }
 
 func (b *budget) release(n int64) {

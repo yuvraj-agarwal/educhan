@@ -196,11 +196,21 @@ func TestConfigFromEnvRejectsInvalidValues(t *testing.T) {
 	// whatever picture it holds (TestLargestAttachmentLimitIsReachable), is
 	// refused, and the largest is accepted. The request carrying a file that
 	// large fits the memory set aside for upload bodies, which is reserved for
-	// a body whole before most of it is read, and one client's share of it.
+	// a body whole before most of it is read, with its start a second time
+	// until the form has been read (admitBody), and one client's share of it,
+	// which counts the body once.
 	t.Run("upload size over the most an attachment may be", func(t *testing.T) {
-		if maxUploadLimit+multipartOverhead > media.UploadBudget {
-			t.Errorf("the body of the largest attachment, %d bytes, is over the upload budget, %d",
-				maxUploadLimit+multipartOverhead, media.UploadBudget)
+		body := maxUploadLimit + multipartOverhead
+		if body+admitBytes(body) > media.UploadBudget {
+			t.Errorf("the body of the largest attachment, %d bytes, with its start held twice, %d, is over the upload budget, %d",
+				body, body+admitBytes(body), media.UploadBudget)
+		}
+		// The bound maxUploadLimit takes from the upload budget, eight ninths
+		// of it, holds of every body it allows, not only of the largest
+		// attachment the processing budget allows now.
+		if most := media.UploadBudget / (uploadAdmitPart + 1) * uploadAdmitPart; most+admitBytes(most) > media.UploadBudget {
+			t.Errorf("the largest body the upload budget allows, %d bytes, with its start held twice, %d, is over the budget, %d",
+				most, most+admitBytes(most), media.UploadBudget)
 		}
 		if maxUploadLimit+multipartOverhead > clientUploadShare {
 			t.Errorf("the body of the largest attachment, %d bytes, is over one client's share of the upload budget, %d",

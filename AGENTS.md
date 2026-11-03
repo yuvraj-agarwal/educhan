@@ -1185,16 +1185,21 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   and only then its declared size, so that holding that costs an eighth of it sent and a
   body that stops sooner holds at most twice what it sent; what has arrived is held in
   memory until the read of the form has copied it into the image's buffer, so until then
-  the upload budget, though not the client's share, holds room for it twice
-  (`bodyRoom.takeCopy`); a wait for a piece is the server's, and moves the body's
-  deadlines on by as long (`pacedBody.pause`); and the grace is the whole 5 s from the
-  first byte (`TestIdleBodiesDoNotHoldUpOtherImagePosts`,
-  `TestABodyOverALongRoundTripIsTaken`). A body without a `Content-Length`
-  (chunked) would have to reserve the most a body may be, and could then be held only to
-  the pace of that, which cut a small one sent slowly off, or to none, which let seven
-  trickles from three addresses hold the whole budget for the window; so, with uploads on,
-  such a post is answered `411` on its headers (`refuseUnsized`), before anything is
-  reserved for it or read of it, charged nothing, its connection closed
+  the upload budget, though not the client's share, holds room for it twice, taken in the
+  same ask as the rest of the body (`bodyRoom.takeRest`), after which the body asks for no
+  more: asked for apart, the second room let eight honest 8 MiB bodies whose rests were
+  granted together hold the whole budget, each waiting for its copy, until the first gave
+  up and was answered `503` (`TestBodiesUnderWayDoNotWaitOnEachOthersRoom`); a body being
+  read holds nine eighths of its size of the budget, so seven are read at once at the
+  default limit and one at the largest (`clientUploadShare`); a wait for a piece is the
+  server's, and moves the body's deadlines on by as long (`pacedBody.pause`); and the
+  grace is the whole 5 s from the first byte (`TestIdleBodiesDoNotHoldUpOtherImagePosts`,
+  `TestABodyOverALongRoundTripIsTaken`). A body without a `Content-Length` (chunked) would
+  have to reserve the most a body may be, and could then be held only to the pace of that,
+  which cut a small one sent slowly off, or to none, which let seven trickles from three
+  addresses hold the whole budget for the window; so, with uploads on, such a post is
+  answered `411` on its headers (`refuseUnsized`), before anything is reserved for it or
+  read of it, charged nothing, its connection closed
   (`TestPostsWithoutALengthAreRefused`), and every body that holds room is held to its own
   pace. Browsers send a `Content-Length` with every form. Between them the two budgets
   hold 320 MiB at most, whatever `containerConcurrency` lets in; the rest of the process

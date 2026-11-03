@@ -1097,7 +1097,8 @@ server that would refuse what it sends.
   counts each of their addresses apart. A body takes no room until its first bytes arrive,
   and one that sends none within 5 seconds answers `400` as below, having held none; it
   then takes room for what it has sent, a little ahead of it, until an eighth of it has
-  arrived, and only then as much as it says it is, so a body that stops holds little more
+  arrived, and only then, in one go, as much as it says it is and that eighth again, which
+  is in memory twice until the form has been read, so a body that stops holds little more
   than it sent. A post waits for room in either budget for about ten seconds at most, and
   a client has one image post waiting for room for its body at a time: its next that finds
   none answers `429` at once, as one past its share does. Its body has 30 seconds to

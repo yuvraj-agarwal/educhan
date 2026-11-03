@@ -167,6 +167,107 @@ func TestTryReserveUploadNeverWaits(t *testing.T) {
 	}
 }
 
+// ReserveUploadParts takes its parts in one ask, granted only once all of
+// them fit together, and gives each back on its own. Two uploads that each
+// held 30 of 100 and asked for 20 more and then 5, one ask after another,
+// held all of it between them once both 20s were granted, each waiting for a
+// 5 the other held.
+func TestUploadPartsAreTakenTogether(t *testing.T) {
+	b := narrowUploads(t, 100)
+	queued := func() int {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.waiters.Len()
+	}
+
+	var held [2]func()
+	for i := range held {
+		release, ok := TryReserveUpload(30)
+		if !ok {
+			t.Fatalf("try 30 with %d free: refused", 100-30*i)
+		}
+		held[i] = release
+	}
+	first, err := ReserveUploadParts(context.Background(), 20, 5)
+	if err != nil || len(first) != 2 {
+		t.Fatalf("20 and 5 with 40 free: %d releases, %v; want both taken at once", len(first), err)
+	}
+	if n := b.held(); n != 85 {
+		t.Fatalf("held %d, want 85", n)
+	}
+	type parts struct {
+		releases []func()
+		err      error
+	}
+	got := make(chan parts, 1)
+	go func() {
+		releases, err := ReserveUploadParts(context.Background(), 20, 5)
+		got <- parts{releases, err}
+	}()
+	for deadline := time.Now().Add(5 * time.Second); queued() == 0; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("20 and 5 with 15 free never waited")
+		}
+	}
+	if n := b.held(); n != 85 {
+		t.Fatalf("held %d while the second waited, want 85: none of its parts taken", n)
+	}
+	// The first upload's parts are given back one at a time; the second is
+	// granted once both of its own fit.
+	first[1]()
+	if n := b.held(); n != 80 {
+		t.Errorf("held %d once the first's 5 was given back, want 80", n)
+	}
+	select {
+	case p := <-got:
+		t.Fatalf("20 and 5 with 20 free: granted (%v), want a wait", p.err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	first[0]()
+	second := <-got
+	if second.err != nil || len(second.releases) != 2 {
+		t.Fatalf("20 and 5 once 40 was free: %d releases, %v", len(second.releases), second.err)
+	}
+	if n := b.held(); n != 85 {
+		t.Errorf("held %d once the second was granted, want 85", n)
+	}
+	for _, release := range append(second.releases, held[:]...) {
+		release()
+	}
+
+	// A part of none holds nothing, given back or not, and parts over the
+	// whole budget are taken in order as far as it goes.
+	if releases, ok := TryReserveUploadParts(10, 0); !ok {
+		t.Error("try 10 and none of a free budget: refused")
+	} else {
+		releases[0]()
+	}
+	if releases, ok := TryReserveUploadParts(0, 0); !ok {
+		t.Error("try none and none of a free budget: refused")
+	} else {
+		releases[0]()
+	}
+	if n := b.held(); n != 0 {
+		t.Errorf("held %d with the first of each part given back, want 0", n)
+	}
+	releases, ok := TryReserveUploadParts(70, 50, 1<<40)
+	if !ok {
+		t.Fatal("try parts over the whole of a free budget: refused")
+	}
+	if n := b.held(); n != 100 {
+		t.Errorf("held %d for parts over the whole budget, want all of it", n)
+	}
+	releases[0]()
+	if n := b.held(); n != 30 {
+		t.Errorf("held %d once the first part was given back, want the 30 the second was given", n)
+	}
+	releases[1]()
+	releases[2]()
+	if n := b.held(); n != 0 {
+		t.Errorf("held %d after every reservation was given back, want 0", n)
+	}
+}
+
 // Save holds the processing budget until both renditions are stored: until
 // then it holds them, and a budget given back before the writes would let in
 // more than it was sized for.
