@@ -1493,12 +1493,16 @@ function badgeOffered(form) {
 // the post out under another. Now a box naming a badge no longer held is drawn
 // again, unticked, for the badge held now, or taken out when there is none,
 // and the half-written post is left where it is. A box the reader had ticked
-// is said to have been unticked (sayBadgeUnticked), and a box that had the
-// focus hands it to the box drawn in its place, or to the form's button when
-// there is none, rather than dropping it to the page. The Name field is left
-// as it is too: a remembered name or tripcode put back on a post written to
-// go out badged would tie it to the reader's unbadged posts.
-function offerHeldBadge() {
+// is said to have been unticked (sayBadgeUnticked), unless the caller says
+// what became of the badge itself (quiet): a post refused for the badge it
+// carried says so where every refusal of a post is said, and the page's
+// notice saying the box was unticked as well was a second message about the
+// one refusal, at the top of the page and out of sight below a long thread. A
+// box that had the focus hands it to the box drawn in its place, or to the
+// form's button when there is none, rather than dropping it to the page. The
+// Name field is left as it is too: a remembered name or tripcode put back on a
+// post written to go out badged would tie it to the reader's unbadged posts.
+function offerHeldBadge({ quiet = false } = {}) {
   const held = state.verification.badge;
   const number = held ? held.number : "";
   let unticked = false;
@@ -1512,7 +1516,7 @@ function offerHeldBadge() {
     const next = slot.querySelector('input[name="badge"]') || slot.closest("form").querySelector('button[type="submit"]');
     if (focused && next) next.focus({ preventScroll: true });
   }
-  if (unticked) sayBadgeUnticked();
+  if (unticked && !quiet) sayBadgeUnticked();
 }
 
 // sayBadgeUnticked says why a badge box the reader ticked is ticked no longer:
@@ -4467,7 +4471,11 @@ el.main.addEventListener("submit", async (event) => {
     // option goes with it — taken out of this form (offerHeldBadge) rather
     // than re-rendering, which leaves the half-written post exactly where it
     // is — so the retry that follows is an ordinary post instead of the same
-    // refusal. The notice below says why.
+    // refusal. The notice below says why, and it alone: offerHeldBadge is
+    // quiet here, since the box it unticks is the one this refusal is about.
+    // It once said so in the page's notice as well, and one refusal came as
+    // two messages, one of them at the top of the page, out of sight below a
+    // long thread.
     //
     // Only the credential refused is dropped, and only while it is the one
     // stored. Another can have been stored since the post went out: a Verify
@@ -4489,7 +4497,7 @@ el.main.addEventListener("submit", async (event) => {
         state.verification.badge = readBadge();
         replacedBy = state.verification.badge;
       }
-      offerHeldBadge();
+      offerHeldBadge({ quiet: true });
     }
     // The cap was reached after this form was drawn: take the image off and
     // switch the picker off, so the next press posts the text that is left.

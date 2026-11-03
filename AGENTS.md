@@ -524,7 +524,10 @@ needs a browser check before the test changes.
   stored. One stored since — that answer, or a badge issued in another tab, which is
   what revoked it — is offered in its place, and the form's notice says so, as it says
   every refusal of a post (`badgeReplacedMessage`): forgetting whatever was stored
-  deleted a badge the server cannot hand out again.
+  deleted a badge the server cannot hand out again. Either way the refusal is said
+  once: the badge box it unticks is not said to be unticked in the page's `#notice` as
+  well (`offerHeldBadge`'s `quiet`), which put a second message about the one refusal
+  at the top of the page.
 - The poster key lives in `localStorage` under `educhan:poster-key`: 16 random bytes as
   22 characters of unpadded base64url, made by `posterKey()` on the first post rather
   than the first visit. `submit` sends it in `X-Educhan-Poster-Key` on thread-create and

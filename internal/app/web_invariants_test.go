@@ -1532,7 +1532,7 @@ func TestOnlyKnownPlacesTellWhetherABadgeIsHeld(t *testing.T) {
 		"function formHTML({ kind, slug, thread = null, open = false }) {": 5,
 		"function badgeOptionHTML(held) {":                                 1,
 		"function badgeOffered(form) {":                                    2,
-		"function offerHeldBadge() {":                                      5,
+		"function offerHeldBadge({ quiet = false } = {}) {":                5,
 		"function sayBadgeUnticked() {":                                    2,
 		"function captureDraft() {":                                        6,
 		"function restoreDraft(draft) {":                                   7,
@@ -3232,9 +3232,11 @@ func TestPostingFormSendsOnlyTheBadgeItNames(t *testing.T) {
 	// What brings a form on screen into line, held whole: it reads no Verify
 	// step and draws nothing but posting forms' badge slots, which is why it
 	// may run in the badge's answer. The focus a redrawn box had goes to the
-	// box drawn in its place, or the form's button, not to the page.
+	// box drawn in its place, or the form's button, not to the page. A box
+	// that was ticked is said to have been unticked, unless the caller says
+	// what became of the badge itself (quiet, below).
 	if got, want := jsLines(jsFunction(t, script, "offerHeldBadge")), []string{
-		"function offerHeldBadge() {",
+		"function offerHeldBadge({ quiet = false } = {}) {",
 		"const held = state.verification.badge;",
 		`const number = held ? held.number : "";`,
 		"let unticked = false;",
@@ -3248,7 +3250,7 @@ func TestPostingFormSendsOnlyTheBadgeItNames(t *testing.T) {
 		`const next = slot.querySelector('input[name="badge"]') || slot.closest("form").querySelector('button[type="submit"]');`,
 		"if (focused && next) next.focus({ preventScroll: true });",
 		"}",
-		"if (unticked) sayBadgeUnticked();",
+		"if (unticked && !quiet) sayBadgeUnticked();",
 		"}",
 	}; !slices.Equal(got, want) {
 		t.Errorf("offerHeldBadge runs\n\t%s\nwant it to draw again, unticked, every badge box naming a badge no longer "+
@@ -3294,7 +3296,7 @@ func TestPostingFormSendsOnlyTheBadgeItNames(t *testing.T) {
 			"state.verification.badge = readBadge();",
 			"replacedBy = state.verification.badge;",
 			"}",
-			"offerHeldBadge();",
+			"offerHeldBadge({ quiet: true });",
 			"}",
 		})
 	if n := strings.Count(submit, "forgetCredential("); n != 1 {
@@ -3314,6 +3316,40 @@ func TestPostingFormSendsOnlyTheBadgeItNames(t *testing.T) {
 	if said := withoutComments(jsFunction(t, script, "badgeReplacedMessage")); !strings.HasPrefix(said, "function badgeReplacedMessage(held) {\n  return `") ||
 		!strings.Contains(said, "Verified: ${held.label}") || strings.Contains(strings.ToLower(said), "verify again") {
 		t.Errorf("badgeReplacedMessage does not say which badge is held now, or sends the reader to verify again:\n%s", said)
+	}
+	// And it is said once. The box offerHeldBadge unticks there is the one
+	// the refusal is about, and the page's notice saying it was unticked
+	// (sayBadgeUnticked) stayed up beside the form's notice saying the
+	// refusal: two messages about one refusal, one of them at the top of the
+	// page, out of sight below a long thread. So the catch has offerHeldBadge
+	// keep quiet, and nothing else it calls reaches sayBadgeUnticked, however
+	// far down. Nothing else keeps it quiet: the box a post was stopped for
+	// before it went (above) and one a badge just issued unticked
+	// (submitVerification) are said to have been unticked, since nothing else
+	// says why.
+	at := strings.Index(submit, "} catch (err) {")
+	if at < 0 {
+		t.Fatal("the submit handler has no catch for a refused post; this test reads it")
+	}
+	caught := submit[at:]
+	if strings.Count(caught, "offerHeldBadge(") != 1 || !strings.Contains(caught, "      offerHeldBadge({ quiet: true });\n") {
+		t.Errorf("the submit handler's catch does not bring the forms into line quietly, once:\n%s", caught)
+	}
+	graph := jsCallGraph(t, script)
+	var says []string
+	for callee := range jsCallees(caught) {
+		if callee != "offerHeldBadge" && graph[callee] != nil && slices.Contains(jsReached(t, graph, callee), "sayBadgeUnticked") {
+			says = append(says, callee)
+		}
+	}
+	if len(says) > 0 {
+		slices.Sort(says)
+		t.Errorf("a refused post's catch calls %v, which say in the page's notice that a badge box was unticked; "+
+			"the refusal is said once, where every refusal of a post is", says)
+	}
+	if n, quiet := strings.Count(code, "offerHeldBadge("), strings.Count(code, "offerHeldBadge({ quiet: true });"); n != 4 || quiet != 1 {
+		t.Errorf("app.js names offerHeldBadge( %d times, %d of them quiet; want its declaration, the two calls that "+
+			"say a box was unticked, and the refused post's catch, quiet", n, quiet)
 	}
 
 	// A draft ticks the box again only for the badge it was ticked for, and
