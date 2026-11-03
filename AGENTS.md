@@ -944,11 +944,11 @@ cost down:
   bodies built to be slow may cost at most `workPerByte` (160) steps per byte of the
   post (the most, of its bodies, is a method question asked three times and then an
   app's name with a tag in it, "how many to od how many to od how many to od i[n]sta "
-  over and over, about 148, so the bound is about 8% above it, and that is also the most
+  over and over, about 150, so the bound is about 7% above it, and that is also the most
   of the 29,397 bodies built to be slow the counts were last checked on; the next are
   handles glued to an opening bracket and pointed at an app, "handles to brackets",
-  about 128, and a pill question run into such a handle, "howmany@pills_(snap ", about
-  117; the steps are the same with Go 1.22, 1.24 and 1.25), at most `workPerChar` (240)
+  about 127, and a pill question run into such a handle, "howmany@pills_(snap ", about
+  116; the steps are the same with Go 1.22, 1.24 and 1.25), at most `workPerChar` (240)
   per character, so that a post of four-byte characters is not given four times the
   steps a character an ASCII one is (the most is Snapchat's ghost over and over, each
   read for an ask or a handle round it, about 193), and eight times the text at most ten

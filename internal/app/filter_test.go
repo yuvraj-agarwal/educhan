@@ -3469,12 +3469,12 @@ func TestJoinActsMatchesTheActsOneByOne(t *testing.T) {
 // under the race detector, and a timer's noise cannot fail or pass it.
 //
 // The first bound is per byte of the post, at full length: the most any of
-// these bodies costs is about 148 steps a byte ("stacked method questions"),
+// these bodies costs is about 150 steps a byte ("stacked method questions"),
 // which is also the most of the 29,397 bodies built to be slow that the
-// counts were last checked on, about 8% under the bound; the next most here
-// are handles glued to an opening bracket, about 128 (about 198 before
+// counts were last checked on, about 6.5% under the bound; the next most
+// here are handles glued to an opening bracket, about 127 (about 198 before
 // firstHandle turned them down before their checks), and a pill question run
-// into such a handle, about 117. A step is not a fixed time — across those
+// into such a handle, about 116. A step is not a fixed time — across those
 // of these bodies that take more than a few milliseconds a millisecond is
 // anything from about 18,000 steps to about 91,000, and the body that costs
 // the most steps is not the slowest — so the bound holds the work linear and
