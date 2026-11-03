@@ -599,34 +599,43 @@ needs a browser check before the test changes.
   is drawn. A panel on the page goes then even when its code has gone already, dropped by
   another tab's Remove or Forget that found no Pass to remove, whose drawing waits on the
   forget (`stopForPassForget`). The panel is worded from the Pass stored here as it is
-  drawn (`passIssuedHTML(issued, held)`), not from `kept` alone: held and good, the code
-  is ready and sent with posts; held and run out, by its date or marked so by a post's
-  answer, it is not sent with posts until it is renewed; kept but no longer held, another
-  code having been typed in here or stored by another tab, or the data cleared, the
-  browser no longer has it and it won't be shown again once the reader leaves; and one
-  the browser could not keep says so. `has` is a Pass held or a code shown that the
-  browser could not keep, the panel's own or one carried (`unkept`). Buy is held back
-  while `has`, while a purchase is being collected (`open` and not `has`, which draws the
-  collecting panel in place of the forms) and while sales are paused, and none is drawn
-  when the page could not be read or the Pass is not on sale, so it is offered beside the
-  code of a Pass the browser no longer holds only once no other Pass is held here. When
-  educhan tells a tab the held code is no longer valid (Check it again, `recheckPass`,
-  Renew, or a post's `"pass": "invalid"`), `forgetInvalidCode` takes that code off its
-  panel if it is the one just handed over, the code of a Pass that one replaced or a code
-  carried, typed back in, there and in every other tab, which reads the code removed from
-  the `storage` event's old value (`followPassStorage`, `passCodeIn`): every other code
-  stays, with no Copy the code once the code handed over has gone, until the reader
-  leaves, said to be in this browser again once it is typed back in or stored by another
-  tab, unless educhan says that code is no longer valid too, and with no code left
-  `passJustIssued` goes, while a code just handed over that another code had already
-  taken the place of is not the code removed, and stays. `passLost`, what the page says
-  of a Pass it removed, stays until the reader leaves the page, Remove the Pass or Forget
-  this browser is pressed, here or in another tab, or the browser holds a Pass again, one
-  `storePass` keeps (typed in, a claim's or a reissue code's) or another tab stores
-  (`followPassStorage`, or the `pageshow` listener on a page back from the back-forward
-  cache), so it never sits beside a Pass held. It says why the Pass went and points to
-  nothing, the Buy form say, which a purchase being collected, a code the browser could
-  not keep or sales paused hold back while it stays. Renew found no longer valid says so
+  drawn (`passIssuedHTML(issued, held, box)`), not from `kept` alone: held and good, the
+  code is ready and sent with posts; held and run out, by its date or marked so by a
+  post's answer, it is not sent with posts until it is renewed; kept, as it came or held
+  here since (`keepShownCode`, from `storePass` and `followPassStorage`), but no longer
+  held, another code having been typed in here or stored by another tab, or the data
+  cleared, the browser no longer has it and it won't be shown again once the reader
+  leaves; and one the browser could not keep and has not held since says so, with what
+  would keep it here only where the code box is drawn (`box`, on a page from a server
+  with the Pass or one that could not be read): beside a good Pass held, which
+  `submitPass` will not replace with a Pass code, to write down both codes, remove that
+  Pass and enter it, and otherwise to allow the site to store data and enter it, never
+  that the browser stores nothing, which the page cannot tell from a full store
+  (`PASS_NOT_KEPT` the same). `has` is a Pass held or a code shown that the browser could
+  not keep and has not held since, the panel's own or one carried (`unkept`). Buy is held
+  back while `has`, while the page shows a purchase being collected (`open` and not
+  `has`, which draws the collecting panel in place of the forms) and while sales are
+  paused, and none is drawn when the page could not be read or the Pass is not on sale;
+  over a checkout set aside (`passStartedAgain`: Start again, back from Stripe's cancel
+  link, or a checkout not followed to Stripe), which the page goes on collecting, it is
+  drawn again by those rules. So it is offered beside the code of a Pass the browser no
+  longer holds only once no other Pass is held here. When educhan tells a tab the held
+  code is no longer valid (Check it again, `recheckPass`, Renew, or a post's
+  `"pass": "invalid"`), `forgetInvalidCode` takes that code off its panel if it is the
+  one just handed over, the code of a Pass that one replaced or a code carried, typed
+  back in, there and in every other tab, which reads the code removed from the `storage`
+  event's old value (`followPassStorage`, `passCodeIn`): every other code stays, with no
+  Copy the code once the code handed over has gone, until the reader leaves, said to be
+  in this browser again once it is typed back in or stored by another tab, unless educhan
+  says that code is no longer valid too, and with no code left `passJustIssued` goes,
+  while a code just handed over that another code had already taken the place of is not
+  the code removed, and stays. `passLost`, what the page says of a Pass it removed, stays
+  until the reader leaves the page, Remove the Pass or Forget this browser is pressed,
+  here or in another tab, or the browser holds a Pass again, one `storePass` keeps (typed
+  in, a claim's or a reissue code's) or another tab stores (`followPassStorage`, or the
+  `pageshow` listener on a page back from the back-forward cache), so it never sits
+  beside a Pass held. It says why the Pass went and points to nothing, the Buy form say,
+  which may be held back or not drawn while it stays. Renew found no longer valid says so
   in the page's own words too (`PASS_GONE_REASONS`), not in the server's, which say to
   buy a new one, and no notice the Pass page words itself says to buy
   (`TestPassPageDetails`). A renewal's date is never stored from the claim's answer,
@@ -635,16 +644,16 @@ needs a browser check before the test changes.
   wait), stores what that says unless the Pass held changed meanwhile, and says the Pass
   is renewed only when the date it checks is the renewal's and later than the one it had;
   a renewal a reissue code brought is said to come from the code, not from a payment in
-  this browser. A renewal that renews its Pass hands over no code, so its claim or reissue
-  code asked again is refused: refused after a retry with a kept nonce, the page checks
-  the held code the same way (`passAfterLostAnswer`) and says only that the Pass is now
-  good until a later date, never where the time came from. A reissue code is typed or
-  pasted into the code box, which takes a Pass code too (`isReissueCode` tells them apart
-  by the server's word and length), and never rides in an address. Pressing the button is
-  the reader's say-so: a Pass held here is replaced at once and its code shown beside the
-  new one, while a Pass code typed over a good one is refused. The code goes once in a
-  claim's body with a nonce of its own (`educhan:pass-reissue-nonce`), the Pass code
-  derived from the two; it is never stored, and stays in the box, in memory
+  this browser. A renewal that renews its Pass hands over no code, so its claim or
+  reissue code asked again is refused: refused after a retry with a kept nonce, the page
+  checks the held code the same way (`passAfterLostAnswer`) and says only that the Pass
+  is now good until a later date, never where the time came from. A reissue code is typed
+  or pasted into the code box, which takes a Pass code too (`isReissueCode` tells them
+  apart by the server's word and length), and never rides in an address. Pressing the
+  button is the reader's say-so: a Pass held here is replaced at once and its code shown
+  beside the new one, while a Pass code typed over a good one is refused. The code goes
+  once in a claim's body with a nonce of its own (`educhan:pass-reissue-nonce`), the Pass
+  code derived from the two; it is never stored, and stays in the box, in memory
   (`passCodeTyped`), until an answer arrives, so pressing again after a lost answer asks
   with the same nonce. That nonce is dropped only when an answer says the code issued or
   renewed a Pass, or by Remove the Pass and Forget this browser, never on a refusal: an
@@ -741,26 +750,35 @@ needs a browser check before the test changes.
   error does not stay under the answer; that drawing is set off by the answer, not the
   reader, so it draws as `redrawPass` does (`renderPass` given the selectors), and focus
   on a control it draws again, Copy the code or Use this code here say, stays there
-  without scrolling the page. Another tab's Remove, Forget, new code or finding that its
-  code is no longer valid reaches this one by the `storage` event. Remove and Forget
-  set their mark (`forgetPassClaim`) before they take the Pass from storage, or, for
-  Forget, the badge, the poster key and the name (only the nonces and this tab's own
-  checkout marks, which other tabs leave be, go first), so this tab hears the mark first
-  and drops every code just handed over, kept or not, with any code it took the place of
-  or carried (`stopForPassForget`), and the removal after it finds nothing left to keep.
-  Any other removal is followed as this tab's own finding that the code is no longer
-  valid (`followPassStorage`, through `forgetInvalidCode`, with the code `passCodeIn`
-  reads from the event's `oldValue`): only the code removed goes. A removal with no code
-  to read, or an event whose `key` is `null` (storage cleared from outside the page,
-  which never calls `localStorage.clear()`), takes nothing off, since the panel says what
-  is held. Another code stored there leaves a code just handed over, kept or not, beside
-  any code it took the place of or carried, and each change draws the Pass page again.
-  All of this needs a browser that stores: one that stores nothing at all tells its other
-  tabs nothing, and a code on screen there stays until the reader leaves the Pass page,
-  and one that lets the Pass go but will not store the mark, its storage full say, has
-  the other tabs take the removal for a finding that the code is no longer valid. A page
-  brought back from the back-forward cache is drawn again through `render` (the
-  `pageshow` listener), so the age screen still comes first. A post whose Pass was no
+  without scrolling the page. The notice that the Pass held has run out, from Check it
+  again or a code typed in (`showPassRunOut`), is worded for the page beside it
+  (`passRunOutText`): Renew below while the Pass is on sale, `PASS_PAUSED` while sales are
+  paused, on a page that could not be read that it can be renewed once the page loads, and
+  no more than that it ran out on one from a server without the Pass. Once the drawing
+  `refreshFailedPass` sets off has landed, or come to nothing, the notice is said again
+  from what it brought only if its words change and the notice still says them
+  (`noticeSays`), so never twice alike, and focus stays where that drawing left it. The
+  held panel's Check it again and the steps beside a code the browser could not keep are
+  offered only where the code box is drawn (`box`). Another tab's Remove, Forget, new code
+  or finding that its code is no longer valid reaches this one by the `storage` event.
+  Remove and Forget set their mark (`forgetPassClaim`) before they take the Pass from
+  storage, or, for Forget, the badge, the poster key and the name (only the nonces and
+  this tab's own checkout marks, which other tabs leave be, go first), so this tab hears
+  the mark first and drops every code just handed over, kept or not, with any code it took
+  the place of or carried (`stopForPassForget`), and the removal after it finds nothing
+  left to keep. Any other removal is followed as this tab's own finding that the code is
+  no longer valid (`followPassStorage`, through `forgetInvalidCode`, with the code
+  `passCodeIn` reads from the event's `oldValue`): only the code removed goes. A removal
+  with no code to read, or an event whose `key` is `null` (storage cleared from outside
+  the page, which never calls `localStorage.clear()`), takes nothing off, since the panel
+  says what is held. Another code stored there leaves a code just handed over, kept or
+  not, beside any code it took the place of or carried, and each change draws the Pass
+  page again. All of this needs a browser that stores: one that stores nothing at all
+  tells its other tabs nothing, and a code on screen there stays until the reader leaves
+  the Pass page, and one that lets the Pass go but will not store the mark, its storage
+  full say, has the other tabs take the removal for a finding that the code is no longer
+  valid. A page brought back from the back-forward cache is drawn again through `render`
+  (the `pageshow` listener), so the age screen still comes first. A post whose Pass was no
   good is a `201` like any other, carrying `"pass": "invalid"` or `"expired"`: the page
   forgets the first, marks the second run out without a date, and says the post was sent.
   A code typed in after it ran out is kept with the date the server gives. While sales

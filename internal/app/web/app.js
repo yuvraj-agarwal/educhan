@@ -313,6 +313,13 @@ function clearNotice() {
   el.notice.textContent = "";
 }
 
+// noticeSays says whether the notice on screen still says message: not
+// dismissed, and not cleared or replaced by another since.
+function noticeSays(message) {
+  const text = el.notice.querySelector(".notice-text");
+  return !el.notice.hidden && text !== null && text.textContent === message;
+}
+
 // announce names the page for assistive tech, which otherwise gets no signal
 // that a client-side navigation replaced the content.
 function announce(title) {
@@ -2246,9 +2253,10 @@ const PASS_STOPPED_MEANWHILE = "Nothing was sent: this browser stopped collectin
 // afresh (the pageshow listener), with the button ready.
 const PASS_LEFT_MEANWHILE = "left";
 // Said when the browser will not keep a Pass: its storage for the site is
-// blocked or full, so the Pass cannot ride on the next post.
+// blocked or full, which the page cannot tell apart, so the Pass cannot ride
+// on the next post.
 const PASS_NOT_KEPT =
-  "This browser couldn't keep the Pass, because it isn't letting educhan store anything, so it can't send it with your posts. Allow this site to store data, then enter the code again.";
+  "This browser couldn't store the Pass, so it can't send it with your posts. Allow this site to store data, then enter the code again.";
 // Said instead of sending a buyer to Stripe from a browser that would keep
 // neither the claim that collects a purchase nor the Pass it brings.
 const PASS_NO_STORAGE =
@@ -2263,8 +2271,9 @@ const PASS_GONE_REASONS = "It may have run out more than a month ago, or been re
 // stored by another tab (followPassStorage, or the pageshow listener for a page
 // the back-forward cache kept meanwhile), since beside one it would say the
 // Pass here has gone. It points to nothing the page may not draw beside it,
-// such as the Buy form, which a purchase being collected, a code the browser
-// could not keep or sales paused hold back.
+// such as the Buy form, which the page holds back while it shows a purchase
+// being collected, a code the browser could not keep or sales paused, among
+// others (passViewHTML).
 let passLost = "";
 
 // passVisit counts the times the Pass page has been drawn from the server's
@@ -2375,32 +2384,33 @@ let passCodeCopied = "";
 // on its way, by its mark's key, once the mark goes (followPassForget).
 const passForgetHeard = new Map();
 
-// passJustIssued is the code a claim or a reissue code has just handed over,
-// as { code, expires, kept, replaced, earlier, reissued, shown }: replaced is
-// the code of a different Pass it took the place of in this browser, earlier
-// the codes an earlier panel on this visit showed that this one does not show
-// as its own (passCodesCarried), and shown is whether the Pass page has drawn
-// it. It is drawn on every drawing of the Pass page, so no redraw, poll or
-// second code handed over loses a code the server will not show again, until
-// the reader leaves the page (render), or the document, for another site say
-// (pagehide), once drawn, kept or not (forgetShownCode): one this browser
-// could not store goes as its panel says, and a page brought back from the
-// back-forward cache shows neither kind to whoever uses the browser next. One
-// not yet drawn, its answer having come while the reader was elsewhere, or they
-// having left before its drawing came, waits for them to come back to the Pass
-// page: one this browser could not keep is nowhere else, and nor is the code of
-// a Pass one it keeps took the place of (replaced), or a code carried from an
-// earlier panel (earlier). Remove the Pass and Forget this browser, here or in
-// another tab (stopForPassForget), drop it too, with every code beside it. One
-// this browser kept and no longer holds, another code having taken its place,
-// typed in here or stored by another tab, or its data cleared, stays until
-// then, worded as no longer here (passIssuedHTML), since it may be nowhere
-// else. Once educhan tells this tab or another that a code on the panel is no
-// longer valid, as the Pass held here, which another tab's removal of it is
-// taken for (followPassStorage), that code is worth nothing and goes, be it the
-// code handed over, the code it took the place of or a code carried, and every
-// other code stays, worded for whether this browser holds it as it is drawn
-// (forgetInvalidCode).
+// passJustIssued is the code a claim or a reissue code has just handed over, as
+// { code, expires, kept, replaced, earlier, reissued, shown }: kept is whether
+// this browser has held it since it came, stored as it came or since
+// (keepShownCode), replaced the code of a different Pass it took the place of
+// in this browser, earlier the codes an earlier panel on this visit showed that
+// this one does not show as its own (passCodesCarried), each with a kept of its
+// own, and shown whether the Pass page has drawn it. It is drawn on every
+// drawing of the Pass page, so no redraw, poll or second code handed over loses
+// a code the server will not show again, until the reader leaves the page
+// (render), or the document, for another site say (pagehide), once drawn, kept
+// or not (forgetShownCode): one this browser could not store goes as its panel
+// says, and a page brought back from the back-forward cache shows neither kind
+// to whoever uses the browser next. One not yet drawn, its answer having come
+// while the reader was elsewhere, or they having left before its drawing came,
+// waits for them to come back to the Pass page: one this browser could not keep
+// is nowhere else, and nor is the code of a Pass one it keeps took the place of
+// (replaced), or a code carried from an earlier panel (earlier). Remove the
+// Pass and Forget this browser, here or in another tab (stopForPassForget),
+// drop it too, with every code beside it. One this browser kept and no longer
+// holds, another code having taken its place, typed in here or stored by
+// another tab, or its data cleared, stays until then, worded as no longer here
+// (passIssuedHTML), since it may be nowhere else. Once educhan tells this tab
+// or another that a code on the panel is no longer valid, as the Pass held
+// here, which another tab's removal of it is taken for (followPassStorage),
+// that code is worth nothing and goes, be it the code handed over, the code it
+// took the place of or a code carried, and every other code stays, worded for
+// whether this browser holds it as it is drawn (forgetInvalidCode).
 let passJustIssued = null;
 
 // lastPassInfo is what GET /api/pass said for the drawing on screen, so a
@@ -2441,7 +2451,8 @@ function storedPass() {
 // storePass keeps a Pass in this browser, and says whether it was kept: a
 // browser that blocks storage, or has run out of it, keeps nothing, and the
 // page must not then say the Pass is here. One kept ends what the page said
-// of a Pass that went (passLost), which would otherwise sit beside it.
+// of a Pass that went (passLost), which would otherwise sit beside it, and
+// counts as kept on the panel of a code just handed over (keepShownCode).
 function storePass(code, expires) {
   storageSet(PASS_STORAGE_KEY, JSON.stringify({ code, expires }));
   const kept = storedPass();
@@ -2449,7 +2460,29 @@ function storePass(code, expires) {
     return false;
   }
   passLost = "";
+  keepShownCode(code);
   return true;
+}
+
+// keepShownCode counts a code on the panel of a code just handed over, its own
+// or one carried from an earlier panel, as kept once this browser holds it
+// (code), stored here (storePass), typed in say, or by another tab
+// (followPassStorage), though the browser could not keep it when it came: from
+// then on it is worded as one the browser kept (passIssuedHTML), no longer in
+// this browser once another code takes its place or the data is cleared, and
+// it no longer holds Buy back (passViewHTML's unkept).
+function keepShownCode(code) {
+  if (!passJustIssued) {
+    return;
+  }
+  if (passJustIssued.code === code) {
+    passJustIssued.kept = true;
+  }
+  for (const earlier of passJustIssued.earlier) {
+    if (earlier.code === code) {
+      earlier.kept = true;
+    }
+  }
 }
 
 // markPassExpired keeps a Pass the server says has run out, for renewing,
@@ -3123,11 +3156,38 @@ function passErrorText(err) {
   return /[.!?]$/.test(text) ? text : `${text}.`;
 }
 
-// passRunOutText says that a Pass has run out, and what the page offers.
+// passRunOutText says that a Pass has run out, and what the page drawn from
+// lastPassInfo offers for it: Renew, which the held Pass's panel has while the
+// Pass is on sale; that sales are paused, said where Renew would be; or, on a
+// page drawn without the server's answer, which has no Renew, that renewing
+// needs the page to load. A server without the Pass offers nothing.
 function passRunOutText() {
-  return lastPassInfo.paused
-    ? `This Pass has run out. ${PASS_PAUSED}`
-    : "This Pass has run out. You can renew it below.";
+  if (lastPassInfo.paused) {
+    return `This Pass has run out. ${PASS_PAUSED}`;
+  }
+  if (lastPassInfo.enabled) {
+    return "This Pass has run out. You can renew it below.";
+  }
+  return lastPassInfo.failed
+    ? "This Pass has run out. You can renew it here once this page loads, which it couldn't just now."
+    : "This Pass has run out.";
+}
+
+// showPassRunOut says, as a press's answer, that the Pass held here has run
+// out (passRunOutText), and asks for the page again if it was drawn without
+// the server's answer (refreshFailedPass). The words are for the page on
+// screen, so once that drawing has landed, or failed, they are said again if
+// they have changed and the notice still says them: Renew drawn now, say, or
+// sales paused meanwhile. Focus stays where that drawing left it.
+function showPassRunOut(...selectors) {
+  const said = passRunOutText();
+  showPassNotice(said);
+  refreshFailedPass(...selectors).then(() => {
+    const now = passRunOutText();
+    if (now !== said && passPageShown() && noticeSays(said)) {
+      showPassNotice(now);
+    }
+  });
 }
 
 // passPriceText writes Stripe's amount, kept in the currency's smallest unit,
@@ -3231,8 +3291,9 @@ function passIntroHTML(info) {
 
 // passHeldHTML is this browser's Pass, with what can be done about it.
 // codeOnScreen is set when the panel of a code just handed over shows this
-// one, which then needs no second showing.
-function passHeldHTML(info, held, codeOnScreen) {
+// one, which then needs no second showing, and box when the code box is drawn
+// below it.
+function passHeldHTML(info, held, codeOnScreen, box) {
   let status = "";
   if (!held.expired) {
     status = `<p>This browser has a Pass, good until ${timeHTML(held.expires.toISOString())}.</p>`;
@@ -3242,14 +3303,16 @@ function passHeldHTML(info, held, codeOnScreen) {
       : `<p>The Pass in this browser has run out.</p>`;
   }
   // A Pass renewed on another device looks expired here until the server is
-  // asked again.
-  const check = held.expired
-    ? `
+  // asked again. A server without the Pass takes no code, to check or to type
+  // in, so its page offers neither (box).
+  const check =
+    held.expired && box
+      ? `
       <p class="muted">Renewed it somewhere else? Check it again, or enter a newer code below.</p>
       <div class="actions">
         <button class="btn subtle" type="button" data-action="check-pass">Check it again</button>
       </div>`
-    : "";
+      : "";
   const show = codeOnScreen
     ? ""
     : `
@@ -3338,51 +3401,62 @@ function passAttestHTML(id) {
     </label>`;
 }
 
-// passIssuedHTML is a code the server has just handed over, which it will
-// never show again, worded for what this browser holds as it is drawn (held,
-// the Pass stored here), not for what it held when the code came: the code
-// itself, ready to go with posts, or run out, and so not sent with them until
-// it is renewed; or another code, or none, another code having taken its
-// place, here or in another tab, or the browser's data cleared, so it goes
-// once the reader leaves the page, as one the browser could not keep does. It
-// is drawn already filled, so the page moves focus to it (focusPassPanel) for
-// a screen reader to read it out. A different Pass it took the place of in
-// this browser is shown beside it, to be written down, and stays, with any
-// codes carried, once educhan has said the code itself is no longer valid
-// (forgetInvalidCode), worded then, as the code itself is, for whether this
-// browser holds it as it is drawn, typed back in here or stored by another
-// tab say, when it can be shown again from the held Pass's panel. Once educhan
-// says that code is no longer valid too, it is not drawn either. Below them
-// come the codes carried from an earlier panel on this visit (issued.earlier),
-// each worded as passEarlierHTML says.
-function passIssuedHTML(issued, held) {
+// PASS_CODE_BACK_HTML is said of the code a code handed over here took the
+// place of, once this browser holds it again, typed back in here or stored by
+// another tab: the held Pass's panel below can show it.
+const PASS_CODE_BACK_HTML = `<strong>This browser has that code again.</strong> educhan keeps no copy of it, and
+  this browser can show it below only until its data is cleared, so write it down if you still need it.`;
+
+// passIssuedHTML is a code the server has just handed over, which it will never
+// show again, worded for what this browser holds as it is drawn (held, the Pass
+// stored here), not for what it held when the code came: the code itself, ready
+// to go with posts, or run out, and so not sent with them until it is renewed;
+// or another code, or none, another code having taken its place, here or in
+// another tab, or the browser's data cleared, so it goes once the reader leaves
+// the page, as one the browser could not keep does. One it could not keep, and
+// has not held since (keepShownCode), says what would keep it here, in steps
+// the code box takes (submitPass): with nothing held, or a Pass held that has
+// run out, to let the site store data and enter it in the code box; beside a
+// good Pass held, which the code box will not put another code in place of, to
+// write both codes down, remove that Pass, which takes this panel away, and
+// then enter it. On a page without the code box (box false, a server's without
+// the Pass) it says neither. It is drawn already filled, so the page moves
+// focus to it (focusPassPanel) for a screen reader to read it out. A different
+// Pass it took the place of in this browser is shown beside it, worded, as the
+// code itself is, for whether this browser holds it as it is drawn: to be
+// written down to go on using it, or, typed back in here or stored by another
+// tab say, said to be in this browser again (PASS_CODE_BACK_HTML), when the
+// held Pass's panel can show it. It stays, with any codes carried, once educhan
+// has said the code itself is no longer valid (forgetInvalidCode), and once
+// educhan says that code is no longer valid too, it is not drawn either. Below
+// them come the codes carried from an earlier panel on this visit
+// (issued.earlier), each worded as passEarlierHTML says.
+function passIssuedHTML(issued, held, box) {
   const here = Boolean(held && held.code === issued.code);
   const took = here ? "takes" : "took";
+  const back = Boolean(held && held.code === issued.replaced);
+  const use = back ? "" : ": write its code down to go on using it";
+  const heldAgain = back ? ` ${PASS_CODE_BACK_HTML}` : "";
   let replaced = "";
   if (issued.replaced && issued.reissued) {
     replaced = `
       <p>It ${took} the place of the code this browser had,
         <span class="pass-code-old">${esc(issued.replaced)}</span>. If that code was for another
-        Pass, that Pass isn't affected: write its code down to go on using it. If it was for the
-        Pass this reissue code was for, it no longer works.</p>`;
+        Pass, that Pass isn't affected${use}. If it was for the Pass this reissue code was for, it
+        no longer works.${heldAgain}</p>`;
   } else if (issued.replaced) {
     replaced = `
       <p>It ${took} the place of the Pass this browser had, whose code is
-        <span class="pass-code-old">${esc(issued.replaced)}</span>. That Pass isn't affected:
-        write its code down to go on using it.</p>`;
+        <span class="pass-code-old">${esc(issued.replaced)}</span>. That Pass isn't
+        affected${use}.${heldAgain}</p>`;
   }
   const earlier = issued.earlier.map((old) => passEarlierHTML(old, held)).join("");
   if (!issued.code) {
-    const back = Boolean(held && held.code === issued.replaced);
-    let keep = "";
-    if (back) {
-      keep = `<p><strong>This browser has that code again.</strong> educhan keeps no copy of it, and this
-        browser can show it below only until its data is cleared, so write it down if you still
-        need it.</p>`;
-    } else if (issued.replaced) {
-      keep = `<p><strong>Write that code down now if you still need it.</strong> educhan keeps no copy of
-        it, and this browser no longer has it, so it won't be shown again once you leave this page.</p>`;
-    }
+    const keep =
+      issued.replaced && !back
+        ? `<p><strong>Write that code down now if you still need it.</strong> educhan keeps no copy of
+        it, and this browser no longer has it, so it won't be shown again once you leave this page.</p>`
+        : "";
     return `
     <div class="verify-panel pass-issued" id="pass-issued" tabindex="-1">
       <p><strong>The new code handed over here is no longer valid, so this browser no longer has it.</strong></p>
@@ -3407,10 +3481,21 @@ function passIssuedHTML(issued, held) {
     write = "Write this code down or save it somewhere safe now if you still need it.";
     again = "educhan keeps no copy of it, and this browser no longer has it, so it won't be shown again once you leave this page.";
     need = "You need it to use its Pass again, here or on another device.";
-  } else if (!here) {
-    said =
-      "This browser couldn't keep it, because it isn't letting educhan store anything, so it can't send it with your posts. Allow this site to store data, then enter the code below.";
+  } else if (!here && held && !held.expired) {
+    said = "This browser couldn't store it in place of the code it has, so it isn't sent with your posts.";
+    if (box) {
+      said +=
+        " To use it here, write down this code and the one this browser has, remove that Pass, which takes this code off the page, then enter this code below.";
+    }
     again = "educhan keeps no copy of it, and this browser couldn't keep it either, so it won't be shown again once you leave this page.";
+    need = "You need it to use the Pass, here or on another device.";
+  } else if (!here) {
+    said = "This browser couldn't store it, so it can't send it with your posts.";
+    if (box) {
+      said += " Allow this site to store data, then enter the code below.";
+    }
+    again = "educhan keeps no copy of it, and this browser couldn't keep it either, so it won't be shown again once you leave this page.";
+    need = "You need it to use the Pass, here or on another device.";
   }
   return `
     <div class="verify-panel pass-issued" id="pass-issued" tabindex="-1">
@@ -3435,7 +3520,8 @@ function passIssuedHTML(issued, held) {
 // handed over here took the place of ("replaced", or "reissued" when a reissue
 // code's new code did) is worded as the panel's own replaced code is, that Pass
 // unaffected, or, after a reissue code, perhaps that code's own Pass, which
-// then no longer works.
+// then no longer works, and to be written down to go on using it, or, held
+// again, said to be in this browser again (PASS_CODE_BACK_HTML).
 function passEarlierHTML(old, held) {
   const code = `<span class="pass-code-old">${esc(old.code)}</span>`;
   const here = Boolean(held && held.code === old.code);
@@ -3448,18 +3534,15 @@ function passEarlierHTML(old, held) {
     return `
       <p>Earlier on this page, the code ${code} was handed over here. ${keep}</p>`;
   }
+  const use = here ? "" : ": write its code down to go on using it";
   const was =
     old.was === "reissued"
       ? `Earlier on this page, a reissue code's new code took the place of the code this browser had,
-        ${code}. If that code was for another Pass, that Pass isn't affected: write its code down to
-        go on using it. If it was for the Pass that reissue code was for, it no longer works.`
+        ${code}. If that code was for another Pass, that Pass isn't affected${use}. If it was for the
+        Pass that reissue code was for, it no longer works.`
       : `Earlier on this page, a code handed over here took the place of the Pass this browser had,
-        whose code is ${code}. That Pass isn't affected: write its code down to go on using it.`;
-  const keep = here
-    ? ` <strong>This browser has that code again.</strong> educhan keeps no copy of it, and this
-        browser can show it below only until its data is cleared, so write it down if you still
-        need it.`
-    : "";
+        whose code is ${code}. That Pass isn't affected${use}.`;
+  const keep = here ? ` ${PASS_CODE_BACK_HTML}` : "";
   return `
       <p>${was}${keep}</p>`;
 }
@@ -3573,9 +3656,14 @@ function passCodeFieldHTML(held) {
 function passViewHTML(info) {
   const held = storedPass();
   const issued = passJustIssued;
+  // box is whether the code box is drawn below a Pass held or a code this
+  // browser could not keep, which words there may point to: on every page but
+  // one from a server without the Pass, which takes no code. With neither
+  // drawn, a purchase being collected may draw its panel in the box's place.
+  const box = Boolean(info.enabled || info.failed);
   const parts = [`<div class="board-head" data-pass-page><h1>educhan Pass</h1></div>`];
   if (issued) {
-    parts.push(passIssuedHTML(issued, held));
+    parts.push(passIssuedHTML(issued, held, box));
     issued.shown = true;
   }
   parts.push(passIntroHTML(info));
@@ -3591,27 +3679,31 @@ function passViewHTML(info) {
   // nothing is offered for sale, and nothing is said about sales either.
   if (info.failed) {
     if (held) {
-      parts.push(passHeldHTML({ enabled: false }, held, shown));
+      parts.push(passHeldHTML({ enabled: false }, held, shown, box));
     }
     parts.push(passCodeFieldHTML(held));
     parts.push(`<p class="empty">${esc(passErrorText(info.failed))}</p>`);
     return parts.join("");
   }
-  // has is whether this browser has a Pass, kept, or handed over and shown
-  // here because it could not keep it, the panel's own code or one carried
-  // from an earlier panel; open is a checkout under its claim that is still to
-  // be collected. Buy is held back while a Pass is held here, while a code the
-  // browser could not keep is shown, while a purchase is being collected (open
-  // and not has, which draws the collecting panel in place of the forms) and
-  // while sales are paused, and none is drawn when the page could not be read
-  // or the Pass is not on sale. So it is offered beside the code of a Pass the
-  // browser no longer holds only once no other Pass is held here, its data
-  // cleared say, or the code that took its place gone too.
+  // has is whether this browser has a Pass, kept, or handed over and shown here
+  // because it could not keep it and has not held it since (keepShownCode), the
+  // panel's own code or one carried from an earlier panel; open is a checkout
+  // under its claim that is still to be collected. Buy is held back while a
+  // Pass is held here, while a code the browser could not keep and has not held
+  // since is shown, while the page shows a purchase being collected (open and
+  // not has, which draws the collecting panel in place of the forms) and while
+  // sales are paused, and none is drawn when the page could not be read or the
+  // Pass is not on sale. Beside a checkout set aside (passStartedAgain: Start
+  // again, Stripe's cancel link, or a checkout not followed to Stripe), which
+  // the page goes on collecting underneath, it is offered again. So it is
+  // offered beside the code of a Pass the browser no longer holds only once no
+  // other Pass is held here, its data cleared say, or the code that took its
+  // place gone too.
   const unkept = Boolean(issued && ((issued.code && !issued.kept) || issued.earlier.some((old) => !old.kept)));
   const has = Boolean(held || unkept);
   const open = info.enabled && info.claim === true && !passStartedAgain;
   if (held) {
-    parts.push(passHeldHTML(info, held, shown));
+    parts.push(passHeldHTML(info, held, shown, box));
   }
   if (!info.enabled) {
     parts.push(`<p class="empty">The Pass is not on sale on this server.</p>`);
@@ -4003,15 +4095,18 @@ async function passAfterLostAnswer(gone = "The Pass that was in this browser is 
 // educhan has just answered. Something other than the reader sets the new
 // drawing off, so it draws as redrawPass does: focus on a control it draws
 // again stays there, without scrolling the page, and focus it drops, or that
-// was on the body, goes to the first of selectors still on the page.
+// was on the body, goes to the first of selectors still on the page. It
+// resolves once that drawing has landed, or come to nothing, or at once when
+// there is none to ask for.
 function refreshFailedPass(...selectors) {
   if (!lastPassInfo.failed) {
-    return;
+    return Promise.resolve(false);
   }
-  renderPass(...selectors).then((drawn) => {
+  return renderPass(...selectors).then((drawn) => {
     if (drawn && (!document.activeElement || document.activeElement === document.body)) {
       passFocus(...selectors);
     }
+    return drawn;
   });
 }
 
@@ -4410,8 +4505,7 @@ async function checkHeldPass(button) {
   } else if (expired) {
     drawPass(lastPassInfo);
     passFocus('[data-action="check-pass"]', "#pass-held");
-    showPassNotice(passRunOutText());
-    refreshFailedPass('[data-action="check-pass"]', "#pass-held");
+    showPassRunOut('[data-action="check-pass"]', "#pass-held");
   } else {
     showPassNotice(passErrorText(failed));
     button.disabled = false;
@@ -4610,8 +4704,12 @@ async function submitPass(form) {
   if (expired) {
     drawPass(lastPassInfo);
     passFocus("#pass-held");
-    showPassNotice(kept ? passRunOutText() : PASS_NOT_KEPT);
-    refreshFailedPass("#pass-held");
+    if (kept) {
+      showPassRunOut("#pass-held");
+    } else {
+      showPassNotice(PASS_NOT_KEPT);
+      refreshFailedPass("#pass-held");
+    }
     return;
   }
   // Sales were paused after this page was drawn.
@@ -4622,8 +4720,9 @@ async function submitPass(form) {
     return;
   }
   // In the page's own words, as what it says of the Pass gone is (passLost):
-  // the server's say to buy a new one would point to a Buy form a code the
-  // browser could not keep, or a purchase being collected, holds back.
+  // the server's say to buy a new one would point to a Buy form the page holds
+  // back beside a code the browser could not keep, or in showing a purchase
+  // being collected, among others (passViewHTML).
   if (kind === "renew" && refusal === "invalid") {
     drawPass(lastPassInfo);
     passFocus("form[data-pass] input");
@@ -6077,19 +6176,20 @@ document.addEventListener("cut", forgetCopiedPassCode);
 // the browser holds. Another code stored there leaves a code just handed over
 // be, kept or not: one this browser kept is drawn as no longer here, beside any
 // code it took the place of, until the reader leaves the Pass page, and one it
-// could not keep was never the Pass it holds. A browser that stores nothing at
-// all tells this tab nothing, and a code here then stays until the reader
-// leaves the Pass page. Once this browser holds a Pass again, what the page
-// said of one that went goes (passLost). A code this tab copied no longer
-// counts as its to empty from the clipboard once the other tab has taken that
-// code itself out of storage, removed or another stored in its place: what
-// the event says was stored (was) held it, and the browser no longer holds
-// it. Storage cleared (a key of null) counts too, once the browser no longer
-// holds it. The same code stored again, renewed or with a new date say, or a
-// change to a Pass whose code is not the one copied, leaves it counted, so
-// Remove and Forget still empty the clipboard. The Pass page, if it is on
-// screen here, is drawn again from what this browser holds now, which also
-// hides a code shown on it.
+// could not keep was never the Pass it holds. A code on the panel that the
+// other tab stored counts as kept from then on (keepShownCode), however it
+// came. A browser that stores nothing at all tells this tab nothing, and a code
+// here then stays until the reader leaves the Pass page. Once this browser
+// holds a Pass again, what the page said of one that went goes (passLost). A
+// code this tab copied no longer counts as its to empty from the clipboard once
+// the other tab has taken that code itself out of storage, removed or another
+// stored in its place: what the event says was stored (was) held it, and the
+// browser no longer holds it. Storage cleared (a key of null) counts too, once
+// the browser no longer holds it. The same code stored again, renewed or with a
+// new date say, or a change to a Pass whose code is not the one copied, leaves
+// it counted, so Remove and Forget still empty the clipboard. The Pass page, if
+// it is on screen here, is drawn again from what this browser holds now, which
+// also hides a code shown on it.
 function followPassStorage(event) {
   if (event.key !== PASS_STORAGE_KEY && event.key !== null) {
     return;
@@ -6101,6 +6201,7 @@ function followPassStorage(event) {
   }
   if (now) {
     passLost = "";
+    keepShownCode(now.code);
   }
   if ((event.key === null || was === passCodeCopied) && (!now || now.code !== passCodeCopied)) {
     passCodeCopied = "";
