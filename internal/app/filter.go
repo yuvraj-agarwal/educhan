@@ -13069,18 +13069,32 @@ var (
 	// the harm or the handling of what does it ("less bleeding", "out using
 	// a lighter", "less pressing the blade"); a degree is set only in an
 	// activity named, activityGerunds or selfSports ("less playing", "less
-	// jogging"); selfTools anywhere after either are a method's ("less when
-	// i use a blade"); selfAmounts start an amount after "down to" or "back
-	// to".
+	// jogging"). Later in the clause the harm is a method's anywhere ("less
+	// after cutting"), but the handling, selfHandlings, only of a tool of
+	// harm or the body, harmHandled: "less when using my nails", "less when
+	// hitting my head", not "less when holding the kettle". selfHarmObjects
+	// are such things beside selfTools, weaponHeads, bluntHeads, selfBody
+	// and bodyHeads. selfTools anywhere after either are a method's ("less
+	// when i use a blade"), plainTools in a clause of their own only without
+	// one of toolUses after them ("less when using a knife to cut
+	// vegetables"). selfAmounts start an amount after "down to" or "back to".
 	selfClauses     = canonSetOf(`when whenever while if because cause cuz since as until till`)
 	selfHiddenAfter = canonSetOf(`getting being leaving letting anyone anybody anything telling`)
 	selfHarmings    = canonSetOf(`bleeding scarring cutting burning hurting showing using holding pressing
 		heating lighting hitting punching banging picking scratching scraping biting carving slicing stabbing
 		applying touching`)
-	selfSports = canonSetOf(`jogging sprinting exercising wrestling tackling skiing straightening curling`)
-	doForms    = canonSetOf(`do does did doing`)
-	selfTools  = canonSetOf(`blade blades razor razors lighter lighters compass compasses knife knives scissors
+	selfHandlings = canonSetOf(`using holding pressing heating lighting hitting punching banging picking applying
+		touching`)
+	selfHarmObjects = canonSetOf(`nail nails glass match matches cigarette cigarettes wall walls scab scabs myself`)
+	selfSports      = canonSetOf(`jogging sprinting exercising wrestling tackling skiing straightening curling
+		heading carrying sitting`)
+	doForms   = canonSetOf(`do does did doing`)
+	selfTools = canonSetOf(`blade blades razor razors lighter lighters compass compasses knife knives scissors
 		sharpener sharpeners needle needles`)
+	plainTools = canonSetOf(`knife knives scissors`)
+	toolUses   = canonSetOf(`vegetables vegetable veggies veg fruit fruits onion onions potato potatoes tomato
+		tomatoes bread meat chicken fish cake paper cardboard cloth fabric ribbon thread class art craft crafts
+		kitchen project`)
 	selfAmounts = canonSetOf(`one two three four five six seven eight nine ten twelve fifteen twenty thirty half
 		once twice zero`)
 	suicideTopics = canonSetOf(`prevention awareness essay essays rates rate statistics stats hotline helpline helplines squad bombing bomber bombers attack attacks mission missions doors door run runs research project report article documentary`)
@@ -15889,14 +15903,17 @@ func unseenAfter(next []string) bool {
 // season", "hurt myself less when i fall"). Anything else after them is a
 // method's, and so is the harm hidden, how deep or a scar anywhere in the
 // clause, a tool, or a place on the body before a clause of its own begins,
-// selfMarks: "cut myself down my arm", "burn myself less visibly", "hurt
+// selfMarked: "cut myself down my arm", "burn myself less visibly", "hurt
 // myself out of sight", "cut myself out deeply", "cut myself back there so
 // no one sees", "hurt myself less when i use a blade", not "hurt myself less
-// when i fall on my knees". So is the
-// handling of a tool after either ("hurt myself less using a blade", "burn
-// myself out using a lighter"), and the harm or "do it" after a degree
-// ("hurt myself less after cutting", "burn myself less every time i do
-// it"). "How to cut myself less" still asks about cutting.
+// when i fall on my knees" or "hurt myself less when using a knife to cut
+// vegetables". So is the handling of a tool straight after either ("hurt
+// myself less using a blade", "burn myself out using a lighter"), and after
+// a degree the harm or "do it" anywhere, or the handling of a tool of harm
+// or the body later in the clause ("hurt myself less after cutting", "burn
+// myself less every time i do it", "hurt myself less when using my nails",
+// not "burn myself less when holding the kettle"). "How to cut myself less"
+// still asks about cutting.
 func selfIdiom(ws, next []string) bool {
 	if len(next) == 0 || is(next[0], "less") && hasWord(ws, "cut") {
 		return false
@@ -15930,11 +15947,54 @@ func selfIdiom(ws, next []string) bool {
 		return true // "burn myself out completely"
 	}
 	for i, w := range rest {
-		if !phrasal && (selfHarmings[w] || is(w, "it") && i > 0 && doForms[rest[i-1]]) {
-			return false // "less after cutting", "less every time i do it"
+		if !phrasal && (selfHarmings[w] && !selfHandlings[w] || is(w, "it") && i > 0 && doForms[rest[i-1]] ||
+			selfHandlings[w] && harmHandled(rest[i+1:])) {
+			return false // "less after cutting", "less every time i do it", "less when using my nails"
 		}
 	}
 	return selfIdiomTimes[rest[0]]
+}
+
+// harmHandled reports, in the words ws after one of selfHandlings and
+// before a clause of its own begins, a tool of harm or the body as what is
+// handled: "my nails", "the lighter", "my head", "walls"; not a hand it is
+// handled with ("with my hands"), and a knife or scissors only without an
+// ordinary use after it (plainUse).
+func harmHandled(ws []string) bool {
+	for i, w := range ws {
+		switch {
+		case selfClauses[w]:
+			return false
+		case plainTools[w]:
+			if !plainUse(ws[i+1:]) {
+				return true
+			}
+		case selfTools[w] || weaponHeads[w] || bluntHeads[w] || selfHarmObjects[w]:
+			return true
+		case (selfBody[w] || bodyHeads[w]) && !(i > 0 && (is(ws[i-1], "with") || is(ws[i-1], "bare") ||
+			i > 1 && ownerWord(ws[i-1]) && is(ws[i-2], "with"))):
+			return true
+		}
+	}
+	return false
+}
+
+// plainUse reports, in the words ws after a knife or scissors and before a
+// clause of its own begins, an ordinary use of it, one of toolUses, with no
+// place on the body or "myself": "to cut vegetables", "in art class", not
+// "in class on my arm".
+func plainUse(ws []string) bool {
+	use := false
+	for _, w := range ws {
+		if selfClauses[w] {
+			break
+		}
+		if selfBody[w] || bodyHeads[w] || is(w, "myself") {
+			return false
+		}
+		use = use || toolUses[w]
+	}
+	return use
 }
 
 // selfObject reports a noun phrase at the start of ws that a phrasal verb
@@ -15969,10 +16029,12 @@ func selfAmount(w string) bool {
 // selfMarked reports, in the words after a particle or a degree, the harm
 // hidden, how deep or a scar anywhere ("less visibly", "so no one sees",
 // "without anyone knowing", "deeply", "so it doesn't scar"), a tool
-// anywhere ("less when i use a blade"), or a place on the body before a
-// clause of its own begins ("down my arm", "out of sight on my thigh", not
-// "less when i fall on my knees"). "Without" hides it unless an activity
-// follows ("without failing").
+// anywhere ("less when i use a blade"), but a knife or scissors in a clause
+// of its own only without an ordinary use after it (plainUse: not "less when
+// using scissors in art class"), or a place on the body before a clause of
+// its own begins ("down my arm", "out of sight on my thigh", not "less when
+// i fall on my knees"). "Without" hides it unless an activity follows
+// ("without failing").
 func selfMarked(ws []string) bool {
 	body := true
 	for i, w := range ws {
@@ -15983,7 +16045,7 @@ func selfMarked(ws []string) bool {
 			if i+1 >= len(ws) || !strings.HasSuffix(ws[i+1], "ing") || selfHiddenAfter[ws[i+1]] {
 				return true
 			}
-		case selfMarks[w] && (body || !selfBody[w]), selfTools[w]:
+		case selfMarks[w] && (body || !selfBody[w]), selfTools[w] && (body || !plainTools[w] || !plainUse(ws[i+1:])):
 			return true
 		}
 	}
