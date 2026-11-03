@@ -14374,7 +14374,8 @@ func quoteSpeaker(text string, open, end int, ownState bool) speaker {
 				is(w, "what") && helpAsked(after[:min(len(after), 8)]),
 				quoteRefs[w] && quoteReceived(after[1:min(len(after), 9)]),
 				leftByOthers(after):
-				if own := wordsIn(sentenceAfter(text, end)); !posterOwns(own) && (!ownState || sentByOthers(own)) {
+				if own := wordsIn(sentenceAfter(text, end)); !posterOwns(own) && !posterCarries(own) &&
+					(!ownState || sentByOthers(own)) {
 					return otherSpeaks
 				}
 			}
@@ -14542,7 +14543,9 @@ func receiptAfter(ws []string, found, placed bool) bool {
 			return true
 		case placed && receiptPrepositions[w]:
 			for k := i + 1; k < len(ws) && k < i+4; k++ {
-				if receiptPlaces[bare(ws[k])] {
+				if x := bare(ws[k]); readerOwners[x] {
+					return false // "on your desk", the reader's place, not where the words came to the poster
+				} else if receiptPlaces[x] {
 					return true
 				}
 			}
@@ -14602,22 +14605,32 @@ func leftByOthers(ws []string) bool {
 // posterOwns reports, in the words after a quotation, the words owned: aimed
 // at someone ("i see this as good advice for you"), meant ("i read this out
 // to him and i meant it"), covered up ("i never said this if anyone asks"),
-// or with a weapon the poster has or brings beside them ("i found this knife
-// in my locker", "i found this on my dad's desk and i'm bringing it", but not
-// "i'm bringing this to the principal").
+// with a weapon the poster has or brings beside them ("i found this knife in
+// my locker", "i found this on my dad's desk and i'm bringing it", but not
+// "i'm bringing this to the principal"), real this time ("this time it's
+// real", not "is this time it's real"), agreed with ("and i agree"), or
+// said to be the poster's ("it was me", "written by me").
 func posterOwns(ws []string) bool {
 	for j, w := range ws {
 		w = bare(w)
-		var next string
+		var next, third string
 		if j+1 < len(ws) {
 			next = bare(ws[j+1])
+		}
+		if j+2 < len(ws) {
+			third = bare(ws[j+2])
 		}
 		switch {
 		case is(w, "for") && ownedFor[next],
 			(is(w, "meant") || is(w, "mean")) && (is(next, "it") || is(next, "every")),
-			is(w, "if") && (is(next, "anyone") || is(next, "anybody")) && j+2 < len(ws) && is(bare(ws[j+2]), "asks"),
-			quoteRefs[w] && (weaponHeads[next] || bluntHeads[next] || fuelHeads[next]):
-			return true
+			is(w, "if") && (is(next, "anyone") || is(next, "anybody")) && is(third, "asks"),
+			quoteRefs[w] && (weaponHeads[next] || bluntHeads[next] || fuelHeads[next]),
+			quoteRefs[w] && (is(next, "was") || is(next, "is")) && posterLabels[third] && !is(third, "i"),
+			is(w, "by") && posterLabels[next] && !is(next, "i"),
+			is(w, "time") && (is(next, "it's") || is(next, "its")) && madeReal[third] &&
+				!anyIn(ws[max(0, j-3):j], realDoubts),
+			(is(w, "agree") || is(w, "agreed")) && j > 0 && posterSubjects[bare(ws[j-1])]:
+			return true // "it was me", "by me", "this time it's real", "and i agree"
 		case posterSubjects[w]:
 			// "and i'm bringing it", "so i'm doing it tomorrow", "and i'll do
 			// it"; not "should i do it", a question.
@@ -14639,6 +14652,57 @@ func posterOwns(ws []string) bool {
 		}
 	}
 	return false
+}
+
+// posterCarries reports, in the words of the sentence after a quotation,
+// the words brought, used or made real by the poster or by no one named:
+// "found this in my bag, bringing it tomorrow", "and i'm going to use it",
+// "i'll make it real", not "he's bringing it", "bringing it up with my
+// parents", "using it as proof" or "using it to report him". It reads to
+// the sentence's end, past the words a reading of the receipt takes, for
+// someone to help or a report: "bringing it to my teacher tomorrow".
+func posterCarries(ws []string) bool {
+	for j, w := range ws {
+		w = bare(w)
+		if j+1 >= len(ws) || !quoteRefs[bare(ws[j+1])] || !ownedDoing(ws, j) {
+			continue
+		}
+		var third string
+		if j+2 < len(ws) {
+			third = bare(ws[j+2])
+		}
+		switch {
+		case (carryWords[w] || useWords[w]) && !is(third, "as") && !is(third, "up") &&
+			!anyIn(ws[j+2:], helperWords) && !anyIn(ws[j+2:], passOnVerbs),
+			makeWords[w] && madeReal[third]:
+			return true
+		}
+	}
+	return false
+}
+
+// ownedDoing reports the doer of the verb ws[j] the poster, or no one
+// named: the nearest subject in the five words before it, where someone
+// after a preposition is none ("and i'm going to use it", "got this from my
+// uncle, bringing it tomorrow", not "he's bringing it" or "my friend found
+// this and is bringing it").
+func ownedDoing(ws []string, j int) bool {
+	for k := j - 1; k >= 0 && k >= j-5; k-- {
+		x := bare(ws[k])
+		switch {
+		case posterSubjects[x] || posterLeads[x]:
+			return true
+		case otherSpeakers[x]:
+			p := k - 1
+			if p >= 0 && ownerWord(bare(ws[p])) {
+				p--
+			}
+			if p < 0 || !doerPrepositions[bare(ws[p])] {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // sentByOthers reports, in the words after a quotation, someone else named
@@ -14776,7 +14840,18 @@ var (
 	// do", ask for the next step of a plan, not for help: "what do i do
 	// next".
 	carryWords = canonSetOf(`bring brings bringing brought carry carries carrying`)
-	stepWords  = canonSetOf(`next first then afterwards`)
+	// useWords before "it" or "this", and makeWords before them and one of
+	// madeReal, have the poster use the words or make them come true: "i'm
+	// going to use it", "i'll make it real". readerOwners own a place as the
+	// reader's: "on your desk" is where the words were left for the reader.
+	// doerPrepositions before someone make them no subject: "from my
+	// uncle".
+	doerPrepositions = canonSetOf(`from by to with for of at`)
+	useWords         = canonSetOf(`use uses using`)
+	madeReal         = canonSetOf(`real true happen`)
+	realDoubts       = canonSetOf(`is if whether maybe think thinks scared afraid worried hope`)
+	readerOwners     = canonSetOf(`your ur yours`)
+	stepWords        = canonSetOf(`next first then afterwards`)
 	// intentWords, between the poster and "do it", make it what the poster
 	// means to do: "i'm going to do it", "i will do it".
 	intentWords = canonSetOf(`will going gonna wanna am`)

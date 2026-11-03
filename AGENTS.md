@@ -861,20 +861,25 @@ teacher or the mods, "i'll show this text to my mum"), the same clause with its 
 out ("got this again", `elidedReceipts`), a clause with the words as its subject
 (`quoteReceived`: "this was written on my desk", "this keeps happening", not "this is in
 my locker"), or someone else leaving them (`leftByOthers`: "someone left this in my
-locker"), unless the rest of the sentence owns them (`posterOwns`: "for you", a weapon,
-"and i'm bringing it", "and i'll do it"). For crisis language a clause gives the words
-away only when it names who sent them or a message (`sentByOthers`), so "'i want to die'
-this keeps happening" stays the poster's; a quotation named as a kind of post
-(`namedAsAKind`: "the 'add me on snap' guys"); and the same report without quotation
-marks (`reportedClause`: a verb of saying before the words, in their sentence and before
-any comma, with only `reportedLinks` between: "my bf told me to go kill myself", "he
-said he'll shoot up the school"). A verb that doubles as a noun is the noun after
-`nounLeads` or a possessive (`sayingNoun`: "my post", "his message"). The
-poster's own words stay theirs however they are wrapped: a label, a dash or a subject
-that is the poster (`posterLabels`, `posterSubjects`, the poster's own mind,
-`mindWords`: "my head keeps telling me to"), an instruction (`instructionModals`: "you
-should tell him to kys"), a verb with no subject or only an adverb before it ("already
-told everyone '…'"), "you heard me", and a quotation no one is named as saying. A source that is not a person names no one, so "news: '…'" and "'…' - police"
+locker"), unless the place is the reader's ("this was left on your desk",
+`readerOwners`) or the rest of the sentence owns them (`posterOwns`: "for you", a
+weapon, "and i'm bringing it", "and i'll do it", "it was me", "by me", "this time it's
+real", "and i agree"; `posterCarries`: the poster, or no one named, carrying, using or
+making real what came, "bringing it tomorrow", "and i'm going to use it", "i'll make it
+real", `ownedDoing`; not "bringing it to my teacher" or "using it as evidence"). For
+crisis language a clause gives the words away only when it names who sent them or a
+message (`sentByOthers`), so "'i want to die' this keeps happening" stays the poster's;
+a quotation named as a kind of post (`namedAsAKind`: "the 'add me on snap' guys"); and
+the same report without quotation marks (`reportedClause`: a verb of saying before the
+words, in their sentence and before any comma, with only `reportedLinks` between: "my bf
+told me to go kill myself", "he said he'll shoot up the school"). A verb that doubles as
+a noun is the noun after `nounLeads` or a possessive (`sayingNoun`: "my post", "his
+message"). The poster's own words stay theirs however they are wrapped: a label, a dash
+or a subject that is the poster (`posterLabels`, `posterSubjects`, the poster's own
+mind, `mindWords`: "my head keeps telling me to"), an instruction (`instructionModals`:
+"you should tell him to kys"), a verb with no subject or only an adverb before it
+("already told everyone '…'"), "you heard me", and a quotation no one is named as
+saying. A source that is not a person names no one, so "news: '…'" and "'…' - police"
 still hold. This is the rule the owner set: a student reporting a threat, a grooming
 attempt or being told to kill themselves is not held for it, and a poster who wraps
 their own threat in quotation marks ("'I'm bringing a gun tomorrow' - me") is. The cost
