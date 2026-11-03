@@ -855,8 +855,9 @@ server that would refuse what it sends.
   pixel is refused with `400` after flood control, once it is encoded (`image would be too
   large once re-encoded for storage`), which a file made to compress in a way Go's
   encoders cannot follow reaches, as can a PNG that another encoder compressed far smaller
-  than the fastest level it is stored at (see the PNG bullet below), and so, once it is
-  played, is a GIF that cannot be stored one frame to a picture (`image too large to
+  than the fastest level it is stored at (see the PNG bullet below) and a GIF whose frames
+  are put back over a background of many colours (see the GIF bullet below); and so, once
+  it is played, is a GIF that cannot be stored one frame to a picture (`image too large to
   process`; see the GIF bullet below). A lossy WebP with transparency is held instead to
   what a PNG of its size can come to, because stored losslessly it is meant to be many
   times the size it came in at; it is refused from its header when that is too large to
@@ -990,13 +991,18 @@ server that would refuse what it sends.
     narrower than 64 pixels counting as 64 wide) is refused too, which takes frames that
     jump across the canvas from one picture to the next; with a table a frame, a rectangle
     looked at for a way of disposing of a frame that is not taken counts as a frame, so
-    that the work of looking is bounded as the work of writing is. Neither refusal can be
-    read from the header, only found by playing the GIF, so a file the header check admits
-    is turned away only after it has been decoded and its thumbnail made, and after flood
-    control. It costs the post its cooldown, and nothing is stored: the renditions are
-    written only once processing has succeeded. Comments and application data such as XMP
-    are dropped, and the background colour, which browsers never draw, is written as the
-    first entry.
+    that the work of looking is bounded as the work of writing is. With one table no frame
+    is put back, so a GIF whose frames are put back over a background of many colours,
+    each drawing only a sprite, is stored with the background the sprite leaves drawn
+    again in every frame: a sprite hopping to and fro over a dithered photo comes to about
+    nine times the upload, and is refused as too large once re-encoded (see above), where
+    the same animation with every frame left in place is stored. None of the three
+    refusals can be read from the header, only found by playing the GIF, so a file the
+    header check admits is turned away only after it has been decoded and its thumbnail
+    made, and after flood control. It costs the post its cooldown, and nothing is stored:
+    the renditions are written only once processing has succeeded. Comments and
+    application data such as XMP are dropped, and the background colour, which browsers
+    never draw, is written as the first entry.
   - *WebP* cannot be encoded in Go, so it is stored as another format made from its
     pixels: a lossy, opaque WebP as a JPEG at quality 90 that keeps the WebP's own
     half-resolution (4:2:0) colour, and any other (lossless, or with transparency) as a

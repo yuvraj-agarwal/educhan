@@ -2017,6 +2017,97 @@ func TestStoredFileCannotOutgrowItsUpload(t *testing.T) {
 	}
 }
 
+// A GIF's frames are rewritten, not copied, and with one colour table a
+// stored frame is left in place or cleared, never put back (playGIF). An
+// animation that puts each frame back, over a background of many colours,
+// draws only its sprite; stored, each frame has to draw the background the
+// sprite leaves as well. Here a flat sprite hops between two places, 400
+// times, over 128 dithered browns: the upload, every frame put back, comes to
+// about a ninth of what it is stored at, and is refused as too large to
+// store, once played, where the same animation drawn with every frame left in
+// place, which a browser shows alike, is stored, as exactly what the other
+// would have been.
+func TestAGIFPutBackOverABusyBackgroundCanOutgrowItsUpload(t *testing.T) {
+	const w, h, side, gap, hops = 96, 64, 24, 8, 400
+	colours := make([][3]byte, 129)
+	for i := range 128 {
+		colours[i] = [3]byte{byte(2 * i), byte(i * 8 / 5), byte(i)}
+	}
+	colours[128] = [3]byte{255, 0, 0}
+	rng := rand.New(rand.NewSource(1))
+	background := make([]uint8, w*h)
+	for y := range h {
+		for x := range w {
+			v := (x*127/(w-1)+y*60/(h-1))/2 + rng.Intn(41) - 20
+			background[y*w+x] = uint8(min(max(v, 0), 127))
+		}
+	}
+	top := (h - side) / 2
+	places := [2]int{w/2 - side - gap/2, w/2 + gap/2}
+	// drawn is the rectangle given, with the sprite at x and the background
+	// elsewhere.
+	drawn := func(at image.Rectangle, x int) []uint8 {
+		var pix []uint8
+		for py := at.Min.Y; py < at.Max.Y; py++ {
+			for px := at.Min.X; px < at.Max.X; px++ {
+				if px >= x && px < x+side && py >= top && py < top+side {
+					pix = append(pix, 128)
+				} else {
+					pix = append(pix, background[py*w+px])
+				}
+			}
+		}
+		return pix
+	}
+	animation := func(putBack bool) rawGIF {
+		whole := image.Rect(0, 0, w, h)
+		g := rawGIF{w: w, h: h, global: colours, loops: []rawLoop{{"NETSCAPE2.0", 0}}, frames: []rawFrame{
+			{controls: []rawControl{{keepFrame, 10, -1}}, at: whole, pix: drawn(whole, -side)},
+		}}
+		for i := range hops {
+			x := places[i%2]
+			f := rawFrame{controls: []rawControl{{restoreFrame, 10, -1}}, at: image.Rect(x, top, x+side, top+side)}
+			if !putBack {
+				f.controls[0].disposal = keepFrame
+				f.at = image.Rect(places[0], top, places[1]+side, top+side)
+			}
+			f.pix = drawn(f.at, x)
+			g.frames = append(g.frames, f)
+		}
+		return g
+	}
+	putBack, kept := animation(true), animation(false)
+	if d := showDifference(chromiumReads(putBack), chromiumReads(kept)); d != "" {
+		t.Fatalf("the two uploads do not show alike: %s", d)
+	}
+
+	upload := putBack.bytes()
+	in, err := inspect(upload)
+	if err != nil {
+		t.Fatalf("Inspect = %v; the header is sound", err)
+	}
+	if _, err := Process(context.Background(), upload); !errors.Is(err, ErrStoredTooLarge) {
+		t.Errorf("Process(frames put back) = %v, want ErrStoredTooLarge", err)
+	}
+	if n := processing.held(); n != 0 {
+		t.Errorf("%d bytes of the budget still held after the refusal", n)
+	}
+	stored := process(t, kept.bytes()).Data
+	in.limit = math.MaxInt64
+	unlimited, err := sanitize(context.Background(), in, upload)
+	if err != nil {
+		t.Fatalf("sanitize(frames put back) with no limit = %v", err)
+	}
+	if !bytes.Equal(unlimited.data, stored) {
+		t.Errorf("with no limit, the frames put back come to %d bytes, not the %d the frames left in place are stored at", len(unlimited.data), len(stored))
+	}
+	limit := storedLimit(FormatGIF, upload, w, h)
+	t.Logf("upload %d bytes, its limit %d, stored %d (%.1f times the upload)", len(upload), limit, len(stored), float64(len(stored))/float64(len(upload)))
+	if int64(len(stored)) <= limit*5/4 {
+		t.Errorf("stored at %d bytes against a limit of %d: the case is too near the limit to show anything", len(stored), limit)
+	}
+}
+
 // A cut-out photo saved as a lossy WebP with transparency is stored as a PNG
 // of its pixels, which is many times the size it came in at: that is what a
 // lossy picture stored losslessly comes to, and it is stored, not refused

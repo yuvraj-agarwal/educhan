@@ -1094,7 +1094,10 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   encoder's output buffer (`storedBuffer`, which refuses to grow past `storedLimit` with
   `ErrStoredTooLarge`: four times the upload plus half a byte a pixel, so a file Go's
   encoders cannot compress the way it came is refused rather than stored many times
-  larger; a lossy WebP with transparency, stored as a PNG and so meant to grow, is held to
+  larger, as is a GIF whose frames are put back over a background of many colours, since
+  with one table `playGIF` puts no frame back and draws that background again each frame
+  (about nine times the upload, `TestAGIFPutBackOverABusyBackgroundCanOutgrowItsUpload`);
+  a lossy WebP with transparency, stored as a PNG and so meant to grow, is held to
   `pngLimit` of its size instead, which the header gives, so its cost refuses it up front
   rather than after decoding), the six rows of the stored picture `image/png`'s encoder
   writes a PNG through (`pngEncoderRows`, all made before the first row is written, so
