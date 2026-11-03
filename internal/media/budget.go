@@ -91,9 +91,10 @@ const UploadBudget int64 = 64 << 20
 //     repeat a cheap scan thousands of times and decode for thousands of
 //     seconds.
 //   - a GIF of many colours: 25 frames of a 2000×2000 canvas, which the frame
-//     cap (maxGIFFramePixels) lets come to 100 million pixels, each drawn
-//     from a table of its own of 256 colours, ~4-4.5 s whichever colours they
-//     are, and ~4.5-5 s when each frame leaves pixels undrawn, for whose
+//     cap (maxGIFFramePixels) lets come to 100 million pixels, each drawn from
+//     a table of its own of 256 colours, ~4-4.5 s whichever colours they are,
+//     and about 5 s when each frame leaves pixels undrawn (~4.9-4.95 s the
+//     best of three runs on a quiet core, single runs up to ~5.7 s), for whose
 //     colours its rows are gone over a second time (undrawnInTable), however
 //     those pixels lie: every other row, every other pixel, half at random or
 //     all but two a row. Each colour is found in a frame's table in the same
