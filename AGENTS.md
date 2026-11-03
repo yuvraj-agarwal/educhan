@@ -491,7 +491,9 @@ properties and needs a browser check before the test changes.
   form has been read and checked, straight into the `try` whose catch releases them, and
   switched back on after a refusal, with the focus on the button, without scrolling to
   it, if the form had it and it is still lost, on the page or nowhere, or after a
-  success once the form is emptied; `app.css` shows the held controls switched off). A
+  success once the form is emptied; a badge box drawn into the form meanwhile, for a
+  badge stored or forgotten in another tab say, is drawn switched off and switched back
+  on with them (`drawBadgeOption`); `app.css` shows the held controls switched off). A
   redraw of the form's own page while the form is held or still owed a notice (above),
   such as Update, or another page of the same board's index, which has the same
   `routeKey` (the view, the board and the thread, never the index page), keeps the page,
@@ -759,13 +761,15 @@ properties and needs a browser check before the test changes.
   verified since in this browser, so nothing was posted, and, unless release left the
   post with nothing in it (the form is then told only what went and why, and, by
   `imageTakenOff`, to write something instead), pressing again posts without a badge,
-  and ticking the form's box, which now offers the new one, posts with that one. That
-  notice is its one refusal for the badge, so a note left on it while the post was on
-  its way goes, whatever left it: a change of badge in another tab
-  (`followCredentialStorage`), a confirmation answered in this one
-  (`submitVerification`), another badged post's refusal in this one (`submit`),
-  `/verify` loading over the form (`loadVerification`), or a redraw that puts it back
-  (`restoreDraft`).
+  and ticking the form's box, which now offers the new one, posts with that one. It
+  reads the badge held when it is said, which a redraw loading meanwhile can do again
+  (`restoreDraft`): with none held by then, forgotten since, it ends with what pressing
+  again does, and with another, verified since, it names that one. That notice is its
+  one refusal for the badge, so a note left on it while the post was on its way goes,
+  whatever left it: a change of badge in another tab (`followCredentialStorage`), a
+  confirmation answered in this one (`submitVerification`), another badged post's
+  refusal in this one (`submit`), `/verify` loading over the form (`loadVerification`),
+  or a redraw that puts it back (`restoreDraft`).
 - The poster key lives in `localStorage` under `educhan:poster-key`: 16 random bytes as
   22 characters of unpadded base64url, made by `posterKey()` on the first post rather
   than the first visit. `submit` sends it in `X-Educhan-Poster-Key` on thread-create and

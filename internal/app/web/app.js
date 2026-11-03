@@ -1518,8 +1518,12 @@ function badgeOffered(form) {
 // in its place, or to the form's button when there is none, rather than
 // dropping it to the page. The Name field is left as it is too: a remembered
 // name or tripcode put back on a post written to go out badged would tie it to
-// the reader's unbadged posts. It says whether the box it drew over was
-// ticked.
+// the reader's unbadged posts. A form held while its request is pending gets
+// its new box switched off, as holdForm switched off the one it replaces, and
+// switched on with the rest when the hold ends: what is sent was read at the
+// press, so a box ticked meanwhile would show a badge the post does not carry.
+// A box taken out of a held form stays out. It says whether the box it drew
+// over was ticked.
 function drawBadgeOption(form) {
   const held = state.verification.badge;
   const number = held ? held.number : "";
@@ -1530,9 +1534,14 @@ function drawBadgeOption(form) {
   const focused = slot.contains(document.activeElement);
   slot.dataset.badgeOption = number;
   slot.innerHTML = badgeOptionHTML(held);
+  const drawn = slot.querySelector('input[name="badge"]');
+  if (drawn && heldForms.has(form)) {
+    drawn.disabled = true;
+    heldForms.get(form).push(drawn);
+  }
   const check = form.querySelector("[data-check-hint]");
   if (check) check.textContent = held ? CHECK_HINT_WITH_BADGE : CHECK_HINT;
-  const next = slot.querySelector('input[name="badge"]') || form.querySelector('button[type="submit"]');
+  const next = drawn || form.querySelector('button[type="submit"]');
   if (focused && next) next.focus({ preventScroll: true });
   return ticked;
 }
@@ -1642,13 +1651,20 @@ const BADGE_REPLACED = "The badge this post carried was replaced by one verified
 // to post with the new badge: the form offers it, not ticked (drawBadgeOption).
 // A post release left with nothing in it, its image taken off, has nothing to
 // press again for, and the notice then says only what went (imageTakenOff says
-// the rest).
+// the rest). It reads the badge held and the poster key when it is said, which
+// a redraw loading meanwhile can do again later (restoreDraft): with no badge
+// held by then, forgotten since, it ends with what pressing again does, as
+// badgeWithdrawnNotice says only that the badge has gone, and with another,
+// verified since, it names that one.
 function badgeReplacedNotice(form, { hasText, imageOff }) {
   if (!hasText && imageOff !== "") {
     return BADGE_REPLACED;
   }
   const held = state.verification.badge;
   const press = pressedWithoutBadge(form, storageGet(POSTER_KEY_STORAGE_KEY) || "");
+  if (!held) {
+    return `${BADGE_REPLACED} ${press}`;
+  }
   return `${BADGE_REPLACED} ${press} To post it with the new badge, Verified: ${held.label}, tick its box.`;
 }
 
@@ -4308,9 +4324,10 @@ function restoreDraft(draft) {
     // Taken off: the new form is left without it.
   } else if (refusal) {
     const said = el.notice.hidden ? "" : el.notice.querySelector(".notice-text").textContent;
-    const notice = refusalNotices.get(answeredForm);
+    const refused = refusalNotices.get(answeredForm);
     const kept = { hasText: Boolean(draft.body.trim()), isThread: form.dataset.kind === "thread" };
-    showNotice(notice && said === notice("") ? notice(refusal) : said ? imageTakenOff(said, refusal, kept) : refusal);
+    const unchanged = refused && said === refused.told;
+    showNotice(unchanged ? refused.notice(refusal) : said ? imageTakenOff(said, refusal, kept) : refusal);
   } else if (fileField && draft.file && setFile(fileField, draft.file)) {
     updateFileField(fileField);
     // Only alongside the file it was ticked for.
@@ -5358,8 +5375,10 @@ function formOnScreen(form, route) {
   return form.isConnected && (form.dataset.kind ? routeKey(state.route) === routeKey(route) : state.route === route);
 }
 
-// The forms holdForm holds.
-const heldForms = new WeakSet();
+// The forms holdForm holds, each with the controls it switched off, for
+// release to switch back on: a badge box drawn into the form during the hold
+// among them (drawBadgeOption).
+const heldForms = new WeakMap();
 
 // How many times each posting form has been pressed (submit), for a redraw to
 // tell whether the form it read its draft from has been pressed since
@@ -5381,11 +5400,14 @@ const refocusedForms = new WeakSet();
 const redrawnPickers = new WeakMap();
 
 // How each posting form's last refusal was worded, by form, as a function of
-// why release took its image off ("" for not at all): a refusal answered while
-// a redraw of the page loads, which then draws the picker switched off, is
-// worded again with the picker's reason (restoreDraft), so it reads as it
-// would had the redraw come first. The two refusals of the image itself take
-// the image off themselves, and keep nothing here.
+// why release took its image off ("" for not at all), with the words it was
+// told: a refusal answered while a redraw of the page loads, which then draws
+// the picker switched off, is worded again with the picker's reason
+// (restoreDraft), so it reads as it would had the redraw come first. The words
+// it was told say whether its notice is still the one on screen, however the
+// page has changed since, a badge forgotten or verified meanwhile say, which
+// the wording reads as it stands then (badgeReplacedNotice). The two refusals
+// of the image itself take the image off themselves, and keep nothing here.
 const refusalNotices = new WeakMap();
 
 // What each posting form would have been told when its post was answered, or
@@ -5417,7 +5439,8 @@ function takeUnsaidNotice(form) {
 // the press until the answer, with whatever the reader wrote left where it is.
 // What is sent was read from the form at the press, so a change made in the
 // meantime would be left out of it, and wiped by the reset after a success. It
-// returns release, which switches back on the controls it switched off, and no
+// returns release, which switches back on the controls it switched off, a
+// badge box drawn into the form meanwhile among them (drawBadgeOption), and no
 // others: a picker switched off for its own reason stays off. When the hold
 // ends, success or refusal, release leaves the picker as a redraw of the page
 // meanwhile drew it (redrawnPickers): switched off with that drawing's reason,
@@ -5448,7 +5471,7 @@ function holdForm(form) {
   for (const control of controls) {
     control.disabled = true;
   }
-  heldForms.add(form);
+  heldForms.set(form, controls);
   return (refocus) => {
     heldForms.delete(form);
     for (const control of controls) {
@@ -5813,11 +5836,12 @@ el.main.addEventListener("submit", async (event) => {
       if (imageRefused && fileField) {
         clearFileField(fileField);
       }
+      const told = imageRefused ? errorMessage(err, { hasText, imageOff }) : notice(imageOff);
       if (!imageRefused) {
-        refusalNotices.set(form, notice);
+        refusalNotices.set(form, { notice, told });
       }
       unsaidNotices.set(form, {
-        notice: imageRefused ? errorMessage(err, { hasText, imageOff }) : notice(imageOff),
+        notice: told,
         focused,
         badgeRefused: Boolean(held) && (reason === "expired" || reason === "revoked"),
         imageRefused,
@@ -5842,8 +5866,9 @@ el.main.addEventListener("submit", async (event) => {
       showNotice(errorMessage(err, { hasText, imageOff }));
       return;
     }
-    refusalNotices.set(form, notice);
-    showNotice(notice(imageOff));
+    const told = notice(imageOff);
+    refusalNotices.set(form, { notice, told });
+    showNotice(told);
   }
 });
 
