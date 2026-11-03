@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The client keeps promises the server cannot check: that the poster key and
@@ -471,19 +473,37 @@ func jsString(t *testing.T, script, name string) string {
 // off and keeping the text, and it knows them by the server's own words. If
 // those words drifted apart, a page would show the raw refusal and leave the
 // image on the form to be refused again, so they are checked against what the
-// server actually answers.
+// server actually answers. So is a third, an image whose body fell behind its
+// pace, which the server answers 400 rather than 408 Request Timeout: Chromium
+// sends a request answered 408 on a reused keep-alive connection again, the
+// whole body with it and without telling the page, until a 408 comes on a
+// fresh connection. The page knows that refusal by its words, and looks for no
+// 408, which nothing answers now.
 func TestClientKnowsTheServersImageRefusals(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
 	limitReached := jsString(t, script, "IMAGE_LIMIT_REACHED")
 	switchedOff := jsString(t, script, "UPLOADS_SWITCHED_OFF")
-	for name, words := range map[string]string{"IMAGE_LIMIT_REACHED": limitReached, "UPLOADS_SWITCHED_OFF": switchedOff} {
+	tooSlow := jsString(t, script, "UPLOAD_TOO_SLOW")
+	for name, words := range map[string]string{"IMAGE_LIMIT_REACHED": limitReached, "UPLOADS_SWITCHED_OFF": switchedOff,
+		"UPLOAD_TOO_SLOW": tooSlow} {
 		if n := strings.Count(code, `"`+words+`"`); n != 1 {
 			t.Errorf("app.js spells out %q %d times; want once, as %s", words, n, name)
 		}
+	}
+	for _, name := range []string{"IMAGE_LIMIT_REACHED", "UPLOADS_SWITCHED_OFF"} {
 		if n := strings.Count(code, "err.message === "+name); n != 2 {
 			t.Errorf("app.js compares a refusal with %s %d times; want twice, in errorMessage and in the submit handler", name, n)
 		}
+	}
+	errMsg := withoutComments(jsFunction(t, script, "errorMessage"))
+	if n := strings.Count(code, "UPLOAD_TOO_SLOW"); n != 2 ||
+		!strings.Contains(errMsg, "if (err.status === 400 && err.message === UPLOAD_TOO_SLOW) {") {
+		t.Errorf("app.js names UPLOAD_TOO_SLOW %d times; want its definition and errorMessage's "+
+			"if (err.status === 400 && err.message === UPLOAD_TOO_SLOW)", n)
+	}
+	if strings.Contains(code, "408") {
+		t.Error("app.js looks for a 408; the server answers a slow upload 400 with UPLOAD_TOO_SLOW's words")
 	}
 
 	on := testServer(t, nil)
@@ -501,6 +521,15 @@ func TestClientKnowsTheServersImageRefusals(t *testing.T) {
 		"pic.png", pngBytes(t, 24, 24), &refused); status != http.StatusForbidden || refused.Error != switchedOff {
 		t.Errorf("image post with uploads off: %d %q, want 403 %q", status, refused.Error, switchedOff)
 	}
+
+	slow := testServer(t, nil)
+	slow.addBoard("general")
+	slow.app.uploadReadTimeout = 400 * time.Millisecond
+	status, text := stalledUpload(t, slow.client.base)
+	var stalled createdPost
+	if err := json.Unmarshal([]byte(text), &stalled); err != nil || status != http.StatusBadRequest || stalled.Error != tooSlow {
+		t.Errorf("an image post whose body stopped: %d %q, want 400 %q", status, text, tooSlow)
+	}
 }
 
 // Forget this browser is the FAQ's advice for a shared computer, and its
@@ -512,6 +541,57 @@ func TestEveryVerifyStateOffersToForgetTheBrowser(t *testing.T) {
 	offers := strings.Count(view, "${forgetBrowserHTML()}`;")
 	if returns < 4 || offers != returns {
 		t.Errorf("verifyViewHTML draws %d states and ends %d of them with forgetBrowserHTML(); want every one", returns, offers)
+	}
+}
+
+// A post's form is cleared, its file with it, only once the answer is the post
+// it made. An answer with a success status and no post in it — the empty 200
+// net/http sends for a handler that wrote nothing — was taken for one: the form
+// was reset and only then did reading the post's place from it fail, so the
+// draft was gone and the post had not been made. The check comes between the
+// request and the reset, and it asks for the fields a made post is answered
+// with, which are checked against what the server answers.
+func TestThePostFormIsClearedOnlyForAPostMade(t *testing.T) {
+	script := appScript(t)
+	submit := withoutComments(submitHandler(t, script))
+	request := strings.Index(submit, "const created = await api(path,")
+	check := strings.Index(submit, "if (!isCreatedPost(created)) {")
+	reset := strings.Index(submit, "form.reset();")
+	if request < 0 || check < 0 || reset < 0 || strings.Count(submit, "form.reset();") != 1 {
+		t.Fatalf("the submit handler no longer sends the post, checks its answer with isCreatedPost and resets the form once")
+	}
+	if !(request < check && check < reset) || !strings.Contains(submit[check:reset], "throw err;") {
+		t.Error("the submit handler does not refuse an answer that is not a made post before it resets the form")
+	}
+	if strings.Contains(submit[request:check], "form") {
+		t.Error("the submit handler touches the form between the request and the check of its answer")
+	}
+
+	isCreated := withoutComments(jsFunction(t, script, "isCreatedPost"))
+	fields := map[string]string{
+		"board":     `typeof answer.board === "string"`,
+		"no":        "Number.isInteger(answer.no)",
+		"thread_no": "Number.isInteger(answer.thread_no)",
+	}
+	for field, test := range fields {
+		if !strings.Contains(isCreated, test) {
+			t.Errorf("isCreatedPost no longer asks for %s (%s)", field, test)
+		}
+	}
+
+	h := testServer(t, nil)
+	h.addBoard("words")
+	var answer map[string]any
+	if status := h.post("/api/boards/words/threads", map[string]any{"body": "made"}, &answer); status != http.StatusCreated {
+		t.Fatalf("create a thread: status %d (%v)", status, answer)
+	}
+	if board, ok := answer["board"].(string); !ok || board == "" {
+		t.Errorf("a made post is answered with board %v, want its board's slug", answer["board"])
+	}
+	for _, field := range []string{"no", "thread_no"} {
+		if n, ok := answer[field].(float64); !ok || n != float64(int64(n)) || n <= 0 {
+			t.Errorf("a made post is answered with %s %v, want a whole number", field, answer[field])
+		}
 	}
 }
 
@@ -2483,17 +2563,18 @@ func holdVerifyRequestsToADeadline(t *testing.T, script string) {
 	if err != nil {
 		t.Fatalf("reading the server's timeouts: %v", err)
 	}
-	seconds := func(name string) int {
-		m := regexp.MustCompile(`\n\t\t` + name + `:\s+(\d+) \* time\.Second,\n`).FindSubmatch(serverSrc)
-		if m == nil {
-			t.Fatalf("cmd/server/main.go does not set %s as a number of seconds; this test reads it", name)
+	// The server's timeouts are this package's constants, which is what makes
+	// reading them here the same as reading the server's.
+	for _, name := range []string{"ReadHeaderTimeout", "WriteTimeout"} {
+		if !regexp.MustCompile(`\n\t\t` + name + `:\s+app\.` + name + `,\n`).Match(serverSrc) {
+			t.Fatalf("cmd/server/main.go does not set its http.Server's %s to app.%s; this test reads app.%s",
+				name, name, name)
 		}
-		n, _ := strconv.Atoi(string(m[1]))
-		return n
 	}
-	// A request's headers are read within ReadHeaderTimeout, and its answer
-	// is written within WriteTimeout of that or not at all.
-	server := (seconds("ReadHeaderTimeout") + seconds("WriteTimeout")) * 1000
+	// A Verify request's headers are read within ReadHeaderTimeout, and its
+	// answer is written within WriteTimeout of that or not at all: it is not
+	// a multipart post, which sets deadlines of its own.
+	server := int((ReadHeaderTimeout + WriteTimeout).Milliseconds())
 	if deadline <= server {
 		t.Errorf("VERIFY_TIMEOUT_MS is %d; the server can still be answering until %d ms, and a badge it issues "+
 			"after the page has given up is one nobody holds", deadline, server)

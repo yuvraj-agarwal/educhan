@@ -6,10 +6,12 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"image"
 	"image/color"
+	"image/gif"
 	"image/jpeg"
 	"image/png"
 	"io"
@@ -22,6 +24,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yuvraj-agarwal/educhan/internal/media"
 )
 
 /* Fixtures ----------------------------------------------------------------- */
@@ -69,6 +73,121 @@ func jpegBytes(t *testing.T, w, h int) []byte {
 		t.Fatalf("encode jpeg: %v", err)
 	}
 	return buf.Bytes()
+}
+
+// Strings the camera fixture carries in its metadata, which the stored file
+// must not.
+const (
+	fixtureCamera  = "educhan-test-camera"
+	fixtureDatum   = "WGS-84"
+	fixtureComment = "educhan test comment: taken at 51.5N"
+)
+
+// cameraJPEGBytes is a w×h JPEG as a phone writes one: an Exif APP1 with the
+// camera's make, Orientation 6 (stored on its side), and a GPS IFD with a
+// latitude, a datum and a processing method, then a comment. The TIFF inside
+// is laid out by hand, little-endian, independently of internal/media's own
+// fixtures, so a bug shared between the two cannot hide itself.
+func cameraJPEGBytes(t *testing.T, w, h int) []byte {
+	t.Helper()
+	le := binary.LittleEndian
+	entry := func(b []byte, tag, typ uint16, count, value uint32) []byte {
+		b = le.AppendUint16(b, tag)
+		b = le.AppendUint16(b, typ)
+		b = le.AppendUint32(b, count)
+		return le.AppendUint32(b, value)
+	}
+	camera := fixtureCamera + "\x00"
+	datum := fixtureDatum + "\x00"
+	method := "ASCII\x00\x00\x00GPS"
+
+	// Offsets from the start of the TIFF: the header (8), IFD0 with three
+	// entries (2+36+4), the make, then the GPS IFD with three entries
+	// (2+36+4) and its two long values.
+	makeAt := 8 + 42
+	gpsAt := makeAt + len(camera)
+	datumAt := gpsAt + 42
+	methodAt := datumAt + len(datum) + len(datum)%2
+
+	tiff := []byte("II*\x00")
+	tiff = le.AppendUint32(tiff, 8)
+	tiff = le.AppendUint16(tiff, 3)
+	tiff = entry(tiff, 0x010F, 2, uint32(len(camera)), uint32(makeAt)) // Make
+	tiff = entry(tiff, 0x0112, 3, 1, 6)                                // Orientation
+	tiff = entry(tiff, 0x8825, 4, 1, uint32(gpsAt))                    // GPSInfo
+	tiff = le.AppendUint32(tiff, 0)
+	tiff = append(tiff, camera...)
+	tiff = le.AppendUint16(tiff, 3)
+	tiff = entry(tiff, 0x0001, 2, 2, uint32('N'))                        // GPSLatitudeRef
+	tiff = entry(tiff, 0x0012, 2, uint32(len(datum)), uint32(datumAt))   // GPSMapDatum
+	tiff = entry(tiff, 0x001B, 7, uint32(len(method)), uint32(methodAt)) // GPSProcessingMethod
+	tiff = le.AppendUint32(tiff, 0)
+	tiff = append(tiff, datum...)
+	if len(datum)%2 == 1 {
+		tiff = append(tiff, 0)
+	}
+	tiff = append(tiff, method...)
+	if len(tiff) != methodAt+len(method) {
+		t.Fatalf("TIFF laid out as %d bytes, want %d", len(tiff), methodAt+len(method))
+	}
+
+	segment := func(marker byte, payload []byte) []byte {
+		n := len(payload) + 2
+		return append([]byte{0xFF, marker, byte(n >> 8), byte(n)}, payload...)
+	}
+	plain := jpegBytes(t, w, h)
+	out := append([]byte(nil), plain[:2]...) // SOI
+	out = append(out, segment(0xE1, append([]byte("Exif\x00\x00"), tiff...))...)
+	out = append(out, segment(0xFE, []byte(fixtureComment))...)
+	return append(out, plain[2:]...)
+}
+
+// metadataNeedles are what cameraJPEGBytes carries that a stored file must not.
+var metadataNeedles = []string{"Exif", "GPS", fixtureDatum, fixtureCamera, fixtureComment}
+
+// requireNoMetadata fails if data, a file served or stored, carries any of the
+// camera fixture's metadata, or any APP or COM segment at all if it is a JPEG.
+func requireNoMetadata(t *testing.T, what string, data []byte) {
+	t.Helper()
+	for _, needle := range metadataNeedles {
+		if bytes.Contains(data, []byte(needle)) {
+			t.Errorf("%s carries %q", what, needle)
+		}
+	}
+	if !bytes.HasPrefix(data, []byte{0xFF, 0xD8}) {
+		return
+	}
+	for i := 2; i+4 <= len(data) && data[i] == 0xFF && data[i+1] != 0xDA; {
+		if m := data[i+1]; (m >= 0xE0 && m <= 0xEF) || m == 0xFE {
+			t.Errorf("%s has a JPEG segment with marker %#x", what, m)
+		}
+		i += 2 + (int(data[i+2])<<8 | int(data[i+3]))
+	}
+}
+
+// requireSamePicture fails unless two encoded images decode to the same
+// pixels. The PNG fixtures are lossless, so their stored form, rewritten
+// without metadata, must still be the picture that was uploaded.
+func requireSamePicture(t *testing.T, want, got []byte) {
+	t.Helper()
+	a, _, err := image.Decode(bytes.NewReader(want))
+	if err != nil {
+		t.Fatalf("decode uploaded image: %v", err)
+	}
+	b, _, err := image.Decode(bytes.NewReader(got))
+	if err != nil {
+		t.Fatalf("decode served image: %v", err)
+	}
+	if a.Bounds() != b.Bounds() {
+		t.Fatalf("served image is %v, want %v", b.Bounds(), a.Bounds())
+	}
+	for y := a.Bounds().Min.Y; y < a.Bounds().Max.Y; y++ {
+		for x := a.Bounds().Min.X; x < a.Bounds().Max.X; x++ {
+			if color.NRGBAModel.Convert(a.At(x, y)) != color.NRGBAModel.Convert(b.At(x, y)) {
+				t.Fatalf("served image differs from the upload at (%d,%d)", x, y)
+			}
+		}
+	}
 }
 
 /* Multipart client --------------------------------------------------------- */
@@ -161,8 +280,8 @@ func TestCreateThreadWithImage(t *testing.T) {
 	if att == nil {
 		t.Fatal("opening post has no attachment")
 	}
-	if att.Name != "holiday photo.png" {
-		t.Errorf("name = %q, want the uploaded filename", att.Name)
+	if att.Name != "image.png" {
+		t.Errorf("name = %q, want image.png: the uploaded filename is never kept", att.Name)
 	}
 	if att.ContentType != "image/png" {
 		t.Errorf("content type = %q, want image/png", att.ContentType)
@@ -173,9 +292,6 @@ func TestCreateThreadWithImage(t *testing.T) {
 	if att.ThumbWidth != 250 || att.ThumbHeight != 125 {
 		t.Errorf("thumb = %dx%d, want 250x125", att.ThumbWidth, att.ThumbHeight)
 	}
-	if att.Size != int64(len(original)) {
-		t.Errorf("size = %d, want %d", att.Size, len(original))
-	}
 	if !strings.HasPrefix(att.URL, "/media/original/general/") {
 		t.Errorf("url = %q, want a /media/original/general/ prefix", att.URL)
 	}
@@ -184,12 +300,16 @@ func TestCreateThreadWithImage(t *testing.T) {
 		t.Errorf("url = %q, want a generated filename", att.URL)
 	}
 
+	// The original is served as stored: rewritten without its metadata, so
+	// not the uploaded bytes, but the same picture, and the size the
+	// attachment reports is the stored file's.
 	res, payload := c.fetch(att.URL, nil)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("get original: status %d", res.StatusCode)
 	}
-	if !bytes.Equal(payload, original) {
-		t.Error("served original differs from the uploaded bytes")
+	requireSamePicture(t, original, payload)
+	if att.Size != int64(len(payload)) {
+		t.Errorf("size = %d, want %d, the stored file's", att.Size, len(payload))
 	}
 	if got := res.Header.Get("Cache-Control"); got != mediaCacheControl {
 		t.Errorf("cache control = %q, want %q", got, mediaCacheControl)
@@ -226,6 +346,96 @@ func TestCreateThreadWithImage(t *testing.T) {
 	}
 	if catalog.Threads[0].Attachment.ThumbURL != att.ThumbURL {
 		t.Errorf("catalog thumb = %q, want %q", catalog.Threads[0].Attachment.ThumbURL, att.ThumbURL)
+	}
+}
+
+// A camera's or a phone's filename can name its owner, so whatever the file
+// was called, the image is shown as "image" and the extension of the format it
+// was stored in, and the name sent is written nowhere: not in the database
+// and not in the log, for an upload refused as for one stored.
+func TestUploadedFilenameIsNotKept(t *testing.T) {
+	var logs syncBuffer
+	c := testServerLogging(t, func(cfg *Config) { cfg.MaxUploadBytes = 1 << 20 }, &logs)
+	c.addBoard("general")
+	const marker = "body-marker-for-the-filename-scan"
+
+	thread := c.createThread("general", "names", "", marker)
+	path := fmt.Sprintf("/api/boards/general/threads/%d/posts", thread.ThreadNo)
+	uploads := []struct {
+		filename string
+		file     []byte
+		want     string
+	}{
+		{"IMG_20261013_Priya.jpg", jpegBytes(t, 64, 48), "image.jpg"},
+		// The extension sent is not the format: a PNG called .jpg is a PNG.
+		{"Priya at the fest.jpg", pngBytes(t, 64, 48), "image.png"},
+		{`C:\Users\Priya\Desktop\..\..\Priya.webp`, jpegBytes(t, 64, 48), "image.jpg"},
+		{"Priya ☕ selfie.png", pngBytes(t, 64, 48), "image.png"},
+		{strings.Repeat("Priya", 100) + ".gif", pngBytes(t, 64, 48), "image.png"},
+	}
+	for _, u := range uploads {
+		var out createdPost
+		if status := c.upload(path, map[string]string{"body": ""}, u.filename, u.file, &out); status != http.StatusCreated {
+			t.Fatalf("reply with %q: status %d (%s)", u.filename, status, out.Error)
+		}
+	}
+	// Each way an upload is refused once its part has been read: not an
+	// image, an image that does not decode, and a file over the size limit.
+	refused := []struct {
+		filename string
+		file     []byte
+		status   int
+	}{
+		{"Priya's notes.png", []byte("these are not the pixels you are looking for"), http.StatusBadRequest},
+		{"Priya_broken.jpg", jpegBytes(t, 64, 48)[:300], http.StatusBadRequest},
+		{"Priya_huge.png", make([]byte, 3<<20), http.StatusRequestEntityTooLarge},
+	}
+	for _, u := range refused {
+		var out createdPost
+		if status := c.upload(path, map[string]string{"body": ""}, u.filename, u.file, &out); status != u.status {
+			t.Fatalf("reply with %q: status %d (%s), want %d", u.filename, status, out.Error, u.status)
+		}
+	}
+
+	posts := fetchThread(t, c, "general", thread.ThreadNo).Posts
+	if len(posts) != len(uploads)+1 {
+		t.Fatalf("thread has %d posts, want %d", len(posts), len(uploads)+1)
+	}
+	for i, u := range uploads {
+		att := posts[i+1].Attachment
+		if att == nil {
+			t.Fatalf("reply %d has no attachment", i+1)
+		}
+		if att.Name != u.want {
+			t.Errorf("uploaded as %q: name = %q, want %q", u.filename, att.Name, u.want)
+		}
+		if strings.Contains(att.URL, "Priya") || strings.Contains(att.ThumbURL, "Priya") {
+			t.Errorf("uploaded as %q: URLs %s and %s carry the filename", u.filename, att.URL, att.ThumbURL)
+		}
+	}
+
+	// The scans have to be able to find what is there before their silence
+	// about the filename means anything.
+	if n := c.rowsContaining("posts", []byte(marker)); n != 1 {
+		t.Fatalf("the scan found the body marker in %d posts, want 1; it cannot be trusted", n)
+	}
+	if n := c.rowsContaining("attachments", []byte("image.png")); n != 3 {
+		t.Fatalf("the scan found image.png in %d attachments, want 3; it cannot be trusted", n)
+	}
+	for _, table := range c.tables() {
+		if n := c.rowsContaining(table, []byte("Priya")); n != 0 {
+			t.Errorf("%d rows of %s contain the uploaded filename", n, table)
+		}
+	}
+	out := logs.String()
+	for _, status := range []int{http.StatusCreated, http.StatusBadRequest, http.StatusRequestEntityTooLarge} {
+		line := fmt.Sprintf(`"path":%q,"status":%d`, path, status)
+		if !strings.Contains(out, line) {
+			t.Fatalf("the log has no request line with %s; it cannot be trusted:\n%s", line, out)
+		}
+	}
+	if strings.Contains(out, "Priya") {
+		t.Errorf("the log contains the uploaded filename:\n%s", out)
 	}
 }
 
@@ -336,11 +546,102 @@ func pngClaiming(t *testing.T, w, h uint32) []byte {
 	return data
 }
 
+// pngDeepClaiming is pngClaiming with sixteen bits a channel, which image/png
+// decodes to eight bytes a pixel, and interlaced, which it decodes a pass at a
+// time beside the whole.
+func pngDeepClaiming(t *testing.T, w, h uint32) []byte {
+	t.Helper()
+	data := pngClaiming(t, w, h)
+	data[24], data[28] = 16, 1
+	binary.BigEndian.PutUint32(data[29:33], crc32.ChecksumIEEE(data[12:29]))
+	return data
+}
+
+// animatedWebP is an animated WebP of the given number of frames, each the
+// picture of internal/media's lossy.webp with pad bytes of an unknown chunk
+// beside it, on a canvas of that picture's size.
+func animatedWebP(t *testing.T, frames, pad int) []byte {
+	t.Helper()
+	still, err := os.ReadFile(filepath.Join("..", "media", "testdata", "lossy.webp"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	if string(still[12:16]) != "VP8 " {
+		t.Fatal("lossy.webp is not a simple-format lossy WebP")
+	}
+	picture := still[12:]
+	w := int(binary.LittleEndian.Uint16(still[26:28]) & 0x3FFF)
+	h := int(binary.LittleEndian.Uint16(still[28:30]) & 0x3FFF)
+	chunk := func(id string, payload []byte) []byte {
+		out := binary.LittleEndian.AppendUint32([]byte(id), uint32(len(payload)))
+		out = append(out, payload...)
+		if len(payload)%2 == 1 {
+			out = append(out, 0)
+		}
+		return out
+	}
+	put24 := func(b []byte, v int) []byte { return append(b, byte(v), byte(v>>8), byte(v>>16)) }
+	vp8x := put24(put24([]byte{0x02, 0, 0, 0}, w-1), h-1) // the animation flag
+	out := append([]byte("RIFF\x00\x00\x00\x00WEBP"), chunk("VP8X", vp8x)...)
+	out = append(out, chunk("ANIM", make([]byte, 6))...)
+	for i := 0; i < frames; i++ {
+		frame := put24(put24(put24(put24(make([]byte, 0, 16), 0), 0), w-1), h-1)
+		frame = append(put24(frame, 100), 0) // a tenth of a second
+		frame = append(frame, picture...)
+		frame = append(frame, chunk("ZZZZ", make([]byte, pad))...)
+		out = append(out, chunk("ANMF", frame)...)
+	}
+	binary.LittleEndian.PutUint32(out[4:8], uint32(len(out)-8))
+	return out
+}
+
+// webpOnAWiderCanvas is internal/media's lossy.webp under a VP8X whose canvas
+// is two pixels wider than its picture: a file whose chunks do not make one
+// picture, which nothing here decodes, and which is known from its chunks.
+func webpOnAWiderCanvas(t *testing.T) []byte {
+	t.Helper()
+	still, err := os.ReadFile(filepath.Join("..", "media", "testdata", "lossy.webp"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	if string(still[12:16]) != "VP8 " {
+		t.Fatal("lossy.webp is not a simple-format lossy WebP")
+	}
+	w := int(binary.LittleEndian.Uint16(still[26:28]) & 0x3FFF)
+	h := int(binary.LittleEndian.Uint16(still[28:30]) & 0x3FFF)
+	put24 := func(b []byte, v int) []byte { return append(b, byte(v), byte(v>>8), byte(v>>16)) }
+	vp8x := put24(put24([]byte{0, 0, 0, 0}, w+2-1), h-1)
+	out := append([]byte("RIFF\x00\x00\x00\x00WEBPVP8X"), binary.LittleEndian.AppendUint32(nil, uint32(len(vp8x)))...)
+	out = append(append(out, vp8x...), still[12:]...)
+	binary.LittleEndian.PutUint32(out[4:8], uint32(len(out)-8))
+	return out
+}
+
+// losslessWebPClaiming is the header of a lossless WebP of w×h and n bytes of
+// bitstream, which Go's decoder would hold Huffman tables for out of all
+// proportion to the picture (see the README's Formats).
+func losslessWebPClaiming(w, h, n int) []byte {
+	bits := uint32(w-1) | uint32(h-1)<<14
+	payload := binary.LittleEndian.AppendUint32([]byte{0x2F}, bits)
+	payload = append(payload, make([]byte, n-len(payload))...)
+	out := append([]byte("RIFF\x00\x00\x00\x00WEBPVP8L"), binary.LittleEndian.AppendUint32(nil, uint32(n))...)
+	out = append(out, payload...)
+	binary.LittleEndian.PutUint32(out[4:8], uint32(len(out)-8))
+	return out
+}
+
 // A file whose header shows it cannot be used, because it is not an accepted
-// image or has too many pixels, is refused before flood control, so the poster
-// can send the text on its own at once. An image whose header is sound but
-// whose pixels do not decode is found only by decoding, after the cooldowns
-// have started, which is the one exception the README names.
+// image, has too many pixels, is encoded in a way that would take more
+// memory to decode than the server has for it, or is an animated WebP, which
+// nothing here can decode, or a WebP whose chunks do not make one picture of
+// its canvas, is refused before flood control, so the poster
+// can send the text on its own at once. Each gets an answer that says which:
+// a picture of too many pixels is too large a resolution, one dear to decode
+// for its encoding is too large to process, and an animated WebP cannot be
+// decoded whatever its size. An image whose header is sound but whose pixels
+// do not decode, or that would be stored many times larger than it came in,
+// is found only by decoding and encoding it, after the cooldowns have
+// started, which are the exceptions the README names.
 func TestImagesRefusedByTheirHeaderStartNoCooldown(t *testing.T) {
 	c := testServer(t, func(cfg *Config) {
 		cfg.TrustedProxyHops = 1
@@ -350,6 +651,11 @@ func TestImagesRefusedByTheirHeaderStartNoCooldown(t *testing.T) {
 	})
 	c.addBoard("general")
 	threads := "/api/boards/general/threads"
+	lossyWebP, err := os.ReadFile(filepath.Join("..", "media", "testdata", "lossy.webp"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	cutShort := func(b []byte) []byte { return b[:len(b)-len(b)/10] }
 	unusable := []struct {
 		name, filename string
 		data           []byte
@@ -357,6 +663,17 @@ func TestImagesRefusedByTheirHeaderStartNoCooldown(t *testing.T) {
 	}{
 		{"not an image", "notes.png", []byte("#!/bin/sh\necho hello\n"), "unsupported image format"},
 		{"too many pixels", "huge.png", pngClaiming(t, 10000, 10000), "image resolution is too large"},
+		{"too costly to decode", "deep.png", pngDeepClaiming(t, 6000, 4000), "image too large to process"},
+		{"a lossless WebP too costly to decode", "screenshot.webp", losslessWebPClaiming(1920, 1080, 317<<10), "image too large to process"},
+		{"an animated WebP", "moving.webp", animatedWebP(t, 2, 0), "image could not be decoded"},
+		{"a long animated WebP", "longer.webp", animatedWebP(t, 6, 50<<10), "image could not be decoded"},
+		// Files cut short in transfer: each RIFF runs past the end of its file.
+		{"an animated WebP cut short", "moving-cut.webp", cutShort(animatedWebP(t, 2, 0)), "image could not be decoded"},
+		{"a long animated WebP cut short", "longer-cut.webp", cutShort(animatedWebP(t, 6, 50<<10)), "image could not be decoded"},
+		{"a WebP cut short", "still-cut.webp", cutShort(lossyWebP), "image could not be decoded"},
+		// Chunks that do not make one picture, which a decoder reading no
+		// further than the VP8X does not see.
+		{"a WebP on a canvas wider than its picture", "wider.webp", webpOnAWiderCanvas(t), "image could not be decoded"},
 	}
 
 	const poster = "198.51.100.21"
@@ -391,8 +708,182 @@ func TestImagesRefusedByTheirHeaderStartNoCooldown(t *testing.T) {
 		"cut.png", pngBytes(t, 24, 24)[:33], &out); status != http.StatusBadRequest || !strings.Contains(out.Error, "image could not be decoded") {
 		t.Fatalf("reply with pixels missing: %d %q, want 400 %q", status, out.Error, "image could not be decoded")
 	}
-	if status := c.postFrom(another, replies, map[string]any{"body": "and no image"}, &out); status != http.StatusTooManyRequests {
+	if status := c.postFrom(another, replies, map[string]any{"body": "and no image"}, &createdPost{}); status != http.StatusTooManyRequests {
 		t.Errorf("text reply after an image that failed to decode: %d, want 429: decoding comes after flood control", status)
+	}
+
+	// A file that would be stored many times larger than it came in, which
+	// only encoding it can find, is refused for that, not for its resolution.
+	repeat, err := os.ReadFile(filepath.Join("..", "media", "testdata", "repeat.webp"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	const third = "198.51.100.23"
+	out = createdPost{}
+	if status := c.uploadWithHeaders(http.Header{"X-Forwarded-For": {third}}, replies, map[string]string{"body": "look"},
+		"repeat.webp", repeat, &out); status != http.StatusBadRequest || out.Error != media.ErrStoredTooLarge.Error() {
+		t.Fatalf("reply with a file that outgrows its upload: %d %q, want 400 %q", status, out.Error, media.ErrStoredTooLarge.Error())
+	}
+	if status := c.postFrom(third, replies, map[string]any{"body": "and no image"}, &createdPost{}); status != http.StatusTooManyRequests {
+		t.Errorf("text reply after an image too large once re-encoded: %d, want 429: encoding comes after flood control", status)
+	}
+
+	// A GIF that cannot be stored one frame to a picture, which only playing
+	// it can find, is refused after flood control too.
+	const fourth = "198.51.100.24"
+	out = createdPost{}
+	if status := c.uploadWithHeaders(http.Header{"X-Forwarded-For": {fourth}}, replies, map[string]string{"body": "look"},
+		"colours.gif", gifOfTooManyColoursAtOnce(t), &out); status != http.StatusBadRequest || out.Error != media.ErrImageTooCostly.Error() {
+		t.Fatalf("reply with a GIF of too many colours at once: %d %q, want 400 %q", status, out.Error, media.ErrImageTooCostly.Error())
+	}
+	if status := c.postFrom(fourth, replies, map[string]any{"body": "and no image"}, &createdPost{}); status != http.StatusTooManyRequests {
+		t.Errorf("text reply after a GIF of too many colours at once: %d, want 429: playing a GIF comes after flood control", status)
+	}
+}
+
+// gifOfTooManyColoursAtOnce is a 300×1 GIF whose fourth picture changes 300
+// pixels to 300 colours at once: the first frame draws 150 colours, the
+// second and the third each draw 150 others over them and are put back, and
+// the fourth draws 150 more beside them. The stored file leaves the second
+// picture's frame in place, since nothing after it needs otherwise, so
+// putting back the third's leaves the second picture's colours where the
+// first's show again: whichever way the third is disposed of, the fourth
+// picture's stored frame has to draw 300 colours, and the GIF cannot be
+// stored one frame to a picture.
+func gifOfTooManyColoursAtOnce(t *testing.T) []byte {
+	t.Helper()
+	frame := func(x0, first int) *image.Paletted {
+		pal := make(color.Palette, 150)
+		for i := range pal {
+			pal[i] = color.RGBA{byte(first + i), byte((first + i) >> 8), 0x55, 0xFF}
+		}
+		m := image.NewPaletted(image.Rect(x0, 0, x0+150, 1), pal)
+		for i := range m.Pix {
+			m.Pix[i] = uint8(i)
+		}
+		return m
+	}
+	g := &gif.GIF{
+		Image:    []*image.Paletted{frame(0, 0), frame(0, 1000), frame(0, 2000), frame(150, 3000)},
+		Delay:    []int{10, 10, 10, 10},
+		Disposal: []byte{gif.DisposalNone, gif.DisposalPrevious, gif.DisposalPrevious, gif.DisposalNone},
+		Config:   image.Config{Width: 300, Height: 1},
+	}
+	var buf bytes.Buffer
+	if err := gif.EncodeAll(&buf, g); err != nil {
+		t.Fatalf("encode gif: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// cheapestUpload is a file of the given format of exactly size bytes that is
+// about as cheap to process as a file that size can be: a picture of one pixel
+// (for a WebP, the 64×48 of internal/media's lossy.webp, the smallest to hand,
+// since nothing here encodes one), made up to size by what its decoder skips:
+// comment segments after a JPEG's start, a chunk of no known kind before a
+// PNG's pixels, a comment extension after a GIF's frame, and a chunk of no
+// known kind after a WebP's picture. Its stored file and its thumbnail are
+// small, but nothing tells that from its header: what processing it is
+// estimated to hold grows with its size whatever it carries.
+func cheapestUpload(t *testing.T, format string, size int) []byte {
+	t.Helper()
+	be := binary.BigEndian
+	out := make([]byte, 0, size)
+	switch format {
+	case "jpeg":
+		small := jpegBytes(t, 1, 1)
+		out = append(out, small[:2]...)
+		for rest := size - len(small); rest > 0; {
+			n := min(rest, 4+0xFFFD) // a marker, a length, and at most 65,533 bytes
+			if rest-n > 0 && rest-n < 4 {
+				n -= 4
+			}
+			out = be.AppendUint16(append(out, 0xFF, 0xFE), uint16(n-2))
+			out = append(out, make([]byte, n-4)...)
+			rest -= n
+		}
+		out = append(out, small[2:]...)
+	case "png":
+		small := pngBytes(t, 1, 1)
+		const ihdrEnd = 8 + 25 // the signature, then IHDR's length, type, 13 bytes and CRC
+		out = append(out, small[:ihdrEnd]...)
+		start := len(out)
+		out = be.AppendUint32(out, uint32(size-len(small)-12))
+		out = append(out, "zzzz"...)
+		out = append(out, make([]byte, size-len(small)-12)...)
+		out = be.AppendUint32(out, crc32.ChecksumIEEE(out[start+4:]))
+		out = append(out, small[ihdrEnd:]...)
+	case "gif":
+		var buf bytes.Buffer
+		pixel := image.NewPaletted(image.Rect(0, 0, 1, 1), color.Palette{color.Black, color.White})
+		if err := gif.Encode(&buf, pixel, nil); err != nil {
+			t.Fatalf("encode gif: %v", err)
+		}
+		small := buf.Bytes()
+		out = append(out, small[:len(small)-1]...) // all but the trailer
+		out = append(out, 0x21, 0xFE)
+		// Sub-blocks of a length byte and up to 255 bytes, then a zero length
+		// to end them: never one of no bytes but that one.
+		for rest := size - len(small) - 3; rest > 0; {
+			n := min(rest, 256)
+			if rest-n == 1 {
+				n--
+			}
+			out = append(append(out, byte(n-1)), make([]byte, n-1)...)
+			rest -= n
+		}
+		out = append(out, 0x00, small[len(small)-1])
+	case "webp":
+		small, err := os.ReadFile(filepath.Join("..", "media", "testdata", "lossy.webp"))
+		if err != nil {
+			t.Fatalf("read fixture: %v", err)
+		}
+		if size%2 != 0 {
+			t.Fatalf("a WebP is made of chunks of even length, so it cannot be %d bytes", size)
+		}
+		out = append(out, small...)
+		out = binary.LittleEndian.AppendUint32(append(out, "zzzz"...), uint32(size-len(small)-8))
+		out = append(out, make([]byte, size-len(small)-8)...)
+		binary.LittleEndian.PutUint32(out[4:8], uint32(size-8))
+	default:
+		t.Fatalf("cheapestUpload: no format %q", format)
+	}
+	if len(out) != size {
+		t.Fatalf("cheapest %s is %d bytes, want %d", format, len(out), size)
+	}
+	return out
+}
+
+// TestLargestAttachmentLimitIsReachable: the most EDUCHAN_MAX_UPLOAD_BYTES
+// may be is a size a file can be posted at. The cheapest file of that size in
+// each format is processed and stored, and the same file a MiB larger is
+// refused from its header as too costly to process, so the next whole MiB is
+// not a size a file can be posted at. An upload costs about eight times its
+// size whatever its picture, because its stored file may come to four times
+// its size and the encoder's buffer holds two of those as it grows
+// (media.MaxUploadBytes).
+func TestLargestAttachmentLimitIsReachable(t *testing.T) {
+	c := testServer(t, func(cfg *Config) { cfg.MaxUploadBytes = maxUploadLimit })
+	c.addBoard("largest")
+	for _, format := range []string{"jpeg", "png", "gif", "webp"} {
+		var out createdPost
+		status := c.upload("/api/boards/largest/threads", map[string]string{"body": format},
+			"largest."+format, cheapestUpload(t, format, int(maxUploadLimit)), &out)
+		if status != http.StatusCreated {
+			t.Errorf("the cheapest %s of %d bytes, the most an attachment may be: status = %d (%s), want 201",
+				format, maxUploadLimit, status, out.Error)
+		}
+		larger := cheapestUpload(t, format, int(maxUploadLimit+1<<20))
+		if _, err := media.Inspect(larger); !errors.Is(err, media.ErrImageTooCostly) {
+			t.Errorf("the cheapest %s a MiB larger: Inspect = %v, want %v", format, err, media.ErrImageTooCostly)
+		}
+	}
+	var stored int
+	if err := c.app.pool.QueryRow(context.Background(), `SELECT count(*) FROM attachments`).Scan(&stored); err != nil {
+		t.Fatalf("count attachments: %v", err)
+	}
+	if stored != 4 {
+		t.Errorf("stored %d attachments, want one of each format", stored)
 	}
 }
 
@@ -449,18 +940,6 @@ func TestUploadsSwitchedOff(t *testing.T) {
 			t.Errorf("upload dir %s has %d files, want none", e.Name(), len(files))
 		}
 	}
-}
-
-// countingReader counts what the server reads of a request body.
-type countingReader struct {
-	r io.Reader
-	n int64
-}
-
-func (c *countingReader) Read(p []byte) (int, error) {
-	n, err := c.r.Read(p)
-	c.n += int64(n)
-	return n, err
 }
 
 // With uploads switched off an image post is refused for that reason however
@@ -713,12 +1192,13 @@ func TestMediaSupportsRangeRequests(t *testing.T) {
 	}
 	att := fetchThread(t, c, "general", created.ThreadNo).Posts[0].Attachment
 
+	_, whole := c.fetch(att.URL, nil)
 	res, payload := c.fetch(att.URL, http.Header{"Range": []string{"bytes=0-7"}})
 	if res.StatusCode != http.StatusPartialContent {
 		t.Fatalf("status = %d, want 206", res.StatusCode)
 	}
-	if !bytes.Equal(payload, original[:8]) {
-		t.Errorf("range body = %v, want the first 8 bytes of the original", payload)
+	if !bytes.Equal(payload, whole[:8]) {
+		t.Errorf("range body = %v, want the first 8 bytes of the stored original", payload)
 	}
 }
 

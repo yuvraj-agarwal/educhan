@@ -151,6 +151,12 @@ func (s *GCSStore) Put(ctx context.Context, key, contentType string, r io.Reader
 	w := obj.NewWriter(ctx)
 	w.ContentType = contentType
 	w.CacheControl = CacheControl
+	// Without this the writer allocates a 16 MiB buffer for every object,
+	// a 20 KB thumbnail included, outside any budget (processingCost counts
+	// what Save writes, not a copy of it). The buffer is only for retrying,
+	// and a write without preconditions, which this is, is never retried, so
+	// the object goes out in one request read straight from r.
+	w.ChunkSize = 0
 	if _, err := io.Copy(w, r); err != nil {
 		cancel()
 		return fmt.Errorf("media: write object: %w", err)

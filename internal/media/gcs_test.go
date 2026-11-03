@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -38,6 +40,35 @@ func TestGCSStoreContract(t *testing.T) {
 // show up as objects landing in the wrong place rather than as a failure.
 func TestGCSStoreContractWithPrefix(t *testing.T) {
 	testStoreContract(t, func(t *testing.T) Store { return gcsStore(t, "media/v1") })
+}
+
+// TestGCSPutAllocatesNoBufferOfItsOwn writes thumbnail-sized objects and
+// counts what the process allocated meanwhile, the emulator receiving them
+// included. The writer's default is a 16 MiB buffer for every object, which
+// nothing budgets: Save holds what it writes in the processing budget, and a
+// copy beside it would not be counted.
+func TestGCSPutAllocatesNoBufferOfItsOwn(t *testing.T) {
+	ctx := context.Background()
+	store := gcsStore(t, "")
+	payload := bytes.Repeat([]byte("thumbnail"), 8<<10)
+	put := func(i int) {
+		key := fmt.Sprintf("thumbs/general/2026/08/%d.png", i)
+		if err := store.Put(ctx, key, "image/png", bytes.NewReader(payload)); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+	}
+	put(0) // the first opens the connection
+
+	const puts = 4
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	for i := 1; i <= puts; i++ {
+		put(i)
+	}
+	runtime.ReadMemStats(&after)
+	if each := (after.TotalAlloc - before.TotalAlloc) / puts; each > 4<<20 {
+		t.Errorf("each Put of %d bytes allocated %d bytes; want no buffer beyond the object", len(payload), each)
+	}
 }
 
 func TestGCSStorePrefixNamesObjects(t *testing.T) {
