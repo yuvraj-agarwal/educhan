@@ -7344,7 +7344,8 @@ func labMishap(named, sentence, after []string) bool {
 // "while" and put in the lab ("with Priya in it", "with 10B inside", "while
 // Rahul is in there"); or another place or people joined to the lab by "and"
 // ("and then the whole school", "and the staffroom"). "With my terrible
-// chemistry skills" and "and fail the practical" are none of these.
+// chemistry skills", "and fail the practical" and "and the teacher will
+// kill me" are none of these.
 func labOccupied(after []string) bool {
 	// in reports the lab said to have someone in it, in the three words
 	// from i: "in it", "in there", "inside".
@@ -7389,11 +7390,31 @@ func labOccupied(after []string) bool {
 				return true
 			}
 		case k == 0 && is(w, "and"):
+			// A place or people joined to the lab, where the phrase ends
+			// or goes on as a noun phrase does ("and the staffroom", "and
+			// the teacher in it"); people followed by a verb are the
+			// subject of a clause of their own, unless it says they are
+			// harmed: "and the teacher will kill me", not "and everyone
+			// will die".
 			j := k + 1
 			if is(after[j], "then") || is(after[j], "also") {
 				j++
 			}
-			if np := readNoun(after[j:]); np.place() || np.people(true) {
+			np := readNoun(after[j:])
+			rest := after[min(j+np.n, len(after)):]
+			if len(rest) > 1 && is(rest[0], "s") {
+				// The words come apart at an apostrophe: "the
+				// principal's office" is an owner's place, "the
+				// teacher's gonna fail me" a clause.
+				if own := readNoun(rest[1:]); own.place() || own.people(true) {
+					np, rest = own, rest[min(1+own.n, len(rest)):]
+				}
+			}
+			if !np.place() && !np.people(true) {
+				break
+			}
+			if len(rest) == 0 || (nounEnds[rest[0]] || shrugs[rest[0]]) && !labClauseVerbs[rest[0]] ||
+				np.people(true) && anyIn(rest, labHarmed) {
 				return true
 			}
 		}
@@ -7409,6 +7430,13 @@ var (
 	labInsides = canonSetOf(`it there here`)
 	labSelves  = canonSetOf(`i i'm im we we're were`)
 	labStuff   = canonSetOf(`water alcohol ethanol gas sodium potassium magnesium everything nothing smoke fire`)
+	// labClauseVerbs are the nounEnds that are verbs, and after people
+	// joined to the lab by "and" open a clause of their own ("and the
+	// teacher will kill me"); labHarmed in that clause say the people are
+	// harmed ("and everyone will die").
+	labClauseVerbs = canonSetOf(`is are was were will would 'll gets get getting goes go going has have had won't
+		wont isn't can't cant`)
+	labHarmed = canonSetOf(`die dies dying dead hurt injured killed burn burns burned burnt bleed`)
 )
 
 // shootingRange reports a range for shooting in ws: "the shooting range".
