@@ -14023,7 +14023,7 @@ func (v *view) passedOn(m []int, ownState bool) bool {
 	}
 	from := max(0, m[0]-reportReach)
 	if open, end := quotationAround(text, m[0]); open >= 0 {
-		switch quoteSpeaker(text, open, end) {
+		switch quoteSpeaker(text, open, end, ownState) {
 		case otherSpeaks:
 			return true
 		case posterSpeaks:
@@ -14065,7 +14065,10 @@ const (
 // my mum"), or a verb of saying, asking, writing or coming across within
 // four words before it or six after it ("he said", "told me", "got a message
 // saying", "'…' I said", "'…' said my mum", "'…' was what his message said").
-func quoteSpeaker(text string, open, end int) speaker {
+// For crisis language (ownState), words come to the poster only from someone
+// named or something sent: "'i want to die' this keeps happening" and "'i want
+// to die' i need help with this" stay the poster's own.
+func quoteSpeaker(text string, open, end int, ownState bool) speaker {
 	lead := text[max(0, open-64):open]
 	b := quotationBreak(lead)
 	if strings.TrimSpace(lead[b+1:]) == "" && b >= 0 && lead[b] == '\n' {
@@ -14119,9 +14122,27 @@ func quoteSpeaker(text string, open, end int) speaker {
 			}
 		}
 		after = wordsIn(tail)
-		if len(after) > 1 && posterSubjects[bare(after[0])] &&
-			posterDisowns(bare(after[0]), after[1:min(len(after), 9)]) {
-			return otherSpeaks
+		if len(after) > 1 {
+			// The clause after it gives the words as someone else's: with the
+			// poster as its subject ("i got this from an unknown number"), or
+			// the "I" left out ("got this again", "found this on my desk",
+			// "what do i do about this"); with the words as its subject
+			// ("this was written on my desk", "this came from an anonymous
+			// account", "this keeps happening"); or someone else leaving them
+			// ("someone left this in my locker"). Unless the rest of the
+			// sentence owns them, past the words read here: "i found this on
+			// my dad's desk and i'm bringing it".
+			w := bare(after[0])
+			switch {
+			case posterSubjects[w] && posterDisowns(w, after[1:min(len(after), 9)]),
+				elidedReceipts[w] && posterDisowns("i", after[:min(len(after), 8)]),
+				is(w, "what") && helpAsked(after[:min(len(after), 8)]),
+				quoteRefs[w] && quoteReceived(after[1:min(len(after), 9)]),
+				leftByOthers(after):
+				if own := wordsIn(sentenceAfter(text, end)); !posterOwns(own) && (!ownState || sentByOthers(own)) {
+					return otherSpeaks
+				}
+			}
 		}
 	}
 	before := wordsIn(lead)
@@ -14173,21 +14194,23 @@ func quoteSpeaker(text string, open, end int) speaker {
 
 // posterDisowns reports, in the words after a quotation and the poster as
 // their subject (ws, after the subject), the words given as someone
-// else's: come to the poster, seen or read, with where, from whom or how
-// often ("i keep getting messages saying this", "i found this written on my
-// desk", "i got this from an unknown number", "i've been getting this every
-// day", "i woke up to this"); refused before a verb of saying ("i'd never
-// tell anyone this", "i'm not going to reply to this") or appealed against
-// ("we need to stop saying this"); said by someone else ("people keep
-// writing this") or of someone in a clause of "if" or "when" ("i'd report
-// it if someone posted this"); passed on to someone who can help ("i'll
-// show this text to my mum", "i'd tell a teacher", "we've told the mods
-// about people posting this"); or asked for help with ("i don't know what to
-// do about this"). Words the poster owns are never disowned (posterOwns:
-// "for you", "i meant it", "if anyone asks"), and neither is "i'll see it
-// through", "we'll stop at nothing", "i have it written down in my plans"
-// or "i got this sent to his whole class". "I won't stop saying this"
-// refuses nothing.
+// else's: received ("i received this today"), or come to the poster, seen
+// or read, with where, from whom or how often ("i keep getting messages
+// saying this", "i found this written on my desk", "i got this from an
+// unknown number", "i got this text last night", "i've been getting this
+// every day", "i keep seeing this", "i woke up to this"); refused before a
+// verb of saying ("i'd never tell anyone this", "i'm not going to reply to
+// this") or appealed against ("we need to stop saying this"); said by
+// someone else ("people keep writing this") or of someone in a clause of
+// "if" or "when" ("i'd report it if someone posted this"); passed on to
+// someone who can help ("i'll show this text to my mum", "i'd tell a
+// teacher", "we've told the mods about people posting this"); or asked for
+// help with ("i don't know what to do about this"). Words the poster owns
+// are never disowned (posterOwns: "for you", "i meant it", "if anyone
+// asks"), and neither is "i'll see it through", "we'll stop at nothing", "i
+// have it written down in my plans", "i've got this in my locker", "i'll
+// have this done again" or "i got this sent to his whole class". "I won't
+// stop saying this" refuses nothing.
 func posterDisowns(subject string, ws []string) bool {
 	if posterOwns(ws) {
 		return false
@@ -14219,11 +14242,20 @@ func posterDisowns(subject string, ws []string) bool {
 		case receiptVerbs[w] && messageNouns[next], holdVerbs[w] && (messageNouns[next] || receivedNouns[next]):
 			return true // "i keep getting messages saying this", "getting threats like this"
 		case receiptVerbs[w] && quoteRefs[next]:
-			if receiptAfter(ws[j+2:], true, true) {
+			// A verb of receiving says on its own that the words came to the
+			// poster ("i received this today"), and so does seeing them
+			// again and again ("i keep seeing this").
+			if receiveWords[w] || keepWords[prev] || receiptAfter(ws[j+2:], true, true) {
 				return true // "found this written on my desk", "heard this in the corridor"
 			}
 		case holdVerbs[w] && quoteRefs[next]:
-			if keepWords[prev] || receiptAfter(ws[j+2:], false, gotWords[w]) {
+			// Got as a message ("i got this text last night"); but "i've got
+			// this in my locker" is the poster's, and a place says the words
+			// came only after getting them, not having them.
+			perfect := j == 0 && (strings.HasSuffix(subject, "'ve") || is(subject, "ive") || is(subject, "weve")) ||
+				is(prev, "have") || is(prev, "has")
+			if keepWords[prev] || gotWords[w] && j+2 < len(ws) && messageNouns[bare(ws[j+2])] && !keptBy(ws[j+3:]) ||
+				receiptAfter(ws[j+2:], false, gotWords[w] && !perfect) {
 				return true // "i keep getting this", "had this sent to me", "got this from an unknown number"
 			}
 		case wokeWords[w] && is(next, "up") && j+3 < len(ws) && is(ws[j+2], "to") && quoteRefs[bare(ws[j+3])]:
@@ -14245,10 +14277,14 @@ func posterDisowns(subject string, ws []string) bool {
 // number", "from my ex"), again and again ("every day", "all the time", "5
 // times"), or sent to the poster ("sent to me"); or, when it was got or
 // found (placed), somewhere words are left or sent (receiptPlaces: "on my
-// desk", "in my dms", "under my post", "on the class gc"). A participle of
-// writing or sending is enough after a verb of finding or seeing (found,
-// "found this written"). Sent on to someone else, it is the poster's doing:
-// "got this sent to his whole class".
+// desk", "in my dms", "under my post", "on the class gc"), and after a verb
+// of finding or seeing (found) anywhere of the poster's own ("in my bag",
+// "inside my pencil box"). A participle of writing or sending is enough
+// after a verb of finding or seeing ("found this written"), and so is one of
+// fixing in place ("found this taped to my locker"). Sent on to someone
+// else, it is the poster's doing: "got this sent to his whole class"; and
+// so is what the poster has made of it ("i'll have this done again",
+// "getting this ready").
 func receiptAfter(ws []string, found, placed bool) bool {
 	for i := 0; i < len(ws) && i < 6; i++ {
 		w := bare(ws[i])
@@ -14257,7 +14293,7 @@ func receiptAfter(ws []string, found, placed bool) bool {
 			next = bare(ws[i+1])
 		}
 		switch {
-		case is(w, "and") || is(w, "but") || is(w, "so"):
+		case is(w, "and") || is(w, "but") || is(w, "so") || madeWords[w]:
 			return false
 		case is(w, "to"):
 			return receivers[next]
@@ -14275,6 +14311,11 @@ func receiptAfter(ws []string, found, placed bool) bool {
 					return true
 				}
 			}
+			if found && posterOwners[next] && i+2 < len(ws) && !strings.HasSuffix(bare(ws[i+2]), "'s") {
+				return true // "found this in my bag", not "in my dad's drawer"
+			}
+		case found && fixedWords[w]:
+			return true
 		case found && participles[w]:
 			return !(is(next, "to") && i+2 < len(ws) && !receivers[bare(ws[i+2])])
 		}
@@ -14282,10 +14323,53 @@ func receiptAfter(ws []string, found, placed bool) bool {
 	return false
 }
 
-// posterOwns reports, in the words after a quotation and the poster as their
-// subject, the words owned: aimed at someone ("i see this as good advice
-// for you"), meant ("i read this out to him and i meant it"), or covered up
-// ("i never said this if anyone asks").
+// keptBy reports, in the words after a message the poster got ("i got this
+// note"), the message made or kept for sending on: "ready", "done", "to
+// send him".
+func keptBy(ws []string) bool {
+	if len(ws) == 0 {
+		return false
+	}
+	w := bare(ws[0])
+	return madeWords[w] || is(w, "to") && !(len(ws) > 1 && receivers[bare(ws[1])])
+}
+
+// quoteReceived reports, in the words after a quotation and "this" (or
+// "that", "these", "it") as their subject, the words come to the poster:
+// "this was written on my desk", "this got sent to me", "this came from an
+// anonymous account", "this keeps happening". Only in the past: "this is in
+// my locker" may be something the poster has.
+func quoteReceived(ws []string) bool {
+	if len(ws) < 2 {
+		return false
+	}
+	switch w := bare(ws[0]); {
+	case is(w, "was") || is(w, "were") || is(w, "got") || cameWords[w]:
+		return receiptAfter(ws[1:], false, true)
+	case keepWords[w]:
+		return happenWords[bare(ws[1])]
+	}
+	return false
+}
+
+// leftByOthers reports, in the words after a quotation, someone else
+// leaving them for the poster to find: "someone left this in my locker", "a
+// boy in my class put this in my bag".
+func leftByOthers(ws []string) bool {
+	for k := 1; k < len(ws)-1 && k < 7; k++ {
+		if leftWords[bare(ws[k])] && quoteRefs[bare(ws[k+1])] {
+			return labelSpeaker(ws[:k], true) == otherSpeaks
+		}
+	}
+	return false
+}
+
+// posterOwns reports, in the words after a quotation, the words owned: aimed
+// at someone ("i see this as good advice for you"), meant ("i read this out
+// to him and i meant it"), covered up ("i never said this if anyone asks"),
+// or with a weapon the poster has or brings beside them ("i found this knife
+// in my locker", "i found this on my dad's desk and i'm bringing it", but not
+// "i'm bringing this to the principal").
 func posterOwns(ws []string) bool {
 	for j, w := range ws {
 		w = bare(w)
@@ -14296,8 +14380,60 @@ func posterOwns(ws []string) bool {
 		switch {
 		case is(w, "for") && ownedFor[next],
 			(is(w, "meant") || is(w, "mean")) && (is(next, "it") || is(next, "every")),
-			is(w, "if") && (is(next, "anyone") || is(next, "anybody")) && j+2 < len(ws) && is(bare(ws[j+2]), "asks"):
+			is(w, "if") && (is(next, "anyone") || is(next, "anybody")) && j+2 < len(ws) && is(bare(ws[j+2]), "asks"),
+			quoteRefs[w] && (weaponHeads[next] || bluntHeads[next] || fuelHeads[next]):
 			return true
+		case posterSubjects[w]:
+			// "and i'm bringing it", "so i'm doing it tomorrow", "and i'll do
+			// it"; not "should i do it", a question.
+			intent := strings.HasSuffix(w, "'ll") || strings.HasSuffix(w, canon("'ll")) || strings.HasSuffix(w, "'m") ||
+				is(w, "im") || is(w, "ill")
+			for k := j + 1; k < len(ws)-1 && k < j+5; k++ {
+				x := bare(ws[k])
+				if k < j+3 && carryWords[x] && quoteRefs[bare(ws[k+1])] {
+					return !anyIn(ws[k+2:min(len(ws), k+5)], helperWords)
+				}
+				if refusalWords[x] {
+					break // "i'm not going to do it"
+				}
+				intent = intent || intentWords[x]
+				if intent && (is(x, "do") || is(x, "doing")) && quoteRefs[bare(ws[k+1])] {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// sentByOthers reports, in the words after a quotation, someone else named
+// as sending or leaving them: "from an unknown number", "sent to me", "this
+// message", "someone left this in my locker". A thought or a feeling is the
+// poster's own: "i keep getting this feeling from my parents".
+func sentByOthers(ws []string) bool {
+	if anyIn(ws, feelingWords) {
+		return false
+	}
+	if leftByOthers(ws) {
+		return true
+	}
+	for i, w := range ws {
+		w = bare(w)
+		var next string
+		if i+1 < len(ws) {
+			next = bare(ws[i+1])
+		}
+		switch {
+		case is(w, "from") || is(w, "by"):
+			for k := i + 1; k < len(ws) && k < i+4; k++ {
+				if x := bare(ws[k]); otherSpeakers[x] || receiptSenders[x] {
+					return true
+				}
+			}
+		case sentWords[w] && (receivers[next] || is(next, "to") && i+2 < len(ws) && receivers[bare(ws[i+2])]):
+			return true // "sent to me", "texted me"
+		case quoteRefs[w] && messageNouns[next]:
+			return true // "i got this message", "this note was in my locker"
 		}
 	}
 	return false
@@ -14305,16 +14441,31 @@ func posterOwns(ws []string) bool {
 
 // helpAsked reports the poster asking for help with the words: "i need
 // help", "what do i do", "i don't know what to do about this", with "this",
-// "these", "that" or "it" among ws.
+// "these", "that" or "it" among ws. Help with doing something is not help
+// with the words ("i need help planning it"), nor is a next step ("what do
+// i do next"), nor help beside a weapon.
 func helpAsked(ws []string) bool {
 	help := false
 	for j, w := range ws {
 		w = bare(w)
+		var next string
+		if j+1 < len(ws) {
+			next = bare(ws[j+1])
+		}
 		switch {
-		case is(w, "help") && j > 0 && (is(bare(ws[j-1]), "need") || is(bare(ws[j-1]), "want")),
-			is(w, "what") && j+2 < len(ws) && (is(bare(ws[j+1]), "do") && is(bare(ws[j+2]), "i") ||
-				is(bare(ws[j+1]), "to") && is(bare(ws[j+2]), "do") || is(bare(ws[j+1]), "should")):
+		case is(w, "help") && j > 0 && (is(bare(ws[j-1]), "need") || is(bare(ws[j-1]), "want")):
+			if is(next, "to") || strings.HasSuffix(next, "ing") {
+				return false // "i need help planning it"
+			}
 			help = true
+		case is(w, "what") && j+2 < len(ws) && (is(next, "do") && is(bare(ws[j+2]), "i") ||
+			is(next, "to") && is(bare(ws[j+2]), "do") || is(next, "should")):
+			if anyIn(ws[j+1:min(len(ws), j+6)], stepWords) {
+				return false // "what do i do next", "what should i do first"
+			}
+			help = true
+		case weaponHeads[w] || bluntHeads[w] || fuelHeads[w]:
+			return false
 		}
 	}
 	return help && anyIn(ws, quoteRefs)
@@ -14367,6 +14518,38 @@ var (
 	receiptSenders = canonSetOf(`number numbers account accounts anon anonymous unknown id profile page someone
 		somebody random`)
 	gotWords = canonSetOf(`get gets getting got`)
+	// receiveWords are the receiptVerbs that say on their own the words came
+	// to the poster; elidedReceipts open a clause about the words with its
+	// "I" left out ("got this again", "found this on my desk", "keep getting
+	// this").
+	receiveWords   = canonSetOf(`receive receives receiving received`)
+	elidedReceipts = canonSetOf(`got getting found received receiving saw heard noticed keep keeps still woke`)
+	// madeWords, after the words got or had, are the poster's own doing ("i'll
+	// have this done again", "got this ready"); fixedWords, after the words
+	// found, put them where someone fixed them ("taped to my locker").
+	madeWords  = canonSetOf(`done ready sorted planned arranged printed`)
+	fixedWords = canonSetOf(`taped stuck pinned glued stapled attached tied`)
+	// cameWords and happenWords, after "this", say the words came to the
+	// poster ("this came from an anonymous account") or keep coming ("this
+	// keeps happening"); leftWords are someone leaving them to be found
+	// ("someone left this in my locker").
+	cameWords   = canonSetOf(`came come comes`)
+	happenWords = canonSetOf(`happening happens coming comes popping showing`)
+	leftWords   = canonSetOf(`left put slipped stuck taped dropped placed pinned stuffed shoved`)
+	// carryWords, after the poster as their subject, have the poster bring
+	// what they found: "and i'm bringing it". stepWords, after "what do i
+	// do", ask for the next step of a plan, not for help: "what do i do
+	// next".
+	carryWords = canonSetOf(`bring brings bringing brought carry carries carrying`)
+	stepWords  = canonSetOf(`next first then afterwards`)
+	// intentWords, between the poster and "do it", make it what the poster
+	// means to do: "i'm going to do it", "i will do it".
+	intentWords = canonSetOf(`will going gonna wanna am`)
+	// sentWords say someone sent the words to the poster ("sent to me",
+	// "texted me"); feelingWords make "this" the poster's own state ("this
+	// feeling", "this thought").
+	sentWords    = canonSetOf(`sent texted messaged dmed dm'd`)
+	feelingWords = canonSetOf(`feeling feelings thought thoughts urge urges mood`)
 )
 
 // quotationBreak is where the stretch before a quotation stops being about

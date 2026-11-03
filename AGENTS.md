@@ -854,15 +854,22 @@ texting me" are theirs, and "'…' i've been told this" was said to the poster, 
 "'…' i've been texting him this" is the poster's own; `heardVerbs`, `receivedVerbs`);
 the poster's own clause after it giving the words as someone else's (`posterDisowns`:
 come to the poster, seen or read, "'…' i keep getting messages saying this", "i found
-this written on my desk"; refused before the verb of saying or appealed against, "i'd
-never say this", "we need to stop saying this", not "i won't stop saying this"; said by
-someone in a clause of "if" or "when"; or passed on to a parent, a teacher or the mods,
-"i'll show this text to my mum"); a quotation named as a kind of post (`namedAsAKind`:
-"the 'add me on snap' guys"); and the same report
-without quotation marks (`reportedClause`: a verb of saying before the words, in their
-sentence and before any comma, with only `reportedLinks` between: "my bf told me to go
-kill myself", "he said he'll shoot up the school"). A verb that doubles as a noun is the
-noun after `nounLeads` or a possessive (`sayingNoun`: "my post", "his message"). The
+this written on my desk", "i received this today"; refused before the verb of saying or
+appealed against, "i'd never say this", "we need to stop saying this", not "i won't stop
+saying this"; said by someone in a clause of "if" or "when"; or passed on to a parent, a
+teacher or the mods, "i'll show this text to my mum"), the same clause with its "I" left
+out ("got this again", `elidedReceipts`), a clause with the words as its subject
+(`quoteReceived`: "this was written on my desk", "this keeps happening", not "this is in
+my locker"), or someone else leaving them (`leftByOthers`: "someone left this in my
+locker"), unless the rest of the sentence owns them (`posterOwns`: "for you", a weapon,
+"and i'm bringing it", "and i'll do it"). For crisis language a clause gives the words
+away only when it names who sent them or a message (`sentByOthers`), so "'i want to die'
+this keeps happening" stays the poster's; a quotation named as a kind of post
+(`namedAsAKind`: "the 'add me on snap' guys"); and the same report without quotation
+marks (`reportedClause`: a verb of saying before the words, in their sentence and before
+any comma, with only `reportedLinks` between: "my bf told me to go kill myself", "he
+said he'll shoot up the school"). A verb that doubles as a noun is the noun after
+`nounLeads` or a possessive (`sayingNoun`: "my post", "his message"). The
 poster's own words stay theirs however they are wrapped: a label, a dash or a subject
 that is the poster (`posterLabels`, `posterSubjects`, the poster's own mind,
 `mindWords`: "my head keeps telling me to"), an instruction (`instructionModals`: "you
