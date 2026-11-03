@@ -3295,20 +3295,20 @@ function endLoading() {
 
 // beginLoading dims the current view and only falls back to a skeleton if the
 // request is slow enough to notice, which keeps fast navigations from flashing.
-// With skeleton false the current view stays, dimmed, however long it takes.
-// The skeleton is drawn, and the finish it returns takes the dimming off, only
-// while its render is still the latest: an overtaken render's skeleton would
-// blank the newer page for good, since the overtaken render then draws
-// nothing, and its finish would show a newer render still loading, a kept page
-// say, as loaded. The latest is counted rather than asked of overtaken: a kept
-// page whose redraw fails puts back the route it was drawn for, which
-// overtakes that redraw too. A skeleton drawn leaves the page it replaces
-// (leavePage).
-function beginLoading({ skeleton = true } = {}) {
+// skeleton says, when that time comes, whether to draw it: while it says no,
+// the current view stays, dimmed, however long it takes. The skeleton is drawn,
+// and the finish it returns takes the dimming off, only while its render is
+// still the latest: an overtaken render's skeleton would blank the newer page
+// for good, since the overtaken render then draws nothing, and its finish would
+// show a newer render still loading, a kept page say, as loaded. The latest is
+// counted rather than asked of overtaken: a kept page whose redraw fails puts
+// back the route it was drawn for, which overtakes that redraw too. A skeleton
+// drawn leaves the page it replaces (leavePage).
+function beginLoading({ skeleton = () => true } = {}) {
   const begun = rendersBegun;
   el.main.setAttribute("aria-busy", "true");
   loadingTimer = setTimeout(() => {
-    if (skeleton && begun === rendersBegun) {
+    if (begun === rendersBegun && skeleton()) {
       el.main.innerHTML = '<div class="skeleton"><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div></div>';
       leavePage();
     }
@@ -3372,9 +3372,13 @@ async function render({ draft = captureDraft() } = {}) {
   // is drawn in the page's place (leavePage, and below): a refusal answered
   // meanwhile updates the page it is shown on, and Escape closes the image open
   // there. A redraw of the page a post is on its way from, or whose form has
-  // yet to be told what it missed off the screen, keeps the page on screen
-  // (below).
-  const keepPage = Boolean(draft && draft.held && draft.key === routeKey(route));
+  // yet to be told what it missed off the screen, or whose form is pressed
+  // while it loads, keeps the page on screen (below). That is read as the draft
+  // stands when it is used (carriedDraft).
+  const keepPage = () => {
+    const carried = carriedDraft(draft);
+    return Boolean(carried && carried.held && carried.key === routeKey(route));
+  };
   renderNav(route);
   clearNotice();
   hideQuotePreview();
@@ -3395,8 +3399,9 @@ async function render({ draft = captureDraft() } = {}) {
   // A redraw of the page a post is on its way from, or whose form has yet to be
   // told what it missed off the screen (captureDraft), keeps the page on
   // screen, dimmed, rather than a skeleton, so the form stays in the document
-  // until it goes into the new page (restoreDraft).
-  const finish = beginLoading({ skeleton: !keepPage });
+  // until it goes into the new page (restoreDraft), and so does one whose form
+  // is pressed before the skeleton would be drawn (carriedDraft).
+  const finish = beginLoading({ skeleton: () => !keepPage() });
   let resolved = null;
   try {
     if (age === "ok") {
@@ -3492,8 +3497,11 @@ async function render({ draft = captureDraft() } = {}) {
     // badge said in place of the note the refusal left, as restoreDraft does
     // when the redraw draws; and a refusal of its image switches its picker off
     // and puts the thread's counts in step, as on screen (blockRefusedPicker),
-    // which a page drawn afresh does itself.
-    if (keepPage && draft.held.isConnected) {
+    // which a page drawn afresh does itself. The draft is read as it stands
+    // now, so a form pressed while the redraw loaded is that form, held
+    // (carriedDraft).
+    draft = carriedDraft(draft);
+    if (keepPage() && draft.held.isConnected) {
       renderedPath = drawnFor.path;
       window.history.replaceState(window.history.state, "", drawnFor.path + window.location.hash);
       state.route = drawnFor.route;
@@ -3546,7 +3554,7 @@ async function render({ draft = captureDraft() } = {}) {
   drawnFor = { path: renderedPath, route, thread: state.thread };
   expandedLink = null;
   enhancePosts(el.main);
-  restoreDraft(draft);
+  restoreDraft(carriedDraft(draft));
   focusHash();
 }
 
@@ -3602,7 +3610,9 @@ function field(form, name) {
 // keyed by the page on screen, which the render that drew it noted (drawnFor),
 // not by the newest render begun: one begun before the last has drawn, the
 // second of a double click say, would carry this page's form, held or not, into
-// the form of the page it goes to.
+// the form of the page it goes to. A form read for its values is noted with
+// them, with how often it had been pressed (presses), so that one pressed
+// while the redraw loads is carried held after all (carriedDraft).
 function captureDraft() {
   const key = routeKey(drawnFor.route || state.route);
   const form = el.main.querySelector("form[data-kind]");
@@ -3614,7 +3624,23 @@ function captureDraft() {
   if (heldForms.has(form) || unsaidNotices.has(form)) {
     return { key, held: form, forgets: browserForgets };
   }
-  return { key, ...formDraft(form) };
+  return { key, ...formDraft(form), from: form, pressed: presses.get(form) ?? 0 };
+}
+
+// carriedDraft is the draft a redraw carries, as of now. One read from a form
+// for its values stands for that form only until the form is pressed: a press
+// made while the redraw loads, its page still on screen, form and all, is
+// carried as one made just before the redraw began would have been, the form
+// itself carried held (captureDraft), whatever has become of its post since.
+// So the redraw keeps the page for it (render) and puts the form back, or
+// reads it as it is by then (restoreDraft), rather than the values read before
+// the press, which the form a post went from would leave in the new form, to
+// be posted twice.
+function carriedDraft(draft) {
+  if (!draft || !draft.from || (presses.get(draft.from) ?? 0) === draft.pressed) {
+    return draft;
+  }
+  return { key: draft.key, held: draft.from, forgets: draft.forgets };
 }
 
 // formDraft reads what a posting form holds, noting browserForgets as it was,
@@ -3654,7 +3680,9 @@ function restoreDraft(draft) {
   const form = el.main.querySelector("form[data-kind]");
   // A form carried held whose post has been answered by now: on screen while
   // its page was drawn again, its notice said then, or off the screen, before
-  // the redraw began or while it loaded, its notice said here (below).
+  // the redraw began or while it loaded, its notice said here (below). So is
+  // one pressed while the redraw loaded and refused before anything was sent,
+  // an empty press say, its notice said then too (carriedDraft).
   let answered = null;
   if (draft.held) {
     const held = draft.held;
@@ -3775,10 +3803,17 @@ function restoreDraft(draft) {
   // notice saying so rather than giving way to the picker's reason: the
   // refusal's own notice, still on screen, is worded again with that reason
   // (refusalNotices), and any other has it added (imageTakenOff). So whichever
-  // comes first, the answer or the redraw, the notice ends the same.
+  // comes first, the answer or the redraw, the notice ends the same. The one
+  // case with nothing added is the notice of a refusal of the image itself said
+  // above, the image limit reached or uploads switched off, which says already
+  // that the image was taken off and why: an image attached since goes with
+  // nothing said, the picker left as the new page drew it, as on the page a
+  // failed redraw keeps (blockRefusedPicker), so the refusal is said once.
   const fileField = form.querySelector("[data-file-field]");
   const refusal = answered && draft.file ? pickerRefusal(form) : "";
-  if (refusal) {
+  if (refusal && unsaid && unsaid.imageRefused) {
+    // Taken off: the new form is left without it.
+  } else if (refusal) {
     const said = el.notice.hidden ? "" : el.notice.querySelector(".notice-text").textContent;
     const notice = refusalNotices.get(answered);
     const kept = { hasText: Boolean(draft.body.trim()), isThread: form.dataset.kind === "thread" };
@@ -3795,8 +3830,11 @@ function restoreDraft(draft) {
   }
   // As a refusal on screen gives it (holdForm): on the button, without
   // scrolling, if the form had the focus at the press and it is lost now, on
-  // the page itself or nowhere.
-  if (unsaid && unsaid.focused && (!document.activeElement || document.activeElement === document.body)) {
+  // the page itself or nowhere. A form refused on screen while the redraw
+  // loaded had it given back then, on a button that has gone with the old page
+  // since (refocusedForms), so the new form's button takes its place.
+  const focused = unsaid ? unsaid.focused : refocusedForms.has(answered);
+  if (focused && (!document.activeElement || document.activeElement === document.body)) {
     form.querySelector('button[type="submit"]')?.focus({ preventScroll: true });
   }
 }
@@ -4654,15 +4692,19 @@ function runCaptchaWorkers(challenge, signal) {
 // (formOnScreen), and the browser not forgotten since the press. A request
 // whose form has gone, because the reader went to another page, or that Forget
 // this browser cancelled meanwhile, is not sent, the first time or once more
-// after a refused answer. That is asked when its answer is ready, which then
-// goes back for the next press, on keepCaptcha's terms, and again when a
-// refusal of the answer arrives, perhaps after a forget heard while the first
-// send was on its way. Either way sendWithCaptcha throws the error notSent
-// makes, for a caller that says nothing on a page the reader went to and, on a
-// form still on screen, which only the forget stops, says why. A post's form
-// keeps what it would have been told, for a redraw that carries it held to say
-// (unsaidNotices). Neither the second send nor the next puzzle is started for
-// one.
+// after a refused answer. That is asked once it has waited for the puzzle,
+// solved since the press, its answer then put back for the next press, on
+// keepCaptcha's terms, and again when a refusal of the answer arrives, perhaps
+// after a forget heard while the first send was on its way.
+// Either way sendWithCaptcha throws the error notSent makes, for a caller that
+// says nothing on a page the reader went to and, on a form still on screen,
+// which only the forget stops, says why. A post's form keeps what it would
+// have been told, for a redraw that carries it held to say (unsaidNotices).
+// Neither the second send nor the next puzzle is started for one. A request
+// with an answer held already, or needing none, goes with the press, made on a
+// form on screen: one pressed while a render for another page loads, its page
+// still drawn, form and all, goes as it would have just before that render
+// began, its answer judged by where the reader is when it comes (onScreen).
 // Pressing Update while a post waits does not take its form away: the redrawn
 // page shows the same form, still held, as does another page of the same
 // board's index, drawn with the same new-thread form, and a redraw that will
@@ -4670,15 +4712,19 @@ function runCaptchaWorkers(challenge, signal) {
 async function sendWithCaptcha(needsIt, send, solving, onScreen) {
   for (let retried = false; ; retried = true) {
     let taken = null;
+    let waited = false;
     if (needsIt()) {
       solving(true);
       captcha.waiting += 1;
       try {
         // Taken as soon as it is handed over, in the same step. An answer
         // another request waiting on the same puzzle took first is not shared:
-        // this one solves another.
+        // this one solves another. One held already is handed over at once;
+        // anything else is the puzzle, waited for.
         do {
-          taken = takeCaptcha(await captchaAnswer());
+          const ready = captchaAnswer();
+          waited = waited || ready === captcha.solving;
+          taken = takeCaptcha(await ready);
         } while (!taken);
       } catch (err) {
         // The server has switched the captcha off since this page learned it
@@ -4693,7 +4739,7 @@ async function sendWithCaptcha(needsIt, send, solving, onScreen) {
       }
     }
     const answer = taken ? taken.answer : "";
-    if (!onScreen()) {
+    if (waited && !onScreen()) {
       keepCaptcha(taken);
       throw notSent();
     }
@@ -4736,23 +4782,41 @@ function notSent() {
 // formOnScreen says whether a form is still the one the reader is looking at:
 // in the document, on the page that drew it. Going to another page changes
 // state.route at once, while the old form stays in the document until the new
-// page is drawn over it. A redraw of the same page, Update say, or of another
+// page is drawn over it. A posting form's route is the page it is on at the
+// press, as the render that drew that page noted it (drawnFor), never a render
+// begun since that has not drawn yet: pressed just after a link, its post is
+// answered as off the screen while state.route is another page's, and on the
+// form again once a redraw of its own page, a post link's lookup into its
+// thread say, carries it. A redraw of the same page, Update say, or of another
 // page of the same board's index (the same routeKey), keeps a posting form
-// whose post is on its way in the document: it puts the form in place of the
-// one the new page draws for the same thread or board (restoreDraft) or, when
-// the new page will not load, leaves the page on screen, form and all
-// (render). Either way the post goes ahead and is answered on that form. Only
-// a new page that draws no such form, the thread locked or archived meanwhile,
-// takes it off the screen. No redraw carries a /verify form, so one is on
-// screen only until the next render, of /verify too: a code requested from the
-// form a redraw is about to replace would be answered on a page that shows the
-// address step, with nothing to say a code was sent.
+// whose post is on its way in the document, one pressed while the redraw loads
+// included (carriedDraft): it puts the form in place of the one the new page
+// draws for the same thread or board (restoreDraft) or, when the new page will
+// not load, leaves the page on screen, form and all (render). Either way the
+// post goes ahead and is answered on that form. Only a new page that draws no
+// such form, the thread locked or archived meanwhile, takes it off the screen.
+// No redraw carries a /verify form, so one is on screen only until the next
+// render, of /verify too: a code requested from the form a redraw is about to
+// replace would be answered on a page that shows the address step, with nothing
+// to say a code was sent.
 function formOnScreen(form, route) {
   return form.isConnected && (form.dataset.kind ? routeKey(state.route) === routeKey(route) : state.route === route);
 }
 
 // The forms holdForm holds.
 const heldForms = new WeakSet();
+
+// How many times each posting form has been pressed (submit), for a redraw to
+// tell whether the form it read its draft from has been pressed since
+// (carriedDraft).
+const presses = new WeakMap();
+
+// The posting forms whose last press was refused on screen with its button
+// given the focus back (holdForm), for a redraw loading meanwhile that puts
+// such a form's values into its new page, the old form, button and all, gone as
+// the page is drawn again, to give the new form's button the focus as well
+// (restoreDraft). Every press takes its form out first (submit).
+const refocusedForms = new WeakSet();
 
 // How the last redraw of a held form's page drew the picker there, by form:
 // the reason it was drawn switched off with, or "" for one drawn live, or the
@@ -4809,17 +4873,20 @@ function takeUnsaidNotice(form) {
 // then switches the picker off (blockRefusedPicker): the submit handler does
 // that for a form on screen, and for one answered off the screen the page a
 // failed redraw keeps for it does (render), or the form's next press if that
-// comes first (submit), while a page drawn afresh draws its picker as the
-// server says by then. With refocus, a form that had the focus at the press,
-// which disabling the focused control took away, gets it back on its button,
-// ready to press again; put back in a box to write in, it would start another
-// puzzle. That is only while the focus is still lost, on the page itself or
-// nowhere: a reader who moved it during the wait, to read a post say, keeps it
-// where they put it. And it does not scroll the page: a reader who scrolled
-// away during the wait stays where they are. The notice saying what happened is
-// at the top of the page, in view only of a reader who is there. Until release,
-// the form is in heldForms, and a redraw of its page carries it across as it is
-// (captureDraft, restoreDraft).
+// comes first, unless an image has been attached since, which that press sends
+// for the server to answer (submit), while a page drawn afresh draws its picker
+// as the server says by then. With refocus, a form that had the focus at the
+// press, which disabling the focused control took away, gets it back on its
+// button, ready to press again (put back in a box to write in, it would start
+// another puzzle), and so does the button of the form a redraw loading
+// meanwhile then draws in its place (refocusedForms, restoreDraft). That is
+// only while the focus is still lost, on the page itself or nowhere: a reader
+// who moved it during the wait, to read a post say, keeps it where they put it.
+// And it does not scroll the page: a reader who scrolled away during the wait
+// stays where they are. The notice saying what happened is at the top of the
+// page, in view only of a reader who is there. Until release, the form is in
+// heldForms, and a redraw of its page carries it across as it is (captureDraft,
+// restoreDraft).
 function holdForm(form) {
   const controls = Array.from(form.elements).filter((control) => !control.disabled);
   const focused = form.contains(document.activeElement);
@@ -4849,6 +4916,7 @@ function holdForm(form) {
     const lost = !document.activeElement || document.activeElement === document.body;
     if (refocus && focused && lost) {
       form.querySelector('button[type="submit"]')?.focus({ preventScroll: true });
+      refocusedForms.add(form);
     }
     return imageOff;
   };
@@ -4890,6 +4958,12 @@ el.main.addEventListener("submit", async (event) => {
   if (owed && owed.imageRefused && !(image && image.files.length)) {
     blockRefusedPicker(form, owed.limitReached);
   }
+  // Every press is counted, so that a redraw loading meanwhile, whose draft
+  // was read from this form before it, carries the form as it would have had
+  // the press come first (carriedDraft), and the focus an earlier refusal gave
+  // back is no longer this press's to give again (refocusedForms).
+  presses.set(form, (presses.get(form) ?? 0) + 1);
+  refocusedForms.delete(form);
   const button = form.querySelector('button[type="submit"]');
   const data = new FormData(form);
   const name = String(data.get("name") || "");
@@ -4943,20 +5017,24 @@ el.main.addEventListener("submit", async (event) => {
   // beside its credential in one request — the only place they could meet.
   const headers = held ? { [CREDENTIAL_HEADER]: held.token } : { [POSTER_KEY_HEADER]: posterKey() };
 
+  // The page the form is on, which the render that drew it noted (drawnFor),
+  // never one begun since that has not drawn yet, after a link pressed just
+  // before say: its board is where the post goes, and it is the page the post
+  // is answered on (formOnScreen).
+  const route = drawnFor.route;
   const isThread = form.dataset.kind === "thread";
   const payload = { name, body, badge: wantsBadge };
   let path;
   if (isThread) {
     payload.subject = String(data.get("subject") || "");
-    path = `/api/boards/${encodeURIComponent(state.route.slug)}/threads`;
+    path = `/api/boards/${encodeURIComponent(route.slug)}/threads`;
   } else {
     payload.sage = data.get("sage") === "on";
-    path = `/api/boards/${encodeURIComponent(state.route.slug)}/threads/${form.dataset.thread}/posts`;
+    path = `/api/boards/${encodeURIComponent(route.slug)}/threads/${form.dataset.thread}/posts`;
   }
 
   const label = button.textContent;
   const sending = file ? "Uploading…" : "Posting…";
-  const route = state.route;
   const onScreen = () => formOnScreen(form, route);
   // "Forget this browser", pressed in another tab while the post waits on its
   // puzzle, stops it as it stops a code request: sent, it would go under the
