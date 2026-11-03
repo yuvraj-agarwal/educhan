@@ -7579,12 +7579,16 @@ var (
 	// castNames are parts in plays a school puts on, and castRoles parts
 	// that are named by what they are, so an act done to one is a part's:
 	// "I stab Caesar tonight", not "I stab Rahul tonight" (strangerActedOn).
-	// Names that are often people's own, as Ram or Arjun are, are none.
-	castNames = canonSetOf(`caesar brutus cassius antony casca hamlet laertes polonius claudius ophelia gertrude
-		macbeth duncan banquo macduff othello desdemona iago cassio romeo juliet tybalt mercutio benvolio lear
-		cordelia goneril regan shylock prospero caliban oberon titania lysander demetrius malvolio orsino
-		hamilton burr lennie dracula frankenstein scrooge marley javert valjean ravana ravan kansa kans meghnad
-		kumbhakarna duryodhana duryodhan shakuni mahishasura`)
+	// Names that are often people's own, as Ram or Arjun are, are none, and
+	// a part missing from the list is read as a stranger's name.
+	castNames = canonSetOf(`caesar brutus cassius antony casca calpurnia octavius lepidus hamlet laertes polonius
+		claudius ophelia gertrude horatio rosencrantz guildenstern fortinbras osric macbeth duncan banquo macduff
+		fleance hecate othello desdemona iago cassio roderigo emilia brabantio lodovico romeo juliet tybalt
+		mercutio benvolio capulet montague lear cordelia goneril regan shylock bassanio gratiano prospero caliban
+		trinculo stephano gonzalo oberon titania lysander demetrius hermia theseus hippolyta egeus puck malvolio
+		orsino feste hamilton burr lennie dracula frankenstein scrooge marley javert valjean ravana ravan kansa
+		kans meghnad indrajit kumbhakarna vibhishana surpanakha kaikeyi manthara duryodhana duryodhan dushasana
+		shakuni jarasandha shishupal hiranyakashipu holika putana bakasura narakasura mahishasura`)
 	castRoles = canonSetOf(`soothsayer ghost witch witches narrator chorus villain hero heroine king queen prince
 		princess knight dragon giant wolf monster demon`)
 	stagePlaces = canonSetOf(`auditorium hall halls assembly`)
