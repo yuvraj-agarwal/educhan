@@ -362,7 +362,8 @@ func (h *bodyRoom) release() {
 // its size of the budget, and asks for no more. It takes room a piece at a
 // time, each before it reads into it: first for the buffer the body's first
 // read began (startBody), uploadHeadBytes, and then each piece as large as
-// all before it, so a body that stops holds at most twice what it has sent.
+// all before it, so a body that stops holds at most twice what it has sent,
+// or uploadHeadBytes if that is more.
 //
 // Room taken for the whole of a body that has sent only its first bytes cost
 // the sender nothing to hold: answered upload too slow once its grace ran

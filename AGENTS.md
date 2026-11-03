@@ -1196,7 +1196,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   body holds room for what it has sent (`admitBody`): a piece at a time, each taken before
   it is read into and as large as all before it, until an eighth of the body has arrived,
   and only then its declared size, so that holding that costs an eighth of it sent and a
-  body that stops sooner holds at most twice what it sent; what has arrived is held in
+  body that stops sooner holds at most twice what it sent, or `uploadHeadBytes` (4 KiB) if
+  that is more, as one that has sent a single byte does; what has arrived is held in
   memory until the read of the form has copied it into the image's buffer, so until then
   the upload budget, though not the client's share, holds room for it twice, taken in the
   same ask as the rest of the body (`bodyRoom.takeRest`), after which the body asks for no

@@ -996,7 +996,8 @@ func TestIdleBodiesDoNotHoldUpOtherImagePosts(t *testing.T) {
 
 	// A body takes room a piece at a time, each before it is read into and
 	// as large as all before it, so it holds at most twice what it has sent,
-	// until an eighth of it has arrived; then it holds its declared size.
+	// or uploadHeadBytes if that is more, until an eighth of it has arrived;
+	// then it holds its declared size.
 	t.Run("a body holds its declared size once an eighth of it has arrived", func(t *testing.T) {
 		h := testServer(t, func(cfg *Config) { cfg.TrustedProxyHops = 1 })
 		h.addBoard("general")

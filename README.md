@@ -1095,27 +1095,27 @@ server that would refuse what it sends.
   (see **Formats**), and the rest wait for room in the order they arrived. The uploads'
   own bytes have a budget of their own (64 MiB), taken as a request body is read, so how
   many requests an instance is let take at once does not decide how many images it holds.
-  Between them that is 320 MiB at most: eighty 8 MiB uploads sent at once to a
-  server run with `GOMEMLIMIT=400MiB` peaked at 330 MiB resident, so an instance of 512
-  MiB has room with that limit set. The posts of one client hold at most half the upload
-  budget at once, so a client cannot take all of it with a few connections that declare
-  large bodies and send nothing; its next image post past that answers `429`, with a
-  `Retry-After` of 10 seconds and no cooldown started. A client here is one address, as
-  flood control counts them, except that the addresses of one IPv6 /64 network count as
-  one client, since a host can usually take any address in its /64: the people on one such
-  network share that half, as those behind one IPv4 address do, while flood control still
-  counts each of their addresses apart. A body takes no room until its first bytes arrive,
-  and one that sends none within 5 seconds answers `400` as below, having held none; it
-  then takes room for what it has sent, a little ahead of it, until an eighth of it has
+  Between them that is 320 MiB at most: eighty 8 MiB uploads sent at once to a server run
+  with `GOMEMLIMIT=400MiB` peaked at 330 MiB resident, so an instance of 512 MiB has room
+  with that limit set. The posts of one client hold at most half the upload budget at
+  once, so a client cannot take all of it with a few connections that declare large bodies
+  and send nothing; its next image post past that answers `429`, with a `Retry-After` of
+  10 seconds and no cooldown started. A client here is one address, as flood control
+  counts them, except that the addresses of one IPv6 /64 network count as one client,
+  since a host can usually take any address in its /64: the people on one such network
+  share that half, as those behind one IPv4 address do, while flood control still counts
+  each of their addresses apart. A body takes no room until its first bytes arrive, and
+  one that sends none within 5 seconds answers `400` as below, having held none; it then
+  takes room for what it has sent, a little ahead of it, until an eighth of it has
   arrived, and only then, in one go, as much as it says it is and that eighth again, which
-  is in memory twice until the form has been read, so a body that stops holds little more
-  than it sent. A post waits for room in either budget for about ten seconds at most, and
-  a client has one image post waiting for room for its body at a time: its next that finds
-  none answers `429` at once, as one past its share does. Its body has 30 seconds to
-  arrive from its first bytes, the time it waits for room aside, at an even pace with up
-  to 5 seconds to spare — a body that falls further behind the pace that would bring it
-  all in by then, sending nothing or a trickle, is cut off then and its room given back —
-  and once it has arrived its image has
+  is in memory twice until the form has been read, so a body that stops holds at most
+  twice what it has sent or, if that is more, 4 KiB. A post waits for room in either
+  budget for about ten seconds at most, and a client has one image post waiting for room
+  for its body at a time: its next that finds none answers `429` at once, as one past its
+  share does. Its body has 30 seconds to arrive from its first bytes, the time it waits
+  for room aside, at an even pace with up to 5 seconds to spare — a body that falls
+  further behind the pace that would bring it all in by then, sending nothing or a
+  trickle, is cut off then and its room given back — and once it has arrived its image has
   25 seconds to be processed and stored. A post that cannot be taken in time — no room
   within the wait, or its image not stored within those 25 seconds — answers `503` (see
   [Flood control](#flood-control)) with nothing stored, rather than being made after its
