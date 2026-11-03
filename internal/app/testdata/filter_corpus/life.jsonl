@@ -498,3 +498,11 @@
 {"id": "life-498", "body": "tox: lethal dose of paracetamol for a 15 year old", "subject": "", "name": "", "expect": "hold", "why": "a dose asked for a fifteen-year-old (R22V-DOSE-LABEL-TOPIC)"}
 {"id": "life-499", "body": "in my pharmacology exam they asked us to explain why the lethal dose of paracetamol drops with alcohol use", "subject": "", "name": "", "expect": "publish", "why": "an exam question explaining why a dose changes (R22V-DOSE-EMBEDDED-WHY)"}
 {"id": "life-500", "body": "the lethal dose of paracetamol drops a lot in people with liver damage", "subject": "", "name": "", "expect": "publish", "why": "a fact about the dose, said with \"drops\" (R22V-DOSE-EMBEDDED-WHY)"}
+{"id": "life-735", "body": "i need to sh*t but the school toilets are gross", "subject": "", "name": "", "expect": "publish", "why": "censored swearing: \"sh\" with a mask and a letter after it is no verb (V4-SH-CENSORED-SWEAR)"}
+{"id": "life-736", "body": "i want to sh*t talk the new syllabus", "subject": "", "name": "", "expect": "publish", "why": "censored \"shit talk\" (V4-SH-CENSORED-SWEAR)"}
+{"id": "life-737", "body": "i want to sh!t on whoever made this paper", "subject": "", "name": "", "expect": "publish", "why": "censored with \"!\" (V4-SH-CENSORED-SWEAR)"}
+{"id": "life-738", "body": "this paper made me want to sh*t myself", "subject": "", "name": "", "expect": "publish", "why": "censored swearing about an exam paper (V4-SH-CENSORED-SWEAR)"}
+{"id": "life-739", "body": "i want to sh*t lol the canteen food", "subject": "", "name": "", "expect": "publish", "why": "censored swearing about canteen food (V4-SH-CENSORED-SWEAR)"}
+{"id": "life-740", "body": "i need to sh!t so bad", "subject": "", "name": "", "expect": "publish", "why": "censored swearing, needing the toilet (V4-SH-CENSORED-SWEAR)"}
+{"id": "life-741", "body": "i sh'd have studied more lol", "subject": "", "name": "", "expect": "publish", "why": "\"sh'd have\" is \"should have\", not \"self harmed\" (V4-SH-CENSORED-SWEAR)"}
+{"id": "life-742", "body": "i sh'd again after the fight", "subject": "", "name": "", "expect": "support", "why": "\"sh'd\" with no \"have\" after it is still \"self harmed\" (V4-SH-CENSORED-SWEAR control)"}

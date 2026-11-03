@@ -704,13 +704,18 @@ func plainView(src string, readings []reading) view {
 // closed and short. A word read so still maps back to the characters the
 // poster wrote, as a ligature folded to several letters does. A bare "sh" is
 // left alone ("sh, quiet", "sh build.sh"); supportRuns read it as a verb only
-// where one is wanted.
+// where one is wanted. "Sh'd" before a verb that "should" takes is "should":
+// "i sh'd have studied more" (shouldWords).
 var spellingFolds = map[string]string{
 	"sucide": "suicide", "suicde": "suicide", "suiside": "suicide", "suicid": "suicide", "sucidal": "suicidal",
 	"suicdal": "suicidal", "suisidal": "suicidal", "commiting": "committing", "comitting": "committing",
 	"comit": "commit", "sh'd": "self harmed", "sh'ed": "self harmed", "sh-ed": "self harmed",
 	"sh'ing": "self harming", "sh-ing": "self harming",
 }
+
+// shouldWords, after "sh'd", make it "should": "sh'd have", "sh'd not".
+var shouldWords = map[string]bool{"have": true, "hav": true, "ve": true, "been": true, "be": true, "not": true,
+	"never": true, "of": true}
 
 // foldSpellings reads v's words of spellingFolds as what they stand for. A
 // word is a run of ASCII letters, joined by an apostrophe or a hyphen with a
@@ -730,7 +735,19 @@ func foldSpellings(v view) view {
 		for j < len(t) && (letter(t[j]) || (t[j] == '\'' || t[j] == '-') && j+1 < len(t) && letter(t[j+1])) {
 			j++
 		}
-		if to, ok := spellingFolds[t[i:j]]; ok && !(j < len(t) && (t[j] >= utf8.RuneSelf || isASCIIDigit(t[j]))) {
+		to, ok := spellingFolds[t[i:j]]
+		if ok && t[i:j] == "sh'd" {
+			k := j
+			for k < len(t) && t[k] == ' ' {
+				k++
+			}
+			e := k
+			for e < len(t) && letter(t[e]) {
+				e++
+			}
+			ok = !shouldWords[t[k:e]]
+		}
+		if ok && !(j < len(t) && (t[j] >= utf8.RuneSelf || isASCIIDigit(t[j]))) {
 			if b == nil {
 				b = newViewBuilder(len(t) + 16)
 			}
@@ -14265,9 +14282,11 @@ func searchedMethod(w string, next []string) bool {
 
 // shellAfter reports "sh", ending at text[end] and followed by the words
 // next, used as a shell's command rather than a verb: "sh-ow", "sh
-// build.sh", "sh into the server".
+// build.sh", "sh into the server"; or as the start of a word masked with a
+// character and a letter after it, which is how swearing is censored: "sh*t",
+// "sh!t", "sh#t".
 func shellAfter(text string, end int, next []string) bool {
-	if end+1 < len(text) && strings.IndexByte("-./_", text[end]) >= 0 && unicode.IsLetter(rune(text[end+1])) {
+	if end+1 < len(text) && strings.IndexByte("-./_*!#@$%", text[end]) >= 0 && unicode.IsLetter(rune(text[end+1])) {
 		return true
 	}
 	return len(next) > 0 && shellWords[next[0]] || anyIn(next, canonSetOf(`sh bash zsh ssh`))
