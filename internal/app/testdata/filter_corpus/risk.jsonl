@@ -629,3 +629,12 @@
 {"id": "risk-629", "body": "practical tomorrow, i'm going to blow up the lab and the staffroom", "subject": "", "name": "", "expect": "hold", "why": "a second place joined to the lab (V4-LAB-LETOFF-MISSES-PEOPLE)"}
 {"id": "risk-630", "body": "chem practical tomorrow, i'm gonna blow up the lab while i'm in there lol", "subject": "", "name": "", "expect": "publish", "why": "the poster in the lab is the joke's own clumsiness (V4-LAB-LETOFF-MISSES-PEOPLE control)"}
 {"id": "risk-631", "body": "chem practical tomorrow, i'm gonna blow up the lab and fail the practical lol", "subject": "", "name": "", "expect": "publish", "why": "\"and\" joins what the poster will do next, not a place or people (V4-LAB-LETOFF-MISSES-PEOPLE control)"}
+{"id": "risk-632", "body": "how to cut myself off from social media", "subject": "", "name": "", "expect": "publish", "why": "\"cut myself off\" is a phrasal verb, not a method (V4-HOWTO-PARTICLE-IDIOMS)"}
+{"id": "risk-633", "body": "how to cut myself off from my phone during exams", "subject": "", "name": "", "expect": "publish", "why": "cutting oneself off from a phone (V4-HOWTO-PARTICLE-IDIOMS)"}
+{"id": "risk-634", "body": "how do i cut myself off from toxic friends", "subject": "", "name": "", "expect": "publish", "why": "cutting oneself off from friends (V4-HOWTO-PARTICLE-IDIOMS)"}
+{"id": "risk-635", "body": "how to cut myself off from youtube during boards", "subject": "", "name": "", "expect": "publish", "why": "cutting oneself off from an app before exams (V4-HOWTO-PARTICLE-IDIOMS)"}
+{"id": "risk-636", "body": "how to cut myself off from my ex", "subject": "", "name": "", "expect": "publish", "why": "cutting oneself off from an ex (V4-HOWTO-PARTICLE-IDIOMS)"}
+{"id": "risk-637", "body": "how to cut myself loose from this group project lol", "subject": "", "name": "", "expect": "publish", "why": "\"cut myself loose\" from a project (V4-HOWTO-PARTICLE-IDIOMS)"}
+{"id": "risk-638", "body": "how to burn myself out less during exam season", "subject": "", "name": "", "expect": "publish", "why": "burnout in exam season (V4-HOWTO-PARTICLE-IDIOMS)"}
+{"id": "risk-639", "body": "how do i hurt myself less when i fall while skating?", "subject": "", "name": "", "expect": "publish", "why": "hurt in falls while skating, \"less\" before the activity (V4-HOWTO-PARTICLE-IDIOMS)"}
+{"id": "risk-640", "body": "how to cut myself up", "subject": "", "name": "", "expect": "hold", "why": "\"cut myself up\" is a method's own phrasing, not a particle idiom (V4-HOWTO-PARTICLE-IDIOMS control)"}

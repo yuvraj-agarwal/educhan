@@ -11693,7 +11693,12 @@ var againTimes = canonSetOf(`again since for every daily last yesterday today to
 // stove", "on a nail", "while cooking", "shaving", "lifting weights", "at
 // football". What is not named as one is not one: "on my wrist", "on
 // monday", "using a razor blade", "trying to feel something", "when I'm sad".
+// A word of how much comes before either: "hurt myself less when i fall
+// while skating", "badly while cooking".
 func hurtByAccident(next []string) bool {
+	for len(next) > 1 && hurtDegrees[next[0]] {
+		next = next[1:]
+	}
 	if len(next) == 0 {
 		return false
 	}
@@ -11725,6 +11730,9 @@ var (
 		skating skateboarding falling tripping slipping fixing repairing building working sewing knitting baking
 		frying grilling trimming lifting training practicing practising boxing hiking welding soldering moving
 		unpacking packing sawing drilling hammering dancing jumping swimming surfing`)
+	// hurtDegrees say how much someone hurt themselves, before what they
+	// were doing: "less when i fall", "badly while cooking".
+	hurtDegrees = canonSetOf(`less more badly bad so really pretty`)
 	// accidentObjects, after "on", are what someone hurt themselves on.
 	accidentObjects = canonSetOf(`stove hob oven pan pot kettle iron burner bunsen grill toaster glass nail nails
 		fence wire paper can tin lid edge corner table desk door metal rock rocks stone stones bike chain stapler
@@ -11877,6 +11885,11 @@ var (
 	// give it something to make or send: "cut myself a fringe", "burn
 	// myself a cd", "shoot myself a reminder".
 	secondObjects = canonSetOf(`a an some`)
+	// selfParticles, after "cut myself", "burn myself" or "hurt myself",
+	// make a phrasal verb or a degree of it ("cut myself off", "burn myself
+	// out", "hurt myself less"). "Up" is not one: "cut myself up" is a
+	// method's own phrasing.
+	selfParticles = canonSetOf(`off out loose down short less back`)
 	suicideTopics = canonSetOf(`prevention awareness essay essays rates rate statistics stats hotline helpline helplines squad bombing bomber bombers attack attacks mission missions doors door run runs research project report article documentary`)
 	kmsQuantity   = canonSetOf(`many few some several couple more less fewer extra total thousand thousands hundred hundreds lakh lakhs million millions of the those these in kitne kitna`)
 	kmsAfter      = canonSetOf(`away per from long far ahead left of an a hai`)
@@ -14079,6 +14092,13 @@ func methodCheck(v *view, m []int) bool {
 	case is(ws[len(ws)-1], "myself") && len(next) > 0 && (hasWord(ws, "cut") || hasWord(ws, "burn") ||
 		hasWord(ws, "shoot")) && secondObjects[next[0]]:
 		return false // "how to cut myself a fringe", "how to burn myself a cd"
+	case is(ws[len(ws)-1], "myself") && len(next) > 0 && selfParticles[next[0]] &&
+		!(is(next[0], "less") && hasWord(ws, "cut")):
+		// "how to cut myself off from social media", "how to burn myself
+		// out less", "how do i hurt myself less when i fall": a phrasal
+		// verb or a degree, not a method. "How to cut myself less" still
+		// asks about cutting.
+		return false
 	case is(ws[len(ws)-1], "myself") && len(next) > 0 && is(next[0], "in") && hasWord(ws, "drown"):
 		return anyIn(next[1:min(len(next), 4)], waterWords) // not "in work"
 	case is(ws[len(ws)-1], "myself") && len(next) > 0 && is(next[0], "in") && hasWord(ws, "shoot"):
