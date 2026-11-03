@@ -13042,8 +13042,9 @@ var (
 	// selfDegrees a degree ("hurt myself less"); selfIdiomTimes after
 	// either set it in a time or an activity ("less when i fall", "out
 	// during exams", "off this semester"). selfMarks after them are a
-	// method's: a place on the body (selfBody), or the harm hidden ("down my
-	// arm", "less visibly", "out of sight", "so no one sees"). "Up" is no
+	// method's: a place on the body (selfBody), how deep or a scar ("out
+	// deeply", "so it doesn't scar"), or the harm hidden ("down my arm",
+	// "less visibly", "out of sight", "so no one sees"). "Up" is no
 	// particle: "cut myself up" is a method's own phrasing.
 	selfPhrasal    = canonSetOf(`off out loose short`)
 	selfDegrees    = canonSetOf(`less down back`)
@@ -13053,7 +13054,8 @@ var (
 		neck face hand hands finger fingers knee knees shoulder shoulders body`)
 	selfMarks = func() map[string]bool {
 		m := canonSetOf(`visibly visible obviously obvious noticeably unseen secretly quietly secret hidden hide
-			hiding sight see sees seeing notice notices noticing know knows knowing find finds finding nobody`)
+			hiding sight see sees seeing notice notices noticing know knows knowing find finds finding nobody deep
+			deeper deeply scar scars scarred`)
 		for w := range selfBody {
 			m[w] = true
 		}
@@ -15885,11 +15887,12 @@ func unseenAfter(next []string) bool {
 // completely"), a degree before an activity named ("hurt myself less playing
 // football"), or either before a time ("burn myself out less during exam
 // season", "hurt myself less when i fall"). Anything else after them is a
-// method's, and so is the harm hidden anywhere in the clause, a tool, or a
-// place on the body before a clause of its own begins, selfMarks: "cut
-// myself down my arm", "burn myself less visibly", "hurt myself out of
-// sight", "cut myself back there so no one sees", "hurt myself less when i
-// use a blade", not "hurt myself less when i fall on my knees". So is the
+// method's, and so is the harm hidden, how deep or a scar anywhere in the
+// clause, a tool, or a place on the body before a clause of its own begins,
+// selfMarks: "cut myself down my arm", "burn myself less visibly", "hurt
+// myself out of sight", "cut myself out deeply", "cut myself back there so
+// no one sees", "hurt myself less when i use a blade", not "hurt myself less
+// when i fall on my knees". So is the
 // handling of a tool after either ("hurt myself less using a blade", "burn
 // myself out using a lighter"), and the harm or "do it" after a degree
 // ("hurt myself less after cutting", "burn myself less every time i do
@@ -15964,11 +15967,12 @@ func selfAmount(w string) bool {
 }
 
 // selfMarked reports, in the words after a particle or a degree, the harm
-// hidden anywhere ("less visibly", "so no one sees", "without anyone
-// knowing"), a tool anywhere ("less when i use a blade"), or a place on the
-// body before a clause of its own begins ("down my arm", "out of sight on my
-// thigh", not "less when i fall on my knees"). "Without" hides it unless an
-// activity follows ("without failing").
+// hidden, how deep or a scar anywhere ("less visibly", "so no one sees",
+// "without anyone knowing", "deeply", "so it doesn't scar"), a tool
+// anywhere ("less when i use a blade"), or a place on the body before a
+// clause of its own begins ("down my arm", "out of sight on my thigh", not
+// "less when i fall on my knees"). "Without" hides it unless an activity
+// follows ("without failing").
 func selfMarked(ws []string) bool {
 	body := true
 	for i, w := range ws {
