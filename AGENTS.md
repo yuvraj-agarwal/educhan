@@ -877,15 +877,14 @@ has changed one of those properties and needs a browser check before the test ch
   the browser holds one (`showPassLink`), asked at every drawing (`renderNav`) and
   wherever the Pass stored here changes: `storePass` and `forgetPass`, through which every
   write of the Pass goes but `markPassExpired`'s (it only marks a Pass held as run out),
-  and `followPassStorage` for another tab's, so on a server without the Pass the link
-  goes with the Pass in every tab and comes back when one is stored; focus on the link
-  as it goes moves to `el.main`, with `preventScroll`, as from a notice taken off. The
-  price is Stripe's amount divided by ten to the exponent `GET /api/pass` sends beside
-  it, Stripe's own count of the currency's decimals and not the browser's, which has ISK
-  and UGX whole where Stripe keeps them in hundredths, and an amount with a part of a
-  unit is written with that many decimals, which the browser's usual digits for the
-  currency could round away (`passPriceText`,
-  `TestPassPriceIsWrittenWithStripesDecimals`).
+  and `followPassStorage` for another tab's, so on a server without the Pass the link goes
+  with the Pass in every tab and comes back when one is stored; focus on the link as it
+  goes moves to `el.main`, with `preventScroll`, as from a notice taken off. The price is
+  Stripe's amount divided by ten to the exponent `GET /api/pass` sends beside it, Stripe's
+  own count of the currency's decimals and not the browser's, which has ISK and UGX whole
+  where Stripe keeps them in hundredths, and an amount with a part of a unit is written
+  with that many decimals, which the browser's usual digits for the currency could round
+  away (`passPriceText`, `TestPassPriceIsWrittenWithStripesDecimals`).
   `TestOnlyThePostingRequestCarriesThePass` pins the header and every read of the held
   code; the Pass page's other promises have their own tests beside it.
 - The remembered name (`educhan:name`) is the unbadged posts' name. Ticking the badge
