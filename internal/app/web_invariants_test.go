@@ -135,8 +135,9 @@ const panelRedrawn = `const panel = el.main.querySelector('[data-action="forget-
 // badge and whether it refuses the image itself, for the thread's image limit
 // or not, and the wording of a refusal for a redraw that takes the image off
 // too; it takes the image off after a refusal of the image itself, as on
-// screen, where a page kept for the form then switches the picker off
-// (blockRefusedPicker); and it returns.
+// screen, where a page kept for the form, or the form's next press if that
+// comes first, then switches the picker off (blockRefusedPicker); and it
+// returns.
 const awayFromScreen = "if (!shown) { const imageRefused = limitReached || uploadsOff; " +
 	`const fileField = form.querySelector("[data-file-field]"); if (imageRefused && fileField) { clearFileField(fileField); } ` +
 	"if (!imageRefused) { refusalNotices.set(form, notice); } unsaidNotices.set(form, { " +
@@ -990,7 +991,8 @@ func TestCaptchaIsNotWorkedOnForNothing(t *testing.T) {
 // after a post link's lookup into its thread say, or keeps that page when it
 // will not load: a refusal as on screen, say, or for a post not sent, which on
 // screen would have gone, that nothing was posted. Every press of the form
-// drops what an earlier one left unsaid.
+// takes out what an earlier one left unsaid, switching the picker off first
+// after a refusal of the image itself unless an image has been attached since.
 func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 	script := appScript(t)
 	if on := squash(withoutComments(jsFunction(t, script, "formOnScreen"))); !strings.Contains(on,
@@ -1090,13 +1092,19 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 	// button as release gives it on screen: if the form had it at the press,
 	// noted as holdForm notes it, and it is lost now. A refusal of the badge is
 	// said in place of the note the catch left on the form, which would refuse
-	// the next press for the badge again. Every press of a posting form drops
-	// what an earlier one left unsaid before anything else, one refused before
-	// it is sent included, an empty one or one the badge's note refuses say, so
-	// a form is told only of the press it is answering, and a form that does
-	// not come back takes what it was not told with it.
+	// the next press for the badge again. Every press of a posting form takes
+	// out what an earlier one left unsaid before anything else, one refused
+	// before it is sent included, an empty one or one the badge's note refuses
+	// say, so a form is told only of the press it is answering, and a form that
+	// does not come back takes what it was not told with it. A refusal of the
+	// image itself is acted on first, the picker switched off as on screen, so
+	// the press is judged as it would have been there, unless an image has been
+	// attached since, which is left for the server to answer rather than taken
+	// off unsaid.
 	inOrder(t, "the submit handler", submit,
-		"if (form.dataset.verify) { await submitVerification(form); return; } unsaidNotices.delete(form); const button = ",
+		"if (form.dataset.verify) { await submitVerification(form); return; } const owed = takeUnsaidNotice(form); "+
+			`const image = field(form, "image"); if (owed && owed.imageRefused && !(image && image.files.length)) { `+
+			"blockRefusedPicker(form, owed.limitReached); } const button = ",
 		"const focused = form.contains(document.activeElement); const release = holdForm(form);",
 		"} catch (err) {", `const box = field(form, "body");`, "const said = (off) =>", "const notice = (off) =>", awayFromScreen)
 	if take := squash(withoutComments(jsFunction(t, script, "takeUnsaidNotice"))); take != "function takeUnsaidNotice(form) { "+
@@ -1115,10 +1123,10 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 			`form.querySelector('button[type="submit"]')?.focus({ preventScroll: true }); } }`,
 	)
 	if code := withoutComments(script); !strings.Contains(code, "\nconst unsaidNotices = new WeakMap();\n") ||
-		strings.Count(code, "unsaidNotices") != 6 || strings.Count(code, "takeUnsaidNotice(") != 3 ||
+		strings.Count(code, "unsaidNotices") != 5 || strings.Count(code, "takeUnsaidNotice(") != 4 ||
 		strings.Count(restored, "unsaid") != 7 || strings.Count(code, "focused,") != 1 {
-		t.Error("unsaidNotices is no longer only declared, kept by the submit handler for a form off the screen, dropped " +
-			"at its next press, read by captureDraft and taken out by restoreDraft and a kept page's failed redraw, or " +
+		t.Error("unsaidNotices is no longer only declared, kept by the submit handler for a form off the screen, read " +
+			"by captureDraft and taken out at its next press, by restoreDraft and by a kept page's failed redraw, or " +
 			"restoreDraft reads it for something besides the notice, the badge and the focus")
 	}
 	// A post not sent because its form had left the screen would have gone on
@@ -1181,7 +1189,7 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 // captcha check on the server can look it up is refused as used and solves a
 // fresh one, while one refused before that check, a reply to a thread locked
 // meanwhile say, or by a lookup that fails, a 500 with no header, puts it back
-// again, and one sent after the server's secret was rotated is refused as
+// again, and one checked after the server's secret was rotated is refused as
 // invalid and solves a fresh one too.
 func TestEachCaptchaAnswerGoesOnOneRequest(t *testing.T) {
 	script := appScript(t)
@@ -2012,7 +2020,13 @@ func TestAPendingFormIsHeld(t *testing.T) {
 		}
 	}
 	inOrder(t, "the submit handler", submit, "sendWithCaptcha(", "form.reset();", "clearFileField(fileField); } release(false);", "} catch (err) {")
-	if blocked, released := strings.Index(submit, "blockRefusedPicker("), strings.Index(submit, "release(shown);"); blocked < released ||
+	// The picker switched off at a press for a refusal answered off the screen
+	// is off before holdForm reads which controls to switch off, so release
+	// leaves it off too.
+	holding, catching := strings.Index(submit, "const release = holdForm(form);"), strings.Index(submit, "} catch (err) {")
+	caught := submit[max(catching, 0):]
+	if blocked, released := strings.Index(caught, "blockRefusedPicker("), strings.Index(caught, "release(shown);"); blocked < released ||
+		holding < 0 || catching < holding || strings.Contains(submit[holding:catching], "blockRefusedPicker(") ||
 		strings.Contains(submit, "blockFileField(") {
 		t.Error("the submit handler switches its controls back on after switching the picker off, which turns the picker back on")
 	}
@@ -2444,8 +2458,10 @@ func TestCaptchaRefusalSaysWhatTheFormStillHolds(t *testing.T) {
 	// A refusal of the image itself switches the picker off with its reason,
 	// and puts the thread on screen in step with what it taught: on screen
 	// here, and for a form answered off the screen on the page a failed redraw
-	// keeps for it (TestAHeldFormSurvivesARedrawOfItsPage), and nowhere else,
-	// since a page drawn afresh draws both from what the server says by then.
+	// keeps for it (TestAHeldFormSurvivesARedrawOfItsPage) or at the form's
+	// next press, if that comes first (TestARequestGoesOnlyFromAFormOnScreen),
+	// and nowhere else, since a page drawn afresh draws both from what the
+	// server says by then.
 	code := withoutComments(script)
 	if block := squash(withoutComments(jsFunction(t, script, "blockRefusedPicker"))); block !=
 		"function blockRefusedPicker(form, limitReached) { "+
@@ -2454,9 +2470,9 @@ func TestCaptchaRefusalSaysWhatTheFormStillHolds(t *testing.T) {
 			"if (thread) { thread.at_image_limit = true; if (thread.board && thread.board.image_limit > 0) { "+
 			"thread.images = Math.max(Number(thread.images) || 0, thread.board.image_limit); } } } "+
 			"else if (fileField) { blockFileField(fileField, UPLOADS_OFF_REASON); } redrawThreadCounts(); }" ||
-		strings.Count(code, "blockRefusedPicker(") != 3 {
+		strings.Count(code, "blockRefusedPicker(") != 4 {
 		t.Errorf("blockRefusedPicker no longer switches the picker off with the refusal's reason and redraws the thread's "+
-			"counts, or is called besides on screen and on a kept page: %s", block)
+			"counts, or is called besides on screen, on a kept page and at the next press: %s", block)
 	}
 	if strings.Count(refused, "showNotice(") != 3 || strings.Count(refused, "body.trim()") != 0 ||
 		strings.Count(code, "imageTakenOff(") != 4 {
