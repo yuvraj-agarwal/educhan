@@ -7670,13 +7670,21 @@ func (f *scannedField) threatComingCheck(v *view, m []int) bool {
 }
 
 // explodesAtNews reports, in the words after "will explode", a clause of
-// "when", "once" or "if" that says what the place will explode at: news,
-// results, a holiday, the wifi going down ("the school will explode
-// tomorrow when they announce the holiday"). A clause with the poster in it,
-// with people inside or a bomb's timing is no news: "when I press the
-// button", "when everyone is inside", "when the bell rings", "once the
-// assembly starts".
+// "when", "once" or "if" that says the place will explode at news: an
+// announcement, results or marks, something found out, come out or brought
+// back, a holiday, the wifi ("the school will explode tomorrow when they
+// announce the holiday", "the staffroom will explode when they find out").
+// A clause that names none of these is no news, and neither is one with
+// the poster in it, a bomb's timing, people arriving, going in or being
+// somewhere, gates closing, a clock time or "least expect" anywhere after
+// "explode", whatever news it names as well: "when I press the button",
+// "when the bell rings", "when everyone is in assembly", "when the students
+// arrive", "once the gates close", "when you least expect it", "at 10 when
+// the results come out".
 func explodesAtNews(ws []string) bool {
+	if clockTime(ws) {
+		return false
+	}
 	for i, w := range ws {
 		if !explodeWhen[w] {
 			continue
@@ -7685,22 +7693,68 @@ func explodesAtNews(ws []string) bool {
 		if len(clause) < 2 {
 			return false
 		}
-		for _, c := range clause {
-			if explodeTriggers[c] || firstPersonSubjects[c] {
+		news := false
+		for j, c := range clause {
+			var next string
+			if j+1 < len(clause) {
+				next = clause[j+1]
+			}
+			switch {
+			case explodeTriggers[c] || firstPersonSubjects[c] || explodePresent[c]:
 				return false
+			case explodeGoIn[c] && (is(next, "in") || is(next, "into") || is(next, "inside")),
+				explodeBe[c] && (is(next, "in") || is(next, "at") || is(next, "there") || is(next, "here")):
+				return false // "when the principal walks in", "when everyone is in class"
+			case explodeNews[c],
+				explodeOut[c] && is(next, "out"),
+				explodeBack[c] && is(next, "back"):
+				news = true
 			}
 		}
-		return true
+		return news
+	}
+	return false
+}
+
+// clockTime reports a time of day in ws: "at 10", "10am", "3 pm", "at
+// noon".
+func clockTime(ws []string) bool {
+	for i, w := range ws {
+		if w == "" {
+			continue
+		}
+		digit := isASCIIDigit(w[0])
+		switch {
+		case clockWords[w] && (i > 0 && isASCIIDigit(ws[i-1][0]) || is(w, "noon") || is(w, "midnight")),
+			digit && (strings.HasSuffix(w, "am") || strings.HasSuffix(w, "pm")),
+			digit && i > 0 && (is(ws[i-1], "at") || is(ws[i-1], "by")):
+			return true
+		}
 	}
 	return false
 }
 
 var (
-	// explodeWhen open the clause explodesAtNews reads, and
-	// explodeTriggers in it are a bomb's timing or people inside.
+	// explodeWhen open the clause explodesAtNews reads; explodeNews in it,
+	// or explodeOut before "out" or explodeBack before "back", are news.
+	// explodeTriggers are a bomb's timing or people inside, explodePresent
+	// people arriving or somewhere and gates closing, and explodeGoIn before
+	// "in" and explodeBe before "in", "at" or "there" people going in or
+	// there: none of them is news.
 	explodeWhen     = canonSetOf(`when once if whenever`)
 	explodeTriggers = canonSetOf(`bomb bombs button timer detonate detonator trigger bell bells clock alarm inside
 		full packed crowded everyone's start starts begin begins ring rings strike strikes hits`)
+	explodeNews = canonSetOf(`announce announces announced announcing announcement announcements declare declares
+		declared result results mark marks grade grades score scores rank ranks news holiday holidays vacation
+		vacations wifi internet timetable`)
+	explodeOut     = canonSetOf(`find finds found finding come comes came coming`)
+	explodeBack    = canonSetOf(`bring brings bringing brought`)
+	explodePresent = canonSetOf(`arrive arrives arrived arriving enter enters entered entering assembly assemblies
+		gate gates close closes closed closing shut shuts least fill fills filled filling`)
+	explodeGoIn = canonSetOf(`walk walks walked walking come comes came coming get gets got go goes went step steps
+		run runs`)
+	explodeBe = canonSetOf(`is are was were be been they're we're you're he's she's it's everyone's everybody's
+		sitting sits sit`)
 )
 
 // explodeRuns are a place said to be about to explode, read as
