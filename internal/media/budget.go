@@ -38,9 +38,18 @@ const UploadBudget int64 = 64 << 20
 // (storedPNG), whose work follows the length of the rows rather than what they
 // hold. So no admitted upload is processed for more than about ten seconds of
 // CPU on one core. The slowest kinds measured, each on one core:
-//   - a 25-megapixel 16-bit PNG: ~4-5 s; at 8 bits, one with transparency of
-//     about 7 MiB, ~2-3 s. Written at deflate's default level, rows crafted to
-//     make it search took a 16-bit one of 1.4 MB ~17 s.
+//   - a 16-bit PNG at the most pixels the memory estimate admits of one (a
+//     square of ~4800-4850, ~23 megapixels): ~4-5 s opaque, and ~6.5-7.5 s,
+//     about three quarters of the CMYK JPEG's time below, with a partial alpha
+//     in every pixel and rows filtered by Paeth, the slowest PNG measured. The
+//     alpha costs it more than the filter: every colour channel of every pixel
+//     is then reduced to what its alpha shows (reduceHiddenColour, which skips
+//     a pixel opaque or clear), the PNG is written at 8 bytes a pixel rather
+//     than an opaque one's 6, which takes a fifth to a third longer, and the
+//     thumbnail is scaled through the alpha; Paeth, the costliest filter to
+//     undo, about doubles the decode, to ~1 s. At 8 bits, one with transparency
+//     of about 7 MiB, ~2-3 s. Written at deflate's default level, rows crafted
+//     to make it search took a 16-bit one of 1.4 MB ~17 s.
 //   - a WebP stored as a PNG: a lossless one of 25 megapixels, which a crafted
 //     file of a few dozen bytes can be, as a lossless bitstream can spend no
 //     bits on a pixel, ~4-5 s, and ~5.5-6.5 s with its predictor, cross-colour
@@ -57,11 +66,11 @@ const UploadBudget int64 = 64 << 20
 //     with an alpha opaque but for rounded corners it takes ~3.5-4.5 s over a
 //     photograph and ~5-5.5 s over a synthetic one or noise, and with one clear
 //     throughout, whose PNG is written in a fraction of a second, ~1.5-2.5 s
-//     over a photograph. Those were measured in runs in which the 16-bit PNG
-//     took its ~4-5 s and the CMYK JPEG ~8.5-10 s, as on a busy host (below);
-//     in runs where the CMYK JPEG took ~6-6.5 s, a clear alpha took ~1.4-1.9 s
-//     over a photograph and ~2.5-2.7 s over noise that fills the default size
-//     limit, which takes longer to decode.
+//     over a photograph. Those were measured in runs in which the opaque 16-bit
+//     PNG took its ~4-5 s and the CMYK JPEG ~8.5-10 s, as on a busy host
+//     (below); in runs where the CMYK JPEG took ~6-6.5 s, a clear alpha took
+//     ~1.4-1.9 s over a photograph and ~2.5-2.7 s over noise that fills the
+//     default size limit, which takes longer to decode.
 //   - a JPEG at the scan cap (jpegScanBlockVisits weighs each scan by its
 //     work): a progressive one of ~0.8 million blocks, the most the memory
 //     estimate admits of one (a 25-megapixel 4:2:2 picture or ~17 megapixels
@@ -83,8 +92,8 @@ const UploadBudget int64 = 64 << 20
 //
 // A slower core, or other uploads beside it, makes that longer (with the
 // host's other cores busy, the CMYK JPEG's decode took about 1.4 times the
-// time above, and the 16-bit PNG and the lossless WebP barely more), so the
-// deadline still has the last word: Save stores nothing once it has passed,
+// time above, and the opaque 16-bit PNG and the lossless WebP barely more), so
+// the deadline still has the last word: Save stores nothing once it has passed,
 // and the work stops when the context ends, at the next point that asks
 // (Process) — which for a decode that read its whole input before its costly
 // passes, as image/jpeg does a small progressive file, is the end of the
