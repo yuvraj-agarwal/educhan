@@ -1859,8 +1859,9 @@ func TestPassRenewalOfAPassThatIsGone(t *testing.T) {
 		t.Fatalf("a renewal of a lapsed Pass left %d orders", n)
 	}
 
-	// An order naming a Pass that is not there, as one would whose Pass went
-	// after the lookup, is a renewal of nothing: paid, it makes a new Pass,
+	// No order is left naming a Pass that has gone
+	// (TestPassThatIsGoneIsNamedByNoOrder), but one naming a Pass that is not
+	// there is a renewal of nothing all the same: paid, it makes a new Pass,
 	// as one whose Pass is refunded after its order does
 	// (TestPassRenewalRacingARefund), and the Pass it was opened for is left
 	// as it was.
@@ -1876,6 +1877,119 @@ func TestPassRenewalOfAPassThatIsGone(t *testing.T) {
 	}
 	if got, ok := p.passExpiresAt(kept.Pass); !ok || !got.Equal(keptExpiry) {
 		t.Fatalf("the Pass the order was opened for runs to %v (kept: %v), want %v", got, ok, keptExpiry)
+	}
+}
+
+// TestPassThatIsGoneIsNamedByNoOrder holds every deletion of a Pass to the
+// orders that renew it: a refund or a dispute that leaves it no paid time to
+// come, and the prune a month past its expiry, each clear it from those
+// orders, paid or not, in the transaction that deletes it, as the foreign
+// key's ON DELETE SET NULL once did (0012). A paid renewal is kept for up to
+// its deadline and its term so its owner can reissue it, and all that time an
+// id left in it would tie its payer to a Pass that has gone and to whoever
+// else renewed it. Clearing writes to pass_orders alone, so no other Pass's
+// row is stamped by it; an order renewing another Pass names it still; and a
+// cleared order, collected, makes a new Pass. A checkout and a deletion both
+// take the Pass lock, so whichever comes second sees all the first did: a
+// Pass deleted while Stripe is opening its renewal's checkout leaves no order
+// (TestPassRenewalOfAPassThatIsGone), and one deleted after the order is
+// written clears it, as here.
+func TestPassThatIsGoneIsNamedByNoOrder(t *testing.T) {
+	for _, gone := range []struct {
+		name string
+		take func(p *passHarness, id int64)
+	}{
+		{"refunded", func(p *passHarness, _ int64) { p.refund("pi_bought") }},
+		{"disputed", func(p *passHarness, _ int64) {
+			if status := p.webhook(stripeDisputeCreated, map[string]any{"object": "dispute", "payment_intent": "pi_bought"}); status != http.StatusOK {
+				p.t.Fatalf("dispute webhook: status %d", status)
+			}
+		}},
+		{"pruned", func(p *passHarness, id int64) {
+			p.exec(`UPDATE passes SET expires_at = $2 WHERE id = $1`, id, time.Now().Add(-passExpiredGrace-time.Hour))
+			if err := p.app.store.prunePasses(context.Background(), time.Now()); err != nil {
+				p.t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(gone.name, func(t *testing.T) {
+			p := passServer(t, nil)
+			idOf := func(code string) int64 {
+				t.Helper()
+				canonical, _ := parsePassCode(code)
+				id, _, err := p.app.store.passByToken(context.Background(), p.app.passTokenHash(canonical))
+				if err != nil {
+					t.Fatalf("look up a Pass: %v", err)
+				}
+				return id
+			}
+			naming := func(id int64) int {
+				t.Helper()
+				var n int
+				if err := p.app.pool.QueryRow(context.Background(),
+					`SELECT count(*) FROM pass_orders WHERE renew_pass_id = $1`, id).Scan(&n); err != nil {
+					t.Fatal(err)
+				}
+				return n
+			}
+			stamps := func(id int64) string {
+				t.Helper()
+				var s string
+				if err := p.app.pool.QueryRow(context.Background(),
+					`SELECT xmin::text || ' ' || xmax::text FROM passes WHERE id = $1`, id).Scan(&s); err != nil {
+					t.Fatal(err)
+				}
+				return s
+			}
+
+			// Its holder and somebody they shared the code with each pay to
+			// renew it, and a third opens a renewal checkout and pays nothing
+			// yet. Another Pass has a renewal paid and waiting too.
+			issued := p.buy("pi_bought")
+			id := idOf(issued.Pass)
+			p.paid(p.checkout(issued.Pass), "pi_renewal")
+			sharer := p.otherBrowser()
+			sharer.paid(sharer.checkout(issued.Pass), "pi_shared_renewal")
+			p.otherBrowser().checkout(issued.Pass)
+			other := p.otherBrowser()
+			kept := other.buy("pi_other")
+			keptID := idOf(kept.Pass)
+			other.paid(other.checkout(kept.Pass), "pi_other_renewal")
+			if n := naming(id); n != 3 {
+				t.Fatalf("%d orders name the Pass before it goes, want its 3 renewals", n)
+			}
+			before := stamps(keptID)
+
+			gone.take(p, id)
+			if status, _ := p.activate(issued.Pass); status != http.StatusForbidden {
+				t.Fatalf("the Pass still works once %s: status %d", gone.name, status)
+			}
+			if n := naming(id); n != 0 {
+				t.Fatalf("%d orders still name the Pass once it is %s, want none", n, gone.name)
+			}
+			if n := p.count("pass_orders"); n != 4 {
+				t.Fatalf("%d orders left once the Pass is %s, want all 4 kept", n, gone.name)
+			}
+			if n := naming(keptID); n != 1 {
+				t.Fatalf("%d orders name the other Pass, want its renewal still", n)
+			}
+			if after := stamps(keptID); after != before {
+				t.Fatalf("the other Pass's xmin and xmax went from %s to %s", before, after)
+			}
+
+			for _, b := range []*passHarness{p, sharer} {
+				status, made := b.claim()
+				if status != http.StatusOK || made.Status != "issued" || !passCodeShape(made.Pass) || made.Pass == issued.Pass {
+					t.Fatalf("a renewal of the Pass %s, collected: status %d, %+v; want a new Pass", gone.name, status, made)
+				}
+				if status, _ := p.activate(made.Pass); status != http.StatusOK {
+					t.Fatalf("the Pass made for a renewal of one %s: status %d", gone.name, status)
+				}
+			}
+			if status, renewed := other.claim(); status != http.StatusOK || renewed.Status != "renewed" {
+				t.Fatalf("the other Pass's renewal: status %d, %+v", status, renewed)
+			}
+		})
 	}
 }
 

@@ -1446,9 +1446,13 @@ var errPassGone = errors.New("the Pass to renew is gone")
 // stops a reissue while one is under way (renewalUnderWay).
 //
 // The order names the Pass it renews with no foreign key, whose check would
-// lock the Pass's row and leave this transaction's id on it (0012). A Pass
-// that goes once the order is written leaves the order naming no Pass, and
-// collecting it then makes a new one (collectPassOrder).
+// lock the Pass's row and leave this transaction's id on it (0012). What the
+// key's ON DELETE SET NULL did is done where a Pass is deleted (revokeTerm,
+// prunePasses): that transaction clears the Pass from every order naming it,
+// and it takes the lock too, so it comes either before the lookup above,
+// which then finds no Pass, or after the order is written, which it then
+// clears. No order is left naming a Pass that has gone, and collecting one
+// cleared makes a new Pass (collectPassOrder).
 func (s *Store) createPassOrder(ctx context.Context, o passOrder, now time.Time) error {
 	return s.passTx(ctx, func(tx pgx.Tx) error {
 		var renewID *int64
@@ -2021,8 +2025,8 @@ func (s *Store) revokePassPayment(ctx context.Context, paymentHash []byte, now t
 			res = revokedOrder
 			// A paid renewal not collected yet counts as a term to come of
 			// the Pass it renews, so taking it back is applied as a payment
-			// of that Pass would be. A Pass gone since has no payments left,
-			// and nothing moves.
+			// of that Pass would be. An order whose Pass has gone since names
+			// none (revokeTerm, prunePasses), and nothing moves.
 			if renewID != nil {
 				if err := moveOrigin(ctx, tx, *renewID, now); err != nil {
 					return err
@@ -2071,7 +2075,9 @@ type revokedPayment struct {
 // it stops at the next midnight and the terms after it come forward whole. A
 // Pass left with no paid time to come is deleted, and its other payments with
 // it: one whose only time left is the rest of a day a refunded term stopped
-// at goes as one with none would.
+// at goes as one with none would. The same statement clears it from every
+// order that renews it, paid or not, writing to pass_orders alone, so none
+// names a Pass that has gone (0012), and collecting one makes a new Pass.
 //
 // A Pass that goes on without its origin, the refunded payment having been
 // it, could no longer be reissued; moveOrigin decides whether another payment
@@ -2096,7 +2102,9 @@ func revokeTerm(ctx context.Context, tx pgx.Tx, p revokedPayment, now time.Time)
 	off = min(p.days, off)
 	expires = expires.UTC().AddDate(0, 0, -off)
 	if !expires.After(now) || !paid {
-		_, err := tx.Exec(ctx, `DELETE FROM passes WHERE id = $1`, p.passID)
+		_, err := tx.Exec(ctx, `
+			WITH gone AS (DELETE FROM passes WHERE id = $1 RETURNING id)
+			UPDATE pass_orders SET renew_pass_id = NULL WHERE renew_pass_id IN (SELECT id FROM gone)`, p.passID)
 		return revokedPass, err
 	}
 	if off > 0 {
@@ -2147,19 +2155,28 @@ func moveOrigin(ctx context.Context, tx pgx.Tx, passID int64, now time.Time) err
 // deadline would have run out too (the deadline plus the order's own term);
 // reissue codes past their deadline; remembered refunds past their month; and
 // Passes a month past expiry, which can no longer be renewed and are bought
-// anew instead. Checkout runs it, and so does the daily sweep, which needs no
-// Pass setting for it: every order carries its own term.
+// anew instead. A Pass that goes is cleared from every order that renews it,
+// as revokeTerm clears one, so no order kept names a Pass that has gone, and
+// collecting one makes a new Pass. Checkout runs it, and so does the daily
+// sweep, which needs no Pass setting for it: every order carries its own term.
 func (s *Store) prunePasses(ctx context.Context, now time.Time) error {
 	return s.passTx(ctx, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
-			WITH o AS (
-			       DELETE FROM pass_orders
-			       WHERE CASE WHEN payment_hash IS NULL THEN expires_at
-			                  ELSE expires_at + make_interval(hours => 24 * days) END <= $1),
-			     r AS (DELETE FROM pass_revocations WHERE expires_at <= $1),
+			WITH r AS (DELETE FROM pass_revocations WHERE expires_at <= $1),
 			     i AS (DELETE FROM pass_reissues WHERE expires_at <= $1)
-			DELETE FROM passes WHERE expires_at <= $2`,
-			now, now.Add(-passExpiredGrace))
+			DELETE FROM pass_orders
+			WHERE CASE WHEN payment_hash IS NULL THEN expires_at
+			           ELSE expires_at + make_interval(hours => 24 * days) END <= $1`, now)
+		if err != nil {
+			return err
+		}
+		// A statement of its own, after the orders', since one statement that
+		// both deleted an order and cleared it would leave Postgres to pick
+		// which of the two happens.
+		_, err = tx.Exec(ctx, `
+			WITH gone AS (DELETE FROM passes WHERE expires_at <= $1 RETURNING id)
+			UPDATE pass_orders SET renew_pass_id = NULL WHERE renew_pass_id IN (SELECT id FROM gone)`,
+			now.Add(-passExpiredGrace))
 		return err
 	})
 }

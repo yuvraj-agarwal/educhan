@@ -814,7 +814,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   refusal limit or a cooldown. Only a transaction that writes a `passes` row locks it, so
   its `xmax` dates nothing its `xmin` does not: `pass_orders.renew_pass_id` is no foreign
   key, whose check would leave every renewal checkout's transaction id on the Pass's row
-  (`TestPassRowIsDatedOnlyByItsWrites`). `TestPassIsNeverStoredOrLogged`,
+  (`TestPassRowIsDatedOnlyByItsWrites`). What the key's `ON DELETE SET NULL` did is done
+  in code instead: every transaction that deletes a Pass (today a refund or dispute that
+  leaves it no paid time to come, and the prune a month past its expiry) clears it from
+  every order that renews it, writing to `pass_orders` alone, so no order, paid or not,
+  names a Pass that has gone (`TestPassThatIsGoneIsNamedByNoOrder`); anything new that
+  deletes a Pass must do the same. `TestPassIsNeverStoredOrLogged`,
   `TestPassTablesCannotBeJoinedToPosts` and `TestPassSharesOneHourlyBudget` hold it
   there.
 - **Bump order only.** The index and the catalog list stickies, then threads by their

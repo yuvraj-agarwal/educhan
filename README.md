@@ -545,7 +545,8 @@ the server secret and the Stripe account can see:
   edge of the design;
 - in `pass_orders`, while an order waits to be paid or collected: HMACs of its
   Stripe session and payment ids, a hash of the browser's claim, the Pass it
-  renews, the term it buys, and its deadline;
+  renews while that Pass exists (deleting a Pass clears it from every order
+  that names it), the term it buys, and its deadline;
 - in `pass_revocations`, for a month after a refund or a dispute: the
   payment's HMAC, so that a late "paid" event cannot undo it. Stripe sends
   these for any payment on the account, so a refund of something else the
@@ -571,8 +572,12 @@ would lock the row. A refund or dispute that takes none off (of a term already
 run while a later one runs, or of a paid renewal not collected yet, say) leaves
 the row as it was, and the `pass_revocations` row it writes dates it instead.
 One that leaves the Pass no paid time to come, as one of any of its terms does
-once it has run out, deletes the row. Stripe keeps the exact time of every
-payment anyway.
+once it has run out, deletes the row, as the prune a month past its expiry does.
+The transaction that deletes a Pass also clears it from every order that renews
+it, paid or not, so no order names a Pass that has gone; that writes only those
+orders, and each then holds that transaction's id, so whoever holds those files
+can still tell which orders one deletion cleared. Stripe keeps the exact time of
+every payment anyway.
 
 They cannot link a Pass to a post. Posts carry nothing about a Pass, using one
 writes nothing (no "last used"), the code is stored only as a keyed hash, the
