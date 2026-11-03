@@ -1295,8 +1295,11 @@ fresh one too.
 
 While a post or a code request waits for its puzzle and its answer, its form is
 held: its boxes and buttons are switched off, and look it, so what is sent is
-what the form shows. A reader who goes to another page before the answer is
-ready sends nothing, and what they wrote is dropped with the page they left,
+what the form shows, but for what a forget or a change of badge does to it
+meanwhile, such as the Name emptied or the badge box taken out, or drawn for
+another badge, switched off and unticked, while a post that still goes carries
+what was read at the press. A reader who goes to another page before the answer
+is ready sends nothing, and what they wrote is dropped with the page they left,
 never put into a form on the page they went to, even after a double click; the
 answer is put back for the next press, on the same terms, and a request that had
 already gone is not reported on that page either. A post pressed just after a

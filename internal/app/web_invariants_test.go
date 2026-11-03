@@ -2024,17 +2024,23 @@ func TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress(t *testing.T) {
 			"called from somewhere besides it")
 	}
 	replacedNotice := squash(withoutComments(jsFunction(t, script, "badgeReplacedNotice")))
-	// It reads the badge held when it is said, which a redraw can do again
-	// once that badge has been forgotten (restoreDraft), so with none held it
-	// ends with what pressing again does, and offers no box to tick.
+	// It reads the badge held and the form's box when it is said, which a
+	// redraw can do again later (restoreDraft), the page it keeps on screen
+	// meanwhile still in the reader's hands: so with none held by then,
+	// forgotten since, it ends with what pressing again does, and offers no box
+	// to tick, and with the new badge's box ticked since, it says that pressing
+	// again posts with that badge, not to tick it.
 	if replacedNotice != "function badgeReplacedNotice(form, { hasText, imageOff }) { "+
 		`if (!hasText && imageOff !== "") { return BADGE_REPLACED; } const held = state.verification.badge; `+
+		`const box = field(form, "badge"); if (held && box && box.checked && badgeOffered(form) === held.number) { `+
+		"return `${BADGE_REPLACED} The box for the new badge, Verified: ${held.label}, is ticked, so pressing again "+
+		"posts this with that badge.`; } "+
 		`const press = pressedWithoutBadge(form, storageGet(POSTER_KEY_STORAGE_KEY) || ""); `+
 		"if (!held) { return `${BADGE_REPLACED} ${press}`; } "+
 		"return `${BADGE_REPLACED} ${press} To post it with the new badge, Verified: ${held.label}, tick its box.`; }" {
 		t.Errorf("badgeReplacedNotice no longer says what the next press does, with the poster key storage holds now, "+
 			"and how to post with the new badge the form now offers, or says it of a post left with nothing, or reads "+
-			"a badge forgotten since: %s", replacedNotice)
+			"a badge forgotten since, or a box ticked since: %s", replacedNotice)
 	}
 	if got := jsString(t, script, "BADGE_REPLACED"); !strings.Contains(got, "replaced by one verified since in this browser") ||
 		!strings.Contains(got, "nothing was posted") || strings.Contains(got, "verify again") {
@@ -2070,10 +2076,10 @@ func TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress(t *testing.T) {
 func TestAFormSendsOnlyTheBadgeItWasDrawnFor(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
-	if strings.Count(code, "badgeOffered") != 5 || strings.Count(code, `form.querySelector("[data-badge-option]")`) != 2 ||
+	if strings.Count(code, "badgeOffered") != 6 || strings.Count(code, `form.querySelector("[data-badge-option]")`) != 2 ||
 		strings.Count(code, "[data-badge-option]") != 2 {
 		t.Error("the badge a form's box was drawn for is read somewhere besides badgeOffered's callers (formDraft, " +
-			"withdrawBadgeOption, a press and a redraw putting a held form back) and drawBadgeOption")
+			"withdrawBadgeOption, a press, a redraw putting a held form back and badgeReplacedNotice) and drawBadgeOption")
 	}
 	// Written in the same template as the form, so the badge the slot names is
 	// the one formHTML drew the box for.
@@ -2158,13 +2164,14 @@ func TestAPendingFormIsHeld(t *testing.T) {
 	if strings.Count(hold, "form.elements") != 1 || strings.Count(hold, ".disabled = false") != 1 {
 		t.Error("holdForm switches on controls it did not switch off")
 	}
-	// A badge box drawn into a held form, for a badge stored or forgotten
-	// meanwhile in another tab or by this tab's confirmation say
-	// (drawBadgeOption), is drawn switched off and kept with the controls
-	// holdForm switched off, so release switches it on with them: what is sent
-	// was read at the press, and a box ticked meanwhile would show a badge the
-	// post does not carry. Nothing else adds to what release switches on, and
-	// no box drawn since the hold began is left on while it lasts.
+	// A badge box drawn into a held form, for a badge stored meanwhile in
+	// another tab or by a confirmation in this one, say (drawBadgeOption), is
+	// drawn switched off and kept with the controls holdForm switched off, so
+	// release switches it on with them: what is sent was read at the press, and
+	// a box ticked meanwhile would show a badge the post does not carry. A box
+	// taken out, the badge forgotten say, stays out. Nothing else adds to what
+	// release switches on, and no box drawn since the hold began is left on
+	// while it lasts.
 	code := withoutComments(script)
 	if draw := squash(withoutComments(jsFunction(t, script, "drawBadgeOption"))); !strings.Contains(draw,
 		`slot.innerHTML = badgeOptionHTML(held); const drawn = slot.querySelector('input[name="badge"]'); `+
@@ -3674,7 +3681,7 @@ func TestOnlyKnownPlacesTellWhetherABadgeIsHeld(t *testing.T) {
 		"function drawBadgeOption(form) {":                                 5,
 		"function withdrawBadgeOption(form, startNothing) {":               1,
 		"function badgeWithdrawnNotice(form, { key }) {":                   2,
-		"function badgeReplacedNotice(form, { hasText, imageOff }) {":      2,
+		"function badgeReplacedNotice(form, { hasText, imageOff }) {":      4,
 		"function formDraft(form) {":                                       6,
 		"function restoreDraft(draft) {":                                   7,
 		"function captchaFormNeedsIt(form) {":                              4,

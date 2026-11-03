@@ -1518,12 +1518,12 @@ function badgeOffered(form) {
 // in its place, or to the form's button when there is none, rather than
 // dropping it to the page. The Name field is left as it is too: a remembered
 // name or tripcode put back on a post written to go out badged would tie it to
-// the reader's unbadged posts. A form held while its request is pending gets
-// its new box switched off, as holdForm switched off the one it replaces, and
-// switched on with the rest when the hold ends: what is sent was read at the
-// press, so a box ticked meanwhile would show a badge the post does not carry.
-// A box taken out of a held form stays out. It says whether the box it drew
-// over was ticked.
+// the reader's unbadged posts. A box drawn into a form held while its request
+// is pending, whether or not it had a box before, is drawn switched off, as
+// holdForm switched off the controls that were on, and switched on with them
+// when the hold ends: what is sent was read at the press, so a box ticked
+// meanwhile would show a badge the post does not carry. A box taken out of a
+// held form stays out. It says whether the box it drew over was ticked.
 function drawBadgeOption(form) {
   const held = state.verification.badge;
   const number = held ? held.number : "";
@@ -1651,16 +1651,23 @@ const BADGE_REPLACED = "The badge this post carried was replaced by one verified
 // to post with the new badge: the form offers it, not ticked (drawBadgeOption).
 // A post release left with nothing in it, its image taken off, has nothing to
 // press again for, and the notice then says only what went (imageTakenOff says
-// the rest). It reads the badge held and the poster key when it is said, which
-// a redraw loading meanwhile can do again later (restoreDraft): with no badge
-// held by then, forgotten since, it ends with what pressing again does, as
-// badgeWithdrawnNotice says only that the badge has gone, and with another,
-// verified since, it names that one.
+// the rest). It reads the badge held, the form's box and the poster key when
+// it is said, which a redraw loading meanwhile can do again later
+// (restoreDraft), the page it keeps on screen until then still in the reader's
+// hands: with no badge held by then, forgotten since, it ends with what
+// pressing again does, there being no box to tick; with another, verified
+// since, it names that one, which the form then offers unticked; and with the
+// new badge's box ticked since, it says that pressing again posts with that
+// badge.
 function badgeReplacedNotice(form, { hasText, imageOff }) {
   if (!hasText && imageOff !== "") {
     return BADGE_REPLACED;
   }
   const held = state.verification.badge;
+  const box = field(form, "badge");
+  if (held && box && box.checked && badgeOffered(form) === held.number) {
+    return `${BADGE_REPLACED} The box for the new badge, Verified: ${held.label}, is ticked, so pressing again posts this with that badge.`;
+  }
   const press = pressedWithoutBadge(form, storageGet(POSTER_KEY_STORAGE_KEY) || "");
   if (!held) {
     return `${BADGE_REPLACED} ${press}`;
@@ -5650,9 +5657,13 @@ el.main.addEventListener("submit", async (event) => {
   const forgets = browserForgets;
   const forgotten = () => forgets !== browserForgets;
   // Read above, and held from here until the post has gone or been refused, so
-  // what the form shows meanwhile is what is sent. Whether the form has the
-  // focus at the press is noted for a refusal answered off the screen
-  // (unsaidNotices); holdForm notes it for one on screen.
+  // what the form shows meanwhile is what is sent, but for what a forget or a
+  // change of badge does to it meanwhile, such as the Name emptied
+  // (forgetForm) or the badge box taken out, or drawn for another badge,
+  // switched off and unticked (drawBadgeOption), while the post, if it goes,
+  // carries what was read at the press. Whether the form has the focus at the
+  // press is noted for a refusal answered off the screen (unsaidNotices);
+  // holdForm notes it for one on screen.
   const focused = form.contains(document.activeElement);
   const release = holdForm(form);
   button.textContent = sending;
