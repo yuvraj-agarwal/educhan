@@ -1919,7 +1919,7 @@ func TestPassThatIsGoneIsNamedByNoOrder(t *testing.T) {
 			idOf := func(code string) int64 {
 				t.Helper()
 				canonical, _ := parsePassCode(code)
-				id, _, err := p.app.store.passByToken(context.Background(), p.app.passTokenHash(canonical))
+				id, _, err := p.app.store.passByToken(context.Background(), p.app.passTokenHash(canonical), time.Now())
 				if err != nil {
 					t.Fatalf("look up a Pass: %v", err)
 				}
@@ -2213,7 +2213,7 @@ func TestPassRowIsDatedOnlyByItsWrites(t *testing.T) {
 func (p *passHarness) passExpiresAt(code string) (time.Time, bool) {
 	p.t.Helper()
 	canonical, _ := parsePassCode(code)
-	_, expires, err := p.app.store.passByToken(context.Background(), p.app.passTokenHash(canonical))
+	_, expires, err := p.app.store.passByToken(context.Background(), p.app.passTokenHash(canonical), time.Now())
 	if err != nil {
 		return time.Time{}, false
 	}
@@ -2356,8 +2356,8 @@ func TestPassReissue(t *testing.T) {
 	if status, _, _ := p.reissueCode("wrong", "pi_lost"); status != http.StatusForbidden {
 		t.Fatalf("reissue without the moderation key: status %d", status)
 	}
-	if status, _, _ := p.reissueCode("mod-key", "pi_unknown"); status != http.StatusNotFound {
-		t.Fatalf("reissue of an unknown payment: status %d", status)
+	if status, out, _ := p.reissueCode("mod-key", "pi_unknown"); status != http.StatusNotFound || out.Error != passReissueMissing {
+		t.Fatalf("reissue of an unknown payment: status %d, %+v", status, out)
 	}
 	asked := time.Now()
 	status, made, code := p.reissueCode("mod-key", "pi_lost")
@@ -5034,13 +5034,15 @@ func TestPassRevocationRunsFromTheLatest(t *testing.T) {
 // payment on a Pass that has run out, and can still be renewed for its grace
 // month, to cancelling it outright, as the README says: nothing of its time is
 // left to take off, so the code the buyer was paid back for cannot be renewed.
+// Nor can the Pass be reissued, from the payment refunded or from the one it
+// left: no Pass is left from either, and the owner is told so.
 func TestPassRefundCancelsAPassInItsGraceMonth(t *testing.T) {
 	for _, c := range []struct{ name, event, payment string }{
 		{"refund of the renewal", stripeChargeRefunded, "pi_grace_renewal"},
 		{"dispute of the purchase", stripeDisputeCreated, "pi_grace_bought"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			p := passServer(t, nil)
+			p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
 			issued := p.buy("pi_grace_bought")
 			p.renew(issued.Pass, "pi_grace_renewal")
 			// Run out five days ago, every term with it.
@@ -5067,6 +5069,186 @@ func TestPassRefundCancelsAPassInItsGraceMonth(t *testing.T) {
 			var renewal passResponse
 			if status := p.post("/api/pass/checkout", map[string]any{"adult": true, "renew": issued.Pass}, &renewal); status != http.StatusForbidden {
 				t.Fatalf("renewing a Pass cancelled in its grace month: status %d", status)
+			}
+			for _, payment := range []string{"pi_grace_bought", "pi_grace_renewal"} {
+				if status, out, _ := p.reissueCode("mod-key", payment); status != http.StatusNotFound || out.Error != passReissueMissing {
+					t.Errorf("reissuing the Pass from %s once it is cancelled: status %d, %+v", payment, status, out)
+				}
+			}
+		})
+	}
+}
+
+// TestPassPastItsGraceMonthIsGone holds a Pass a month past its expiry to one
+// rule wherever it is read (passCutoff): it has gone, as if the prune had
+// deleted it, though no prune has run. Checking it, posting with it, renewing
+// it, asking again for it with the claim or reissue code that made it, a
+// "paid" event delivered again for its payment, refunding that payment,
+// collecting a paid renewal of it, reissuing it, and redeeming a reissue code
+// made for it before it went, the one its right moved to while a renewal is
+// under way included, each find no Pass, and the prune that follows changes
+// none of their answers. An hour inside the month, each finds it, run out.
+func TestPassPastItsGraceMonthIsGone(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		past bool
+	}{
+		{"an hour inside its grace month", false},
+		{"an hour past its grace month", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
+			p.addBoard("pass-board")
+			ctx := context.Background()
+			hashOf := func(code string) []byte {
+				t.Helper()
+				canonical, ok := parsePassCode(code)
+				if !ok {
+					t.Fatalf("%q is not a Pass code", code)
+				}
+				return p.app.passTokenHash(canonical)
+			}
+
+			// Each Pass is bought in a browser of its own. The first is the
+			// one checked, posted with, renewed and refunded.
+			first := p.otherBrowser()
+			firstSession := first.checkout("")
+			first.paid(firstSession, "pi_first")
+			firstNonce := first.collectNonce()
+			status, issued := first.claimWith(firstNonce)
+			if status != http.StatusOK || issued.Status != "issued" {
+				t.Fatalf("buying the first Pass: status %d, %+v", status, issued)
+			}
+			// A renewal of the second is paid and not collected yet.
+			second := p.otherBrowser()
+			renewed := second.buy("pi_second")
+			second.paid(second.checkout(renewed.Pass), "pi_second_renewal")
+			// The third has a reissue code made for it.
+			third := p.otherBrowser().buy("pi_third")
+			_, _, thirdCode := p.reissueCode("mod-key", "pi_third")
+			// The fourth was given a new code by a reissue code.
+			p.otherBrowser().buy("pi_fourth")
+			_, _, fourthCode := p.reissueCode("mod-key", "pi_fourth")
+			finder := p.otherBrowser()
+			finderNonce := finder.collectNonce()
+			status, reissued := finder.redeemWith(fourthCode, finderNonce)
+			if status != http.StatusOK || reissued.Status != "issued" {
+				t.Fatalf("reissuing the fourth Pass: status %d, %+v", status, reissued)
+			}
+			// The fifth's purchase was refunded, its right moved to its
+			// renewal, a reissue code was made for that, and another renewal
+			// of it is under way.
+			fifth := p.otherBrowser()
+			moved := fifth.buy("pi_fifth")
+			fifth.renew(moved.Pass, "pi_fifth_renewal")
+			p.refund("pi_fifth")
+			if got := p.originOf("pi_fifth_renewal"); got != "moved" {
+				t.Fatalf("the fifth Pass's renewal is the origin %q, want moved", got)
+			}
+			_, _, movedCode := p.reissueCode("mod-key", "pi_fifth_renewal")
+			p.otherBrowser().checkout(moved.Pass)
+			if thirdCode == "" || fourthCode == "" || movedCode == "" {
+				t.Fatal("a reissue code was not made")
+			}
+
+			// Every Pass and every term ran out a month ago, give or take the
+			// hour, and nothing has pruned them since.
+			expires := time.Now().Add(-passExpiredGrace + time.Hour)
+			if c.past {
+				expires = time.Now().Add(-passExpiredGrace - time.Hour)
+			}
+			p.exec(`UPDATE passes SET expires_at = $1`, expires)
+			p.exec(`UPDATE pass_payments SET ends_at = $1`, expires)
+
+			if status, out := p.activate(issued.Pass); c.past && (status != http.StatusForbidden || out.Pass != passInvalid) ||
+				!c.past && (status != http.StatusForbidden || out.Pass != passExpired || out.Code != issued.Pass) {
+				t.Errorf("checking it: status %d, %+v", status, out)
+			}
+			want := map[bool]string{false: passExpired, true: passInvalid}[c.past]
+			if status, out := p.postWithPass("pass-board", issued.Pass, "", nil); status != http.StatusCreated || out.Pass != want {
+				t.Errorf("posting with it: status %d, %+v; want 201 and %q", status, out, want)
+			}
+			if status, out := first.claimWith(firstNonce); c.past && status != http.StatusBadRequest ||
+				!c.past && (status != http.StatusOK || out.Status != "issued" || out.Pass != issued.Pass) {
+				t.Errorf("its claim asked again with the same nonce: status %d, %+v", status, out)
+			}
+			if outcome, err := p.app.store.markPassOrderPaid(ctx, p.app.passSessionHash(firstSession),
+				p.app.passPaymentHash("pi_first"), time.Now()); err != nil ||
+				outcome != map[bool]paidOutcome{false: paidCollected, true: paidUnmatched}[c.past] {
+				t.Errorf("its payment reported paid again: %v, %v", outcome, err)
+			}
+			nobody := sha256.Sum256([]byte("nobody"))
+			err := p.app.store.createPassOrder(ctx, passOrder{
+				ClaimHash: nobody[:], SessionHash: nobody[:], RenewTokenHash: hashOf(issued.Pass),
+				Days: 365, ExpiresAt: passClaimDeadline(time.Now()),
+			}, time.Now())
+			if c.past && !errors.Is(err, errPassGone) || !c.past && err != nil {
+				t.Errorf("an order renewing it: %v", err)
+			}
+			sessions := p.stripe.sessionCount()
+			var out passResponse
+			status = first.post("/api/pass/checkout", map[string]any{"adult": true, "renew": issued.Pass}, &out)
+			if c.past && (status != http.StatusForbidden || out.Pass != passInvalid || p.stripe.sessionCount() != sessions) ||
+				!c.past && status != http.StatusOK {
+				t.Errorf("renewing it: status %d, %+v", status, out)
+			}
+			if res, err := p.app.store.revokePassPayment(ctx, p.app.passPaymentHash("pi_first"), time.Now()); err != nil ||
+				res != map[bool]revocation{false: revokedPass, true: revokedNothing}[c.past] {
+				t.Errorf("refunding its payment: %v, %v", res, err)
+			}
+
+			status, collected := second.claim()
+			if c.past && (status != http.StatusOK || collected.Status != "issued" || !passCodeShape(collected.Pass) ||
+				collected.Pass == renewed.Pass) || !c.past && (status != http.StatusOK || collected.Status != "renewed") {
+				t.Errorf("a paid renewal of it, collected: status %d, %+v", status, collected)
+			}
+
+			status, out, again := p.reissueCode("mod-key", "pi_third")
+			if c.past && (status != http.StatusNotFound || out.Error != passReissueMissing) || !c.past && status != http.StatusOK {
+				t.Errorf("a reissue code for it: status %d, %+v", status, out)
+			}
+			if !c.past {
+				// The new reissue code replaced the one before it.
+				thirdCode = again
+			}
+			status, out = p.otherBrowser().redeem(thirdCode)
+			if c.past && (status != http.StatusForbidden || out.Error != passReissueSpent) ||
+				!c.past && (status != http.StatusOK || out.Status != "issued" || out.Pass == third.Pass) {
+				t.Errorf("a reissue code for it redeemed: status %d, %+v", status, out)
+			}
+
+			status, out = finder.redeemWith(fourthCode, finderNonce)
+			if c.past && (status != http.StatusForbidden || out.Error != passReissueSpent) ||
+				!c.past && (status != http.StatusOK || out.Status != "issued" || out.Pass != reissued.Pass) {
+				t.Errorf("the reissue code that gave it its code, asked again with the same nonce: status %d, %+v", status, out)
+			}
+
+			status, out = p.otherBrowser().redeem(movedCode)
+			if c.past && (status != http.StatusForbidden || out.Error != passReissueSpent) ||
+				!c.past && (status != http.StatusConflict || out.Error != passReissueRenewing) {
+				t.Errorf("a reissue code for the right that moved, while it is being renewed: status %d, %+v", status, out)
+			}
+
+			if !c.past {
+				return
+			}
+			// Nothing above deleted them; the prune does, and nothing answers
+			// differently once it has.
+			var aged int
+			if err := p.app.pool.QueryRow(ctx, `SELECT count(*) FROM passes WHERE expires_at = $1`, expires).Scan(&aged); err != nil || aged != 5 {
+				t.Fatalf("%d Passes a month past their expiry left before the prune (%v), want all 5", aged, err)
+			}
+			if err := p.app.store.prunePasses(ctx, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			if n := p.count("passes"); n != 1 {
+				t.Fatalf("%d Passes left after the prune, want only the one the renewal made", n)
+			}
+			if status, out := p.activate(issued.Pass); status != http.StatusForbidden || out.Pass != passInvalid {
+				t.Errorf("checking it once pruned: status %d, %+v", status, out)
+			}
+			if status, out, _ := p.reissueCode("mod-key", "pi_third"); status != http.StatusNotFound || out.Error != passReissueMissing {
+				t.Errorf("a reissue code for it once pruned: status %d, %+v", status, out)
 			}
 		})
 	}

@@ -785,19 +785,20 @@ needs a browser check before the test changes.
   (the `pageshow` listener), so the age screen still comes first. A post whose Pass was no
   good is a `201` like any other, carrying `"pass": "invalid"` or `"expired"`: the page
   forgets the first, marks the second run out without a date, and says the post was sent.
-  A code typed in after it ran out is kept with the date the server gives. While sales
-  are paused the page says `PASS_PAUSED` where Buy and Renew were; `PASS_NOT_ON_SALE` is
-  the server's `passNotOnSale` word for word (`TestPassPageWhileSalesArePaused`), and
-  `PASS_REISSUE_SPENT` its `passReissueSpent`. A browser that keeps no cookies or storage
-  is not sent to Stripe (`passCanBeKept`). The header's Pass link (`data-pass-link`) stays
-  hidden until `GET /api/site` says `"pass"` or the browser holds one (`showPassLink`).
-  The price is Stripe's amount divided by ten to the exponent `GET /api/pass` sends beside
-  it, Stripe's own count of the currency's decimals and not the browser's, which has ISK
-  and UGX whole where Stripe keeps them in hundredths, and an amount with a part of a unit
-  is written with that many decimals, which the browser's usual digits for the currency
-  could round away (`passPriceText`, `TestPassPriceIsWrittenWithStripesDecimals`).
-  `TestOnlyThePostingRequestCarriesThePass` pins the header and every read of the held
-  code; the Pass page's other promises have their own tests beside it.
+  A code typed in after it ran out, until a month past its expiry, is kept with the date
+  the server gives. While sales are paused the page says `PASS_PAUSED` where Buy and Renew
+  were; `PASS_NOT_ON_SALE` is the server's `passNotOnSale` word for word
+  (`TestPassPageWhileSalesArePaused`), and `PASS_REISSUE_SPENT` its `passReissueSpent`. A
+  browser that keeps no cookies or storage is not sent to Stripe (`passCanBeKept`). The
+  header's Pass link (`data-pass-link`) stays hidden until `GET /api/site` says `"pass"`
+  or the browser holds one (`showPassLink`). The price is Stripe's amount divided by ten
+  to the exponent `GET /api/pass` sends beside it, Stripe's own count of the currency's
+  decimals and not the browser's, which has ISK and UGX whole where Stripe keeps them in
+  hundredths, and an amount with a part of a unit is written with that many decimals,
+  which the browser's usual digits for the currency could round away (`passPriceText`,
+  `TestPassPriceIsWrittenWithStripesDecimals`). `TestOnlyThePostingRequestCarriesThePass`
+  pins the header and every read of the held code; the Pass page's other promises have
+  their own tests beside it.
 - The remembered name (`educhan:name`) is the unbadged posts' name. Ticking the badge
   empties the Name field (`badgeToggled`), and a badged post's name is never remembered:
   a tripcode on both kinds of post would publicly tie the unbadged ones to the
@@ -861,9 +862,14 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   leaves it no paid time to come, and the prune a month past its expiry) clears it from
   every order that renews it, writing to `pass_orders` alone, so no order, paid or not,
   names a Pass that has gone (`TestPassThatIsGoneIsNamedByNoOrder`); anything new that
-  deletes a Pass must do the same. `TestPassIsNeverStoredOrLogged`,
-  `TestPassTablesCannotBeJoinedToPosts` and `TestPassSharesOneHourlyBudget` hold it
-  there.
+  deletes a Pass must do the same. A Pass a month past its expiry has gone for every
+  purpose, pruned yet or not: every lookup of a Pass takes only one whose `expires_at` is
+  after `passCutoff(now)`, through `passByToken` and `passWithToken` or in its own query
+  (`renewPass` and `createPassReissue`, for example), so whatever reaches it (a check, a
+  post, a renewal, a claim, a reissue code, a refund) finds it gone, and the prune just
+  deletes its rows (`TestPassPastItsGraceMonthIsGone`); anything new that looks a Pass up
+  must do the same. `TestPassIsNeverStoredOrLogged`, `TestPassTablesCannotBeJoinedToPosts`
+  and `TestPassSharesOneHourlyBudget` hold it there.
 - **Bump order only.** The index and the catalog list stickies, then threads by their
   last bump, and nothing else moves a thread: no "popular", "trending" or "hot", and no
   ranking by views, likes, replies or images, because ranking by popularity is what

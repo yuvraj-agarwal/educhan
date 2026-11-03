@@ -2264,7 +2264,7 @@ const PASS_NOT_KEPT =
 const PASS_NO_STORAGE =
   "This browser couldn't store what educhan needs, so it couldn't collect or keep a Pass. Allow this site to store data first.";
 // Why a Pass the server no longer knows may have gone, likeliest first: one
-// that ran out is deleted after its month of grace.
+// that ran out has gone a month past its expiry, deleted yet or not.
 const PASS_GONE_REASONS = "It may have run out more than a month ago, or been refunded or replaced.";
 
 // Why the Pass that was here has gone, said on the Pass page until the reader
