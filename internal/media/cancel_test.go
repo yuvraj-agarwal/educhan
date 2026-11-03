@@ -73,10 +73,7 @@ func (c *askedContext) Value(any) any               { return nil }
 func (c *askedContext) Done() <-chan struct{}       { return c.done }
 
 func (c *askedContext) Err() error {
-	fn := "?"
-	if pc, _, _, ok := runtime.Caller(1); ok {
-		fn = strings.TrimPrefix(runtime.FuncForPC(pc).Name(), "github.com/yuvraj-agarwal/educhan/internal/media.")
-	}
+	fn := asker()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if fn == c.endsAt && !c.ended {
@@ -100,6 +97,24 @@ func (c *askedContext) Err() error {
 		return context.Canceled
 	}
 	return nil
+}
+
+// asker is the function that called an askedContext's Err, or, for a GIF
+// player's halted, which asks for each pass a player makes over a frame's
+// rows, the function that called halted, so that the passes can be told
+// apart.
+func asker() string {
+	pcs := make([]uintptr, 8)
+	frames := runtime.CallersFrames(pcs[:runtime.Callers(3, pcs)]) // past Callers, asker and Err
+	next := func() string {
+		f, _ := frames.Next()
+		return strings.TrimPrefix(f.Function, "github.com/yuvraj-agarwal/educhan/internal/media.")
+	}
+	fn := next()
+	if fn == "(*gifPlayer).halted" {
+		fn = next()
+	}
+	return fn
 }
 
 // asked is how many times fn asked, and how many of those came after the
@@ -139,9 +154,12 @@ const (
 	askThumb  = "processHeld"
 	askBudget = "(*budget).acquire"
 	// Within a frame, playGIF's player asks as it looks at a stored frame's
-	// rows for its table (ownTable, through halted) and as it writes them.
-	askLook = "(*gifPlayer).halted"
-	askRows = "(*gifPlayer).frame"
+	// rows for its table (ownTable, through halted), again as it looks at
+	// them a second time, for a frame of 256 colours that does not draw them
+	// all (undrawnInTable, through halted), and as it writes them.
+	askLook    = "(*gifPlayer).ownTable"
+	askUndrawn = "(*gifPlayer).undrawnInTable"
+	askRows    = "(*gifPlayer).frame"
 )
 
 // photoPNG and photoJPEG are a 320×240 photo-like picture (photo), whose
@@ -437,14 +455,19 @@ func TestProcessStopsWhenCancelledWhilePlayingAGIF(t *testing.T) {
 // TestPlayingAGIFStopsPartwayThroughAFrame holds that a context that ends
 // while a frame of a GIF is being played stops it there, not at the next
 // frame: when a look at a stored frame's rows for its table (ownTable) asks,
-// or the writing of them does, each of which asks every haltEvery pixels, and
-// when a write is refused (storedBuffer), at the end of the row being
-// written. A frame of 25 megapixels is looked at a few times over and written
-// before the next is reached: with only the check between frames, a GIF of
-// four such frames went on for seconds after its request was cancelled,
-// holding its share of the budget. The GIF is two frames of 512×512 in noise
-// of 256 colours, each with a table of its own, so that it is stored with a
-// table a frame and each pass over a frame is several haltEvery.
+// or the second look a frame of 256 colours that does not draw every pixel
+// takes (undrawnInTable), or the writing of them does, each of which asks
+// every haltEvery pixels, and when a write is refused (storedBuffer), at the
+// end of the row being written. Each pass is ended on its own, so that each
+// one's check is held to stopping it: with either look's taken out, the other
+// still stopped the frame, a pass later. A frame of 25 megapixels is looked
+// at a few times over and written before the next is reached: with only the
+// check between frames, a GIF of four such frames went on for seconds after
+// its request was cancelled, holding its share of the budget. The GIF is two
+// frames of 512×512 in noise of 256 colours, each with a table of its own, so
+// that it is stored with a table a frame and each pass over a frame is
+// several haltEvery; the second frame leaves the pixels where it repeats the
+// first undrawn, and so takes the second look.
 func TestPlayingAGIFStopsPartwayThroughAFrame(t *testing.T) {
 	const w, h = 512, 512
 	noise := rand.New(rand.NewSource(20))
@@ -456,12 +479,12 @@ func TestPlayingAGIFStopsPartwayThroughAFrame(t *testing.T) {
 	}
 	upload := g.bytes()
 	live := sanitizeLive(t, "GIF", upload)
-	player := []string{askLook, askRows, askFrame, askWrite}
+	player := []string{askLook, askUndrawn, askRows, askFrame, askWrite}
 
 	const at = 3
-	for _, fn := range []string{askLook, askRows} {
+	for _, fn := range []string{askLook, askUndrawn, askRows} {
 		if whole, _ := live.asked(fn); whole < 2*at {
-			t.Fatalf("%s asks %d times in a whole play; the fixture must have it ask at least %d", fn, whole, 2*at)
+			t.Fatalf("%s asks %d times in a whole play, want at least %d: a pass that never asks goes on to its end whenever the context ends, and the fixture must make each pass ask often enough to end it partway", fn, whole, 2*at)
 		}
 		ctx := newAskedContext(fn, at)
 		sanitizeUnder(t, "GIF", ctx, upload)

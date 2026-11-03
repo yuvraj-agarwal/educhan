@@ -313,9 +313,10 @@ func (p *gifPlayer) due(n int) bool {
 }
 
 // halted asks the context whether it is done, for a look at a frame's rows
-// (ownTable), and keeps its error (halt) if it is, which stops the look with
-// the frame not to be written so: choose and frameColours then return it
-// (refused), rather than trying another way.
+// (ownTable, and undrawnInTable for a second look), and keeps its error
+// (halt) if it is, which stops the look with the frame not to be written so:
+// choose and frameColours then return it (refused), rather than trying
+// another way.
 func (p *gifPlayer) halted() bool {
 	p.halt = p.ctx.Err()
 	return p.halt != nil
@@ -770,20 +771,33 @@ func (p *gifPlayer) ownTable(r image.Rectangle, next bool) (transparent, ok bool
 		}
 	}
 	if transparent && p.index.n == 256 {
-		for y := r.Min.Y; y < r.Max.Y; y++ {
-			if p.due(r.Dx()) && p.halted() {
-				return false, false
-			}
-			at := y*p.w + r.Min.X
-			for i, k := range row(y) {
-				if _, ok := p.index.lookup(k); !drawn(at+i) && !ok {
-					return false, false
-				}
-			}
+		if !p.undrawnInTable(r, row, drawn) {
+			return false, false
 		}
 		transparent = false
 	}
 	return transparent, true
+}
+
+// undrawnInTable reports whether each pixel of r that a stored frame of 256
+// colours does not draw shows a colour already in the frame's table (index),
+// so that it can be written in that colour, the table having no room for a
+// transparent entry (ownTable): row is what the frame's picture shows of a
+// row of r, and drawn whether the frame draws a pixel. It is a second pass
+// over r, and asks the context as often as the first (halted).
+func (p *gifPlayer) undrawnInTable(r image.Rectangle, row func(y int) []uint32, drawn func(i int) bool) bool {
+	for y := r.Min.Y; y < r.Max.Y; y++ {
+		if p.due(r.Dx()) && p.halted() {
+			return false
+		}
+		at := y*p.w + r.Min.X
+		for i, k := range row(y) {
+			if _, ok := p.index.lookup(k); !drawn(at+i) && !ok {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // playGIF writes to out the run of pictures a GIF's frames show on a canvas,
