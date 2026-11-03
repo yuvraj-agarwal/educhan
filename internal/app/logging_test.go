@@ -118,9 +118,9 @@ func TestServerLogsCarryNoClientAddress(t *testing.T) {
 }
 
 // New builds an App for the sweeper as well as for the web server, and the
-// sweeper runs without a salt, a moderation key or verification on purpose. So
-// New warns about none of them; the serving path asks WarnServingSettings,
-// which does.
+// sweeper runs without a salt, a moderation key, verification or a captcha
+// secret on purpose. So New warns about none of them; the serving path asks
+// WarnServingSettings, which does.
 func TestServingWarningsAreTheServersAlone(t *testing.T) {
 	var logs syncBuffer
 	h := testServerLogging(t, func(cfg *Config) {

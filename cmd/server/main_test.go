@@ -90,6 +90,10 @@ func sweepEnv(t *testing.T) *pgxpool.Pool {
 	t.Setenv("EDUCHAN_MEDIA_BACKEND", "local")
 	t.Setenv("EDUCHAN_UPLOAD_DIR", t.TempDir())
 	t.Setenv("EDUCHAN_VERIFY_SECRET", "")
+	// The captcha's settings as well, so a secret exported where the tests
+	// run cannot reach a sweep, which runs without one as the Job does.
+	t.Setenv("EDUCHAN_CAPTCHA_SECRET", "")
+	t.Setenv("EDUCHAN_CAPTCHA_WORK", "")
 	t.Setenv("EDUCHAN_LOG_FORMAT", "text")
 
 	pool, err := pgxpool.New(ctx, schemaURL)
@@ -169,10 +173,11 @@ func TestSweepModeSweepsAndExits(t *testing.T) {
 }
 
 // The sweeper Job runs deliberately without the poster-ID salt, the
-// moderation key and the verification secret, which only a web server uses.
-// So a sweep says nothing about them: a warning there would read as a fault
-// in the Job and invite an operator to hand it secrets it does not need. The
-// web server's own warnings are WarnServingSettings', which only serving calls.
+// moderation key, the verification secret and the captcha secret, which only a
+// web server uses. So a sweep says nothing about them: a warning there would
+// read as a fault in the Job and invite an operator to hand it secrets it does
+// not need. The web server's own warnings are WarnServingSettings', which only
+// serving calls.
 func TestSweepModeLogsNoServerWarnings(t *testing.T) {
 	sweepEnv(t)
 	t.Setenv("EDUCHAN_POSTER_ID_SALT", "")
@@ -187,7 +192,7 @@ func TestSweepModeLogsNoServerWarnings(t *testing.T) {
 	if !strings.Contains(out, "msg=sweep ") {
 		t.Fatalf("the sweep's record is missing from its log:\n%s", out)
 	}
-	for _, setting := range []string{"EDUCHAN_POSTER_ID_SALT", "EDUCHAN_MOD_KEY", "EDUCHAN_VERIFY_SECRET", "EDUCHAN_MAIL_DEV"} {
+	for _, setting := range []string{"EDUCHAN_POSTER_ID_SALT", "EDUCHAN_MOD_KEY", "EDUCHAN_VERIFY_SECRET", "EDUCHAN_MAIL_DEV", "EDUCHAN_CAPTCHA_SECRET"} {
 		if strings.Contains(out, setting) {
 			t.Errorf("the sweep logged about %s, which only the web server uses:\n%s", setting, out)
 		}
