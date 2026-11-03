@@ -1103,11 +1103,12 @@ not-found view.
   cancel link, or a checkout not followed to Stripe), which the page goes on collecting,
   Buy is drawn again by those rules. So it is offered beside the code of a Pass the
   browser no longer holds only once no other Pass is held here, its data cleared say. A
-  code handed over that the browser could not store is said to be not sent with posts and
-  not shown again once the reader leaves the page, with what would keep it here wherever
-  the code box is drawn: with no good Pass held, to allow the site to store data and
-  enter it below; with a good Pass held, which a code typed in will not replace, to write
-  down both codes, remove that Pass, which takes the new code off the page, and enter it
+  code handed over that the browser could not store, and has not held since, is said to
+  be not sent with posts and not shown again once the reader leaves the page, with what
+  would keep it here wherever the code box is drawn: with no good Pass held, to allow the
+  site to store data and enter it below; with a good Pass held, which a code typed in
+  will not replace, to write down the new code, the one held and any other code on the
+  panel still needed, remove that Pass, which takes the panel off the page, and enter it
   below. A code educhan finds no longer valid as the Pass held here, answering Check it
   again, the check after a reissue code or a renewal, Renew or a post, in any tab of the
   browser, is worth nothing to write down and goes from its panel at once, in every tab
@@ -1129,8 +1130,9 @@ not-found view.
   elsewhere, wherever the code box is drawn. When that check, or a code typed in, finds
   it has run out, the notice says so with what the page beside it offers: Renew below,
   the word that sales are paused, or, on a page that could not be read, that it can be
-  renewed once the page loads. That page is asked for again, and the notice is said again
-  from what comes back if its words change and it is still on screen. A renewal the page
+  renewed once the page loads. That page is asked for again; a notice still on screen is
+  then said again from what comes back if its words change, without moving the page, and
+  taken off if this browser no longer holds that Pass, run out. A renewal the page
   collects is checked against the Pass it holds (`/api/pass/activate`) before it says
   that Pass is renewed; one it cannot match to the Pass it holds is reported as a renewal
   of a Pass, by a payment from this browser or by the reissue code that brought it, with

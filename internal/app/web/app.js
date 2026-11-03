@@ -2257,10 +2257,12 @@ const PASS_LEFT_MEANWHILE = "left";
 // on the next post.
 const PASS_NOT_KEPT =
   "This browser couldn't store the Pass, so it can't send it with your posts. Allow this site to store data, then enter the code again.";
-// Said instead of sending a buyer to Stripe from a browser that would keep
-// neither the claim that collects a purchase nor the Pass it brings.
+// Said instead of sending a buyer to Stripe from a browser that would not keep
+// the claim that collects a purchase, with cookies off, or the Pass it brings,
+// its storage for the site blocked or full, which the page cannot tell apart
+// (passCanBeKept).
 const PASS_NO_STORAGE =
-  "This browser isn't letting educhan keep anything, so it couldn't collect or keep a Pass. Allow this site to store data first.";
+  "This browser couldn't store what educhan needs, so it couldn't collect or keep a Pass. Allow this site to store data first.";
 // Why a Pass the server no longer knows may have gone, likeliest first: one
 // that ran out is deleted after its month of grace.
 const PASS_GONE_REASONS = "It may have run out more than a month ago, or been refunded or replaced.";
@@ -3173,19 +3175,30 @@ function passRunOutText() {
     : "This Pass has run out.";
 }
 
-// showPassRunOut says, as a press's answer, that the Pass held here has run
-// out (passRunOutText), and asks for the page again if it was drawn without
-// the server's answer (refreshFailedPass). The words are for the page on
-// screen, so once that drawing has landed, or failed, they are said again if
-// they have changed and the notice still says them: Renew drawn now, say, or
-// sales paused meanwhile. Focus stays where that drawing left it.
+// showPassRunOut says, as a press's answer, that the Pass held here has run out
+// (passRunOutText), and asks for the page again if it was drawn without the
+// server's answer (refreshFailedPass). The words are for the page on screen, so
+// once that drawing has landed, or failed, a notice that still says them is
+// said again if they have changed: Renew drawn now, say, or sales paused
+// meanwhile. Said again, they are the page's own news and stay where showNotice
+// puts them, since the reader may have scrolled away since the press, and focus
+// stays where that drawing left it. If this browser no longer holds that Pass
+// run out by then, removed, replaced or renewed meanwhile, say, here or in
+// another tab, the notice is about a Pass the page no longer shows, and goes.
 function showPassRunOut(...selectors) {
   const said = passRunOutText();
+  const code = (storedPass() || {}).code;
   showPassNotice(said);
   refreshFailedPass(...selectors).then(() => {
+    if (!passPageShown() || !noticeSays(said)) {
+      return;
+    }
+    const held = storedPass();
     const now = passRunOutText();
-    if (now !== said && passPageShown() && noticeSays(said)) {
-      showPassNotice(now);
+    if (!held || held.code !== code || !held.expired) {
+      clearNotice();
+    } else if (now !== said) {
+      showNotice(now);
     }
   });
 }
@@ -3418,19 +3431,20 @@ const PASS_CODE_BACK_HTML = `<strong>This browser has that code again.</strong> 
 // the code box takes (submitPass): with nothing held, or a Pass held that has
 // run out, to let the site store data and enter it in the code box; beside a
 // good Pass held, which the code box will not put another code in place of, to
-// write both codes down, remove that Pass, which takes this panel away, and
-// then enter it. On a page without the code box (box false, a server's without
-// the Pass) it says neither. It is drawn already filled, so the page moves
-// focus to it (focusPassPanel) for a screen reader to read it out. A different
-// Pass it took the place of in this browser is shown beside it, worded, as the
-// code itself is, for whether this browser holds it as it is drawn: to be
-// written down to go on using it, or, typed back in here or stored by another
-// tab say, said to be in this browser again (PASS_CODE_BACK_HTML), when the
-// held Pass's panel can show it. It stays, with any codes carried, once educhan
-// has said the code itself is no longer valid (forgetInvalidCode), and once
-// educhan says that code is no longer valid too, it is not drawn either. Below
-// them come the codes carried from an earlier panel on this visit
-// (issued.earlier), each worded as passEarlierHTML says.
+// write down both codes, and any other code on the panel still needed, remove
+// that Pass, which takes this panel away, and then enter it. On a page without
+// the code box (box false, a server's without the Pass) it says neither. It is
+// drawn already filled, so the page moves focus to it (focusPassPanel) for a
+// screen reader to read it out. A different Pass it took the place of in this
+// browser is shown beside it, worded, as the code itself is, for whether this
+// browser holds it as it is drawn: to be written down to go on using it, or,
+// typed back in here or stored by another tab say, said to be in this browser
+// again (PASS_CODE_BACK_HTML), when the held Pass's panel can show it. It
+// stays, with any codes carried, once educhan has said the code itself is no
+// longer valid (forgetInvalidCode), and once educhan says that code is no
+// longer valid too, it is not drawn either. Below them come the codes carried
+// from an earlier panel on this visit (issued.earlier), each worded as
+// passEarlierHTML says.
 function passIssuedHTML(issued, held, box) {
   const here = Boolean(held && held.code === issued.code);
   const took = here ? "takes" : "took";
@@ -3485,7 +3499,7 @@ function passIssuedHTML(issued, held, box) {
     said = "This browser couldn't store it in place of the code it has, so it isn't sent with your posts.";
     if (box) {
       said +=
-        " To use it here, write down this code and the one this browser has, remove that Pass, which takes this code off the page, then enter this code below.";
+        " To use it here, write down this code, the one this browser has and any other code on this panel you still need, remove that Pass, which takes this panel off the page, then enter this code below.";
     }
     again = "educhan keeps no copy of it, and this browser couldn't keep it either, so it won't be shown again once you leave this page.";
     need = "You need it to use the Pass, here or on another device.";

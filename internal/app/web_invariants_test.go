@@ -354,6 +354,7 @@ func TestOnlyThePostingRequestCarriesThePass(t *testing.T) {
 		"passAfterLostAnswer", // whether a Pass is held to check after a lost answer
 		"passStillHeld",       // whether an answer is still about the Pass held
 		"followPassStorage",   // whether a code just handed over is still held
+		"showPassRunOut",      // whether the Pass found run out is still held, run out
 		"submitPass",          // the body of a renewal
 	}
 	allowed := strings.Count(submit, "storedPass(")
@@ -1229,8 +1230,9 @@ func TestPassAnswersDrawOnlyOnThePassPage(t *testing.T) {
 // "nearest"), and only once the press has given focus where it gives it, which
 // it leaves there. Every notice the Pass page's presses raise goes this way,
 // Check now's included: what the first claim of the drawing it asks for comes
-// to answers it. What the page says on its own, later claims' news included,
-// and every other page's notices stay where showNotice puts them, which moves
+// to answers it. What the page says on its own, later claims' news and the
+// run-out notice said again for the page drawn after its press included, and
+// every other page's notices stay where showNotice puts them, which moves
 // nothing.
 func TestPassNoticesFromAPressAreBroughtIntoView(t *testing.T) {
 	script := appScript(t)
@@ -1270,7 +1272,6 @@ func TestPassNoticesFromAPressAreBroughtIntoView(t *testing.T) {
 		"redeemPassReissue": withoutComments(jsFunction(t, script, "redeemPassReissue")),
 		"checkHeldPass":     withoutComments(jsFunction(t, script, "checkHeldPass")),
 		"submitPass":        withoutComments(jsFunction(t, script, "submitPass")),
-		"showPassRunOut":    withoutComments(jsFunction(t, script, "showPassRunOut")),
 		"Remove the Pass":   block(`if (event.target.closest('[data-action="forget-pass"]')) {`),
 		"Stop collecting":   block(`const stopClaim = event.target.closest('[data-action="stop-pass-claim"]');`),
 		"Copy the code":     block(`if (event.target.closest('[data-action="copy-pass"]')) {`),
@@ -1301,6 +1302,17 @@ func TestPassNoticesFromAPressAreBroughtIntoView(t *testing.T) {
 		t.Error("what Check now's first claim comes to is not said in view, or a later poll's news is")
 	}
 	said += strings.Count(claimed, "showPassNotice(")
+	// The notice that the Pass held has run out answers the press that found
+	// it so, in view; said again once the page asked for after it has landed,
+	// it is the page's own news and moves nothing, since the reader may have
+	// scrolled away since the press.
+	runOut := withoutComments(jsFunction(t, script, "showPassRunOut"))
+	if strings.Count(runOut, "showPassNotice(said);") != 1 || strings.Count(runOut, "showNotice(now);") != 1 ||
+		strings.Count(runOut, "Notice(") != 3 || strings.Index(runOut, "showPassNotice(said);") > strings.Index(runOut, "refreshFailedPass(") ||
+		strings.Index(runOut, "showNotice(now);") < strings.Index(runOut, ".then(") {
+		t.Error("the run-out notice is not said in view as the press's answer, or its saying again moves the page")
+	}
+	said += strings.Count(runOut, "showPassNotice(")
 	// The notice a checkout's tab gives when it could not drop that
 	// checkout's claim (forgetPassOrder) answers its own Buy or Renew when it
 	// is on the Pass page, and is said in view there, and only there; on any
@@ -3257,7 +3269,7 @@ func TestPassCheckoutNeedsABrowserThatKeepsData(t *testing.T) {
 	if !strings.Contains(can, "if (!navigator.cookieEnabled) {") || !strings.Contains(can, `const kept = storageGet(STORAGE_PROBE_KEY) === "1";`) {
 		t.Error("passCanBeKept no longer checks both cookies and storage")
 	}
-	if got := jsString(t, script, "PASS_NO_STORAGE"); got != "This browser isn't letting educhan keep anything, so it couldn't collect or keep a Pass. Allow this site to store data first." {
+	if got := jsString(t, script, "PASS_NO_STORAGE"); got != "This browser couldn't store what educhan needs, so it couldn't collect or keep a Pass. Allow this site to store data first." {
 		t.Errorf("PASS_NO_STORAGE says %q", got)
 	}
 }
@@ -3310,14 +3322,16 @@ func TestPassPageWhileSalesArePaused(t *testing.T) {
 	}
 }
 
-// What the page says of a Pass found run out, by Check it again or a code
-// typed in, points only to what it draws beside it: Renew while the Pass is on
-// sale, that sales are paused where Renew would be, and, on a page drawn
-// without the server's answer, which has no Renew, that renewing needs the page
-// to load. Such a page is asked for again (refreshFailedPass), and once that
-// drawing has landed, or failed, the notice is said again for it if its words
-// have changed and it still says them: never pointing to a Renew the page does
-// not draw, and never twice in the same words.
+// What the page says of a Pass found run out, by Check it again or a code typed
+// in, points only to what it draws beside it: Renew while the Pass is on sale,
+// that sales are paused where Renew would be, and, on a page drawn without the
+// server's answer, which has no Renew, that renewing needs the page to load.
+// Such a page is asked for again (refreshFailedPass), and once that drawing has
+// landed, or failed, a notice that still says them is said again for it if its
+// words have changed, without moving the page, so never pointing to a Renew the
+// page does not draw and never twice in the same words, and is taken off if the
+// Pass it is about is no longer held run out, removed, replaced or renewed
+// meanwhile, say.
 func TestPassRunOutIsSaidForThePageBesideIt(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -3338,11 +3352,15 @@ func TestPassRunOutIsSaidForThePageBesideIt(t *testing.T) {
 		t.Error("the held Pass's panel no longer draws Renew exactly while the Pass is on sale, as passRunOutText says")
 	}
 	run := withoutComments(jsFunction(t, script, "showPassRunOut"))
-	if run != "function showPassRunOut(...selectors) {\n  const said = passRunOutText();\n  showPassNotice(said);\n"+
-		"  refreshFailedPass(...selectors).then(() => {\n    const now = passRunOutText();\n"+
-		"    if (now !== said && passPageShown() && noticeSays(said)) {\n      showPassNotice(now);\n    }\n  });\n}" {
-		t.Errorf("showPassRunOut no longer says the run-out notice again for the page drawn after it, once, and only "+
-			"while the notice still says it:\n%s", run)
+	if run != "function showPassRunOut(...selectors) {\n  const said = passRunOutText();\n"+
+		"  const code = (storedPass() || {}).code;\n  showPassNotice(said);\n"+
+		"  refreshFailedPass(...selectors).then(() => {\n    if (!passPageShown() || !noticeSays(said)) {\n      return;\n    }\n"+
+		"    const held = storedPass();\n    const now = passRunOutText();\n"+
+		"    if (!held || held.code !== code || !held.expired) {\n      clearNotice();\n"+
+		"    } else if (now !== said) {\n      showNotice(now);\n    }\n  });\n}" {
+		t.Errorf("showPassRunOut no longer says the run-out notice again for the page drawn after it, once and where it "+
+			"is, only while the notice still says it, or no longer takes it off once the Pass it is about is not held "+
+			"run out:\n%s", run)
 	}
 	if got := withoutComments(jsFunction(t, script, "noticeSays")); got != "function noticeSays(message) {\n"+
 		"  const text = el.notice.querySelector(\".notice-text\");\n"+
@@ -3380,13 +3398,14 @@ func TestPassRunOutIsSaidForThePageBesideIt(t *testing.T) {
 // the browser could not keep says what keeps it here in steps the code box
 // takes: with nothing held, or a Pass held that has run out, which a code typed
 // in replaces, to let the site store data and enter it; beside a good Pass
-// held, which the box will not put another code in place of, to write both
-// codes down, remove that Pass, which takes the panel away, and then enter it.
-// None says the browser stores nothing, which it may not know (storage full,
-// say). Such a code counts as kept once this browser holds it, typed in here
-// or stored by another tab, so it is worded as one the browser no longer has
-// once another takes its place or the data is cleared, and Buy is no longer
-// held back for it (TestPassIssuedPanelSaysWhatThisBrowserHolds).
+// held, which the box will not put another code in place of, to write down both
+// codes, and any other code on the panel still needed, remove that Pass, which
+// takes the panel away, and then enter it. None says the browser stores
+// nothing, which it may not know (storage full, say). Such a code counts as
+// kept once this browser holds it, typed in here or stored by another tab, so
+// it is worded as one the browser no longer has once another takes its place or
+// the data is cleared, and Buy is no longer held back for it
+// (TestPassIssuedPanelSaysWhatThisBrowserHolds).
 func TestPassCodeBoxIsPointedToOnlyWhereItIsDrawn(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -3417,8 +3436,8 @@ func TestPassCodeBoxIsPointedToOnlyWhereItIsDrawn(t *testing.T) {
 	}
 	if got := words(issued[good:none]); got != "} else if (!here && held && !held.expired) { "+
 		"said = \"This browser couldn't store it in place of the code it has, so it isn't sent with your posts.\"; "+
-		"if (box) { said += \" To use it here, write down this code and the one this browser has, remove that Pass, "+
-		"which takes this code off the page, then enter this code below.\"; } "+
+		"if (box) { said += \" To use it here, write down this code, the one this browser has and any other code on this "+
+		"panel you still need, remove that Pass, which takes this panel off the page, then enter this code below.\"; } "+
 		"again = \"educhan keeps no copy of it, and this browser couldn't keep it either, so it won't be shown again once "+
 		"you leave this page.\"; need = \"You need it to use the Pass, here or on another device.\";" {
 		t.Errorf("a code the browser could not keep beside a good Pass held offers steps the code box refuses, or none:\n%s", got)
@@ -3441,7 +3460,7 @@ func TestPassCodeBoxIsPointedToOnlyWhereItIsDrawn(t *testing.T) {
 		!strings.Contains(remove, "passJustIssued = null;") {
 		t.Error("the steps a code the browser could not keep gives are no longer the ones the code box and Remove take")
 	}
-	if strings.Contains(code, "store anything") {
+	if strings.Contains(code, "store anything") || strings.Contains(code, "keep anything") {
 		t.Error("the Pass page says this browser stores nothing, which it cannot tell from storage that is full")
 	}
 	if got := jsString(t, script, "PASS_NOT_KEPT"); got !=

@@ -608,9 +608,10 @@ needs a browser check before the test changes.
   leaves; and one the browser could not keep and has not held since says so, with what
   would keep it here only where the code box is drawn (`box`, on a page from a server
   with the Pass or one that could not be read): beside a good Pass held, which
-  `submitPass` will not replace with a Pass code, to write down both codes, remove that
-  Pass and enter it, and otherwise to allow the site to store data and enter it, never
-  that the browser stores nothing, which the page cannot tell from a full store
+  `submitPass` will not replace with a Pass code, to write down both codes and any other
+  code on the panel still needed, remove that Pass, which takes the panel off the page,
+  and enter it, and otherwise to allow the site to store data and enter it, never that
+  the browser stores nothing, which the page cannot tell from a full store
   (`PASS_NOT_KEPT` the same). `has` is a Pass held or a code shown that the browser could
   not keep and has not held since, the panel's own or one carried (`unkept`). Buy is held
   back while `has`, while the page shows a purchase being collected (`open` and not
@@ -755,9 +756,12 @@ needs a browser check before the test changes.
   (`passRunOutText`): Renew below while the Pass is on sale, `PASS_PAUSED` while sales are
   paused, on a page that could not be read that it can be renewed once the page loads, and
   no more than that it ran out on one from a server without the Pass. Once the drawing
-  `refreshFailedPass` sets off has landed, or come to nothing, the notice is said again
-  from what it brought only if its words change and the notice still says them
-  (`noticeSays`), so never twice alike, and focus stays where that drawing left it. The
+  `refreshFailedPass` sets off has landed, or come to nothing, a notice still saying them
+  (`noticeSays`) is said again from what it brought only if its words change, so never
+  twice alike, and taken off (`clearNotice`) if this browser no longer holds that Pass run
+  out, removed, replaced or renewed meanwhile, say; said again, it does not scroll the
+  page (`showNotice`), since the reader may have scrolled away since the press, and focus
+  stays where that drawing left it, on Check it again or the held Pass's panel, say. The
   held panel's Check it again and the steps beside a code the browser could not keep are
   offered only where the code box is drawn (`box`). Another tab's Remove, Forget, new code
   or finding that its code is no longer valid reaches this one by the `storage` event.
