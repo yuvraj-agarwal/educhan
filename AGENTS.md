@@ -377,6 +377,9 @@ needs a browser check before the test changes.
   a code request is told to wait and request a code again, never to post again. A `503`
   with `retry_after` is a post the server was too busy to take, worded as that and not as
   flood control; the form keeps the post, image included, and nothing was charged for it.
+  An image that did not finish arriving in time is a `400` known by the server's words,
+  `UPLOAD_TOO_SLOW`, and worded as the connection's doing; the server never answers it
+  `408`, which Chromium replays (see **Attachments**), so nothing in `app.js` looks for one.
   A not-found page names and links a board only when it is in `state.boards`: the slug
   comes from the address, and echoing any slug would let a crafted link write the page's
   copy. A history change that keeps the rendered path (a same-thread quote link) only
@@ -1155,12 +1158,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   host can usually take any address in its /64 and counted per address the share would
   bound nothing, while flood control stays per address, its cooldowns being a wait a whole
   network would feel), and a post past it is read to its end unkept and answered `429`
-  (`errUploadShare`, `busyRetryAfter` to wait, nothing charged) without waiting, or `408`
-  if its body falls behind on the way (`turnAway`); and `pacedBody` holds the body to an
-  even pace through its read window, moving the read deadline before every read to
-  `uploadPaceGrace` (5 s) past when what has arrived would have at the pace that brings it
-  all in by the window's end, so a body that sends nothing or a trickle is answered `408`
-  and gives its room back after the grace, not at the window's end
+  (`errUploadShare`, `busyRetryAfter` to wait, nothing charged) without waiting, or `400`
+  `upload too slow` if its body falls behind on the way (`turnAway`); and `pacedBody`
+  holds the body to an even pace through its read window, moving the read deadline before
+  every read to `uploadPaceGrace` (5 s) past when what has arrived would have at the pace
+  that brings it all in by the window's end, so a body that sends nothing or a trickle is
+  answered `400` and gives its room back after the grace, not at the window's end
   (`TestIdleUploadsCannotHoldTheUploadBudget`). A body without a `Content-Length`
   (chunked) would have to reserve the most a body may be, and could then be held only to
   the pace of that, which cut a small one sent slowly off, or to none, which let seven
@@ -1202,43 +1205,51 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   deadline set on the connection through an `http.ResponseController` once `ReserveUpload`
   has returned, whatever it returned (the logging middleware's `statusRecorder` carries an
   `Unwrap` so the controller reaches the connection underneath); a body slower than that
-  is the client's doing, answered `408` (`upload too slow`, `isReadTimeout`), as is one
-  that falls behind its pace (`pacedBody`), not the `503` a server with no room gives, and
-  a body that waited for room is not answered `408` for the server's load. A turned-away
-  post's body is read past at the same pace, and `turnAway` answers it from how that read
-  ended, never from the request's context, which net/http cancels for a read deadline as
-  for a client gone: mapped through `fail`, a busy refusal whose body fell behind answered
-  nothing, which net/http sent as an empty `200` that the web client took for a post made
-  (`TestATurnedAwayBodyIsAnsweredWhateverItsPace`). Once the body is read, the image has a
-  fresh `postDeadline` (25 s, `processContext`) to be processed and both renditions stored
-  — measured from after the body, not from the start of the handler, so a slow body no
-  longer spends the time the image has and is no longer mistaken for a busy server
-  (`TestSlowUploadBodyIsNotMistakenForABusyServer`); `processContext` also resets the
-  response's write deadline to cover that processing and the answer, the body read having
-  possibly used more than one `WriteTimeout` (30 s, `app.WriteTimeout`, which `cmd/server`
-  uses) from the end of the headers. `Save` writes nothing once that processing deadline
-  has passed, on either backend (`LocalStore.Put` honours an ended context as Cloud
-  Storage does, pinned in `testStoreContract`), and removes a written original on a
-  context that has not ended (`context.WithoutCancel`). Decoding, re-encoding and playing
-  a GIF each watch that context as they run — a reader that fails once it is done, a check
-  straight after each decode, a stored-buffer write that refuses once it is done (and
-  `jpegenc`, refused, stops at the end of the row of units it is coding), a check before
-  each GIF frame, and one before the thumbnail — so a cancelled or timed-out upload stops
-  partway rather than running to the end. A decode that has already read its whole input
-  is the exception: image/jpeg reads a small progressive file whole, and x/image a lossy
-  WebP's partitions, before their costly work, which then runs to its end — a few seconds
-  of CPU at most within the caps, holding its share of the budget until then — and nothing
-  more is done after it. `cancel_test.go` pins each check on its own by ending the context
-  the moment that check asks (`askedContext`), so none of it rests on timing. The database
-  commit runs on the request's own context, never a deadline: a deadline passing
-  mid-commit could otherwise leave a post made and its image removed. A budget wait or a
-  processing deadline that runs out is `tooBusy`, sent to `answerBusy`: `503` with a
-  `Retry-After` of `busyRetryAfter` (10 s) and `retry_after`, logged by the request log as
-  a warning, not an error; the body of a post turned away for a full budget before it was
-  read is still read to its end and dropped, so the browser gets the answer rather than a
-  connection closed under its upload. Before the bound, a queued upload was stored and its
-  post made after its answer could no longer be sent, and the poster, told the network had
-  failed, posted it twice (`TestBusyServerTurnsAnUploadAwayBeforeKeepingIt`,
+  is the client's doing, answered `400` (`upload too slow`, `uploadTooSlowStatus`,
+  `isReadTimeout`), as is one that falls behind its pace (`pacedBody`), not the `503` a
+  server with no room gives, and a body that waited for room is not answered
+  `upload too slow` for the server's load. It is not `408`: Chromium takes a `408` on a
+  reused HTTP/1.1 keep-alive connection for an idle connection closed and sends the whole
+  post again, without telling the page, until a `408` comes on a fresh connection, so a
+  poster too slow to send the image once sent it once per idle connection and once more,
+  waited that much longer to be told, and held room in the budget and the share for each
+  sending. No header stops that, only the status; `app.js` knows the refusal by its words
+  (`UPLOAD_TOO_SLOW`), which `TestClientKnowsTheServersImageRefusals` checks against the
+  server's answer. A turned-away post's body is read past at the same pace, and `turnAway`
+  answers it from how that read ended, never from the request's context, which net/http
+  cancels for a read deadline as for a client gone: mapped through `fail`, a busy refusal
+  whose body fell behind answered nothing, which net/http sent as an empty `200` that the
+  web client took for a post made (`TestATurnedAwayBodyIsAnsweredWhateverItsPace`). Once
+  the body is read, the image has a fresh `postDeadline` (25 s, `processContext`) to be
+  processed and both renditions stored — measured from after the body, not from the start
+  of the handler, so a slow body no longer spends the time the image has and is no longer
+  mistaken for a busy server (`TestSlowUploadBodyIsNotMistakenForABusyServer`);
+  `processContext` also resets the response's write deadline to cover that processing and
+  the answer, the body read having possibly used more than one `WriteTimeout` (30 s,
+  `app.WriteTimeout`, which `cmd/server` uses) from the end of the headers. `Save` writes
+  nothing once that processing deadline has passed, on either backend (`LocalStore.Put`
+  honours an ended context as Cloud Storage does, pinned in `testStoreContract`), and
+  removes a written original on a context that has not ended (`context.WithoutCancel`).
+  Decoding, re-encoding and playing a GIF each watch that context as they run — a reader
+  that fails once it is done, a check straight after each decode, a stored-buffer write
+  that refuses once it is done (and `jpegenc`, refused, stops at the end of the row of
+  units it is coding), a check before each GIF frame, and one before the thumbnail — so a
+  cancelled or timed-out upload stops partway rather than running to the end. A decode
+  that has already read its whole input is the exception: image/jpeg reads a small
+  progressive file whole, and x/image a lossy WebP's partitions, before their costly work,
+  which then runs to its end — a few seconds of CPU at most within the caps, holding its
+  share of the budget until then — and nothing more is done after it. `cancel_test.go`
+  pins each check on its own by ending the context the moment that check asks
+  (`askedContext`), so none of it rests on timing. The database commit runs on the
+  request's own context, never a deadline: a deadline passing mid-commit could otherwise
+  leave a post made and its image removed. A budget wait or a processing deadline that
+  runs out is `tooBusy`, sent to `answerBusy`: `503` with a `Retry-After` of
+  `busyRetryAfter` (10 s) and `retry_after`, logged by the request log as a warning, not
+  an error; the body of a post turned away for a full budget before it was read is still
+  read to its end and dropped, so the browser gets the answer rather than a connection
+  closed under its upload. Before the bound, a queued upload was stored and its post made
+  after its answer could no longer be sent, and the poster, told the network had failed,
+  posted it twice (`TestBusyServerTurnsAnUploadAwayBeforeKeepingIt`,
   `TestPostPastItsDeadlineIsNotMadeAndNotCharged`,
   `TestWaitingForRoomEndsInTimeForTheWork`). A cancelled wait reaches the handler as
   `context.Canceled`, which `fail` answers like any request whose client left.

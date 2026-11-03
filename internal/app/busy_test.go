@@ -387,9 +387,10 @@ func multipartImage(t *testing.T, body string, image []byte) ([]byte, string) {
 // after the body is read (processContext), so a slow connection no longer
 // spends the image's budget and is no longer mistaken for a busy server and
 // turned away 503. A body slower than the read timeout is the client's doing
-// and is answered 408, with nothing stored either way; that answer is written
-// once the read timeout has passed, inside the write deadline parseSubmission
-// set answerAllowance beyond it, so the 408 is lost without the allowance.
+// and is answered upload too slow, with nothing stored either way; that answer
+// is written once the read timeout has passed, inside the write deadline
+// parseSubmission set answerAllowance beyond it, so the answer is lost without
+// the allowance.
 func TestSlowUploadBodyIsNotMistakenForABusyServer(t *testing.T) {
 	t.Run("a body slower than the processing deadline still posts", func(t *testing.T) {
 		h := testServer(t, nil)
@@ -422,7 +423,8 @@ func TestSlowUploadBodyIsNotMistakenForABusyServer(t *testing.T) {
 
 	// The wait for room in the upload budget is the server's: a post that
 	// waited still has the whole read timeout for its body, counted from when
-	// there was room, and is not answered 408 for the server's own load.
+	// there was room, and is not answered upload too slow for the server's own
+	// load.
 	t.Run("a body that waited for room has the whole read timeout", func(t *testing.T) {
 		h := testServer(t, nil)
 		h.addBoard("general")
@@ -479,17 +481,14 @@ func TestSlowUploadBodyIsNotMistakenForABusyServer(t *testing.T) {
 		}
 	})
 
-	t.Run("a body slower than the read timeout is answered 408", func(t *testing.T) {
+	t.Run("a body slower than the read timeout is answered upload too slow", func(t *testing.T) {
 		h := testServer(t, nil)
 		h.addBoard("general")
 		h.app.uploadReadTimeout = 400 * time.Millisecond
 
 		status, bodyText := stalledUpload(t, h.client.base)
-		if status != http.StatusRequestTimeout {
-			t.Fatalf("stalled upload: status %d (%s), want 408", status, bodyText)
-		}
-		if !strings.Contains(bodyText, "slow") {
-			t.Errorf("408 body = %q, want it to name the slow upload", bodyText)
+		if !answeredTooSlow(status, bodyText) {
+			t.Fatalf("stalled upload: status %d (%s), want 400 %q", status, bodyText, uploadTooSlow)
 		}
 		if n := h.countRows("posts"); n != 0 {
 			t.Errorf("%d posts stored for a stalled upload, want none", n)
@@ -531,6 +530,22 @@ func stalledUpload(t *testing.T, base string) (int, string) {
 	defer resp.Body.Close()
 	out, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(out)
+}
+
+// answeredTooSlow reports whether an answer is the refusal of an upload body
+// that fell behind its pace or its read window: 400 with uploadTooSlow, and no
+// Retry-After asked of it. Not 408 Request Timeout: Chromium takes a 408 on a
+// reused keep-alive connection for an idle connection closed, and sends the
+// whole request again, without telling the page, until one comes on a fresh
+// connection, so a poster too slow to send the image once sent it several
+// times over before being told.
+func answeredTooSlow(status int, text string) bool {
+	var out struct {
+		Error      string `json:"error"`
+		RetryAfter *int   `json:"retry_after"`
+	}
+	return status == http.StatusBadRequest && json.Unmarshal([]byte(text), &out) == nil &&
+		out.Error == uploadTooSlow && out.RetryAfter == nil
 }
 
 // idleBody is a raw connection that has sent an image post's headers,
@@ -650,8 +665,8 @@ func drainShares(t *testing.T, h *harness, clients ...string) {
 // client's counted by its /64 (shareKey), hold at most clientUploadShare, half
 // the budget, its next post refused 429 at once; and a body that falls behind
 // an even pace through its read window by more than uploadPaceGrace is cut
-// off and answered 408, giving its room back, whether it sends nothing or a
-// trickle.
+// off and answered upload too slow, giving its room back, whether it sends
+// nothing or a trickle.
 func TestIdleUploadsCannotHoldTheUploadBudget(t *testing.T) {
 	const declared = 8 << 20 // the default attachment limit, declared and never sent
 	conns := int(media.UploadBudget / declared)
@@ -734,8 +749,8 @@ func TestIdleUploadsCannotHoldTheUploadBudget(t *testing.T) {
 			t.Fatalf("another client's image post: status %d (%s), want 201", status, created.Error)
 		}
 		for i, b := range idle {
-			if status, text := b.answer(t, 5*time.Second); status != http.StatusRequestTimeout {
-				t.Errorf("idle body %d: status %d (%s), want 408", i, status, text)
+			if status, text := b.answer(t, 5*time.Second); !answeredTooSlow(status, text) {
+				t.Errorf("idle body %d: status %d (%s), want 400 %q", i, status, text, uploadTooSlow)
 			}
 		}
 	})
@@ -766,8 +781,8 @@ func TestIdleUploadsCannotHoldTheUploadBudget(t *testing.T) {
 		}()
 		start := time.Now()
 		status, text := b.answer(t, 10*time.Second)
-		if status != http.StatusRequestTimeout {
-			t.Fatalf("trickling body: status %d (%s), want 408", status, text)
+		if !answeredTooSlow(status, text) {
+			t.Fatalf("trickling body: status %d (%s), want 400 %q", status, text, uploadTooSlow)
 		}
 		if took := time.Since(start); took > 5*time.Second {
 			t.Errorf("trickling body answered after %v, want soon after the %v grace, not at the %v window's end",
@@ -991,10 +1006,10 @@ func TestABodyAheadOfItsPaceMayPause(t *testing.T) {
 // in a read deadline, for which net/http cancels the request's context, and the
 // busy refusal, then mapped as a failure, took that for a client gone and
 // answered nothing: net/http sent 200 with an empty body, and the web client
-// took the post as made and cleared its form. Such a body is answered 408 now,
-// as it is with room to read it, whatever the post was turned away for, and one
-// whose client stops sending is answered 503 for the busy server, not 200,
-// though the context ended with it too.
+// took the post as made and cleared its form. Such a body is answered upload
+// too slow now, as it is with room to read it, whatever the post was turned
+// away for, and one whose client stops sending is answered 503 for the busy
+// server, not 200, though the context ended with it too.
 func TestATurnedAwayBodyIsAnsweredWhateverItsPace(t *testing.T) {
 	busy := func(t *testing.T) *harness {
 		h := testServer(t, nil)
@@ -1015,7 +1030,7 @@ func TestATurnedAwayBodyIsAnsweredWhateverItsPace(t *testing.T) {
 	body := boundForm(t, 1<<20, "turned away", pngBytes(t, 32, 32))
 	const sent = 64 << 10 // of the body, before it stops
 
-	t.Run("one that falls behind its pace is answered 408", func(t *testing.T) {
+	t.Run("one that falls behind its pace is answered upload too slow", func(t *testing.T) {
 		h := busy(t)
 		// Told to go on once the post has been turned away and its body is
 		// being read past.
@@ -1024,9 +1039,8 @@ func TestATurnedAwayBodyIsAnsweredWhateverItsPace(t *testing.T) {
 			t.Fatal("the start of the body was not taken")
 		}
 		status, text := b.answer(t, 10*time.Second)
-		var out busyPost
-		if err := json.Unmarshal([]byte(text), &out); err != nil || status != http.StatusRequestTimeout || out.Error != uploadTooSlow {
-			t.Fatalf("a turned-away body that fell behind its pace: status %d (%q), want 408 %q", status, text, uploadTooSlow)
+		if !answeredTooSlow(status, text) {
+			t.Fatalf("a turned-away body that fell behind its pace: status %d (%q), want 400 %q", status, text, uploadTooSlow)
 		}
 		if n := storedFiles(t, h.app.cfg.UploadDir); n != 0 {
 			t.Errorf("%d files stored, want none", n)
@@ -1036,7 +1050,7 @@ func TestATurnedAwayBodyIsAnsweredWhateverItsPace(t *testing.T) {
 	// A post over its client's share is answered 429 at its body's end; one
 	// whose body fell behind on the way is answered for that instead, as the
 	// thing the poster has to change.
-	t.Run("one over its client's share that falls behind is answered 408", func(t *testing.T) {
+	t.Run("one over its client's share that falls behind is answered upload too slow", func(t *testing.T) {
 		h := testServer(t, nil)
 		h.addBoard("general")
 		h.app.uploadPaceGrace = 300 * time.Millisecond
@@ -1053,8 +1067,8 @@ func TestATurnedAwayBodyIsAnsweredWhateverItsPace(t *testing.T) {
 			t.Fatal("the start of the body was not taken")
 		}
 		status, text := b.answer(t, 10*time.Second)
-		if status != http.StatusRequestTimeout || !strings.Contains(text, uploadTooSlow) {
-			t.Fatalf("a body over its client's share that fell behind its pace: status %d (%q), want 408 %q", status, text, uploadTooSlow)
+		if !answeredTooSlow(status, text) {
+			t.Fatalf("a body over its client's share that fell behind its pace: status %d (%q), want 400 %q", status, text, uploadTooSlow)
 		}
 	})
 
@@ -1080,8 +1094,9 @@ func TestATurnedAwayBodyIsAnsweredWhateverItsPace(t *testing.T) {
 // A part's header line cut short reached the form's reader as a malformed
 // header, because bufio's ReadLine, which reads header lines, hands back what
 // it has of a line and drops the error that cut it: so a body that stopped
-// inside a header's name was answered 400 (invalid form data), not 408 for
-// stopping, and one the body limit cut there 400, not what the limit answers.
+// inside a header's name was answered invalid form data, not upload too slow
+// for stopping, and one the body limit cut there invalid form data, not what
+// the limit answers.
 // When the body's own read failed, that failure is the answer.
 func TestABodyCutOffInsideAPartHeaderIsAnsweredForTheCut(t *testing.T) {
 	// Where the image part's first header line is cut: inside its name, so
@@ -1096,9 +1111,9 @@ func TestABodyCutOffInsideAPartHeaderIsAnsweredForTheCut(t *testing.T) {
 	for _, sized := range []bool{true, false} {
 		// A body without a length is read only with uploads off: with them
 		// on, its post is refused on its headers (refuseUnsized).
-		name := "a chunked body that stops there, with uploads off, is answered 408"
+		name := "a chunked body that stops there, with uploads off, is answered upload too slow"
 		if sized {
-			name = "a body with a length that stops there is answered 408"
+			name = "a body with a length that stops there is answered upload too slow"
 		}
 		t.Run(name, func(t *testing.T) {
 			h := testServer(t, func(cfg *Config) { cfg.UploadsEnabled = sized })
@@ -1119,8 +1134,8 @@ func TestABodyCutOffInsideAPartHeaderIsAnsweredForTheCut(t *testing.T) {
 			if !b.trickle(body[:cutIn(body)], len(body), 0) {
 				t.Fatal("the start of the body was not taken")
 			}
-			if status, text := b.answer(t, 20*time.Second); status != http.StatusRequestTimeout {
-				t.Fatalf("a body that stopped inside a part's header: status %d (%s), want 408", status, text)
+			if status, text := b.answer(t, 20*time.Second); !answeredTooSlow(status, text) {
+				t.Fatalf("a body that stopped inside a part's header: status %d (%s), want 400 %q", status, text, uploadTooSlow)
 			}
 		})
 	}

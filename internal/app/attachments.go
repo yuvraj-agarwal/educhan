@@ -114,7 +114,8 @@ const uploadPaceGrace = 5 * time.Second
 // sends nothing is cut off after the grace, and one that trickles soon after,
 // while a body on course to arrive inside the window, as every body the window
 // admits must be on average, has the grace to fall behind by on the way. A
-// body cut off is answered 408 (upload too slow), as one past the window is.
+// body cut off is answered 400 (upload too slow, uploadTooSlowStatus), as one
+// past the window is.
 //
 // Every body that holds room in the upload budget has a length, so its pace
 // is its own: with uploads on, a multipart post without a Content-Length is
@@ -159,9 +160,25 @@ const uploadsSwitchedOff = "image uploads are switched off on this server"
 // Content-Length while uploads are on (refuseUnsized).
 const lengthRequired = "a post with a file needs a Content-Length"
 
-// uploadTooSlow is the refusal, 408, of a multipart post whose body fell behind
-// its pace (pacedBody), whether it was being read or read past.
+// uploadTooSlow is the refusal of a multipart post whose body fell behind its
+// pace (pacedBody) or did not arrive within uploadReadTimeout, whether it was
+// being read or read past: answered uploadTooSlowStatus, with no Retry-After,
+// since waiting does not make a connection faster. Clients match on it, so it
+// does not change.
 const uploadTooSlow = "upload too slow"
+
+// uploadTooSlowStatus is what a body that fell behind is answered with: 400,
+// not 408 Request Timeout. Chromium takes a 408 that arrives on a reused
+// HTTP/1.1 keep-alive connection for an idle connection the server closed: it
+// sends the request again on another connection, the whole body from the
+// start, without telling the page, until a 408 comes on a fresh connection.
+// A poster too slow to send the image once then sent it once for each idle
+// connection and once more, waited that many times as long to be told it took
+// too long, and held room in the upload budget and the client's share for each
+// sending. No header stops that; only the status does. app.js knows this
+// refusal by its words (UPLOAD_TOO_SLOW), as it knows the other refusals it
+// has its own notice for.
+const uploadTooSlowStatus = http.StatusBadRequest
 
 // refuseUnsized answers a multipart post that came without a Content-Length,
 // with uploads on: 411, before anything is reserved for its body or read of
@@ -259,16 +276,16 @@ type submissionForm interface {
 // longer than one WriteTimeout from the end of its headers allows: the body
 // has uploadReadTimeout to arrive from when there is room to read it, at an
 // even pace with uploadPaceGrace to spare (pacedBody), and a body slower than
-// that is answered 408 (upload too slow), not the 503 a server with no room
-// gives; the write deadline covers that read and the answer to it, and
-// processContext resets it for the processing that follows. The deadlines are
-// set once the wait for room is over, whatever its outcome, so a post that
-// waited has its whole uploadReadTimeout for its body — the wait was the
-// server's, and taken out of the body's time it would turn a busy server into
-// a slow upload — and a post turned away has that long for the rest of its
-// body to be read past, at the same pace, and the answer written: 408 if it
-// fell behind on the way, as with room, and otherwise why it was turned away
-// (turnAway).
+// that is answered 400 (upload too slow, uploadTooSlowStatus), not the 503 a
+// server with no room gives; the write deadline covers that read and the
+// answer to it, and processContext resets it for the processing that follows.
+// The deadlines are set once the wait for room is over, whatever its outcome,
+// so a post that waited has its whole uploadReadTimeout for its body — the
+// wait was the server's, and taken out of the body's time it would turn a busy
+// server into a slow upload — and a post turned away has that long for the
+// rest of its body to be read past, at the same pace, and the answer written:
+// upload too slow if it fell behind on the way, as with room, and otherwise
+// why it was turned away (turnAway).
 func (a *App) parseSubmission(ctx context.Context, w http.ResponseWriter, r *http.Request, form submissionForm) (*submission, bool) {
 	if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
 		if !decodeJSON(w, r, form) {
@@ -378,9 +395,10 @@ func (a *App) readMultipart(r *http.Request, size int64) (*submission, int, stri
 		}
 		switch {
 		case isReadTimeout(err):
-			// The body did not arrive inside uploadReadTimeout: the client's
-			// doing, not the server's load, so 408 rather than the 503 busy.
-			return nil, http.StatusRequestTimeout, uploadTooSlow
+			// The body did not arrive inside uploadReadTimeout, or fell
+			// behind its pace: the client's doing, not the server's load, so
+			// upload too slow rather than the 503 busy.
+			return nil, uploadTooSlowStatus, uploadTooSlow
 		case tooLarge(err) && !a.cfg.UploadsEnabled:
 			return nil, http.StatusForbidden, uploadsSwitchedOff
 		case tooLarge(err), errors.Is(err, errPartTooLarge):
@@ -580,18 +598,19 @@ func (a *App) rejectUpload(w http.ResponseWriter, r *http.Request, err error) {
 
 // turnAway answers a multipart post that reserveUpload turned away with err,
 // once its body has been read past, the read having ended with drained. A body
-// that fell behind its pace on the way is answered 408, whatever the post was
-// turned away for, as it would have been with room to read it: the connection
-// is what the poster has to change. Any other is answered for why it was turned
-// away. The answer is decided from those two errors alone, never from the
-// request's context: net/http cancels that for any failed read of the body, a
-// read deadline's included, so a busy refusal mapped through fail took the slow
-// body for a client gone and answered nothing, which net/http sent as 200 with
-// an empty body, and a client read as its post made.
+// that fell behind its pace on the way is answered upload too slow
+// (uploadTooSlowStatus), whatever the post was turned away for, as it would
+// have been with room to read it: the connection is what the poster has to
+// change. Any other is answered for why it was turned away. The answer is
+// decided from those two errors alone, never from the request's context:
+// net/http cancels that for any failed read of the body, a read deadline's
+// included, so a busy refusal mapped through fail took the slow body for a
+// client gone and answered nothing, which net/http sent as 200 with an empty
+// body, and a client read as its post made.
 func (a *App) turnAway(w http.ResponseWriter, r *http.Request, err, drained error) {
 	switch {
 	case isReadTimeout(drained):
-		writeError(w, http.StatusRequestTimeout, uploadTooSlow)
+		writeError(w, uploadTooSlowStatus, uploadTooSlow)
 	case errors.Is(err, errUploadShare):
 		// The client's own doing, like flood control: 429, with as long to
 		// wait as a busy server asks, and no cooldown started.
@@ -608,9 +627,9 @@ func (a *App) turnAway(w http.ResponseWriter, r *http.Request, err, drained erro
 // tooBusy reports whether err is a post's upload that could not be taken in
 // the time the post had (postDeadline): no room in a budget in time
 // (media.ErrBusy), or the processing deadline itself running out. A slow body
-// is not this — it ends in a read-deadline error (isReadTimeout), answered 408
-// — because the processing deadline starts only after the body is read
-// (processContext).
+// is not this — it ends in a read-deadline error (isReadTimeout), answered
+// upload too slow — because the processing deadline starts only after the
+// body is read (processContext).
 func tooBusy(err error) bool {
 	return errors.Is(err, media.ErrBusy) || errors.Is(err, context.DeadlineExceeded)
 }

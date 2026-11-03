@@ -349,14 +349,15 @@ func (a *App) createPost(reserveCtx context.Context, w http.ResponseWriter, r *h
 // post is answered 503 (answerBusy) with nothing stored, because the server had
 // no room for it in time. It is measured from after the body is read
 // (processContext), not from the start of the handler, so a slow body — which
-// is the client's doing, answered 408, not the server's load — does not eat the
-// time the image has to be processed. App.postDeadline is this, except in tests.
+// is the client's doing, answered upload too slow, not the server's load —
+// does not eat the time the image has to be processed. App.postDeadline is
+// this, except in tests.
 const postDeadline = 25 * time.Second
 
 // uploadReadTimeout is how long a multipart post's body has to arrive once
 // there is room to read it. A body slower than this is the client's to answer,
-// 408 (upload too slow), with nothing stored, not the 503 a server with no room
-// gives. App.uploadReadTimeout is this, except in tests.
+// 400 (upload too slow, uploadTooSlowStatus), with nothing stored, not the 503
+// a server with no room gives. App.uploadReadTimeout is this, except in tests.
 const uploadReadTimeout = 30 * time.Second
 
 // answerAllowance is the time left, on top of a post's read and processing
