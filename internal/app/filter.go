@@ -8183,9 +8183,9 @@ func (f *scannedField) threatComingCheck(v *view, m []int) bool {
 // Something unnamed seen or heard on a day named, before "when" or after it,
 // is no news (explodeSees, seenUnnamed): "tomorrow when he sees it", "when
 // they see it tomorrow", not "when they see this lol" or "tomorrow when ma'am
-// sees this meme". "What's in" something that holds nothing, and is no place,
-// is no hidden thing (hiddenIn): "when they see what's in the yearbook",
-// "what's in the timetable".
+// sees this meme". "What's in" something printed, posted or shown, or where
+// food is served, is no hidden thing (hiddenIn): "when they see what's in the
+// yearbook", "what's in the timetable".
 func explodesAtNews(ws []string) bool {
 	for i, w := range ws {
 		if !explodeWhen[w] {
@@ -8426,12 +8426,14 @@ func seenUnnamed(clause []string, j int) bool {
 	return is(clause[j+1], "it") || j+2 >= len(clause) || !explodeMedia[clause[j+2]]
 }
 
-// hiddenIn reports, after "what's" or "what is", what is in something that
-// holds it or in a place (explodeHidden, explodeVessels, explodeSpots,
-// threatPlaceWords but where food is served, explodeFed), or in "it", or
-// inside: "what's in the bag", "what's in the yearbook box", "what's in the
-// hall", "what's inside", not "what's in the yearbook", "what's in the
-// timetable" or "what's in the canteen today".
+// hiddenIn reports, after "what's" or "what is", what is inside, in "it" or
+// in anything but something printed, posted or shown (explodePrints,
+// explodeMedia, explodeNewsHeads: "the date sheet") or a place where food is
+// served (explodeFed), read from the head of its noun phrase (phraseHead):
+// "what's in the bag", "what's in the yearbook box", "what's in the van",
+// "what's in the hall", "what's inside", not "what's in the yearbook",
+// "what's in the timetable", "what's in the video" or "what's in the canteen
+// today".
 func hiddenIn(ws []string) bool {
 	k := 0
 	for k < len(ws) && k < 2 && (is(ws[k], "is") || is(ws[k], "was")) {
@@ -8444,7 +8446,7 @@ func hiddenIn(ws []string) bool {
 		return true
 	}
 	h := phraseHead(ws[k+1:])
-	return explodeHidden[h] || explodeVessels[h] || explodeSpots[h] || threatPlaceWords[h] && !explodeFed[h]
+	return !explodePrints[h] && !explodeMedia[h] && !explodeNewsHeads[h] && !explodeFed[h]
 }
 
 // peopleSubject reports, in the words of a clause before its verb, someone
@@ -8576,10 +8578,16 @@ var (
 		lists merit toppers topper post posts posted`)
 	// explodeReads before "out", or "it" and "out", are a reading out
 	// ("when she reads it out"); explodeMedia after "this" or "that" name
-	// what is seen ("this meme").
+	// what is seen ("this meme"); explodePrints and explodeMedia after
+	// "what's in" are printed, posted or shown, nothing hidden ("what's in
+	// the yearbook", "what's in the timetable").
 	explodeReads = canonSetOf(`read reads reading`)
 	explodeMedia = canonSetOf(`meme memes video videos pic pics photo photos picture pictures reel reels clip clips
 		post posts tweet tweets trailer edit edits`)
+	explodePrints = canonSetOf(`yearbook yearbooks news newspaper newspapers paper papers magazine magazines
+		results result report reports list lists letter letters email emails mail circular circulars notice
+		notices newsletter timetable timetables syllabus datesheet datesheets menu menus album albums slides script
+		scripts speech speeches announcement announcements update updates diary chat chats gc vlog vlogs`)
 	explodeIts = canonSetOf(`it something stuff them one`)
 	explodeIs  = canonSetOf(`is are was were`)
 	// explodeMines after "so is" stand for something named like what was
