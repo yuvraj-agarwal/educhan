@@ -5373,11 +5373,12 @@ func TestPassPastItsGraceMonthIsGone(t *testing.T) {
 // something to collect, making a reissue code for it, Stripe reporting it paid
 // again, a refund of it, and counting it as a renewal waiting to land on its
 // Pass, when the right to reissue that Pass moves and while it has moved, all
-// agree. So does an order left unpaid past its deadline that Stripe reports
-// completed late with its payment still clearing, then paid: held for that
-// payment through a prune, marked and collected while the keep it would have
-// once paid has not ended, and past that not held and matching nothing, with
-// the owner warned, whether the prune has run first or not.
+// agree. So do orders left unpaid past their deadline that Stripe reports paid
+// late, whether or not it reported one completed first with its payment still
+// clearing: while the keep each would have once paid has not ended, one
+// reported completed is held for that payment through a prune, and each is
+// marked and collected; past that, none is held or matches anything, and the
+// owner is warned, whether the prune has run first or not.
 func TestPassOrderPastItsKeepIsGone(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -5443,6 +5444,11 @@ func TestPassOrderPastItsKeepIsGone(t *testing.T) {
 			lateSession := late.checkout("")
 			latePruned := p.otherBrowser()
 			latePrunedSession := latePruned.checkout("")
+			// The eleventh is left unpaid past its deadline too, and Stripe
+			// reports it completed late with its payment still clearing, then
+			// paid.
+			clearing := p.otherBrowser()
+			clearingSession := clearing.checkout("")
 			if redeemedCode == "" {
 				t.Fatal("a reissue code was not made")
 			}
@@ -5501,27 +5507,42 @@ func TestPassOrderPastItsKeepIsGone(t *testing.T) {
 				t.Errorf("reported paid again: %v, %v", outcome, err)
 			}
 
-			// Reported completed with its payment still clearing, the ninth is
-			// held for that payment inside the keep it would have once paid,
+			// Reported paid with nothing before, so held by nothing, the ninth
+			// is marked and collected inside the keep it would have once paid,
+			// with no warning; past it, it matches nothing and the owner is
+			// warned.
+			warned := warnings()
+			late.paid(lateSession, "pi_late")
+			if got := warnings() - warned; got != map[bool]int{false: 0, true: 1}[c.past] {
+				t.Errorf("left unpaid and reported paid late, it was warned about %d times", got)
+			}
+			if status, out := late.claim(); c.past && status != http.StatusBadRequest ||
+				!c.past && (status != http.StatusOK || out.Status != "issued" || !passCodeShape(out.Pass)) {
+				t.Errorf("left unpaid and reported paid late, then claimed: status %d, %+v", status, out)
+			}
+
+			// Reported completed with its payment still clearing, the eleventh
+			// is held for that payment inside the keep it would have once paid,
 			// until the first UTC midnight 30 days on, which a prune leaves,
-			// and not at all past it.
-			lateDeadline := func() time.Time {
+			// and not at all past it; reported paid then, it is marked and
+			// collected inside, and matches nothing past.
+			clearingDeadline := func() time.Time {
 				t.Helper()
 				var at time.Time
 				if err := p.app.pool.QueryRow(ctx, `SELECT expires_at FROM pass_orders WHERE session_hash = $1`,
-					p.app.passSessionHash(lateSession)).Scan(&at); err != nil {
+					p.app.passSessionHash(clearingSession)).Scan(&at); err != nil {
 					t.Fatalf("the order left unpaid: %v", err)
 				}
 				return at
 			}
-			unheld := lateDeadline()
+			unheld := clearingDeadline()
 			before := time.Now()
-			if status := p.webhook(stripeCheckoutCompleted, map[string]any{"id": lateSession, "object": "checkout.session",
-				"mode": "payment", "payment_status": "unpaid", "payment_intent": "pi_late"}); status != http.StatusOK {
+			if status := p.webhook(stripeCheckoutCompleted, map[string]any{"id": clearingSession, "object": "checkout.session",
+				"mode": "payment", "payment_status": "unpaid", "payment_intent": "pi_clearing"}); status != http.StatusOK {
 				t.Fatalf("left unpaid and reported completed late with its payment still clearing: status %d", status)
 			}
 			after := time.Now()
-			if held := lateDeadline(); c.past && !held.Equal(unheld) ||
+			if held := clearingDeadline(); c.past && !held.Equal(unheld) ||
 				!c.past && !dayRoundedAfter(held, before, after, passPendingPaymentTTL) {
 				t.Errorf("left unpaid and reported completed late with its payment still clearing, it is kept until %v, "+
 					"from %v; want it held for that payment %v", held.UTC(), unheld.UTC(), !c.past)
@@ -5532,19 +5553,19 @@ func TestPassOrderPastItsKeepIsGone(t *testing.T) {
 				}
 				var n int
 				if err := p.app.pool.QueryRow(ctx, `SELECT count(*) FROM pass_orders WHERE session_hash = $1`,
-					p.app.passSessionHash(lateSession)).Scan(&n); err != nil || n != 1 {
+					p.app.passSessionHash(clearingSession)).Scan(&n); err != nil || n != 1 {
 					t.Fatalf("the order held for its payment, once pruned: %d left, %v", n, err)
 				}
 			}
 
-			warned := warnings()
-			late.paid(lateSession, "pi_late")
+			warned = warnings()
+			clearing.paid(clearingSession, "pi_clearing")
 			if got := warnings() - warned; got != map[bool]int{false: 0, true: 1}[c.past] {
-				t.Errorf("left unpaid and reported paid late, it was warned about %d times", got)
+				t.Errorf("reported completed late with its payment still clearing, then paid, it was warned about %d times", got)
 			}
-			if status, out := late.claim(); c.past && status != http.StatusBadRequest ||
+			if status, out := clearing.claim(); c.past && status != http.StatusBadRequest ||
 				!c.past && (status != http.StatusOK || out.Status != "issued" || !passCodeShape(out.Pass)) {
-				t.Errorf("left unpaid and reported paid late, then claimed: status %d, %+v", status, out)
+				t.Errorf("reported completed late with its payment still clearing, then paid and claimed: status %d, %+v", status, out)
 			}
 
 			if res, err := p.app.store.revokePassPayment(ctx, p.app.passPaymentHash("pi_refunded"), time.Now()); err != nil ||
