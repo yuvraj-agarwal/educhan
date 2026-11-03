@@ -64,10 +64,11 @@ const sweepBatchSize = 100
 // answer to its cancel request, and the sweep up to as long again for pgx's
 // own (sweepConnection), and five seconds more for this step would bring the
 // exit past the ten. So even with the database not answering, this step is
-// over within six seconds of the stop, and the process writes its error and
-// exits on its own inside the ten, as long as the stop finds no file deletion
-// in hand when the media store or the database stops answering, since the
-// file in hand is finished whatever the stop and that waits on both.
+// over a little more than six seconds after the stop at most, and the process
+// writes its error and exits on its own inside the ten, as long as the stop
+// finds no file deletion in hand when the media store or the database stops
+// answering, since the file in hand is finished whatever the stop and that
+// waits on both.
 const spentPruneTimeout = 5 * time.Second
 
 // spentPruneBound is how long the sweep's prune may take: spentPruneTimeout,
@@ -125,14 +126,19 @@ type SweepReport struct {
 // its rewrite is over stops at the batch or the file it is on, in looking up
 // the next file, or in the rewrite, whose statement PostgreSQL is asked to
 // cancel and whose wait for the statistics ends at once, and prunes them all
-// the same, within spentPruneTimeout of the stop, so its error is the stop,
-// with any file it found missing or could not remove before it and the
-// prune's own failure beside it if the prune could not finish, and no failure
-// the stop would have caused. A stop that
-// comes once the rewrite is over, while the spent answers go, finds nothing
-// left to stop: the prune runs past it, and the stop adds no error of its own,
-// so the sweep ends as one that was not stopped would, failing only if its
-// pass failed.
+// the same, within spentPruneTimeout of the stop. Its error is then the stop,
+// joined to PostgreSQL's word that it cancelled a statement of the rewrite or
+// the vacuum when it did, with any file it found missing or could not remove
+// before it, and the prune's own failure beside them if the prune could not
+// finish, which the stop's wait for the file in hand or for the rewrite's
+// cancel can leave it no time to do; never a failure of the prune's on the
+// stopped context, which it runs past. A stop that comes once the rewrite is
+// over, while the spent answers go, finds nothing left to stop: the prune runs
+// past it, and the stop adds no error of its own, so the sweep ends as one
+// that was not stopped would, failing only if its pass failed. So does a stop
+// that comes once a failure, a batch's or the files' own, has left the rest
+// to the next sweep: its error is that failure, with the prune's beside it if
+// the prune could not finish.
 func (a *App) Sweep(ctx context.Context) (SweepReport, error) {
 	return a.sweep(ctx, time.Now(), sweepBatchSize)
 }
@@ -209,8 +215,12 @@ func (a *App) sweep(ctx context.Context, asOf time.Time, batch int) (SweepReport
 	// before this step, that time counts from the stop, so whatever the stop
 	// waited for first, the file in hand or the rewrite's cancel, leaves it
 	// less, or none (spentPruneTimeout says why). The rewrite leaves
-	// captcha_spent alone: a row there holds nothing about anyone, so there is
-	// nothing in its file for a rewrite or a vacuum to take out.
+	// captcha_spent alone, and the sweep runs no vacuum on it, so a row this
+	// DELETE takes out stays in the table's file, transaction id and all,
+	// until its space there is written over. Paired by that id with the post
+	// or code request beside it, a row there, live or not, shows only that
+	// that request carried an answer, as every post without a badge and every
+	// code request does while the captcha is on (the README's "Captcha").
 	bound := a.cfg.spentPruneBound()
 	deadline := time.Now().Add(bound)
 	if ctx.Err() != nil {

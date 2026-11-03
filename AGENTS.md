@@ -1215,22 +1215,28 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   vacuum that failed (`TestSweepErrorNamesEveryStepThatFailed`) too, and a failure there
   never keeps deleted threads' images up
   (`TestSweepRemovesFilesWhenTheCaptchaCleanupFails`). `captcha_spent` is neither
-  rewritten nor vacuumed: its rows hold a hash and a UTC calendar day, nothing that
-  points at a request or a credential. A stop is no exception: the prune runs on
+  rewritten nor vacuumed: its rows' columns hold a hash and a UTC calendar day, nothing
+  that points at a request or a credential, though the transaction id a row was written
+  with lies beside its post's or code request's while the row lives, and in the table's
+  file after it is deleted until its space there is written over (README's privacy
+  section and "Captcha"). A stop is no exception: the prune runs on
   `context.WithoutCancel`, as the file in hand does, within `spentPruneTimeout` (five
   seconds, inside the ten Cloud Run allows between SIGTERM and SIGKILL:
   `TestSweepsPruneIsGivenFiveSeconds`, and `TestSweepsPruneGivesUpAtItsBound` through
-  `Config.spentPruneWithin`), counted from the stop on a sweep stopped before it
-  (`TestStoppedSweepsPruneCountsFromTheStop`), so a sweep cancelled before its batches
-  (`TestSweepStopsWhenCancelled`), among its files
+  `Config.spentPruneWithin`), counted from the stop on a sweep stopped before it,
+  however long the sweep had run by then (`TestStoppedSweepsPruneCountsFromTheStop`,
+  `TestSweepStoppedLateStillPrunesSpentCaptchas`), so a sweep cancelled before its
+  batches (`TestSweepStopsWhenCancelled`), among its files
   (`TestSweepStoppedAmongItsFilesStillPrunesSpentCaptchas`) or during its rewrite
   (`TestSweepStoppedDuringTheRewriteStillPrunesSpentCaptchas`) prunes all the same, and
-  its error is the stop, with any file it found missing or could not remove before it
+  its error is the stop, PostgreSQL's report of the statement it cancelled included if
+  it cancelled one, with any file it found missing or could not remove before it
   (`TestSweepStoppedAmongItsFilesStillSaysWhatItCouldNotRemove`), and the prune's own
-  failure if the prune could not finish (its database not answering, say), beside it,
-  but no prune failed on the stopped context. It logs one record of counts and nothing
-  that names a board or thread or says anything of a credential, failures included, and
-  the error it returns has the key taken out (`TestSweepLogsOnlyCounts`).
+  failure if the prune could not finish (its database not answering, say, or the stop's
+  wait for the file in hand or the rewrite's cancel leaving it no time), beside it, but
+  no prune failed on the stopped context. It logs one record of counts and nothing that
+  names a board or thread or says anything of a credential, failures included, and the
+  error it returns has the key taken out (`TestSweepLogsOnlyCounts`).
   `credentials_rewritten` is the number of rows the rewrite copied: on a night its
   transaction commits, every row in the credentials table, expired ones no confirmation
   has pruned yet included, even if a later step then fails; on a night it does not — the
@@ -1248,32 +1254,33 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   those fails, the error carries each, so that a failing vacuum of `pg_statistic` does
   not hide files missing from the media store
   (`TestSweepErrorNamesEveryStepThatFailed`). A stop that comes once the rewrite is
-  over, while the spent answers go, finds nothing left to stop and adds no error of its
+  over, while the spent answers go, or once a failure, a batch's or the files' own, has
+  left the rest to the next sweep, finds nothing left to stop and adds no error of its
   own: the sweep ends as one that was not stopped would, failing only if its pass failed
   (`TestSweepStoppedWhileItPrunesEndsAsIfNotStopped`). `runSweep` in `cmd/server` writes
   the sweep's error before it closes the App, and waits on the close for
   `sweepCloseTimeout` (two seconds) at most, since pgx gives a connection that has
   stopped answering fifteen: so with the database not answering, a sweep stopped once
-  under way writes its error within the prune's five seconds of the stop
-  (`TestStoppedSweepExitsWhenTheDatabaseStopsAnswering`, a whole process behind a proxy
-  that stops forwarding), or the six a rewrite or vacuum it finds in hand can take to
-  give up, which can leave the prune no time (the stop waits `cancelGrace`, three
-  seconds, for PostgreSQL to answer its cancel request and as long again for pgx's own:
-  `TestStoppedRewriteExitsWhenTheDatabaseStopsAnswering`), and exits within the close's
-  two after that, inside Cloud Run's ten, as long as no file deletion is in hand when
-  the media store or the database stops answering, since the file in hand waits on both.
-  In sweep mode `run` takes the signal context before `New`, so a stop while the sweep
-  is still starting up ends `New` with the stop as its error, which is written, and the
-  process exits 1 with nothing deleted, the spent answers included: while it connects,
-  waits for or runs migrations, or checks a Cloud Storage bucket, which `NewGCSStore`
-  does on the context it is given while its client is built on one that outlives it
-  (`TestSweepStoppedWhileStartingUpWritesItsError`, connecting to a proxy that answers
-  nothing, waiting on the migrations' lock, and checking a bucket that never answers),
-  and while `migrate` waits for the two answers it waits for whatever the stop, both
-  within `migrateAnswerTimeout` (two seconds) of the stop: a migration's COMMIT once
-  sent, so a stop as it commits leaves the migration applied and recorded and the next
-  not begun, rather than reported as failed, and the migrations' lock given back, which
-  also has two seconds at most from when it is sent
+  under way writes its error about five seconds after the stop at most, once the prune
+  gives up (`TestStoppedSweepExitsWhenTheDatabaseStopsAnswering`, a whole process behind
+  a proxy that stops forwarding), or a little over six if a rewrite or vacuum it finds
+  in hand has to give up first, which can leave the prune no time (the stop waits
+  `cancelGrace`, three seconds, for PostgreSQL to answer its cancel request and as long
+  again for pgx's own: `TestStoppedRewriteExitsWhenTheDatabaseStopsAnswering`), and
+  exits within the close's two after that, inside Cloud Run's ten, as long as no file
+  deletion is in hand when the media store or the database stops answering, since the
+  file in hand waits on both. In sweep mode `run` takes the signal context before `New`,
+  so a stop while the sweep is still starting up ends `New` with the stop as its error,
+  which is written, and the process exits 1 with nothing deleted, the spent answers
+  included: while it connects, waits for or runs migrations, or checks a Cloud Storage
+  bucket, which `NewGCSStore` does on the context it is given while its client is built
+  on one that outlives it (`TestSweepStoppedWhileStartingUpWritesItsError`, connecting
+  to a proxy that answers nothing, waiting on the migrations' lock, and checking a
+  bucket that never answers), and while `migrate` waits for the two answers it waits for
+  whatever the stop, both within `migrateAnswerTimeout` (two seconds) of the stop: a
+  migration's COMMIT once sent, so a stop as it commits leaves the migration applied and
+  recorded and the next not begun, rather than reported as failed, and the migrations'
+  lock given back, which also has two seconds at most from when it is sent
   (`TestAnUnansweredUnlockIsGivenUpWithoutAStop`: an unlock never answered, with no
   stop, is given up two seconds after it is sent, and the sweep goes on and exits 0). A
   commit no stop has come to is not cut short, its two seconds starting at the stop or

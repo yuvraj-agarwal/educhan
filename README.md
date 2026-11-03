@@ -220,8 +220,9 @@ can and cannot work out.
   own, which the sweep prunes but neither rewrites nor vacuums: it dates itself
   only to a UTC calendar day (its challenge's expiry rounded up to the next UTC
   midnight), not to the credential day, and holds nothing that points at the
-  request or the credential, though until the row is deleted, a day or so later,
-  the transaction id it was written with lies beside the request's own. A code
+  request or the credential, though the transaction id it was written with lies
+  beside the request's own until the row is deleted, a day or so later, and in
+  the table's file after that, until its space there is written over. A code
   still in flight as the sweep ran, a sweep run after 05:00 UTC, and the day of
   a deploy that changes how expiries are counted (the first move from midnight
   to 05:00, a new `credentialDayStart` or a new `EDUCHAN_VERIFY_CREDENTIAL_TTL`)
@@ -1386,12 +1387,13 @@ midnight, so the only date a row stores is the day. Each spend deletes a batch
 of the rows past their day, and the daily [sweep](#the-archive-sweeper) the
 rest, so a row is gone a day or so after its puzzle was solved. Nothing stored
 in the table names the post or code request an answer let through, or who solved
-it. Where a row sits is another matter: until it is deleted, its place in the
-table and the transaction that wrote it, which Postgres keeps with every row,
-lie beside the post's or the code request's, so whoever reads the database files
-can pair the two and date the row by the post. That shows only that the post
-carried an answer, which every post without a badge does while the captcha is
-on.
+it. Where a row sits is another matter: its place in the table and the
+transaction that wrote it, which Postgres keeps with every row, lie beside the
+post's or the code request's until it is deleted, and stay in the table's file
+after that until its space there is written over, which the sweep does not
+hurry, so whoever reads the database files can pair the two and date the row by
+the post. That shows only that the post carried an answer, which every post
+without a badge does while the captcha is on.
 
 Proof of work slows a script down; it does not tell a person from one. It
 makes each post cost the poster's processor a moment and a bulk poster's a
@@ -1725,8 +1727,8 @@ owner's role that inherits its privileges, or be a superuser, because only
 those may vacuum `pg_statistic`: owning every table is not enough, and nor is a
 membership that does not inherit. `VACUUM FULL` skips a table or catalog its
 role may not vacuum with only a warning, so the sweep checks that each one
-moved to a new file and fails at once if not, with an error
-that says which (`TestSweepFailsWhenVacuumLeavesATableInItsFile`,
+moved to a new file and fails at once if not, with an error that says which
+(`TestSweepFailsWhenVacuumLeavesATableInItsFile`,
 `TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile`) — so a role that has the
 first and not the second fails every sweep. Run it as the server's role, which
 ran the migrations, and before scheduling it check that role with the
@@ -1803,29 +1805,32 @@ a statement of the rewrite or the vacuum is cancelled by PostgreSQL and rolls
 back whole (a vacuum that had finished stays done, and the next sweep does the
 rest), the minute's wait for the statistics ends at once, and then the spent
 answers go, given what is left of five seconds from the stop. It then writes its
-error (the stop, any files it had found missing or could not remove, and the
-prune's own failure if the prune could not finish, but no failure the stop
-caused) and exits non-zero, waiting at most two seconds for its connections to
-close. A stop that finds the rewrite or the vacuum in hand with the database not
-answering waits up to three seconds for PostgreSQL to answer its cancel request
-and up to three more for pgx to send its own, which can leave the spent answers
-no time, and the error is written up to six seconds after the stop. So even with
+error (the stop, with PostgreSQL's report of the statement it cancelled if it
+cancelled one, any files it had found missing or could not remove, and the
+prune's own failure if the prune could not finish in the time left it) and exits
+non-zero, waiting at most two seconds for its connections to close. A stop that
+finds the rewrite or the vacuum in hand with the database not answering waits up
+to three seconds for PostgreSQL to answer its cancel request and up to three
+more for pgx to send its own, which can leave the spent answers no time, and the
+error is written up to a little over six seconds after the stop. So even with
 the database not answering, the error is written and the process exits inside
 the ten seconds Cloud Run waits before it kills it, as long as the stop finds no
 file being removed when the media store or the database stops answering: the
 file in hand is finished whatever the stop, and that waits on both. A stop that
 comes once the verification tables are done, while the spent answers go, finds
 nothing left to stop: the sweep finishes, and exits as one that was not stopped.
-A stop while the sweep is still starting up (connecting, waiting for, running or
-finishing migrations, checking the bucket, or reading the
-`EDUCHAN_VERIFY_DOMAINS` file) ends it before it is under way: it writes the
-stop as its error and exits non-zero with nothing deleted, the spent answers
-included. A migration the stop lands in is rolled back, unless the stop came as
-it committed: a commit once sent is waited on for up to two seconds after the
-stop, so that migration is applied first and the next is not begun. The
-migrations' lock is given back however the sweep ends, waited on for two seconds
-at most as well, and never past two seconds after the stop, so a stop as a
-migration commits waits two seconds at most for the two together. The domain
+So does one that comes once a failure has left the rest to the next run, a
+batch's or the database's while the files are removed: the sweep exits with that
+failure, as it would have unstopped. A stop while the sweep is still starting up
+(connecting, waiting for, running or finishing migrations, checking the bucket,
+or reading the `EDUCHAN_VERIFY_DOMAINS` file) ends it before it is under way: it
+writes the stop as its error and exits non-zero with nothing deleted, the spent
+answers included. A migration the stop lands in is rolled back, unless the stop
+came as it committed: a commit once sent is waited on for up to two seconds
+after the stop, so that migration is applied first and the next is not begun.
+The migrations' lock is given back however the sweep ends, waited on for two
+seconds at most as well, and never past two seconds after the stop, so a stop as
+a migration commits waits two seconds at most for the two together. The domain
 file is read to the end whatever the stop, and the stop is looked at once it has
 been. So the error is written at once, or once that commit, the lock's release
 or the file's read is done, unless the database stops answering while the sweep

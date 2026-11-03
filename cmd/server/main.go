@@ -150,15 +150,15 @@ func fatal(err error) error {
 // closes, waiting on the close for sweepCloseTimeout at most; the close waits
 // for the pool's connections to send their own cancel requests, which a
 // database that answers takes far less than that for. So even with the
-// database not answering, a stopped run writes its error within those five
-// seconds of the stop, or the six a rewrite or vacuum it finds in hand can
-// take to give up (spentPruneTimeout says why), and exits within the close's
-// two after that, inside the ten Cloud Run gives it, as long as no file
-// deletion is in hand when the media store or the database stops answering,
-// since the file in hand is finished, and its key forgotten, whatever the
-// stop, and that waits on both. A stop that came while the sweep was still
-// starting up never gets here: it ended New, and run wrote that, with nothing
-// deleted.
+// database not answering, a stopped run writes its error about five seconds
+// after the stop at most, or a little over six if a rewrite or vacuum it finds
+// in hand has to give up first (spentPruneTimeout says why), and exits within
+// the close's two after that, inside the ten Cloud Run gives it, as long as no
+// file deletion is in hand when the media store or the database stops
+// answering, since the file in hand is finished, and its key forgotten,
+// whatever the stop, and that waits on both. A stop that came while the sweep
+// was still starting up never gets here: it ended New, and run wrote that,
+// with nothing deleted.
 func runSweep(ctx context.Context, application *app.App) error {
 	_, err := application.Sweep(ctx)
 	// Written before the close, so a process killed while it closes has

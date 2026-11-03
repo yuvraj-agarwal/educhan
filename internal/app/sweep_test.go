@@ -704,6 +704,42 @@ func TestStoppedSweepsPruneCountsFromTheStop(t *testing.T) {
 	}
 }
 
+// The other side of the same bound: a sweep that has run for longer than the
+// prune's bound by the time it is stopped still gives the prune its bound from
+// the stop, not what is left of one counted from an earlier start, the
+// sweep's say, which a Job stopped past its first few seconds would have used
+// up (the rewrite alone waits a minute for the statistics). Here the sweep has
+// had its first file in hand for two bounds when the stop comes, finishes it
+// at once, and prunes the spent answer, so its error is the stop alone.
+func TestSweepStoppedLateStillPrunesSpentCaptchas(t *testing.T) {
+	const bound = time.Second
+	h := testServer(t, func(cfg *Config) { cfg.spentPruneWithin = bound })
+	h.addBoard("latestop")
+	h.exec(`UPDATE boards SET archive_days = 0 WHERE slug = 'latestop'`)
+	thread := h.imageThread("latestop", "an image in hand for longer than the prune's bound")
+	h.archiveThread("latestop", thread.ThreadNo, time.Minute)
+	spentKey := sha256.Sum256([]byte("an answer spent before a late stop"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := h.app.media
+	late := &stopInHand{Store: store, cancel: cancel, after: 2 * bound}
+	h.app.media = late
+	report, err := h.app.Sweep(ctx)
+	h.app.media = store
+	if !errors.Is(err, context.Canceled) || err.Error() != "sweep media: context canceled" {
+		t.Errorf("a sweep stopped %v into its first file returned %v, want the stop and nothing else", 2*bound, err)
+	}
+	if report.BlobsRemoved != 1 || report.SpentCaptchas != 1 {
+		t.Errorf("sweep report = %+v, want the file in hand removed and the spent answer pruned", report)
+	}
+	if n := h.countRows("captcha_spent"); n != 0 {
+		t.Errorf("%d spent answers left by a sweep stopped late, want none", n)
+	}
+}
+
 // holdThePrune locks the table spent answers are kept in against every change,
 // the sweep's prune included, in a transaction it leaves open until release
 // ends it. pid is the open transaction's backend, which the prune waits on.
@@ -1069,18 +1105,21 @@ func (s cancellingDeletes) Delete(ctx context.Context, key string) error {
 	return s.Store.Delete(ctx, key)
 }
 
-// stopInHand is a media store that stops the sweep as it starts on its first
-// file, standing in for SIGTERM arriving while a file is removed, and then
-// takes hold to finish that file, which the sweep waits for whatever the stop.
+// stopInHand is a media store that stops the sweep once it has had its first
+// file in hand for after, standing in for SIGTERM arriving while a file is
+// removed, and then takes hold to finish that file, which the sweep waits for
+// whatever the stop.
 type stopInHand struct {
 	media.Store
 	cancel  context.CancelFunc
+	after   time.Duration
 	hold    time.Duration
 	stopped time.Time
 }
 
 func (s *stopInHand) Get(ctx context.Context, key string) (io.ReadSeekCloser, media.Object, error) {
 	if s.stopped.IsZero() {
+		time.Sleep(s.after)
 		s.stopped = time.Now()
 		s.cancel()
 		time.Sleep(s.hold)
