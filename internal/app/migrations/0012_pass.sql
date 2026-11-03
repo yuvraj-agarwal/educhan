@@ -117,11 +117,12 @@ CREATE TABLE IF NOT EXISTS pass_orders (
 CREATE UNIQUE INDEX IF NOT EXISTS pass_orders_claim_idx ON pass_orders (claim_hash);
 CREATE INDEX IF NOT EXISTS pass_orders_expires_idx ON pass_orders (expires_at);
 
--- Payments refunded or disputed: the processor can deliver a refund ahead of a
--- retried "paid" event, and this is what stops that late event from turning a
--- refunded purchase into a Pass. Kept for a month from the last refund or
--- dispute the processor reports for the payment, a repeated delivery included,
--- longer than the processor retries an event, rounded up to a UTC midnight.
+-- Payments refunded in full or disputed: the processor can deliver a refund
+-- ahead of a retried "paid" event, and this is what stops that late event from
+-- turning a refunded purchase into a Pass. Kept for a month from the last full
+-- refund or dispute the processor reports for the payment, a repeated delivery
+-- included, longer than the processor retries an event, rounded up to a UTC
+-- midnight. A partial refund writes nothing.
 CREATE TABLE IF NOT EXISTS pass_revocations (
     payment_hash BYTEA PRIMARY KEY,
     expires_at   TIMESTAMPTZ NOT NULL
