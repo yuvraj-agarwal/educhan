@@ -8381,11 +8381,9 @@ func (f *scannedField) payCheck(v *view, m []int) bool {
 	sentence := wordsIn(around)
 	damaged, own := damagePaid(sentence)
 	after := sentenceAfter(text, m[1])
-	more := strings.IndexFunc(text[m[1]+len(after):], func(r rune) bool {
-		return unicode.IsLetter(r) || unicode.IsDigit(r)
-	}) >= 0
+	rest := text[m[1]+len(after) : min(len(text), m[1]+len(after)+threatWindow)]
 	if anyIn(sentence, moneyWords) ||
-		purchasePaid(wordsIn(sentenceBefore(text, m[0])), after, more) && !fightSet(sentence, true) ||
+		purchasePaid(wordsIn(sentenceBefore(text, m[0])), after, rest) && !fightSet(sentence, true) ||
 		damaged && !fightSet(sentence, forIt || !own) {
 		return false
 	}
@@ -8453,42 +8451,60 @@ var (
 	wrongVerbs = canonSetOf(`broke smashed damaged cracked scratched stole took snitched ratted touched hit pushed
 		bullied hurt tripped`)
 	prepWords = canonSetOf(`something somethin smth surprise revenge rope ropes lighter lighters poison bleach
-		balaclava zip zipties ziptie tape duct gloves glove handcuffs cuffs`)
+		balaclava zip zipties ziptie handcuffs cuffs chloroform mace`)
+	// plainPreps count as prepWords only with no ordinary use after them
+	// (plainPrepUse: "the gloves for the match", "tape for the project",
+	// "the charts and tape", craftGoods), so "gloves" and "duct tape for
+	// you" still do. poisonWords after the poster's purchase, and
+	// fightDeaths or lastRites after "last", make it a threat's ("it's
+	// laced", "your funeral", "your last meal").
+	plainPreps = canonSetOf(`tape duct gloves glove mask masks spray`)
+	craftGoods = canonSetOf(`chart charts paper papers glue markers cardboard sheets thermocol paint paints
+		colours colors`)
+	poisonWords = canonSetOf(`poison poisoned poisoning laced spiked drugged`)
+	lastRites   = canonSetOf(`meal meals birthday bday breath words supper`)
+	fightDeaths = canonSetOf(`dead grave graves funeral funerals coffin coffins morgue bloodbath massacre carnage`)
 	// payGoods, bought before "for", and payOccasions after the people it
 	// is for, make a purchase for them ordinary, and payTrail may close it
 	// (payOrdinary).
 	payGoods = canonSetOf(`cake cakes pizza pizzas snacks snack food lunch dinner breakfast chocolates chocolate
 		sweets mithai samosa samosas flowers flower bouquet card cards hoodie hoodies tshirt tshirts shirt shirts
 		jersey jerseys book books notes drinks juice coffee tea icecream burger burgers biryani maggi decorations
-		balloons tickets ticket stationery uniform uniforms`)
+		balloons tickets ticket stationery uniform uniforms candles`)
+	// giftGoods are ordinary bought for someone other than the payers: "a
+	// gift for her", not "a gift for you" (payOrdinary).
+	giftGoods    = canonSetOf(`gift gifts present presents watch watches`)
 	payOccasions = canonSetOf(`birthday bday farewell party treat celebration fest trip picnic welcome reunion`)
 	payTrail     = canonSetOf(`guys all both lol lmao haha hehe`)
 	// payWays, in the promise's clause, are a way or a place of hurting
-	// the payers ("with your life", "behind the school"), which no
-	// purchase of the poster's pays (purchasePaid).
-	payWays = canonSetOf(`with behind outside`)
+	// the payers ("with your life", "behind the school", "at the gate"),
+	// which no purchase of the poster's pays (purchasePaid).
+	payWays = canonSetOf(`with behind outside gate gates`)
 )
 
 // purchasePaid reports a thing bought, ordered or signed up for that "will
 // pay" pays for, read in the words before the promise (before) and the text
 // after it in the sentence (after): in a relative clause before it, which is
 // the payer's ("everyone who signed up for the trip will pay", "the people
-// who ordered hoodies"), or in a clause after it, someone else's ("you'll
-// pay tomorrow when you come to collect the book") or the poster's own, for
-// the reader ("i ordered your hoodie") or for anyone, unless purchaseArmed
-// finds a threat's preparation in it: "i already ordered the pizza", "i
-// booked the turf", "i signed us up for the quiz", not "you will pay
-// tomorrow after school, i bought a bat", "i ordered something special" or
-// "i've booked the hall for it". The poster's own purchase pays only in the
-// promise's clause or the one after it, with no way or place of hurting in
-// the promise's clause (payWays: "with your life", "outside the gate") and
-// nothing after it in the post (more says words follow after): not "you
+// who ordered hoodies"), or in a clause after it, someone else's ("you'll pay
+// tomorrow when you come to collect the book") or the poster's own, for the
+// reader ("i ordered your hoodie") or for anyone, unless purchaseArmed finds
+// a threat's preparation in it: "i already ordered the pizza", "i booked the
+// turf", "i signed us up for the quiz", not "you will pay tomorrow after
+// school, i bought a bat", "i ordered something special" or "i've booked the
+// hall for it"; "got" is a purchase only of payGoods ("i got the hoodies for
+// everyone", gotGoods). The poster's own purchase pays only in the promise's
+// clause or the one after it, with no way or place of hurting in the
+// promise's clause (payWays: "with your life", "outside the gate") and no
+// threat's preparation, fight or poison in what follows it in the sentence or
+// the rest of the post (rest, read for threatWindow: payMenace): not "you
 // will pay tomorrow, i'll make sure of it, i bought the pizza" or "you will
-// pay tomorrow, i bought the pizza, it's poisoned". "Book" is a purchase
-// only before a determiner ("book the hall", not "ripped my book"); "buy
-// your way out", "in order of" and "signed" opening a clause, a sign-off
-// ("signed the kid you bullied"), are no purchase.
-func purchasePaid(before []string, after string, more bool) bool {
+// pay tomorrow, i bought the pizza, it's poisoned", but "you'll pay tomorrow,
+// i already ordered the pizza. see you at 7". "Book" is a purchase only
+// before a determiner ("book the hall", not "ripped my book"); "buy your way
+// out", "in order of" and "signed" opening a clause, a sign-off ("signed the
+// kid you bullied"), are no purchase.
+func purchasePaid(before []string, after, rest string) bool {
 	for i, w := range before {
 		if !purchaseWords[w] {
 			continue
@@ -8506,7 +8522,7 @@ func purchasePaid(before []string, after string, more bool) bool {
 	for c, clause := range clauses {
 		ws := wordsIn(clause)
 		for i, w := range ws {
-			if !purchaseWords[w] {
+			if !purchaseWords[w] && !(is(w, "got") && gotGoods(ws[i+1:])) {
 				continue
 			}
 			var next string
@@ -8525,7 +8541,8 @@ func purchasePaid(before []string, after string, more bool) bool {
 				if c > 0 {
 					promise = wordsIn(clauses[0])
 				}
-				if c > 1 || more || len(wordsIn(strings.Join(clauses[c+1:], " "))) > 0 || anyIn(promise, payWays) {
+				later := wordsIn(strings.Join(clauses[c+1:], " ") + " " + rest)
+				if c > 1 || anyIn(promise, payWays) || payMenace(later) {
 					continue
 				}
 				if is(next, "your") || is(next, "ur") || !purchaseArmed(ws[i+1:]) {
@@ -8541,7 +8558,8 @@ func purchasePaid(before []string, after string, more bool) bool {
 
 // purchaseArmed reports, in the words after the poster's own purchase, a
 // threat's preparation: a weapon, something to hurt, tie up or burn with
-// (prepWords: "rope", "zip ties", "gloves"), something left vague
+// (prepWords: "rope", "zip ties"; plainPreps with no ordinary use after
+// them: "gloves", not "the gloves for the match"), something left vague
 // ("something special", "a surprise", "my revenge"), or what is bought
 // aimed at the payers ("for you", "for them", "for it") unless it is
 // ordinary (payOrdinary: "the snacks for them", "the pizza for you guys", "a
@@ -8556,47 +8574,96 @@ func purchaseArmed(ws []string) bool {
 		switch {
 		case i >= 6:
 			return false
-		case weaponHeads[w] || bluntHeads[w] || fuelHeads[w] || prepWords[w],
+		case plainPreps[w] && !plainPrepUse(ws, i),
+			weaponHeads[w] || bluntHeads[w] || fuelHeads[w] || prepWords[w],
 			is(w, "for") && payForWhat[next],
-			is(w, "for") && (objectWords[next] || is(next, "em")) && !payOrdinary(ws[:i], ws[i+2:]):
+			is(w, "for") && (objectWords[next] || is(next, "em")) && !payOrdinary(ws[:i], next, ws[i+2:]):
 			return true
 		}
 	}
 	return false
 }
 
+// gotGoods reports one of payGoods straight after "got", or after a
+// determiner: "got the hoodies", "got pizza", not "got suspended" or "got a
+// knife".
+func gotGoods(ws []string) bool {
+	k := 0
+	if k < len(ws) && determiners[ws[k]] {
+		k++
+	}
+	return k < len(ws) && payGoods[ws[k]]
+}
+
+// plainPrepUse reports, for one of plainPreps at ws[i] among what the poster
+// bought, an ordinary use: "for" and something that is no one ("the gloves
+// for the match", "tape for the project", not "for you" or "for it"), or
+// craftGoods bought with it ("the charts and tape").
+func plainPrepUse(ws []string, i int) bool {
+	k := i + 1
+	for k < len(ws) && plainPreps[ws[k]] {
+		k++ // "duct tape"
+	}
+	if k+1 < len(ws) && is(ws[k], "for") {
+		next := ws[k+1]
+		return !objectWords[next] && !payForWhat[next] && !is(next, "em")
+	}
+	return anyIn(ws, craftGoods)
+}
+
+// payMenace reports, in the words after the poster's own purchase in the
+// sentence and the post, a threat's preparation, a fight or a death
+// (purchaseArmed's words, fightSet) or poison (poisonWords): "it's
+// poisoned", "extra rat poison", "bring a bat", "enjoy your last meal", not
+// "see you at 7" or "its her bday".
+func payMenace(ws []string) bool {
+	for _, w := range ws {
+		if weaponHeads[w] || bluntHeads[w] || fuelHeads[w] || prepWords[w] || poisonWords[w] {
+			return true
+		}
+	}
+	return fightSet(ws, true)
+}
+
 // payOrdinary reports what is bought for the payers as ordinary: something
-// ordinary bought before "for" (payGoods: "the snacks for them") or an
-// occasion after the people (payOccasions: "for her birthday"), with nothing
-// after them in the clause but "guys", "all" or a laugh (payTrail: "the
-// pizza for you guys", "the cake for them lol"); not "the snacks for you and
-// a lighter".
-func payOrdinary(bought, after []string) bool {
+// ordinary bought before "for" (payGoods: "the snacks for them"; giftGoods
+// for "her" or "him": "a gift for her") or an occasion after the people
+// (payOccasions: "for her birthday"), with nothing after them in the clause
+// but "guys", "all", a laugh (payTrail: "the pizza for you guys", "the cake
+// for them lol") or more of payGoods ("the cake for you and the candles");
+// not "the snacks for you and a lighter".
+func payOrdinary(bought []string, who string, after []string) bool {
 	occasion := len(after) > 0 && payOccasions[after[0]]
 	if occasion {
 		after = after[1:]
 	}
 	for _, w := range after {
-		if !payTrail[w] {
+		if !payTrail[w] && !payGoods[w] && !determiners[w] && !is(w, "and") {
 			return false
 		}
 	}
-	return occasion || anyIn(bought, payGoods)
+	return occasion || anyIn(bought, payGoods) || anyIn(bought, giftGoods) && (is(who, "her") || is(who, "him"))
 }
 
-// fightSet reports a fight's place, a weapon or a death in ws, or a fight's
-// time unless the time may be the payment's (forIt), which make a thing
-// broken no payment's: "the guys who broke my glasses will pay tomorrow
+// fightSet reports a fight's place, a weapon or a death in ws (fightDeaths,
+// "in blood", "last" and one of lastRites, "your last" at the end: "dig your
+// grave", "pay in blood", "your last birthday", "it's your last"), or a
+// fight's time unless the time may be the payment's (forIt), which make a
+// thing broken no payment's: "the guys who broke my glasses will pay tomorrow
 // behind the school", "whoever broke my phone will pay tomorrow after
-// school"; not "the guys who broke the window will pay for it after school".
-// It only refuses payCheck's let-off: the promise is held only when
-// threatCheck then finds a time or a place near it, which "whoever broke my
-// phone will pay, they're dead" does not have.
+// school", "outside the gate"; not "the guys who broke the window will pay
+// for it after school". It only refuses payCheck's let-off: the promise is
+// held only when threatCheck then finds a time or a place near it, which
+// "whoever broke my phone will pay, they're dead" does not have.
 func fightSet(ws []string, forIt bool) bool {
-	if anyIn(ws, weaponHeads) || hasWord(ws, "dead") {
+	if anyIn(ws, weaponHeads) || anyIn(ws, fightDeaths) {
 		return true
 	}
 	for i, w := range ws {
+		if i+1 < len(ws) && (is(w, "in") && is(ws[i+1], "blood") || is(w, "last") && lastRites[ws[i+1]]) ||
+			i+1 == len(ws) && i > 0 && is(w, "last") && (is(ws[i-1], "your") || is(ws[i-1], "ur")) {
+			return true // "pay in blood", "your last birthday", "enjoy it, it's your last"
+		}
 		place := is(w, "behind") || is(w, "outside")
 		if !place && (forIt || !timeBefore[w]) {
 			continue
@@ -8605,7 +8672,7 @@ func fightSet(ws []string, forIt bool) bool {
 		for k < len(ws) && k < i+3 && (determiners[ws[k]] || ownerWord(ws[k])) {
 			k++
 		}
-		if k < len(ws) && threatPlaceWords[ws[k]] {
+		if k < len(ws) && (threatPlaceWords[ws[k]] || is(ws[k], "gate") || is(ws[k], "gates")) {
 			return true
 		}
 	}
