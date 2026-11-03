@@ -595,17 +595,21 @@ needs a browser check before the test changes.
   is offered beside a code it no longer holds. When educhan tells a tab the held code is
   no longer valid (Check it again, `recheckPass`, Renew, or a post's `"pass": "invalid"`),
   `forgetInvalidCode` takes that code off its panel if it is the one just handed over,
-  there and in every other tab, which reads the code removed from the `storage` event's
-  old value (`followPassStorage`, `passCodeIn`): a code of a different Pass it replaced
-  stays, alone, with no Copy the code, until the reader leaves, said to be in this browser
-  again once it is typed back in or stored by another tab, and with none `passJustIssued`
-  goes, while a code just handed over that another code had already taken the place
-  of is not the code removed, and stays. `passLost`, what the page says of a Pass it
-  removed, stays until the reader leaves the page or the browser holds a Pass again,
-  one `storePass` keeps (typed in, a claim's or a reissue code's) or another tab stores
-  (`followPassStorage`, or the `pageshow` listener on a page back from the back-forward
-  cache), so it never sits beside a Pass held, offering a Buy form the page does not
-  draw. A renewal's date is never stored from the claim's answer, since the Pass it
+  or the code of a Pass that one replaced, typed back in, there and in every other tab,
+  which reads the code removed from the `storage` event's old value (`followPassStorage`,
+  `passCodeIn`): a code of a different Pass it replaced stays, alone, with no Copy the
+  code, until the reader leaves, said to be in this browser again once it is typed
+  back in or stored by another tab, unless educhan says that code is no longer valid
+  too, and with neither code left `passJustIssued` goes, while a code just handed over
+  that another code had already taken the place of is not the code removed, and stays.
+  `passLost`, what the page says of a Pass it removed, stays until the reader leaves
+  the page, Remove the Pass or Forget this browser is pressed, here or in another tab,
+  or the browser holds a Pass again, one `storePass` keeps (typed in, a claim's or a
+  reissue code's) or another tab stores (`followPassStorage`, or the `pageshow` listener
+  on a page back from the back-forward cache), so it never sits beside a Pass held.
+  It says why the Pass went and points to nothing, the Buy form say, which a purchase
+  being collected, a code the browser could not keep or sales paused hold back while it
+  stays. A renewal's date is never stored from the claim's answer, since the Pass it
   renewed may not be the one held here now: `confirmRenewal` checks the held code with
   `/api/pass/activate` (`recheckPass`, asked once more after a `429`'s wait), stores
   what that says unless the Pass held changed meanwhile, and says the Pass is renewed
@@ -717,16 +721,17 @@ needs a browser check before the test changes.
   error does not stay under the answer; that drawing is set off by the answer, not the
   reader, so it draws as `redrawPass` does (`renderPass` given the selectors), and focus
   on a control it draws again, Copy the code or Use this code here say, stays there
-  without scrolling the page. Another tab's Remove, Forget, new code or finding that
-  its code is no longer valid reaches this one by the `storage` event. Remove and
-  Forget set their mark (`forgetPassClaim`) before they take the Pass, the badge or
-  anything else from storage, so this tab hears the mark first and drops every code just
-  handed over, kept or not, with any code it took the place of (`stopForPassForget`),
-  and the removal after it finds nothing left to keep. Any other removal is followed
-  as this tab's own finding that the code is no longer valid (`followPassStorage`,
-  through `forgetInvalidCode`, with the code `passCodeIn` reads from the event's
-  `oldValue`): only the code removed goes. A removal with no code to read, or an event
-  whose `key` is `null` (storage cleared from outside the page, which never calls
+  without scrolling the page. Another tab's Remove, Forget, new code or finding that its
+  code is no longer valid reaches this one by the `storage` event. Remove and Forget
+  set their mark (`forgetPassClaim`) before they take the Pass from storage, or, for
+  Forget, the badge, the poster key and the name (only the nonces and this tab's own
+  checkout marks, which other tabs leave be, go first), so this tab hears the mark first
+  and drops every code just handed over, kept or not, with any code it took the place
+  of (`stopForPassForget`), and the removal after it finds nothing left to keep. Any
+  other removal is followed as this tab's own finding that the code is no longer valid
+  (`followPassStorage`, through `forgetInvalidCode`, with the code `passCodeIn` reads from
+  the event's `oldValue`): only the code removed goes. A removal with no code to read, or
+  an event whose `key` is `null` (storage cleared from outside the page, which never calls
   `localStorage.clear()`), takes nothing off, since the panel says what is held. Another
   code stored there leaves a code just handed over, kept or not, beside any code it took
   the place of, and each change draws the Pass page again. All of this needs a browser

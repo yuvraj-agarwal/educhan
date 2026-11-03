@@ -1079,12 +1079,14 @@ not-found view.
   won't be shown again once the reader leaves the page. A code educhan finds no longer
   valid as the Pass held here, answering Check it again, the check after a reissue code
   or a renewal, Renew or a post, in any tab of the browser, is worth nothing to write
-  down and goes from its panel at once, in every tab that shows it; only the code of
-  another Pass it took the place of stays there, until the reader leaves the page, and is
-  said to be in this browser again once it is typed back in, and a code just handed
-  over that another code had already taken the place of stays too, as no longer in
-  this browser. What the page says about the Pass it removed stays until the reader
-  leaves the page or the browser holds a Pass again, typed in, collected or stored in
+  down and goes from its panel at once, in every tab that shows it, even when it is
+  a code that one just handed over took the place of, typed back in. Any other code
+  stays there until the reader leaves the page: that of another Pass a code just handed
+  over took the place of, said to be in this browser again once it is typed back in,
+  and a code just handed over that another code had already taken the place of, as no
+  longer in this browser. What the page says about the Pass it removed stays until the
+  reader leaves the page, Remove the Pass or Forget this browser is pressed, here or
+  in another tab, or the browser holds a Pass again, typed in, collected or stored in
   another tab. A code that arrives while the reader is on another page, or that they
   leave before it is drawn, is shown when they come back to the Pass page, beside any
   code it took the place of. A code typed in after it ran out, within its month of

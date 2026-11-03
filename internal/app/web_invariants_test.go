@@ -1491,13 +1491,12 @@ func TestPassPageDetails(t *testing.T) {
 		}
 	})
 	t.Run("what was said about a Pass gone goes once one is held again", func(t *testing.T) {
-		// Beside a Pass held, the note would say the Pass here has gone, and
-		// offer a Buy form the page does not draw. It goes with every Pass
-		// this tab keeps (storePass: a code typed in, run out or not, a
-		// claim's or a reissue code's, a check's date), and with one another
-		// tab stores, heard as it is stored or found when the back-forward
-		// cache brings the page back, but not with one this browser would not
-		// keep, nor while none is held.
+		// Beside a Pass held, the note would say the Pass here has gone. It
+		// goes with every Pass this tab keeps (storePass: a code typed in, run
+		// out or not, a claim's or a reissue code's, a check's date), and with
+		// one another tab stores, heard as it is stored or found when the
+		// back-forward cache brings the page back, but not with one this
+		// browser would not keep, nor while none is held.
 		store := withoutComments(jsFunction(t, script, "storePass"))
 		if !strings.Contains(store, "const kept = storedPass();\n  if (!kept || kept.code !== code) {\n    return false;\n  }\n"+
 			"  passLost = \"\";\n  return true;\n}") || strings.Count(store, "passLost") != 1 {
@@ -1518,6 +1517,26 @@ func TestPassPageDetails(t *testing.T) {
 			strings.Count(show, "storedPass(") != 1 {
 			t.Error("a Pass page brought back from the back-forward cache draws, beside a Pass another tab stored meanwhile, " +
 				"what it said about a Pass that has gone")
+		}
+	})
+	t.Run("what was said about a Pass gone offers nothing", func(t *testing.T) {
+		// The note stays while the page draws a purchase being collected, a
+		// code the browser could not keep or sales paused, none of which has
+		// Buy beside it, so it says why the Pass went and points to nothing:
+		// the Buy form, when it is drawn, says the rest.
+		notes := regexp.MustCompile(`\bpassLost = (.+);`).FindAllStringSubmatch(withoutComments(script), -1)
+		said := 0
+		for _, note := range notes {
+			if note[1] == `""` {
+				continue
+			}
+			said++
+			if !strings.Contains(note[1], "${PASS_GONE_REASONS}") || regexp.MustCompile(`(?i)\b(buy|below)\b`).MatchString(note[1]) {
+				t.Errorf("what the page says about a Pass gone points to something it may not draw beside it: %s", note[1])
+			}
+		}
+		if said != 4 {
+			t.Errorf("the page says a Pass has gone in %d places; want a check, a renewal's check, Renew and a post's answer", said)
 		}
 	})
 	t.Run("a panel drawn already filled is focused", func(t *testing.T) {
@@ -2015,7 +2034,7 @@ func TestPassPageKeepsACodeJustHandedOver(t *testing.T) {
 	if n := strings.Count(withoutComments(script), "passJustIssued = null;"); n != 6 {
 		t.Errorf("a code just handed over is dropped in %d places; want its declaration, leaving the Pass page or the document "+
 			"once it is drawn, removing the Pass, forgetting the browser, another tab's Remove or Forget, "+
-			"and educhan finding it no longer valid, here or in another tab, with no code it replaced beside it", n)
+			"and educhan finding it no longer valid, here or in another tab, with no code it replaced left beside it", n)
 	}
 	// It goes once the reader leaves the Pass page, kept or not, once the page
 	// has drawn it: one this browser could not keep is nowhere else, and its
@@ -2123,11 +2142,17 @@ func TestPassIssuedPanelSaysWhatThisBrowserHolds(t *testing.T) {
 	// Found no longer valid as the Pass held here, by Check it again, the check
 	// after a reissue code or a renewal, Renew or a post's answer, here or in
 	// another tab (TestPassRemovedInAnotherTabLeavesThisOne), the code goes,
-	// and the code it took the place of stays, if there is one.
+	// and the code it took the place of stays, if there is one, unless that is
+	// the code found no longer valid, typed back in say, which goes too: a code
+	// worth nothing is never left on the panel to be written down. With
+	// neither code left, the panel goes.
 	forget := withoutComments(jsFunction(t, script, "forgetInvalidCode"))
-	if forget != "function forgetInvalidCode(code) {\n  if (!passJustIssued || passJustIssued.code !== code) {\n    return;\n  }\n"+
-		"  if (passJustIssued.replaced) {\n    passJustIssued.code = \"\";\n  } else {\n    passJustIssued = null;\n  }\n}" {
-		t.Errorf("forgetInvalidCode no longer takes a code found no longer valid off its panel, keeping only a code it replaced:\n%s", forget)
+	if forget != "function forgetInvalidCode(code) {\n  if (!passJustIssued) {\n    return;\n  }\n"+
+		"  if (passJustIssued.code === code) {\n    passJustIssued.code = \"\";\n  }\n"+
+		"  if (passJustIssued.replaced === code) {\n    passJustIssued.replaced = \"\";\n  }\n"+
+		"  if (!passJustIssued.code && !passJustIssued.replaced) {\n    passJustIssued = null;\n  }\n}" {
+		t.Errorf("forgetInvalidCode no longer takes every code found no longer valid off its panel, "+
+			"keeping only a code it replaced that is not:\n%s", forget)
 	}
 	for name, want := range map[string]string{
 		"recheckPass":   "if (reason === \"invalid\") {\n    forgetPass();\n    forgetInvalidCode(held.code);",
@@ -2723,14 +2748,15 @@ func TestPassRemovedInAnotherTabLeavesThisOne(t *testing.T) {
 	}
 	// Another tab's removal of the Pass is followed as this tab follows its
 	// own finding that the Pass is no longer valid: the code removed, read
-	// from the event's old value, goes from the panel, and a code it took the
-	// place of stays, still good, maybe, and nowhere else; so does a kept code
-	// another had already taken the place of, drawn as no longer here
-	// (passIssuedHTML). A removal with no code to read, or storage cleared (a
-	// key of null), takes nothing off. Another code written there leaves a
-	// code just handed over be, kept or not: one it could not keep was never
-	// the Pass it holds, and may be a spent reissue code's only copy. Each
-	// stays until the reader leaves the page.
+	// from the event's old value, goes from the panel, be it the code handed
+	// over or a code it took the place of, typed back in, and any other code
+	// stays: a code it took the place of, still good, maybe, and nowhere else,
+	// and a kept code another had already taken the place of, drawn as no
+	// longer here (passIssuedHTML). A removal with no code to read, or storage
+	// cleared (a key of null), takes nothing off. Another code written there
+	// leaves a code just handed over be, kept or not: one it could not keep was
+	// never the Pass it holds, and may be a spent reissue code's only copy.
+	// Each stays until the reader leaves the page.
 	follow := withoutComments(jsFunction(t, script, "followPassStorage"))
 	if !strings.Contains(follow, "const now = storedPass();\n  if (event.key === PASS_STORAGE_KEY && event.newValue === null) {\n"+
 		"    const removed = passCodeIn(event.oldValue);\n    if (removed) {\n      forgetInvalidCode(removed);\n    }\n  }") ||
@@ -2741,11 +2767,13 @@ func TestPassRemovedInAnotherTabLeavesThisOne(t *testing.T) {
 			"or leaves that code there, or another tab storing a different code takes a code just handed over off")
 	}
 	// So Remove the Pass and Forget this browser set their mark before they
-	// take the Pass, or anything else, from storage: another tab hears the
-	// mark first, and drops every code just handed over, kept or not, with
-	// any code it took the place of, before the Pass's removal, which alone it
-	// would follow as a code found no longer valid. The clipboard is still
-	// emptied in the click (TestPassCopiedHereIsEmptiedFromTheClipboard).
+	// take the Pass, or anything else of theirs, from storage (only the nonces
+	// and this tab's own checkout marks, which other tabs leave be, go first,
+	// in forgetPassClaim): another tab hears the mark first, and drops every
+	// code just handed over, kept or not, with any code it took the place of,
+	// before the Pass's removal, which alone it would follow as a code found no
+	// longer valid. The clipboard is still emptied in the click
+	// (TestPassCopiedHereIsEmptiedFromTheClipboard).
 	remove := code[strings.Index(code, `if (event.target.closest('[data-action="forget-pass"]')) {`):]
 	remove = remove[:strings.Index(remove, "\n  }\n")]
 	marked := strings.Index(remove, "const dropped = forgetPassClaim(\"remove\");")
@@ -3283,7 +3311,8 @@ func TestPassCopyMatchesWhatTheServerDoes(t *testing.T) {
 	if got := jsString(t, script, "PASS_GONE_REASONS"); got != "It may have run out more than a month ago, or been refunded or replaced." {
 		t.Errorf("PASS_GONE_REASONS says %q", got)
 	}
-	if n := strings.Count(withoutComments(script), "${PASS_GONE_REASONS}"); n != 4 {
-		t.Errorf("the reasons a Pass may have gone are given in %d places; want a check, a renewal's check, a post's answer and its notice", n)
+	if n := strings.Count(withoutComments(script), "${PASS_GONE_REASONS}"); n != 5 {
+		t.Errorf("the reasons a Pass may have gone are given in %d places; want a check, a renewal's check, Renew, "+
+			"a post's answer and its notice", n)
 	}
 }
