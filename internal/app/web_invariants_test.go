@@ -2542,8 +2542,9 @@ func holdVerifyRequestsToADeadline(t *testing.T, script string) {
 				name, name, name)
 		}
 	}
-	// A request's headers are read within ReadHeaderTimeout, and its answer
-	// is written within WriteTimeout of that or not at all.
+	// A Verify request's headers are read within ReadHeaderTimeout, and its
+	// answer is written within WriteTimeout of that or not at all: it is not
+	// a multipart post, which sets deadlines of its own.
 	server := int((ReadHeaderTimeout + WriteTimeout).Milliseconds())
 	if deadline <= server {
 		t.Errorf("VERIFY_TIMEOUT_MS is %d; the server can still be answering until %d ms, and a badge it issues "+

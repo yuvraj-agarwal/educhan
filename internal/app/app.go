@@ -15,12 +15,16 @@ import (
 	"github.com/yuvraj-agarwal/educhan/internal/media"
 )
 
-// The timeouts cmd/server gives its http.Server. They govern a GET and a text
-// post; an image post sets its own read and write deadlines through an
-// http.ResponseController once it knows it is reading a body (parseSubmission,
-// processContext), because its body may legitimately take uploadReadTimeout to
-// arrive and its image then postDeadline to process, more than one WriteTimeout
-// from the end of its headers covers.
+// The timeouts cmd/server gives its http.Server. They govern every request but
+// a multipart post, which is how app.js sends an image: that sets its own read
+// and write deadlines through an http.ResponseController once it knows it is
+// reading a body (parseSubmission, processContext), because its body may
+// legitimately take uploadReadTimeout to arrive and its image then
+// postDeadline to process, more than one WriteTimeout from the end of its
+// headers covers. Any other request's headers are read within
+// ReadHeaderTimeout and its answer written within WriteTimeout of them or not
+// at all, which is what app.js's VERIFY_TIMEOUT_MS is held to
+// (TestVerifyAnswersBelongToTheStepTheyWereSentFrom).
 const (
 	ReadHeaderTimeout = 10 * time.Second
 	ReadTimeout       = 30 * time.Second
