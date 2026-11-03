@@ -1979,18 +1979,19 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `internal/app/migrate_test.go`, `internal/app/markup_api_test.go`,
   `internal/app/logging_test.go`, `internal/app/media_backend_test.go`,
   `internal/app/busy_test.go`, and `TestClientKnowsTheServersImageRefusals`,
-  `TestClientKnowsWhenNoCodeIsPending` and `TestAnExpiredCodeIsSaidToHaveExpired` in
-  `internal/app/web_invariants_test.go`) run the whole app against an isolated schema in
-  `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so they are safe to run against
-  the development database. `testServer` builds its `Config` directly, which leaves every
-  cooldown at zero unless a test asks for one, and gives the client a cookie jar so the
-  two-step verification exchange behaves as it does in a browser. `verifyServer` adds a
-  secret and a capturing `mailer.Sender`, which is how a test reads the code back; the
-  credential it returns is then presented explicitly with `postWithCredential`, because
-  nothing attaches it on a caller's behalf. Poster ID tests post through `browser`
-  (`poster_id_test.go`), which sends what the client sends: the credential alone on a post
-  that asks for a badge, and the poster key on any other. A post carrying both is never
-  sent by the client, and the tests that cover it set the headers explicitly.
+  `TestThePostFormIsClearedOnlyForAPostMade`, `TestClientKnowsWhenNoCodeIsPending` and
+  `TestAnExpiredCodeIsSaidToHaveExpired` in `internal/app/web_invariants_test.go`) run the
+  whole app against an isolated schema in `TEST_DATABASE_URL` (falling back to
+  `DATABASE_URL`), so they are safe to run against the development database. `testServer`
+  builds its `Config` directly, which leaves every cooldown at zero unless a test asks for
+  one, and gives the client a cookie jar so the two-step verification exchange behaves as
+  it does in a browser. `verifyServer` adds a secret and a capturing `mailer.Sender`,
+  which is how a test reads the code back; the credential it returns is then presented
+  explicitly with `postWithCredential`, because nothing attaches it on a caller's behalf.
+  Poster ID tests post through `browser` (`poster_id_test.go`), which sends what the
+  client sends: the credential alone on a post that asks for a badge, and the poster key
+  on any other. A post carrying both is never sent by the client, and the tests that cover
+  it set the headers explicitly.
   Tests post to boards they create with `addBoard` (`api_test.go`), never to seeded
   ones, so they do not depend on which boards the migrations seed;
   `TestBoardsAreSeeded` is the one test that names the seeded set.
