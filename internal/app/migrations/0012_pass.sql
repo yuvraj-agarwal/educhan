@@ -35,9 +35,10 @@
 -- moment it is. Unpaid, it is deleted at the first prune (a checkout, the daily
 -- sweep, or a claim from its own browser) after its deadline, a week after
 -- checkout (longer while a slow payment confirms), and until then a late
--- payment still counts; paid and never collected, it is kept for its own term
--- past that deadline, so the owner can still reissue it, and counts as gone
--- from then on, pruned yet or not, as a Pass does a month past its expiry.
+-- payment still counts, unless it comes once the order's own term has passed
+-- since that deadline; paid and never collected, it is kept for that term past
+-- its deadline, so the owner can still reissue it, and counts as gone from then
+-- on, pruned yet or not, as a Pass does a month past its expiry.
 
 CREATE TABLE IF NOT EXISTS passes (
     id         BIGSERIAL PRIMARY KEY,

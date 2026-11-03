@@ -5323,7 +5323,10 @@ func TestPassPastItsGraceMonthIsGone(t *testing.T) {
 // something to collect, making a reissue code for it, Stripe reporting it paid
 // again, a refund of it, and counting it as a renewal waiting to land on its
 // Pass, when the right to reissue that Pass moves and while it has moved, all
-// agree.
+// agree. So does an order left unpaid past its deadline that Stripe reports
+// paid late: marked and collected while the keep it would have once paid has
+// not ended, and past that matching nothing, with the owner warned, whether
+// the prune has run first or not.
 func TestPassOrderPastItsKeepIsGone(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -5333,8 +5336,10 @@ func TestPassOrderPastItsKeepIsGone(t *testing.T) {
 		{"an hour past its keep", true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
+			var logs syncBuffer
+			p := passServerLogging(t, func(cfg *Config) { cfg.ModKey = "mod-key" }, &logs)
 			ctx := context.Background()
+			warnings := func() int { return strings.Count(logs.String(), "a paid Stripe checkout matched no open Pass order") }
 
 			// Each order is paid in a browser of its own and nobody collects
 			// it. The first gets a reissue code once it has aged, the second
@@ -5380,6 +5385,13 @@ func TestPassOrderPastItsKeepIsGone(t *testing.T) {
 			}
 			underWay := p.otherBrowser()
 			underWay.paid(underWay.checkout(movedPass.Pass), "pi_moved_waiting")
+			// The ninth and tenth are left unpaid past their deadline, and
+			// Stripe reports them paid late: the ninth before any prune, the
+			// tenth after one.
+			late := p.otherBrowser()
+			lateSession := late.checkout("")
+			latePruned := p.otherBrowser()
+			latePrunedSession := latePruned.checkout("")
 			if redeemedCode == "" {
 				t.Fatal("a reissue code was not made")
 			}
@@ -5438,6 +5450,16 @@ func TestPassOrderPastItsKeepIsGone(t *testing.T) {
 				t.Errorf("reported paid again: %v, %v", outcome, err)
 			}
 
+			warned := warnings()
+			late.paid(lateSession, "pi_late")
+			if got := warnings() - warned; got != map[bool]int{false: 0, true: 1}[c.past] {
+				t.Errorf("left unpaid and reported paid late, it was warned about %d times", got)
+			}
+			if status, out := late.claim(); c.past && status != http.StatusBadRequest ||
+				!c.past && (status != http.StatusOK || out.Status != "issued" || !passCodeShape(out.Pass)) {
+				t.Errorf("left unpaid and reported paid late, then claimed: status %d, %+v", status, out)
+			}
+
 			if res, err := p.app.store.revokePassPayment(ctx, p.app.passPaymentHash("pi_refunded"), time.Now()); err != nil ||
 				res != map[bool]revocation{false: revokedOrder, true: revokedNothing}[c.past] {
 				t.Errorf("refunding it: %v, %v", res, err)
@@ -5456,11 +5478,11 @@ func TestPassOrderPastItsKeepIsGone(t *testing.T) {
 			if !c.past {
 				return
 			}
-			// Nothing above deleted the orders that aged but the claimed one,
-			// which its claim did as the prune would; the prune deletes them,
-			// and nothing answers differently once it has.
-			if n := p.count("pass_orders"); n != 7 {
-				t.Fatalf("%d orders left before the prune, want the 7 that aged and were not claimed", n)
+			// Nothing above deleted the orders that aged but the two claimed
+			// ones, which their claims did as the prune would; the prune
+			// deletes them, and nothing answers differently once it has.
+			if n := p.count("pass_orders"); n != 8 {
+				t.Fatalf("%d orders left before the prune, want the 8 that aged and were not claimed", n)
 			}
 			if err := p.app.store.prunePasses(ctx, time.Now()); err != nil {
 				t.Fatal(err)
@@ -5475,6 +5497,11 @@ func TestPassOrderPastItsKeepIsGone(t *testing.T) {
 				p.app.passPaymentHash("pi_again"), time.Now()); err != nil || outcome != paidUnmatched {
 				t.Errorf("reported paid again once pruned: %v, %v", outcome, err)
 			}
+			warned = warnings()
+			latePruned.paid(latePrunedSession, "pi_late_pruned")
+			if got := warnings() - warned; got != 1 {
+				t.Errorf("left unpaid and reported paid late once pruned, it was warned about %d times", got)
+			}
 		})
 	}
 }
@@ -5483,7 +5510,9 @@ func TestPassOrderPastItsKeepIsGone(t *testing.T) {
 // and answered, to what it is for: a week, to the next midnight UTC, unless a
 // paid order's keep ends sooner, or the Pass it gives a new code has gone
 // sooner, a month past its expiry as it was when the code was made. A renewal
-// of that Pass afterwards does not lengthen the code.
+// of that Pass afterwards does not lengthen the code, and a refund of another
+// of its payments that ends the Pass sooner still leaves the code giving
+// nothing.
 func TestPassReissueCodeOutlivesNothing(t *testing.T) {
 	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
 	ctx := context.Background()
@@ -5543,6 +5572,31 @@ func TestPassReissueCodeOutlivesNothing(t *testing.T) {
 	}
 	if status, out := p.otherBrowser().redeem(code); status != http.StatusOK || out.Status != "issued" || out.Pass == endingPass.Pass {
 		t.Fatalf("redeeming it after the renewal: status %d, %+v", status, out)
+	}
+
+	// A Pass whose purchase's term has run, with a renewal paying for the
+	// days it has left, gets a week's code; a refund of the renewal then ends
+	// the Pass sooner than that, and the code gives nothing.
+	short := p.otherBrowser()
+	shortPass := short.buy("pi_pass_short")
+	short.renew(shortPass.Pass, "pi_pass_short_renewal")
+	shortEnd := dayCeil(time.Now().Add(48 * time.Hour))
+	p.exec(`UPDATE pass_payments SET ends_at = $1 WHERE payment_hash = $2`, dayCeil(time.Now()).Add(-24*time.Hour),
+		p.app.passPaymentHash("pi_pass_short"))
+	p.exec(`UPDATE pass_payments SET ends_at = $1 WHERE payment_hash = $2`, shortEnd, p.app.passPaymentHash("pi_pass_short_renewal"))
+	p.exec(`UPDATE passes SET expires_at = $1 WHERE token_hash = $2`, shortEnd,
+		p.app.passTokenHash(strings.ReplaceAll(shortPass.Pass, "-", "")))
+	asked = time.Now()
+	status, out, code = p.reissueCode("mod-key", "pi_pass_short")
+	if status != http.StatusOK || !withinAWeek(out.ExpiresAt, asked) {
+		t.Fatalf("a reissue code for a Pass whose renewal pays for its last days: status %d, %+v; want the first UTC midnight a week on", status, out)
+	}
+	p.refund("pi_pass_short_renewal")
+	if status, _ := p.activate(shortPass.Pass); status != http.StatusForbidden {
+		t.Fatalf("the Pass once the renewal paying for its last days was refunded: status %d", status)
+	}
+	if status, out := p.otherBrowser().redeem(code); status != http.StatusForbidden || out.Error != passReissueSpent {
+		t.Fatalf("redeeming its code once that refund ended the Pass: status %d, %+v", status, out)
 	}
 }
 

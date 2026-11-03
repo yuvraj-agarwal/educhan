@@ -1369,15 +1369,17 @@ func (a *App) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		if outcome == paidUnmatched {
 			// No order still there to be paid or still kept, and no Pass still
 			// there, has this payment: a checkout of something else sold on the
-			// same Stripe account, say, an unpaid order pruned after its
-			// deadline and paid after all, or a delivery repeated after the
-			// order or Pass it bought has gone (an order its own term past its
-			// deadline, a Pass a month past its expiry or ended by a refund or
-			// dispute of another of its payments). Nothing here can tell which,
-			// and none should become a Pass; the owner checks the payment
-			// against the receipt before refunding it. A repeated delivery
-			// while its order or the Pass it bought is still there, or one for
-			// a payment refunded first, is no news, and is not logged.
+			// same Stripe account, say, an unpaid order paid after all once it
+			// was pruned after its deadline, or once its own term had passed
+			// since that deadline, pruned yet or not (markPassOrderPaid), or a
+			// delivery repeated after the order or Pass it bought has gone (an
+			// order its own term past its deadline, a Pass a month past its
+			// expiry or ended by a refund or dispute of another of its
+			// payments). Nothing here can tell which, and none should become a
+			// Pass; the owner checks the payment against the receipt before
+			// refunding it. A repeated delivery while its order or the Pass it
+			// bought is still there, or one for a payment refunded first, is no
+			// news, and is not logged.
 			a.log.Warn("a paid Stripe checkout matched no open Pass order")
 		}
 	case stripeCheckoutExpired, stripeCheckoutAsyncFailure:
@@ -1536,7 +1538,11 @@ const (
 // deleted, so the browser that started it stops waiting for it. An unpaid
 // order past its claim deadline is still marked until something deletes it,
 // the next prune say: the money has been taken, and a paid order waits to be
-// collected or reissued for its own term past that deadline (prunePasses).
+// collected or reissued for its own term past that deadline (prunePasses). Once
+// that term has passed too, the order would be gone for every purpose the
+// moment it was marked (passOrderKept), so it is not marked, pruned yet or not
+// (passPaidOrderEnd): the event finds nothing, as once it is pruned, and the
+// owner is warned the same way.
 func (s *Store) markPassOrderPaid(ctx context.Context, sessionHash, paymentHash []byte, now time.Time) (paidOutcome, error) {
 	var outcome paidOutcome
 	err := s.passTx(ctx, func(tx pgx.Tx) error {
@@ -1553,8 +1559,8 @@ func (s *Store) markPassOrderPaid(ctx context.Context, sessionHash, paymentHash 
 		}
 		tag, err := tx.Exec(ctx, `
 			UPDATE pass_orders SET payment_hash = $2
-			WHERE session_hash = $1
-			  AND (payment_hash IS NULL OR payment_hash = $2 AND `+passOrderKept("", "$3")+`)`,
+			WHERE session_hash = $1 AND (payment_hash IS NULL OR payment_hash = $2)
+			  AND `+passPaidOrderEnd("")+` > $3`,
 			sessionHash, paymentHash, now)
 		if err != nil {
 			return err
@@ -1667,12 +1673,19 @@ func passGoneAt(expires time.Time) time.Time { return expires.Add(passExpiredGra
 // passOrderEnd is, in SQL, when the pass_orders row that alias names ("o." in
 // a join, or "" for the table's own columns) stops being kept: an unpaid order
 // at its deadline, and a paid one, which waits to be collected or reissued, its
-// own term (days) after that, by when a Pass bought with it at its deadline
-// would have run out. The term counts in whole 24-hour days, so a UTC midnight
-// stays one whatever the session's time zone.
+// own term (days) after that (passPaidOrderEnd).
 func passOrderEnd(alias string) string {
 	return "CASE WHEN " + alias + "payment_hash IS NULL THEN " + alias + "expires_at " +
-		"ELSE " + alias + "expires_at + make_interval(hours => 24 * " + alias + "days) END"
+		"ELSE " + passPaidOrderEnd(alias) + " END"
+}
+
+// passPaidOrderEnd is, in SQL, when that order stops being kept once it is
+// paid, whether it is yet or not: its own term (days) after its deadline, by
+// when a Pass bought with it at its deadline would have run out. The term
+// counts in whole 24-hour days, so a UTC midnight stays one whatever the
+// session's time zone.
+func passPaidOrderEnd(alias string) string {
+	return alias + "expires_at + make_interval(hours => 24 * " + alias + "days)"
 }
 
 // passOrderKept is, in SQL, whether that order is still kept at the time in the
@@ -1690,11 +1703,13 @@ func passOrderEnd(alias string) string {
 // (moveOrigin, renewalUnderWay), for example, each find no order, as once it is
 // pruned. An unpaid order is nothing to collect from its deadline on (claimOne,
 // passClaimWaiting), but a payment Stripe reports for it still counts until it
-// is deleted, by the prune or by a claim from its own browser, say: so marking
-// it paid (markPassOrderPaid), holding it for a slow payment (holdPassOrder),
-// counting it as a renewal under way (renewalUnderWay) and dropping it once
-// Stripe closes its checkout unpaid (dropUnpaidPassOrder), for example, take an
-// unpaid order whatever its deadline.
+// is deleted, by the prune or by a claim from its own browser, say, but never
+// past the end of the keep it would have once paid (passPaidOrderEnd): so
+// marking it paid (markPassOrderPaid) takes an unpaid order until then, and
+// holding it for a slow payment (holdPassOrder), counting it as a renewal under
+// way (renewalUnderWay) and dropping it once Stripe closes its checkout unpaid
+// (dropUnpaidPassOrder), for example, take an unpaid order whatever its
+// deadline.
 func passOrderKept(alias, now string) string {
 	return passOrderEnd(alias) + " > " + now
 }
@@ -1959,11 +1974,13 @@ const (
 // being renewed (renewalUnderWay).
 //
 // The reissue code is good until deadline, the caller's week, or sooner when
-// what it is for goes sooner, so it never outlives that: for an order, the end
-// of its keep (passOrderEnd), and for a Pass, the moment it has gone, a month
-// past its expiry as it is now (passGoneAt), which a renewal of the Pass
-// afterwards does not move for the code. The deadline the code is given is
-// returned, to answer.
+// what it is for goes sooner as that stands now: for an order, the end of its
+// keep (passOrderEnd), and for a Pass, the moment it has gone, a month past its
+// expiry as it is now (passGoneAt), which a renewal of the Pass afterwards does
+// not move for the code. A Pass that goes sooner still, ended by a refund or
+// dispute of another of its payments, leaves the code giving nothing until its
+// deadline (redeemPassReissue). The deadline the code is given is returned, to
+// answer.
 func (s *Store) createPassReissue(ctx context.Context, paymentHash, tokenHash []byte, deadline, now time.Time) (reissueState, time.Time, error) {
 	var state reissueState
 	var until time.Time

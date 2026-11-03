@@ -492,30 +492,32 @@ arrives as the checkout completes; one Stripe delivers late, on a retry, can
 hold the order past the cookie, by at most as long as it was late, rounded up to
 whole days, and its buyer then collects it with a reissue code. A payment
 confirmed after its order's deadline still counts while the unpaid order is
-kept, which is only until the next prune: a checkout, the daily sweep, or a
-claim from its own browser. After that the "paid" event matches nothing, and the
-log warns that a paid Stripe checkout matched no open Pass order, without saying
-which. The same warning comes for a paid checkout of anything else sold on the
-same Stripe account, so the owner checks the payment against the receipt in
-Stripe before refunding it. A "paid" event delivered again after its Pass was
-collected, or for a payment already refunded, matches no order either and is not
-logged, unless that Pass has gone since (ended by a refund or dispute of another
-of its payments, or a month past its expiry), when the log warns the same way. A
-paid order nobody collected is kept for its own term past its deadline, by when
-a Pass bought with it would have run out, for the owner to reissue, and has gone
-from then on, pruned yet or not, as a Pass has a month past its expiry (below):
-a claim, a reissue code made or redeemed, or a refund, for example, finds no
-order, as does a "paid" event delivered again for it, which the log warns about
-the same way. Checkout and the daily sweep (`educhan -sweep`) prune what is past
-all that, along with reissue codes past their deadline, refunds remembered for
-their month, and Passes a month past expiry. A Pass has gone from the moment it
-is a month past its expiry, pruned yet or not: every request treats it as
-deleted (a check of its code, a post with it, a renewal, a claim or a reissue
-code, for example), so it can no longer be renewed and is bought anew, and the
-prune deletes its rows when it next runs. The sweep needs no Pass setting to do
-it, since every order carries its own term. A renewal whose Pass was refunded or
-ran past that month while Stripe was opening the checkout is refused with `409`,
-and the checkout is left to expire unpaid.
+kept, which is only until the next prune (a checkout, the daily sweep, or a
+claim from its own browser), and never once the order's own term has passed
+since its deadline, pruned yet or not. After that the "paid" event matches
+nothing, and the log warns that a paid Stripe checkout matched no open Pass
+order, without saying which. The same warning comes for a paid checkout of
+anything else sold on the same Stripe account, so the owner checks the payment
+against the receipt in Stripe before refunding it. A "paid" event delivered
+again after its Pass was collected, or for a payment already refunded, matches
+no order either and is not logged, unless that Pass has gone since (ended by a
+refund or dispute of another of its payments, or a month past its expiry), when
+the log warns the same way. A paid order nobody collected is kept for its own
+term past its deadline, by when a Pass bought with it would have run out, for
+the owner to reissue, and has gone from then on, pruned yet or not, as a Pass
+has a month past its expiry (below): a claim, a reissue code made or redeemed,
+or a refund, for example, finds no order, as does a "paid" event delivered again
+for it, which the log warns about the same way. Checkout and the daily sweep
+(`educhan -sweep`) prune what is past all that, along with reissue codes past
+their deadline, refunds remembered for their month, and Passes a month past
+expiry. A Pass has gone from the moment it is a month past its expiry, pruned
+yet or not: every request treats it as deleted (a check of its code, a post with
+it, a renewal, a claim or a reissue code, for example), so it can no longer be
+renewed and is bought anew, and the prune deletes its rows when it next runs.
+The sweep needs no Pass setting to do it, since every order carries its own
+term. A renewal whose Pass was refunded or ran past that month while Stripe was
+opening the checkout is refused with `409`, and the checkout is left to expire
+unpaid.
 
 **Pausing and retiring.** `EDUCHAN_PASS_SALES=paused` stops selling and
 honours what was sold. Checkout refuses a purchase and a renewal alike with
