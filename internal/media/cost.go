@@ -120,8 +120,8 @@ const gifFramePlay int64 = 64
 // (gifFrames.many) may be stored with a table a frame, and some of its
 // frames put back, for which the player keeps what was under the stored
 // frame of the picture showing (saved), four bytes a pixel more. Its colour
-// index and its LZW compressor's tables, under 80 KiB together, are left to
-// processingSlack.
+// index (colourIndex, ~75 KiB) and its LZW compressor's tables (64 KiB),
+// under 150 KiB together, are left to processingSlack.
 func gifPlayScratch(w, h int64, frames gifFrames) int64 {
 	px := w * h
 	scratch := 4*px + 2*8*((px+63)/64) + 13*w

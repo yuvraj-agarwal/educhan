@@ -88,11 +88,13 @@ const UploadBudget int64 = 64 << 20
 //     refused from its header, before any cooldown — before the cap one could
 //     repeat a cheap scan thousands of times and decode for thousands of
 //     seconds.
-//   - a GIF of many colours: 25 frames of a 2000×2000 canvas each drawn from a
-//     table of its own and each leaving a pixel to clear, 4.5 MB, which the
-//     frame cap (maxGIFFramePixels) lets come to 100 million pixels, ~4 s.
-//     Four 5000×5000 frames of one table take ~2.5 s, and frames a pixel wide,
-//     whose rows the cap counts as 64 pixels each (gifRowPixels), a few tenths.
+//   - a GIF of many colours: 25 frames of a 2000×2000 canvas, which the frame
+//     cap (maxGIFFramePixels) lets come to 100 million pixels, each drawn from
+//     a table of its own of 256 colours, ~3.5-4.5 s, whichever colours they
+//     are: each is found in the frame's table in the same three steps
+//     (colourIndex). Four 5000×5000 frames of one table take ~3-3.5 s, and
+//     frames a pixel wide, whose rows the cap counts as 64 pixels each
+//     (gifRowPixels), a few tenths.
 //
 // A slower core, or other uploads beside it, makes that longer (with the
 // host's other cores busy, the CMYK JPEG's decode took about 1.4 times the

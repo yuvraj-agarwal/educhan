@@ -285,6 +285,50 @@ type gifPlayer struct {
 	now     []uint32
 	idx     []uint8
 	out     gifWriter
+	// ctx is the request's, which the rows of a frame being looked at or
+	// written check every haltEvery pixels (due); halt is its error once
+	// a look at a frame's table (ownTable) has seen it done.
+	ctx  context.Context
+	pace int
+	halt error
+}
+
+// haltEvery is how many pixels of the rows a player goes through — each row
+// counted as at least gifRowPixels, as gifCharge counts it — it looks at or
+// writes between asking its context whether it is done (due): under a
+// millisecond of work, so a frame of 25 megapixels, looked at a few times
+// over and written, stops within that of its request being cancelled or out
+// of time rather than at the next frame, while the asking costs nothing to
+// speak of.
+const haltEvery = 1 << 16
+
+// due counts a row of n pixels, and reports whether it is time to ask the
+// context whether it is done.
+func (p *gifPlayer) due(n int) bool {
+	if p.pace += max(n, gifRowPixels); p.pace < haltEvery {
+		return false
+	}
+	p.pace = 0
+	return true
+}
+
+// halted asks the context whether it is done, for a look at a frame's rows
+// (ownTable), and keeps its error (halt) if it is, which stops the look with
+// the frame not to be written so: choose and frameColours then return it
+// (refused), rather than trying another way.
+func (p *gifPlayer) halted() bool {
+	p.halt = p.ctx.Err()
+	return p.halt != nil
+}
+
+// refused is the error a GIF is refused with when a frame cannot be stored
+// one of the ways choose tries: ErrImageTooCostly, or the context's error if
+// it was that, seen done, which stopped the look (halt).
+func (p *gifPlayer) refused() error {
+	if p.halt != nil {
+		return p.halt
+	}
+	return ErrImageTooCostly
 }
 
 // rows is prev, base and now for canvas row y from x0 to x1. base and prev
@@ -480,7 +524,7 @@ func (p *gifPlayer) choose(box, toClear image.Rectangle) (disposal byte, r, next
 			return restoreFrame, p.box, next, nil
 		}
 	}
-	return 0, image.Rectangle{}, image.Rectangle{}, ErrImageTooCostly
+	return 0, image.Rectangle{}, image.Rectangle{}, p.refused()
 }
 
 // tried charges the rectangles that a way of disposing of a frame looked
@@ -492,6 +536,9 @@ func (p *gifPlayer) choose(box, toClear image.Rectangle) (disposal byte, r, next
 // apart, where every way but the last spans them all, could have choose look
 // at most of a large canvas for each picture, with nothing to stop it.
 func (p *gifPlayer) tried(rs ...image.Rectangle) error {
+	if p.halt != nil {
+		return p.halt
+	}
 	for _, r := range rs {
 		p.area += gifCharge(int64(r.Dx()), int64(r.Dy()))
 	}
@@ -622,6 +669,11 @@ func (p *gifPlayer) frame(r image.Rectangle, delay int, disposal byte, still, bl
 	missing := false
 	idx := p.idx[:r.Dx()]
 	for y := r.Min.Y; y < r.Max.Y; y++ {
+		if p.due(len(idx)) {
+			if err := p.ctx.Err(); err != nil {
+				return err
+			}
+		}
 		if blank {
 			clear(idx)
 		} else {
@@ -637,7 +689,11 @@ func (p *gifPlayer) frame(r image.Rectangle, delay int, disposal byte, still, bl
 				idx[i] = v
 			}
 		}
-		p.out.pixels(idx)
+		if p.out.pixels(idx); p.out.err != nil {
+			// Its writer has refused a write (storedBuffer), and nothing
+			// more of the frame will be written.
+			return p.out.err
+		}
 	}
 	p.out.endImage()
 	if missing {
@@ -668,7 +724,7 @@ func (p *gifPlayer) frameColours(r image.Rectangle, blank bool) (colours []uint3
 	}
 	transparent, ok := p.ownTable(r, false)
 	if !ok {
-		return nil, false, ErrImageTooCostly
+		return nil, false, p.refused()
 	}
 	return p.index.sorted(p.colours[:0]), transparent, nil
 }
@@ -701,6 +757,9 @@ func (p *gifPlayer) ownTable(r image.Rectangle, next bool) (transparent, ok bool
 	drawn := func(i int) bool { return bits[i>>6]>>(i&63)&1 != 0 }
 	p.index.reset()
 	for y := r.Min.Y; y < r.Max.Y; y++ {
+		if p.due(r.Dx()) && p.halted() {
+			return false, false
+		}
 		at := y*p.w + r.Min.X
 		for i, k := range row(y) {
 			if !drawn(at + i) {
@@ -712,6 +771,9 @@ func (p *gifPlayer) ownTable(r image.Rectangle, next bool) (transparent, ok bool
 	}
 	if transparent && p.index.n == 256 {
 		for y := r.Min.Y; y < r.Max.Y; y++ {
+			if p.due(r.Dx()) && p.halted() {
+				return false, false
+			}
 			at := y*p.w + r.Min.X
 			for i, k := range row(y) {
 				if _, ok := p.index.lookup(k); !drawn(at+i) && !ok {
@@ -744,12 +806,15 @@ func (p *gifPlayer) ownTable(r image.Rectangle, next bool) (transparent, ok bool
 //
 // It checks ctx once a frame and returns its error at once if it is done, so a
 // long animation stops being played the moment the request is cancelled or out
-// of time; out writing through a context-aware storedBuffer stops a frame
-// sooner still. While ctx is live neither changes a byte of what is written.
+// of time; and within a frame, as it goes through the rows of a stored frame's
+// table (ownTable) or writes them (frame), every haltEvery pixels, and at once
+// when out refuses a write (as a context-aware storedBuffer does), so a large
+// frame stops within a fraction of a millisecond of work too. While ctx is live
+// none of that changes a byte of what is written.
 func playGIF(ctx context.Context, frames []*image.Paletted, heads []gifFrameHead, canvas image.Rectangle, loop int, out io.Writer) error {
 	w, h := canvas.Dx(), canvas.Dy()
 	colours, global := gifColours(frames, heads, canvas)
-	p := &gifPlayer{w: w, loop: loop, global: global}
+	p := &gifPlayer{w: w, loop: loop, global: global, ctx: ctx}
 	p.out.w = out
 	var table []uint32
 	if global {
@@ -845,61 +910,100 @@ func gifColours(frames []*image.Paletted, heads []gifFrameHead, canvas image.Rec
 	return set.sorted(nil), true
 }
 
-// colourIndex is a set of up to 256 opaque colour keys and the index of
-// each in a colour table, in a table of 512 slots an empty slot of which is
-// 0, which no opaque key is.
+// colourIndexKeys is the most keys a colourIndex holds: a frame's own table
+// of 256 colours, and the one more that shows ownTable a frame has too many.
+const colourIndexKeys = 257
+
+// colourIndex is a set of up to colourIndexKeys opaque colour keys and the
+// index of each in a colour table. A key is found by its own bytes, in a tree
+// of three levels: top, by its 12 highest bits of colour (red and the high
+// half of green), gives a node of mid, by the next 6, which gives a node of
+// low, by the last 6, which holds the index plus one; 0 is none at every
+// level. Every lookup and every add is those three steps, whatever the keys
+// are: the colours a GIF's frames give are the upload's to choose, and a hash
+// of them could be made to put all of them in one place, where every lookup
+// would go through all of them — a 150 KB GIF of 255 colours chosen so for a
+// fixed multiplicative hash took 25 s of CPU to play, against 3 s for the
+// same frames in colours the hash spread out. Each key takes at most a node
+// of mid and one of low, so they hold one for each key the set can hold.
 type colourIndex struct {
-	keys    [512]uint32
-	at      [512]uint8
-	n       int
-	lastKey uint32 // the last key looked up, and its index
-	lastAt  uint8
+	top        [1 << 12]uint16 // node of mid plus one
+	mid        [colourIndexKeys << 6]uint16
+	low        [colourIndexKeys << 6]uint16
+	keys       [colourIndexKeys]uint32 // the keys, in the order added
+	n          int
+	mids, lows int    // nodes of mid and low in use
+	lastKey    uint32 // the last key added or looked up, and its index
+	lastAt     uint8
 }
 
-func colourSlot(k uint32) uint32 { return (k * 0x9E3779B1) >> 23 }
-
+// reset empties the set, in work in proportion to what it held.
 func (c *colourIndex) reset() {
-	clear(c.keys[:])
-	c.n, c.lastKey = 0, 0
+	for _, k := range c.keys[:c.n] {
+		c.top[k>>12&0xFFF] = 0
+	}
+	clear(c.mid[:c.mids<<6])
+	clear(c.low[:c.lows<<6])
+	c.n, c.mids, c.lows, c.lastKey = 0, 0, 0, 0
 }
 
 // add puts opaque key k in the set at index i, and reports whether it was
-// not there already. The set must have room: fewer than 511 keys.
+// not there already. The set must have room for it: fewer than
+// colourIndexKeys keys.
 func (c *colourIndex) add(k uint32, i uint8) bool {
-	s := colourSlot(k)
-	for ; c.keys[s] != 0; s = (s + 1) & 511 {
-		if c.keys[s] == k {
-			return false
-		}
+	if k == c.lastKey && k != 0 {
+		return false // a run of one colour, as most pictures' rows have
 	}
-	c.keys[s], c.at[s] = k, i
+	t := &c.top[k>>12&0xFFF]
+	if *t == 0 {
+		c.mids++
+		*t = uint16(c.mids)
+	}
+	m := &c.mid[int(*t-1)<<6|int(k>>6&63)]
+	if *m == 0 {
+		c.lows++
+		*m = uint16(c.lows)
+	}
+	l := &c.low[int(*m-1)<<6|int(k&63)]
+	if *l != 0 {
+		c.lastKey, c.lastAt = k, uint8(*l-1)
+		return false
+	}
+	*l = uint16(i) + 1
+	c.keys[c.n] = k
 	c.n++
+	c.lastKey, c.lastAt = k, i
 	return true
 }
 
-// lookup is k's index, and whether it is in the set.
+// lookup is k's index, and whether it is in the set. A key that is not
+// opaque never is.
 func (c *colourIndex) lookup(k uint32) (uint8, bool) {
 	if k == c.lastKey && k != 0 {
 		return c.lastAt, true
 	}
-	for s := colourSlot(k); ; s = (s + 1) & 511 {
-		switch c.keys[s] {
-		case 0:
-			return 0, false
-		case k:
-			c.lastKey, c.lastAt = k, c.at[s]
-			return c.at[s], true
-		}
+	if k < opaqueKey {
+		return 0, false
 	}
+	t := c.top[k>>12&0xFFF]
+	if t == 0 {
+		return 0, false
+	}
+	m := c.mid[int(t-1)<<6|int(k>>6&63)]
+	if m == 0 {
+		return 0, false
+	}
+	l := c.low[int(m-1)<<6|int(k&63)]
+	if l == 0 {
+		return 0, false
+	}
+	c.lastKey, c.lastAt = k, uint8(l-1)
+	return c.lastAt, true
 }
 
 // sorted appends the set's keys to dst in order of their values.
 func (c *colourIndex) sorted(dst []uint32) []uint32 {
-	for _, k := range c.keys {
-		if k != 0 {
-			dst = append(dst, k)
-		}
-	}
+	dst = append(dst, c.keys[:c.n]...)
 	slices.Sort(dst)
 	return dst
 }

@@ -138,6 +138,10 @@ const (
 	askFrame  = "playGIF"
 	askThumb  = "processHeld"
 	askBudget = "(*budget).acquire"
+	// Within a frame, playGIF's player asks as it looks at a stored frame's
+	// rows for its table (ownTable, through halted) and as it writes them.
+	askLook = "(*gifPlayer).halted"
+	askRows = "(*gifPlayer).frame"
 )
 
 // photoPNG and photoJPEG are a 320×240 photo-like picture (photo), whose
@@ -427,6 +431,62 @@ func TestProcessStopsWhenCancelledWhilePlayingAGIF(t *testing.T) {
 	}
 	if n := b.held(); n != 0 {
 		t.Errorf("%d bytes held after a cancelled Process, want 0", n)
+	}
+}
+
+// TestPlayingAGIFStopsPartwayThroughAFrame holds that a context that ends
+// while a frame of a GIF is being played stops it there, not at the next
+// frame: when a look at a stored frame's rows for its table (ownTable) asks,
+// or the writing of them does, each of which asks every haltEvery pixels, and
+// when a write is refused (storedBuffer), at the end of the row being
+// written. A frame of 25 megapixels is looked at a few times over and written
+// before the next is reached: with only the check between frames, a GIF of
+// four such frames went on for seconds after its request was cancelled,
+// holding its share of the budget. The GIF is two frames of 512×512 in noise
+// of 256 colours, each with a table of its own, so that it is stored with a
+// table a frame and each pass over a frame is several haltEvery.
+func TestPlayingAGIFStopsPartwayThroughAFrame(t *testing.T) {
+	const w, h = 512, 512
+	noise := rand.New(rand.NewSource(20))
+	g := rawGIF{w: w, h: h}
+	for len(g.frames) < 2 {
+		pix := make([]uint8, w*h)
+		noise.Read(pix)
+		g.frames = append(g.frames, rawFrame{at: image.Rect(0, 0, w, h), local: shades(0, 256), pix: pix})
+	}
+	upload := g.bytes()
+	live := sanitizeLive(t, "GIF", upload)
+	player := []string{askLook, askRows, askFrame, askWrite}
+
+	const at = 3
+	for _, fn := range []string{askLook, askRows} {
+		if whole, _ := live.asked(fn); whole < 2*at {
+			t.Fatalf("%s asks %d times in a whole play; the fixture must have it ask at least %d", fn, whole, 2*at)
+		}
+		ctx := newAskedContext(fn, at)
+		sanitizeUnder(t, "GIF", ctx, upload)
+		if n, _ := ctx.asked(fn); n != at {
+			t.Errorf("ending at %s's ask %d: it asked %d times", fn, at, n)
+		}
+		for _, other := range player {
+			if n, late := ctx.asked(other); late != 0 {
+				t.Errorf("ending at %s's ask %d: %s asked %d times, %d of them after the context ended: the frame played on", fn, at, other, n, late)
+			}
+		}
+	}
+
+	// The fourth write is the first of the first stored frame's pixels,
+	// after the header, its control and its descriptor: refused, the rows
+	// after it are neither written nor looked up.
+	if whole, _ := live.asked(askWrite); whole < 2*at {
+		t.Fatalf("the stored GIF is written in %d writes; the fixture must make more", whole)
+	}
+	ctx := newAskedContext(askWrite, 4)
+	sanitizeUnder(t, "GIF", ctx, upload)
+	for _, other := range player {
+		if n, late := ctx.asked(other); late != 0 {
+			t.Errorf("ending at write 4: %s asked %d times, %d of them after the write was refused: the frame played on", other, n, late)
+		}
 	}
 }
 

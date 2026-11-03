@@ -171,7 +171,7 @@ const maxGIFFramePixels = 4 * MaxPixels
 // much of as a wide one. Charged by its pixels alone, a GIF of the cap's
 // worth of frames a pixel wide and 65,535 tall, 1,525 of them and 100
 // million rows, took 21 seconds of CPU to play, where four 5000×5000 frames
-// take under three. At 64 pixels a row a GIF has at most 1.56 million rows,
+// take about three. At 64 pixels a row a GIF has at most 1.56 million rows,
 // whose setting up comes to a few tenths of a second whatever the path, and
 // a frame at least 64 pixels wide is charged its pixels, as before.
 const gifRowPixels = 64
@@ -196,10 +196,13 @@ func gifCharge(w, h int64) int64 {
 // run out of time, rather than running to the end and only then finding
 // nothing wants it. The encoders stop at the first write refused them, or
 // soon after: jpegenc at the end of the row of units it is coding
-// (TestEncodeStopsAtAFailedWrite), image/png and image/gif once their own
-// buffers next pass a write on. While the context is live the check is the
-// one comparison and the bytes written are exactly what they would be
-// without it.
+// (TestEncodeStopsAtAFailedWrite), image/png once its own buffer next passes
+// a write on, and playGIF at the end of the row it is writing, its LZW
+// compressor passing its codes on 255 bytes at a time (subBlocks) — and
+// playGIF asks the context itself as it goes through a frame's rows, since
+// it may look at a frame's rows a few times before it writes any of them.
+// While the context is live the check is the one comparison and the bytes
+// written are exactly what they would be without it.
 type storedBuffer struct {
 	ctx   context.Context
 	buf   []byte
