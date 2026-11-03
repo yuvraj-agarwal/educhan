@@ -39,14 +39,17 @@ const UploadBudget int64 = 64 << 20
 // hold. So no admitted upload is processed for more than about ten seconds of
 // CPU on one core. The slowest kinds measured, each on one core:
 //   - a 16-bit PNG at the most pixels the memory estimate admits of one (a
-//     square of ~4800-4850, ~23 megapixels): ~4-5 s opaque, and ~6.5-7.5 s,
-//     about three quarters of the CMYK JPEG's time below, with a partial alpha
-//     in every pixel and rows filtered by Paeth, the slowest PNG measured. The
-//     alpha costs it more than the filter: every colour channel of every pixel
-//     is then reduced to what its alpha shows (reduceHiddenColour, which skips
-//     a pixel opaque or clear), the PNG is written at 8 bytes a pixel rather
-//     than an opaque one's 6, which takes a fifth to a third longer, and the
-//     thumbnail is scaled through the alpha; Paeth, the costliest filter to
+//     square of ~4800-4850, ~23 megapixels): ~4-5 s opaque, and ~6.5-7.5 s with
+//     a partial alpha in every pixel and rows filtered by Paeth, the slowest
+//     PNG measured. Like the WebP figures below, those are on the scale on
+//     which the CMYK JPEG takes ~8.5-10 s, as on a busy host (below), rather
+//     than the ~5.5-7.5 s its own bullet gives: measured beside that JPEG, in
+//     the same runs, the two took about half and three quarters of its time.
+//     The alpha costs it more than the filter: every colour channel of every
+//     pixel is then reduced to what its alpha shows (reduceHiddenColour, which
+//     skips a pixel opaque or clear), the PNG is written at 8 bytes a pixel
+//     rather than an opaque one's 6, which takes a fifth to a third longer, and
+//     the thumbnail is scaled through the alpha; Paeth, the costliest filter to
 //     undo, about doubles the decode, to ~1 s. At 8 bits, one with transparency
 //     of about 7 MiB, ~2-3 s. Written at deflate's default level, rows crafted
 //     to make it search took a 16-bit one of 1.4 MB ~17 s.

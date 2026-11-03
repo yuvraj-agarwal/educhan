@@ -379,7 +379,7 @@ needs a browser check before the test changes.
   flood control; the form keeps the post, image included, and nothing was charged for it.
   An image that did not finish arriving in time is a `400` known by the server's words,
   `UPLOAD_TOO_SLOW`, and worded as the connection's doing; the server never answers it
-  `408`, which Chromium replays (see **Attachments**), so nothing in `app.js` looks for one.
+  `408`, which Chromium replays (see **Attachments**); nothing in `app.js` looks for one.
   A not-found page names and links a board only when it is in `state.boards`: the slug
   comes from the address, and echoing any slug would let a crafted link write the page's
   copy. A history change that keeps the rendered path (a same-thread quote link) only
@@ -1186,18 +1186,19 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   1.4 MB about 17 s; the price is size, the 16-bit synthetic pictures tried stored up to
   14 times larger, so a PNG the default level stored near `storedLimit` can now be refused
   `ErrStoredTooLarge`) — a 16-bit PNG at the most pixels the memory estimate admits (about
-  23 megapixels) takes 4 to 5 s of CPU on one core opaque and 6.5 to 7.5, about three
-  quarters of the CMYK JPEG below, with a partial alpha in every pixel and rows filtered
-  by Paeth, the slowest PNG (each pixel's colour is cut to what its alpha shows, the
-  picture is written at 8 bytes a pixel rather than 6 and its thumbnail scaled through the
-  alpha, and Paeth doubles the decode), an 8-bit transparent one 2 to 3, the slowest GIF
-  about 4 (25 frames of a 2000×2000 canvas each with a table of its own and a pixel to
-  clear), a lossless WebP of 25 megapixels, which a crafted file of a few dozen bytes can
-  be, 4 to 6.5, a lossy WebP with transparency at the most pixels the memory estimate
-  admits (19 megapixels square, 21 in a strip) 1.5 to 9.5 by what its alpha holds and the
-  colour under it, which with the CMYK JPEG below makes it the slowest kind (it was
-  measured in runs in which that JPEG took 8.5 to 10 s, see `processingAllowance`), and a
-  JPEG is held to `maxJPEGScanRevisits` passes' work over its blocks
+  23 megapixels) takes 4 to 5 s of CPU on one core opaque and 6.5 to 7.5 with a partial
+  alpha in every pixel and rows filtered by Paeth, the slowest PNG (each pixel's colour is
+  cut to what its alpha shows, the picture is written at 8 bytes a pixel rather than 6 and
+  its thumbnail scaled through the alpha, and Paeth doubles the decode; both on the scale
+  on which the CMYK JPEG below takes 8.5 to 10 s, not its 5.5 to 7.5: beside it the two
+  took about half and three quarters of its time), an 8-bit transparent one 2 to 3, the
+  slowest GIF about 4 (25 frames of a 2000×2000 canvas each with a table of its own and a
+  pixel to clear), a lossless WebP of 25 megapixels, which a crafted file of a few dozen
+  bytes can be, 4 to 6.5, a lossy WebP with transparency at the most pixels the memory
+  estimate admits (19 megapixels square, 21 in a strip) 1.5 to 9.5 by what its alpha holds
+  and the colour under it, which with the CMYK JPEG below makes it the slowest kind (it
+  was measured in runs in which that JPEG took 8.5 to 10 s, see `processingAllowance`),
+  and a JPEG is held to `maxJPEGScanRevisits` passes' work over its blocks
   (`jpegScanBlockVisits`, which weighs a baseline scan's visit at six first-pass visits
   and an AC refinement scan's at two, for what the decoder does on each), so the worst
   admitted one, a 25-megapixel baseline file of four full-resolution components, is about
