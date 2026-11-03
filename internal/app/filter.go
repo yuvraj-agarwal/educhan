@@ -13658,6 +13658,10 @@ func quoteSpeaker(text string, open, end int) speaker {
 			}
 		}
 		after = wordsIn(tail)
+		if len(after) > 1 && posterSubjects[bare(after[0])] &&
+			posterDisowns(bare(after[0]), after[1:min(len(after), 9)]) {
+			return otherSpeaks
+		}
 	}
 	before := wordsIn(lead)
 	for k := len(before) - 1; k >= max(0, len(before)-4); k-- {
@@ -13705,6 +13709,83 @@ func quoteSpeaker(text string, open, end int) speaker {
 	}
 	return noSpeaker
 }
+
+// posterDisowns reports, in the words after a quotation and the poster as
+// their subject (ws, after the subject), the words given as someone
+// else's: come to the poster, seen or read ("i keep getting messages saying
+// this", "i found this written on my desk", "i'm tired of reading this in
+// the comments", "i've had this sent to me"); refused before a verb of
+// saying ("i'd never tell anyone this", "i'm not going to reply to this")
+// or appealed against ("we need to stop saying this"); said of someone in a
+// clause of "if" or "when" ("i'd report it if someone posted this"); or
+// passed on to someone who can help ("i'll show this text to my mum", "i'd
+// tell a teacher", "we've told the mods about people posting this"). "I
+// won't stop saying this" refuses nothing.
+func posterDisowns(subject string, ws []string) bool {
+	negated := false
+	modal := strings.HasSuffix(subject, "'d") || strings.HasSuffix(subject, "'ll")
+	for j, w := range ws {
+		w = bare(w)
+		var next string
+		if j+1 < len(ws) {
+			next = bare(ws[j+1])
+		}
+		switch {
+		case refusalWords[w]:
+			negated = true
+		case is(w, "stop") || is(w, "quit"):
+			return !negated
+		case disownModals[w]:
+			modal = true
+		case (is(w, "if") || is(w, "when") || is(w, "whenever")) && sayersAfterIf[next]:
+			return true
+		case passOnVerbs[w] && anyIn(ws[j+1:min(len(ws), j+6)], helperWords):
+			return true
+		case (is(w, "tell") || is(w, "telling") || is(w, "told")) && anyIn(ws[j+1:min(len(ws), j+4)], helperWords):
+			return modal || hasWord(ws[j+1:], "about")
+		case receiptVerbs[w] && (quoteRefs[next] || messageNouns[next]):
+			return true
+		case holdVerbs[w] && messageNouns[next]:
+			return true
+		case holdVerbs[w] && quoteRefs[next]:
+			// "getting this texted to me", "had this sent to me"; not "i
+			// have this planned" or "i got this".
+			for _, x := range ws[j+2 : min(len(ws), j+5)] {
+				if x = bare(x); participles[x] || sayingVerbs[x] {
+					return true
+				}
+			}
+		case sayingVerbs[w] && !sayingNoun(ws, j):
+			return negated
+		}
+	}
+	return false
+}
+
+var (
+	// refusalWords before a verb of saying refuse it, and disownModals make
+	// telling a teacher what the poster would do: "i'd tell a teacher".
+	refusalWords = canonSetOf(`never not don't dont doesn't doesnt didn't didnt won't wont wouldn't wouldnt can't cant
+		cannot couldn't couldnt shouldn't shouldnt`)
+	disownModals = canonSetOf(`would will gonna going should`)
+	// sayersAfterIf, after "if" or "when", are someone else saying it.
+	sayersAfterIf = canonSetOf(`someone somebody anyone anybody people they he she ppl`)
+	// passOnVerbs pass the words on to one of helperWords, someone who can
+	// help: "i'll show this text to my mum".
+	passOnVerbs = canonSetOf(`show showed showing forward forwarded forwarding report reported reporting screenshot
+		screenshotted screenshotting`)
+	helperWords = canonSetOf(`teacher teachers mum mom mummy dad daddy parents parent principal mods mod moderator
+		moderators police counsellor counselor admin admins`)
+	// receiptVerbs, before quoteRefs or a message, say the words came to
+	// the poster ("found this written", "reading this in the comments"),
+	// and so do holdVerbs before a message, or before quoteRefs and a verb
+	// of saying ("getting messages saying this", "getting this texted to
+	// me").
+	receiptVerbs = canonSetOf(`receive receives receiving received see sees seeing saw seen read reads reading hear
+		hears hearing heard find finds finding found notice noticing noticed`)
+	holdVerbs = canonSetOf(`get gets getting got have has having had`)
+	quoteRefs = canonSetOf(`this these that it`)
+)
 
 // quotationBreak is where the stretch before a quotation stops being about
 // it: the last sentence end, line break or quotation mark in s, or -1. A
