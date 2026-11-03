@@ -418,23 +418,23 @@ func sanitizePNG(ctx context.Context, data []byte, limit int64) (sanitized, erro
 // try them all at almost every byte: measured in CPU time on one core, a
 // 25-megapixel 16-bit PNG of 1.4 MB took 16 to 18 s to process that way, and an
 // 8-bit one of 0.7 MB 8 to 9 s. At BestSpeed each takes under 3 s, and the
-// slowest PNG measured, a 16-bit one of ~23 megapixels with a partial alpha in
-// every pixel, 6.5 to 7.5 s (processingAllowance). The cost is size, and with
-// it some pictures the default level stored. The PNGs of photos and screenshots
-// tried were stored 1% to 80% larger than at the default level, most of them
-// about a tenth; of the 573 PNGs stored from a mixed corpus of 14,015 uploads,
-// PNG uploads a median of 5% larger and at most 2.2 times, and WebPs stored as
-// PNGs a median of 11%. Synthetic pictures grow more: grey 16-bit ones of 25
-// megapixels 1.3 times when flat or graded along one axis, 1.6 times graded
-// radially and up to 7 times graded across both axes, by the slope (6.9 rising
-// twice as fast across as down); smaller ones graded across both axes up to 14
-// times; and rows crafted for it 11 times. So a picture the default level
-// stored close to storedLimit can come out past it here, and is refused
-// (ErrStoredTooLarge) where it was stored before: a 10000×2500 16-bit gradient
-// of 1.7 MB, its rows filtered Up and deflated at zlib's highest level, came to
-// 97% of its limit at the default level, in 12 s of CPU, and comes to 159% of
-// it here. A thumbnail's rows are a few hundred kilobytes at most, and it keeps
-// the default level.
+// slowest PNG measured, a 16-bit one of 23 to 25 megapixels with a partial
+// alpha in every pixel, 6.5 to 7.5 s (processingAllowance). The cost is size,
+// and with it some pictures the default level stored. The PNGs of photos and
+// screenshots tried were stored 1% to 80% larger than at the default level,
+// most of them about a tenth; of the 573 PNGs stored from a mixed corpus of
+// 14,015 uploads, PNG uploads a median of 5% larger and at most 2.2 times, and
+// WebPs stored as PNGs a median of 11%. Synthetic pictures grow more: grey
+// 16-bit ones of 25 megapixels 1.3 times when flat or graded along one axis,
+// 1.6 times graded radially and up to 7 times graded across both axes, by the
+// slope (6.9 rising twice as fast across as down); smaller ones graded across
+// both axes up to 14 times; and rows crafted for it 11 times. So a picture the
+// default level stored close to storedLimit can come out past it here, and is
+// refused (ErrStoredTooLarge) where it was stored before: a 10000×2500 16-bit
+// gradient of 1.7 MB, its rows filtered Up and deflated at zlib's highest
+// level, came to 97% of its limit at the default level, in 12 s of CPU, and
+// comes to 159% of it here. A thumbnail's rows are a few hundred kilobytes at
+// most, and it keeps the default level.
 var storedPNG = png.Encoder{CompressionLevel: png.BestSpeed}
 
 // sanitizeGIF decodes every frame of a GIF and stores what they show, and
