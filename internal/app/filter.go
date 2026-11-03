@@ -7467,9 +7467,11 @@ func labMishap(named, sentence, after []string) bool {
 // bomb", "with the teacher inside"); a name or a class after "with" or
 // "while" and put in the lab ("with Priya in it", "with 10B inside", "while
 // Rahul is in there"); or another place or people joined to the lab by "and"
-// ("and then the whole school", "and the staffroom"). "With my terrible
-// chemistry skills", "and fail the practical" and "and the teacher will
-// kill me" are none of these.
+// ("and then the whole school", "and the staffroom"), or people that go on
+// to be harmed or in the lab, or to do anything but answer the poster's
+// mishap ("and the teacher will be in it", "and the teacher is next"). "With
+// my terrible chemistry skills", "and fail the practical" and "and the
+// teacher will kill me" are none of these.
 func labOccupied(after []string) bool {
 	// in reports the lab said to have someone in it, in the three words
 	// from i: "in it", "in there", "inside".
@@ -7516,15 +7518,27 @@ func labOccupied(after []string) bool {
 		case k == 0 && is(w, "and"):
 			// A place or people joined to the lab, where the phrase ends
 			// or goes on as a noun phrase does ("and the staffroom", "and
-			// the teacher in it"); people followed by a verb are the
-			// subject of a clause of their own, unless it says they are
-			// harmed: "and the teacher will kill me", not "and everyone
-			// will die".
+			// the teacher in it"). People followed by a verb are the
+			// subject of a clause of their own, and it is let off only as
+			// their answer to the poster's mishap (labReaction: "and the
+			// teacher will kill me", "and the whole class will laugh"),
+			// never when it puts them in the lab or says they are harmed
+			// (labTrapped: "and the teacher will be in it", "and everyone
+			// will die"). A name followed by a verb is held only for the
+			// second: "and rahul will be locked in".
 			j := k + 1
 			if is(after[j], "then") || is(after[j], "also") {
 				j++
 			}
 			np := readNoun(after[j:])
+			if j+1 < len(after) && is(after[j], "ma") && is(after[j+1], "am") {
+				np = nounPhrase{kind: nounPerson, head: "maam", n: 2} // "ma'am", split at the apostrophe
+			}
+			named := false
+			if !np.place() && !np.people(true) && j+1 < len(after) && lowerName(after[j]) &&
+				labClauseVerbs[after[j+1]] {
+				np, named = nounPhrase{kind: nounKin, head: after[j], n: 1}, true
+			}
 			rest := after[min(j+np.n, len(after)):]
 			if len(rest) > 1 && is(rest[0], "s") {
 				// The words come apart at an apostrophe: "the
@@ -7537,10 +7551,71 @@ func labOccupied(after []string) bool {
 			if !np.place() && !np.people(true) {
 				break
 			}
-			if len(rest) == 0 || (nounEnds[rest[0]] || shrugs[rest[0]]) && !labClauseVerbs[rest[0]] ||
-				np.people(true) && anyIn(rest, labHarmed) {
+			if np.people(true) && len(rest) > 2 && (is(rest[0], "in") || is(rest[0], "from") ||
+				is(rest[0], "of")) && !labInsides[rest[1]] {
+				// "everyone in my group will hate me": who they are, not
+				// where.
+				for n := 2; n < len(rest) && n < 5; n++ {
+					if labClauseVerbs[rest[n]] {
+						rest = rest[n:]
+						break
+					}
+				}
+			}
+			switch {
+			case len(rest) == 0 || (nounEnds[rest[0]] || shrugs[rest[0]]) && !labClauseVerbs[rest[0]] && !named:
+				return true
+			case !np.people(true):
+			case labTrapped(rest):
+				return true
+			case !named && !labReaction(rest):
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// labTrapped reports, in the clause after people joined to a lab blown up,
+// them harmed or in the lab: "will die", "will be in it", "will be stuck
+// inside", "is next", "will be gone", "won't make it out", "won't see it
+// coming", "will go with it", "are coming with me".
+func labTrapped(rest []string) bool {
+	negated := false
+	for i, w := range rest {
+		var next string
+		if i+1 < len(rest) {
+			next = rest[i+1]
+		}
+		switch {
+		case labHarmed[w] || labStuck[w]:
+			return true
+		case is(w, "in") && labInsides[next]:
+			return true
+		case is(w, "there") && i > 0 && (is(rest[i-1], "be") || is(rest[i-1], "is") || is(rest[i-1], "are")):
+			return true // "will be there"
+		case labNegations[w] || is(w, "t") && i > 0 && labNegations[rest[i-1]+"'t"]:
+			negated = true // "won't", or "won" and "t" apart
+		case is(w, "out") && (negated || i > 1 && is(rest[i-1], "it") && is(rest[i-2], "make")),
+			is(w, "coming") && i > 1 && is(rest[i-1], "it") && (is(rest[i-2], "see") || is(rest[i-2], "saw")):
+			return true // "won't walk out", "won't make it out", "won't see it coming"
+		case is(w, "with") && i > 0 && (labGoes[rest[i-1]] || i > 1 && labUps[rest[i-1]] && labGoes[rest[i-2]]) &&
+			(labWiths[next] || is(next, "the")):
+			return true // "will go with it", "goes up with it", "are coming with me"
+		}
+	}
+	return false
+}
+
+// labReaction reports, in the clause after people joined to a lab blown up,
+// their answer to the poster's mishap: the poster as its object ("will kill
+// me", "will make us redo it", "will be so done with me") or a reaction
+// (labReactions: "will laugh", "will be furious", "will lose it", "knows
+// it", "will see how bad i am", "will hear about it").
+func labReaction(rest []string) bool {
+	for i, w := range rest {
+		if labReactions[w] || (is(w, "me") || is(w, "us")) && i > 0 {
+			return true
 		}
 	}
 	return false
@@ -7561,6 +7636,21 @@ var (
 	labClauseVerbs = canonSetOf(`is are was were will would 'll gets get getting goes go going has have had won't
 		wont isn't can't cant`)
 	labHarmed = canonSetOf(`die dies dying dead hurt injured killed burn burns burned burnt bleed`)
+	// labStuck put people in the lab, or gone, after it ("will be stuck
+	// inside", "is next"); labNegations make "out" not getting out;
+	// labGoes, or one of them and labUps, before "with" and one of labWiths
+	// take people along with the lab ("will go with it", "goes up with it",
+	// "are coming with me"); labReactions are people's answers to the
+	// poster's mishap.
+	labStuck     = canonSetOf(`inside stuck trapped locked buried gone next pieces`)
+	labNegations = canonSetOf(`won't wont never can't cant not`)
+	labGoes      = canonSetOf(`go goes going went gone come comes coming came`)
+	labUps       = canonSetOf(`up down along`)
+	labWiths     = canonSetOf(`it me us them him her`)
+	labReactions = canonSetOf(`laugh laughs laughing laughed cry cries crying mad furious angry upset annoyed
+		disappointed shocked pissed embarrassed lose loses know knows knew see sees hear hears faint scream screams
+		screaming yell yells sigh sighs panic freak priceless ground grounds disown disowns call calls report
+		complain evacuate run`)
 )
 
 // shootingRange reports a range for shooting in ws: "the shooting range".
