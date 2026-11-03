@@ -178,7 +178,10 @@ func TryReserveUpload(n int64) (release func(), ok bool) {
 // the one before took: uploads that each held room and waited for more could
 // hold all of the budget between them, none of them able to go on until one
 // gave up. Over the whole budget, the parts are taken in order as far as it
-// goes.
+// goes. An upload that waits while it holds room, as a request body taken a
+// piece at a time does, is the caller's to keep from that: internal/app lets
+// the uploads waiting hold no more than leaves room for the largest ask once
+// the uploads not waiting have given theirs back (waitingRoom).
 func ReserveUploadParts(ctx context.Context, parts ...int64) (releases []func(), err error) {
 	return uploads.acquireParts(ctx, parts)
 }

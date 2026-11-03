@@ -1236,6 +1236,151 @@ func TestBodiesUnderWayDoNotWaitOnEachOthersRoom(t *testing.T) {
 	awaitBudgetFree(t, media.UploadBudget)
 }
 
+// A body waits for its next piece of room holding the pieces it has, and for
+// the rest of its room holding its first eighth (admitBody), and the queue
+// for room is in order, so the rest a body asks for at its head holds up the
+// pieces asked for behind it. Fifty-seven 8 MiB bodies sent at once, each of
+// which had sent its eighth, held 57 MiB between them, too little was left
+// for the rest of any, and nothing that would give room back was being read:
+// every one of them waited until it gave up, ten seconds after its handler
+// started, and most were answered 503, where the server before bodies took
+// their room a piece at a time took them all. A post that holds room now
+// waits for more only while the posts waiting hold no more than waitingRoom
+// between them, and is otherwise turned away busy at once, so the first in
+// the queue always has room for its rest once the posts not waiting have
+// been answered. Here the bodies send their eighths and pause, as bodies
+// paced at a MiB a second all do a second in: all but the last two at most
+// wait, the first of them gets its room at once, and once they go on every
+// one of them is taken.
+func TestBodiesWaitingForRoomLeaveRoomForTheFirstOfThem(t *testing.T) {
+	h := testServer(t, func(cfg *Config) { cfg.TrustedProxyHops = 1 })
+	h.addBoard("general")
+	// Neither the pace nor the wait for room gives up while the test is
+	// sending: what is at work is the room.
+	h.app.uploadPaceGrace = time.Minute
+	h.app.uploadReadTimeout = 2 * time.Minute
+	h.app.postDeadline = 75 * time.Second // a wait for room gives up after a minute
+	const declared = 8 << 20
+	admit := admitBytes(declared)
+	// One body more than leaves room for the rest of one of them: the
+	// eighths alone leave less than a body free.
+	bodies := int((media.UploadBudget-declared)/admit) + 1
+	room := h.app.waitingRoom()
+	if most := int(room / admit); most+1 >= bodies {
+		t.Fatalf("the waiting room, %d bytes, holds %d eighths: the test needs more bodies than that and one more", room, most)
+	}
+	awaitBudgetFree(t, media.UploadBudget)
+	var clients []string
+	for i := 1; i <= bodies; i++ {
+		clients = append(clients, "203.0.113."+strconv.Itoa(i))
+	}
+	drainShares(t, h, clients...)
+	image := pngBytes(t, 32, 32)
+	probe := boundForm(t, 1000, "waiting", image)
+	form := boundForm(t, 1000+declared-len(probe), "waiting", image)
+	if len(form) != declared {
+		t.Fatalf("the body is %d bytes, want %d", len(form), declared)
+	}
+
+	// Each body sends all but the last byte of its eighth, holding room for
+	// that eighth, and then that byte, under way.
+	conns := make([]*idleBody, bodies)
+	for i, client := range clients {
+		conns[i] = rawUpload(t, h.base, client, declared, false)
+		if _, err := conns[i].conn.Write(form[:admit-1]); err != nil {
+			t.Fatalf("send the start of body %d: %v", i, err)
+		}
+		awaitShare(t, h, client, admit)
+	}
+	for i := range conns {
+		if _, err := conns[i].conn.Write(form[admit-1 : admit]); err != nil {
+			t.Fatalf("send the last byte of body %d's eighth: %v", i, err)
+		}
+	}
+
+	// The waiting posts hold no more than the waiting room, and the first of
+	// them has the rest of its room at once, the others waiting behind it.
+	type state struct{ waiting, taken, away int }
+	look := func() (state, int64) {
+		h.app.uploadShares.mu.Lock()
+		defer h.app.uploadShares.mu.Unlock()
+		var st state
+		for _, c := range clients {
+			switch {
+			case h.app.uploadShares.waiting[c]:
+				st.waiting++
+			case h.app.uploadShares.held[c] == declared:
+				st.taken++
+			case h.app.uploadShares.held[c] == 0:
+				st.away++
+			}
+		}
+		return st, h.app.uploadShares.waitHeld
+	}
+	// A post counts as having its room once it holds all of its share and
+	// does not wait, which it also does for the moment between taking its
+	// share and joining the queue: the state is read until it holds still.
+	var st, last state
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		var held int64
+		st, held = look()
+		if held > room {
+			t.Fatalf("the posts waiting for room hold %d bytes between them, more than the waiting room, %d", held, room)
+		}
+		if st == last && st.taken > 0 && st.waiting+st.taken+st.away == bodies {
+			break
+		}
+		last = st
+		if time.Now().After(deadline) {
+			t.Fatalf("%d bodies under way wait for the rest of their room holding %d bytes between them, "+
+				"%d have it and %d were turned away; want the first of them to have it at once",
+				st.waiting, held, st.taken, st.away)
+		}
+	}
+	if st.away > bodies-int(room/admit) {
+		t.Errorf("%d bodies turned away, want no more than the %d past what the waiting room holds",
+			st.away, bodies-int(room/admit))
+	}
+
+	// The bodies go on, at full speed, and are taken in turn; those turned
+	// away are read past and answered busy.
+	start := time.Now()
+	for i := range conns {
+		go func(i int) { _, _ = conns[i].conn.Write(form[admit:]) }(i)
+	}
+	type answer struct {
+		status int
+		text   string
+		took   time.Duration
+	}
+	answers := make([]answer, bodies)
+	var wg sync.WaitGroup
+	for i := range conns {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			status, text := conns[i].answer(t, time.Minute)
+			answers[i] = answer{status, text, time.Since(start)}
+		}(i)
+	}
+	wg.Wait()
+	busy := 0
+	for i, a := range answers {
+		switch a.status {
+		case http.StatusCreated:
+		case http.StatusServiceUnavailable:
+			busy++
+		default:
+			t.Errorf("body %d: status %d (%s) after %v, want 201, or 503 for one turned away",
+				i, a.status, a.text, a.took)
+		}
+	}
+	if busy != st.away {
+		t.Errorf("%d bodies answered 503, want the %d turned away", busy, st.away)
+	}
+	awaitBudgetFree(t, media.UploadBudget)
+}
+
 // trickle sends body in pieces of at most size bytes with pause after each,
 // as chunks if the body was declared no length, leaving the body open, and
 // reports whether all of it went. It stops early once the server has answered

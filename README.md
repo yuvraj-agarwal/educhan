@@ -1112,12 +1112,16 @@ server that would refuse what it sends.
   twice what it has sent or, if that is more, 4 KiB. A post waits for room in either
   budget for about ten seconds at most, and a client has one image post waiting for room
   for its body at a time: its next that finds none answers `429` at once, as one past its
-  share does. Its body has 30 seconds to arrive from its first bytes, the time it waits
-  for room aside, at an even pace with up to 5 seconds to spare — a body that falls
-  further behind the pace that would bring it all in by then, sending nothing or a
-  trickle, is cut off then and its room given back — and once it has arrived its image has
-  25 seconds to be processed and stored. A post that cannot be taken in time — no room
-  within the wait, or its image not stored within those 25 seconds — answers `503` (see
+  share does. The posts waiting for more room hold no more of the upload budget between
+  them than leaves room for the largest body there may be (55 MiB of the 64 at the default
+  limit), so that the first of them always gets its room once the bodies being read have
+  been answered; a post that holds room and would wait past that answers `503` at once.
+  Its body has 30 seconds to arrive from its first bytes, the time it waits for room
+  aside, at an even pace with up to 5 seconds to spare — a body that falls further behind
+  the pace that would bring it all in by then, sending nothing or a trickle, is cut off
+  then and its room given back — and once it has arrived its image has 25 seconds to be
+  processed and stored. A post that cannot be taken in time — no room within the wait, or
+  its image not stored within those 25 seconds — answers `503` (see
   [Flood control](#flood-control)) with nothing stored, rather than being made after its
   answer could no longer be sent. A body that takes longer than its 30 seconds, or falls
   behind its pace, is the connection's doing, not the server's, and answers `400` with
@@ -1478,16 +1482,17 @@ A refused request answers `429` with a `Retry-After` header in seconds and a
 `retry_after` field in the body. Set a cooldown to `0` to switch it off.
 
 A post with an image the server is too busy to take in time — no room to read or process
-it within about ten seconds, or its image not stored within 25 seconds of its body
-arriving (see **Memory** under [Image attachments](#image-attachments)) — answers `503`
-the same way, with a `Retry-After` and `retry_after` of 10 seconds. Nothing is stored for
-it, and a cooldown it started is given back, so it can be sent again as soon as the wait
-is over. A post with an image from a client whose other image posts already hold half the
-room for upload bodies, or one of which already waits for room, answers `429` the same
-way, at once, with a `Retry-After` and `retry_after` of 10 seconds and no cooldown
-started. A post whose body sends nothing within 5 seconds, takes longer than 30 seconds to
-arrive, counted from when there was room to read it, or falls further behind the even pace
-that would bring it in by then than the 5 seconds it has to spare, answers `400` with
+it within about ten seconds, room it would wait for while the posts waiting already hold
+all they may, or its image not stored within 25 seconds of its body arriving (see
+**Memory** under [Image attachments](#image-attachments)) — answers `503` the same way,
+with a `Retry-After` and `retry_after` of 10 seconds. Nothing is stored for it, and a
+cooldown it started is given back, so it can be sent again as soon as the wait is over. A
+post with an image from a client whose other image posts already hold half the room for
+upload bodies, or one of which already waits for room, answers `429` the same way, at
+once, with a `Retry-After` and `retry_after` of 10 seconds and no cooldown started. A post
+whose body sends nothing within 5 seconds, takes longer than 30 seconds to arrive, counted
+from when there was room to read it, or falls further behind the even pace that would
+bring it in by then than the 5 seconds it has to spare, answers `400` with
 `{"error":"upload too slow"}` and no `Retry-After`, since waiting does not make a
 connection faster — one turned away as busy or over its share included, whose body is
 still read past at that pace — and, with uploads on, a form sent without a

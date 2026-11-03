@@ -47,14 +47,16 @@ const clientUploadShare = media.UploadBudget / 2
 var errUploadShare = errors.New("too many images uploading at once from this client")
 
 // uploadShares counts what each client's posts hold of the upload budget,
-// keyed on shareKey, so that none holds more than clientUploadShare, and
-// which clients have a post waiting for room in it, so that none has more
-// than one (reserveUpload). A client's entries go once it holds nothing and
-// has nothing waiting.
+// keyed on shareKey, so that none holds more than clientUploadShare, and which
+// clients have a post waiting for room in it, so that none has more than one,
+// and what the posts waiting hold of the budget between them, so that it is
+// never more than waitingRoom (reserveUpload). A client's entries go once it
+// holds nothing and has nothing waiting.
 type uploadShares struct {
-	mu      sync.Mutex
-	held    map[string]int64
-	waiting map[string]bool
+	mu       sync.Mutex
+	held     map[string]int64
+	waiting  map[string]bool
+	waitHeld int64
 }
 
 // take records n more bytes held by client and returns the function that
@@ -83,26 +85,35 @@ func (s *uploadShares) take(client string, n int64) (func(), bool) {
 }
 
 // wait records that one of client's posts is waiting for room in the upload
-// budget and returns the function that records it no longer is, or reports
-// false, recording nothing, when another of its posts already is.
-func (s *uploadShares) wait(client string) (func(), bool) {
+// budget, holding held bytes of it already, and returns the function that
+// records it no longer is. It records nothing, and returns why, when another
+// of the client's posts already waits (errUploadShare), or when the posts
+// waiting would then hold more than limit of the budget between them
+// (media.ErrBusy). A post that holds nothing may wait whatever the others
+// hold.
+func (s *uploadShares) wait(client string, held, limit int64) (func(), error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.waiting[client] {
-		return nil, false
+		return nil, errUploadShare
+	}
+	if held > 0 && s.waitHeld+held > limit {
+		return nil, media.ErrBusy
 	}
 	if s.waiting == nil {
 		s.waiting = map[string]bool{}
 	}
 	s.waiting[client] = true
+	s.waitHeld += held
 	var once sync.Once
 	return func() {
 		once.Do(func() {
 			s.mu.Lock()
 			defer s.mu.Unlock()
 			delete(s.waiting, client)
+			s.waitHeld -= held
 		})
-	}, true
+	}, nil
 }
 
 // shareKey is the client a post's share of the upload budget is counted
@@ -290,11 +301,12 @@ type bodyRoom struct {
 }
 
 // reserve takes n bytes of the client's share and of the upload budget, and
-// extra bytes more of the budget in the same ask, as reserveUpload does, and
-// moves the body's window on by as long as that took.
+// extra bytes more of the budget in the same ask, as reserveUpload does for a
+// post that holds what the body has taken so far, and moves the body's window
+// on by as long as that took.
 func (h *bodyRoom) reserve(n, extra int64) (give, giveExtra func(), err error) {
 	asked := time.Now()
-	give, giveExtra, err = h.a.reserveUpload(h.ctx, h.r, n, extra)
+	give, giveExtra, err = h.a.reserveUpload(h.ctx, h.r, h.held, n, extra)
 	h.pace.pause(time.Since(asked))
 	return give, giveExtra, err
 }
@@ -361,9 +373,14 @@ func (h *bodyRoom) release() {
 // (bodyRoom.takeRest), so that a body under way holds about nine eighths of
 // its size of the budget, and asks for no more. It takes room a piece at a
 // time, each before it reads into it: first for the buffer the body's first
-// read began (startBody), uploadHeadBytes, and then each piece as large as
-// all before it, so a body that stops holds at most twice what it has sent,
-// or uploadHeadBytes if that is more.
+// read began (startBody), uploadHeadBytes, and then each piece as large as all
+// before it, so a body that stops holds at most twice what it has sent, or
+// uploadHeadBytes if that is more. It waits for each piece, and for the rest,
+// holding what it took before, and so only while the posts waiting hold no
+// more than waitingRoom of the budget between them, which leaves room for the
+// first of them once the posts not waiting have given theirs back
+// (reserveUpload); a body that would wait past that is turned away busy at
+// once.
 //
 // Room taken for the whole of a body that has sent only its first bytes cost
 // the sender nothing to hold: answered upload too slow once its grace ran out,
@@ -538,10 +555,12 @@ type submissionForm interface {
 // declare a body and send little of it hold little, and keep the budget from
 // no one. ctx is the post's reserveContext: with no room in time the body is
 // read to its end unkept and the post is answered 503 (busy), before flood
-// control has charged it anything. The room comes out of the client's share
-// of the budget first (reserveUpload): a post whose client's other posts hold
-// that already, or one of which already waits for room, is read to its end
-// unkept and answered 429 at once, without waiting, and also charged nothing.
+// control has charged it anything, as it is at once when, holding room, it
+// would wait for more while the posts waiting hold all the room waitingRoom
+// lets them (reserveUpload). The room comes out of the client's share of the
+// budget first (reserveUpload): a post whose client's other posts hold that
+// already, or one of which already waits for room, is read to its end unkept
+// and answered 429 at once, without waiting, and also charged nothing.
 //
 // Such a body has to say how long it is: one without a Content-Length
 // (chunked) is answered 411 before anything is reserved for it or read of it
@@ -648,22 +667,39 @@ func (a *App) parseSubmission(ctx context.Context, w http.ResponseWriter, r *htt
 	return sub, true
 }
 
-// reserveUpload takes room for a multipart post's body: n bytes of its
-// client's share first (clientUploadShare, the client as shareKey counts it),
-// refused at once with errUploadShare when the client's other posts and what
-// this one holds already hold it, and then n bytes of the upload budget
-// itself and, in the same ask, extra bytes more of it, for the room a body's
-// start takes a second time (bodyRoom.takeRest): what is free now
-// (media.TryReserveUploadParts), or else what it waits for under ctx
-// (media.ReserveUploadParts). One post of a client waits for room at a time:
-// while one does, the client's next post that finds no room is refused at
-// once with errUploadShare too. The queue for room is in the order posts
-// asked, so without that a few clients, each within its share, could put
-// their bodies' worth of posts in it ahead of everyone else's, each to hold
-// its room for a while once it got it, and keep other image posts waiting;
-// with it, each such client has one post in the queue. Of the functions it
-// returns, give gives back the n bytes of both, and giveExtra the extra.
-func (a *App) reserveUpload(ctx context.Context, r *http.Request, n, extra int64) (give, giveExtra func(), err error) {
+// reserveUpload takes room for a multipart post's body, which holds held bytes
+// of the upload budget already: n bytes of its client's share first
+// (clientUploadShare, the client as shareKey counts it), refused at once with
+// errUploadShare when the client's other posts and what this one holds already
+// hold it, and then n bytes of the upload budget itself and, in the same ask,
+// extra bytes more of it, for the room a body's start takes a second time
+// (bodyRoom.takeRest): what is free now (media.TryReserveUploadParts), or else
+// what it waits for under ctx (media.ReserveUploadParts). One post of a client
+// waits for room at a time: while one does, the client's next post that finds
+// no room is refused at once with errUploadShare too. The queue for room is in
+// the order posts asked, so without that a few clients, each within its share,
+// could put their bodies' worth of posts in it ahead of everyone else's, each
+// to hold its room for a while once it got it, and keep other image posts
+// waiting; with it, each such client has one post in the queue. Of the
+// functions it returns, give gives back the n bytes of both, and giveExtra the
+// extra.
+//
+// A post that holds room waits for more only while the posts waiting hold no
+// more than waitingRoom of the budget between them, its own included; past
+// that it is refused at once with media.ErrBusy, as a post that waited in vain
+// is, to be read past and answered 503 (turnAway). A body holds room for what
+// it has sent while it waits for its next piece, and for its first eighth
+// while it waits for the rest (admitBody), and the queue is in order, so a
+// large ask at its head holds up the small ones behind it. Posts that waited
+// holding room waited on one another: fifty-seven 8 MiB bodies sent at once,
+// each of which had sent its eighth, held 57 MiB between them, too little was
+// left for the rest of any, and nothing that would have given room back was
+// being read, so all of them waited until they gave up ten seconds on, and
+// most were answered 503. What the posts waiting hold now leaves room for the
+// largest ask there is: the posts not waiting are being read or processed, and
+// either give their room back in time or come to wait in turn, so the first
+// post in the queue gets its room, and then the next.
+func (a *App) reserveUpload(ctx context.Context, r *http.Request, held, n, extra int64) (give, giveExtra func(), err error) {
 	client := shareKey(clientIP(r, a.cfg.TrustedProxyHops))
 	share, ok := a.uploadShares.take(client, n)
 	if !ok {
@@ -671,10 +707,10 @@ func (a *App) reserveUpload(ctx context.Context, r *http.Request, n, extra int64
 	}
 	reserved, ok := media.TryReserveUploadParts(n, extra)
 	if !ok {
-		waited, ok := a.uploadShares.wait(client)
-		if !ok {
+		waited, err := a.uploadShares.wait(client, held, a.waitingRoom())
+		if err != nil {
 			share()
-			return nil, nil, errUploadShare
+			return nil, nil, err
 		}
 		reserved, err = media.ReserveUploadParts(ctx, n, extra)
 		waited()
@@ -687,6 +723,16 @@ func (a *App) reserveUpload(ctx context.Context, r *http.Request, n, extra int64
 		reserved[0]()
 		share()
 	}, reserved[1], nil
+}
+
+// waitingRoom is the most of the upload budget that the posts waiting for more
+// room in it may hold between them (reserveUpload): the budget less the most a
+// body may be, which is the largest ask a post makes, the rest of a body of
+// that size with the second room for its start (bodyRoom.takeRest). That is
+// 55 MiB at the default attachment limit, and 32 MiB at the largest
+// (maxUploadLimit).
+func (a *App) waitingRoom() int64 {
+	return media.UploadBudget - (a.cfg.MaxUploadBytes + multipartOverhead)
 }
 
 // readMultipart reads a multipart post's text fields and its image, from a

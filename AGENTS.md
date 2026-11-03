@@ -1205,7 +1205,16 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   granted together hold the whole budget, each waiting for its copy, until the first gave
   up and was answered `503` (`TestBodiesUnderWayDoNotWaitOnEachOthersRoom`); a body being
   read holds nine eighths of its size of the budget, so seven are read at once at the
-  default limit and one at the largest (`clientUploadShare`); a wait for a piece is the
+  default limit and one at the largest (`clientUploadShare`); a body waits for a piece
+  holding what it has sent and for its rest holding its eighth, so posts that waited
+  holding room waited on one another, and fifty-seven 8 MiB bodies sent at once, each with
+  its eighth in, held 57 MiB, left too little for the rest of any, and all waited out
+  their ten seconds, most to be answered `503`: now the posts waiting hold no more of the
+  budget between them than `waitingRoom`, the budget less the most a body may be (55 MiB
+  at the default limit), so the first of them gets its room once the posts not waiting
+  have given theirs back, and a post that holds room and would wait past that is turned
+  away at once as busy, answered `503`
+  (`TestBodiesWaitingForRoomLeaveRoomForTheFirstOfThem`); a wait for a piece is the
   server's, and moves the body's deadlines on by as long (`pacedBody.pause`); and the
   grace is the whole 5 s from the first byte (`TestIdleBodiesDoNotHoldUpOtherImagePosts`,
   `TestABodyOverALongRoundTripIsTaken`). A body without a `Content-Length` (chunked) would
