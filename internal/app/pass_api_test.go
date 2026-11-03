@@ -1888,12 +1888,14 @@ func TestPassRenewalOfAPassThatIsGone(t *testing.T) {
 // its deadline and its term so its owner can reissue it, and all that time an
 // id left in it would tie its payer to a Pass that has gone and to whoever
 // else renewed it. Clearing writes to pass_orders alone, so no other Pass's
-// row is stamped by it; an order renewing another Pass names it still; and a
-// cleared order, collected, makes a new Pass. A checkout and a deletion both
-// take the Pass lock, so whichever comes second sees all the first did: a
-// Pass deleted while Stripe is opening its renewal's checkout leaves no order
-// (TestPassRenewalOfAPassThatIsGone), and one deleted after the order is
-// written clears it, as here.
+// row is stamped by it; an order renewing another Pass, paid or not, names it
+// still and renews it once collected; and a cleared order, collected by its
+// claim or by a reissue code, makes a new Pass and hands over its code, the
+// same code again when asked again with the same nonce. A checkout and a
+// deletion both take the Pass lock, so whichever comes second sees all the
+// first did: a Pass deleted while Stripe is opening its renewal's checkout
+// leaves no order (TestPassRenewalOfAPassThatIsGone), and one deleted after
+// the order is written clears it, as here.
 func TestPassThatIsGoneIsNamedByNoOrder(t *testing.T) {
 	for _, gone := range []struct {
 		name string
@@ -1913,7 +1915,7 @@ func TestPassThatIsGoneIsNamedByNoOrder(t *testing.T) {
 		}},
 	} {
 		t.Run(gone.name, func(t *testing.T) {
-			p := passServer(t, nil)
+			p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
 			idOf := func(code string) int64 {
 				t.Helper()
 				canonical, _ := parsePassCode(code)
@@ -1944,17 +1946,25 @@ func TestPassThatIsGoneIsNamedByNoOrder(t *testing.T) {
 
 			// Its holder and somebody they shared the code with each pay to
 			// renew it, and a third opens a renewal checkout and pays nothing
-			// yet. Another Pass has a renewal paid and waiting too.
+			// yet. The sharer loses their claim, and the owner reissues their
+			// renewal while the Pass is still there. Another Pass has a
+			// renewal paid and waiting too, and one opened and not paid yet.
 			issued := p.buy("pi_bought")
 			id := idOf(issued.Pass)
 			p.paid(p.checkout(issued.Pass), "pi_renewal")
 			sharer := p.otherBrowser()
 			sharer.paid(sharer.checkout(issued.Pass), "pi_shared_renewal")
 			p.otherBrowser().checkout(issued.Pass)
+			status, _, reissue := p.reissueCode("mod-key", "pi_shared_renewal")
+			if status != http.StatusOK {
+				t.Fatalf("a reissue code for the sharer's renewal: status %d", status)
+			}
 			other := p.otherBrowser()
 			kept := other.buy("pi_other")
 			keptID := idOf(kept.Pass)
 			other.paid(other.checkout(kept.Pass), "pi_other_renewal")
+			late := p.otherBrowser()
+			lateSession := late.checkout(kept.Pass)
 			if n := naming(id); n != 3 {
 				t.Fatalf("%d orders name the Pass before it goes, want its 3 renewals", n)
 			}
@@ -1967,27 +1977,41 @@ func TestPassThatIsGoneIsNamedByNoOrder(t *testing.T) {
 			if n := naming(id); n != 0 {
 				t.Fatalf("%d orders still name the Pass once it is %s, want none", n, gone.name)
 			}
-			if n := p.count("pass_orders"); n != 4 {
-				t.Fatalf("%d orders left once the Pass is %s, want all 4 kept", n, gone.name)
+			if n := p.count("pass_orders"); n != 5 {
+				t.Fatalf("%d orders left once the Pass is %s, want all 5 kept", n, gone.name)
 			}
-			if n := naming(keptID); n != 1 {
-				t.Fatalf("%d orders name the other Pass, want its renewal still", n)
+			if n := naming(keptID); n != 2 {
+				t.Fatalf("%d orders name the other Pass, want its two renewals, paid and unpaid, still", n)
 			}
 			if after := stamps(keptID); after != before {
 				t.Fatalf("the other Pass's xmin and xmax went from %s to %s", before, after)
 			}
 
-			for _, b := range []*passHarness{p, sharer} {
-				status, made := b.claim()
-				if status != http.StatusOK || made.Status != "issued" || !passCodeShape(made.Pass) || made.Pass == issued.Pass {
-					t.Fatalf("a renewal of the Pass %s, collected: status %d, %+v; want a new Pass", gone.name, status, made)
-				}
-				if status, _ := p.activate(made.Pass); status != http.StatusOK {
+			status, made := p.claim()
+			if status != http.StatusOK || made.Status != "issued" || !passCodeShape(made.Pass) || made.Pass == issued.Pass {
+				t.Fatalf("a renewal of the Pass %s, collected: status %d, %+v; want a new Pass", gone.name, status, made)
+			}
+			finder := p.otherBrowser()
+			nonce := finder.collectNonce()
+			status, reissued := finder.redeemWith(reissue, nonce)
+			if status != http.StatusOK || reissued.Status != "issued" || !passCodeShape(reissued.Pass) ||
+				reissued.Pass == issued.Pass || reissued.Pass == made.Pass {
+				t.Fatalf("a renewal of the Pass %s, collected by its reissue code: status %d, %+v; want a new Pass", gone.name, status, reissued)
+			}
+			if status, again := finder.redeemWith(reissue, nonce); status != http.StatusOK || again.Status != "issued" || again.Pass != reissued.Pass {
+				t.Fatalf("that reissue code asked again with the same nonce: status %d, %+v; want the same code", status, again)
+			}
+			for _, code := range []string{made.Pass, reissued.Pass} {
+				if status, _ := p.activate(code); status != http.StatusOK {
 					t.Fatalf("the Pass made for a renewal of one %s: status %d", gone.name, status)
 				}
 			}
 			if status, renewed := other.claim(); status != http.StatusOK || renewed.Status != "renewed" {
 				t.Fatalf("the other Pass's renewal: status %d, %+v", status, renewed)
+			}
+			late.paid(lateSession, "pi_other_late_renewal")
+			if status, renewed := late.claim(); status != http.StatusOK || renewed.Status != "renewed" {
+				t.Fatalf("the other Pass's renewal paid after the Pass %s: status %d, %+v; want the other Pass renewed", gone.name, status, renewed)
 			}
 		})
 	}
