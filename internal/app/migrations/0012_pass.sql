@@ -32,11 +32,12 @@
 --
 -- pass_orders is the exception, as verification_pending is for 0004: a row
 -- there lives from checkout until the Pass is collected, and is deleted the
--- moment it is. Unpaid, it is deleted at the first prune (a checkout, the
--- daily sweep, or a claim from its own browser) after its deadline, a week
--- after checkout (longer while a slow payment confirms), and until then a late
+-- moment it is. Unpaid, it is deleted at the first prune (a checkout, the daily
+-- sweep, or a claim from its own browser) after its deadline, a week after
+-- checkout (longer while a slow payment confirms), and until then a late
 -- payment still counts; paid and never collected, it is kept for its own term
--- past that deadline, so the owner can still reissue it.
+-- past that deadline, so the owner can still reissue it, and counts as gone
+-- from then on, pruned yet or not, as a Pass does a month past its expiry.
 
 CREATE TABLE IF NOT EXISTS passes (
     id         BIGSERIAL PRIMARY KEY,
@@ -51,9 +52,11 @@ CREATE TABLE IF NOT EXISTS passes (
 CREATE INDEX IF NOT EXISTS passes_expires_idx ON passes (expires_at);
 
 -- The payments behind a Pass: the first purchase and every renewal. Refunding
--- or disputing one takes the part of its term still to come off the Pass's
--- expiry and deletes its row; a Pass left with no time to come goes too, and
--- these rows with it.
+-- or disputing one of a Pass not yet gone takes the part of its term still to
+-- come off the Pass's expiry and deletes its row; a Pass left with no time to
+-- come goes too, and these rows with it. Once the Pass is a month past its
+-- expiry, a refund or dispute finds no Pass, and its rows are left to the
+-- prune, which deletes them with it.
 CREATE TABLE IF NOT EXISTS pass_payments (
     payment_hash BYTEA PRIMARY KEY,
     pass_id      BIGINT NOT NULL REFERENCES passes (id) ON DELETE CASCADE,
@@ -135,9 +138,11 @@ CREATE TABLE IF NOT EXISTS pass_revocations (
 -- the buyer wrote in from, and whoever types it on the Pass page is given a new
 -- code. The owner never sees a Pass code. A row lives until its reissue code is
 -- used, replaced by a newer one, cancelled by a refund or a dispute or by a
--- renewal of a Pass whose right had moved, or past its deadline, rounded up to
--- a UTC midnight like an order's. One for a right that moved is refused, and
--- kept, while a renewal of its Pass is under way.
+-- renewal of a Pass whose right had moved, or past its deadline: a week,
+-- rounded up to a UTC midnight like an order's, or sooner if what it is for
+-- goes sooner (a paid order's keep ending, or its Pass a month past its expiry
+-- as that expiry stood when the code was made). One for a right that moved is
+-- refused, and kept, while a renewal of its Pass is under way.
 CREATE TABLE IF NOT EXISTS pass_reissues (
     -- SHA-256 of the reissue code's random characters, which only the
     -- owner's answer, the message to the buyer and the claim that redeems it

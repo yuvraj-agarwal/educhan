@@ -889,15 +889,28 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   a Pass must do the same. A Pass a month past its expiry has gone for every purpose,
   pruned yet or not: every lookup of a Pass but `moveOrigin`'s takes only one whose
   `expires_at` is after `passCutoff(now)`, through `passByToken` and `passWithToken` or
-  in its own query (`renewPass` and `createPassReissue`, for example), so whatever
+  in its own query (`renewPass` and `createPassReissue`, for example), and what a
+  transaction then reads or writes of the Pass it found, under the lock, follows from
+  that lookup (`revokeTerm` after `revokePassPayment`'s, for example), so whatever
   reaches it (such as a check, a post, a renewal, a claim, a reissue code or a refund)
   finds it gone, and the prune just deletes its rows (`TestPassPastItsGraceMonthIsGone`);
-  anything new that looks a Pass up must do the same. Until the prune, an order still
-  naming such a Pass is collected or refunded as one naming none: `renewPass` and
-  `renewalUnderWay` find no Pass, and `moveOrigin`, which a refund of the order calls on
-  it, finds none of its terms still running. `TestPassIsNeverStoredOrLogged`,
-  `TestPassTablesCannotBeJoinedToPosts` and `TestPassSharesOneHourlyBudget` hold it
-  there.
+  anything new that looks a Pass up must do the same. The `now` a lookup is held to is
+  read just before the store call that makes it, so one made after a call to Stripe is
+  held to the clock once Stripe has answered (`createPassOrder`,
+  `TestPassRenewalOfAPassThatIsGone`). Until the prune, an order still naming such a Pass
+  is collected or refunded as one naming none: `renewPass` and `renewalUnderWay` find no
+  Pass, and `moveOrigin`, which a refund of the order calls on it, finds none of its
+  terms still running. A paid order nobody collected has gone the same way once its own
+  term has passed since its deadline, pruned yet or not: every read of a paid order that
+  decides what to do with it holds it to `passOrderKept` (a claim, a reissue code made or
+  redeemed, a refund, Stripe reporting it paid again, and counting it as waiting or as a
+  renewal under way, for example), so the prune only frees its row
+  (`TestPassOrderPastItsKeepIsGone`); anything new that reads a paid order must do the
+  same. A reissue code never outlives what it is for: its deadline is a week, the end of
+  its order's keep, or the moment its Pass has gone, whichever comes first, and a renewal
+  of that Pass afterwards does not move it (`TestPassReissueCodeOutlivesNothing`).
+  `TestPassIsNeverStoredOrLogged`, `TestPassTablesCannotBeJoinedToPosts` and
+  `TestPassSharesOneHourlyBudget` hold it there.
 - **Bump order only.** The index and the catalog list stickies, then threads by their
   last bump, and nothing else moves a thread: no "popular", "trending" or "hot", and no
   ranking by views, likes, replies or images, because ranking by popularity is what

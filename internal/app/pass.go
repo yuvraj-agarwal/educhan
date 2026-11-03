@@ -338,9 +338,10 @@ func termDays(base, expiry time.Time) int {
 	return int(n)
 }
 
-// passClaimDeadline is when an order started at now stops being collectable
-// by its claim: a week on, rounded up to a UTC midnight, so the stored
-// deadline dates a checkout to the day and not the microsecond.
+// passClaimDeadline is the deadline of an order started at now: a week on,
+// rounded up to a UTC midnight, so the stored deadline dates a checkout to the
+// day and not the microsecond. An unpaid order is nothing to collect from then
+// on, and a paid one is kept for its own term past it (passOrderEnd).
 func passClaimDeadline(now time.Time) time.Time {
 	return dayCeil(now.Add(passClaimTTL))
 }
@@ -660,6 +661,11 @@ func (a *App) handlePassCheckout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The order's deadline counts from the checkout's start, as the cookie
+	// does, but the Pass it renews is held to its month past its expiry by
+	// the clock read now, after the Stripe call, not by the one read before
+	// the lookup above, so one that ran past that month while Stripe was
+	// opening the session is refused like one refunded meanwhile.
 	err = a.store.createPassOrder(r.Context(), passOrder{
 		ClaimHash:      hashToken(claim),
 		SessionHash:    a.passSessionHash(session.ID),
@@ -1207,16 +1213,18 @@ func (b *passBudget) sweepExpired() {
 // nothing left to reissue: it bought nothing, it was refunded or disputed, or
 // what it bought has gone, such as a Pass a month past its expiry (passCutoff),
 // one ended by a refund or a dispute of another of its payments, or a paid
-// order pruned past its term. passReissueRenewal answers one asked for with a
-// renewal's payment, and passReissueNoOrigin one for a Pass that no payment can
-// reissue now: none left on it pays for all its time, or the one the right
-// moved to is waiting on a renewal under way. passReissueSpent refuses a
-// reissue code that gives nothing, which the Pass page knows by these words
-// (PASS_REISSUE_SPENT), and passReissueRenewing one that cannot be used while a
-// renewal of its Pass is under way and is not spent by being refused.
+// order nobody collected for its own term past its deadline (passOrderKept).
+// passReissueRenewal answers one asked for with a renewal's payment, and
+// passReissueNoOrigin one for a Pass that no payment can reissue now: none left
+// on it pays for all its time, or the one the right moved to is waiting on a
+// renewal under way. passReissueSpent refuses a reissue code that gives
+// nothing, which the Pass page knows by these words (PASS_REISSUE_SPENT), and
+// passReissueRenewing one that cannot be used while a renewal of its Pass is
+// under way and is not spent by being refused.
 const (
 	passReissueMissing = "no Pass or paid order is left from that payment: it bought nothing, it was refunded or disputed, " +
-		"or what it bought has gone, such as a Pass a month past its expiry or one ended by a refund or dispute of another of its payments"
+		"or what it bought has gone, such as a Pass a month past its expiry, one ended by a refund or dispute of another of its payments, " +
+		"or a paid order nobody collected for its own term past its deadline"
 	passReissueRenewal = "that payment renewed a Pass; reissue it with the payment that bought the Pass, " +
 		"or, if that one was refunded or disputed, with the one renewal that then paid for all the time it had left"
 	passReissueNoOrigin = "this Pass can't be reissued now: the payment that bought it was refunded or disputed, " +
@@ -1234,12 +1242,13 @@ type passReissueBody struct {
 
 // handlePassReissue gives a buyer who lost their code a way back, behind the
 // moderation key: a reissue code the owner sends to the address the buyer
-// wrote in from, which works once, until a deadline like an order's. Whoever
-// types it on the Pass page is given a new code for the Pass, and the old one
-// stops working. For a purchase or a renewal paid and never collected, it
-// collects it instead: a renewal's reissue code renews the Pass it was for
-// and hands over no code, or makes a new Pass and hands over its code if
-// that one has gone.
+// wrote in from, which works once, until a deadline like an order's, or
+// sooner when what it is for goes sooner (createPassReissue), which the answer
+// gives. Whoever types it on the Pass page is given a new code for the Pass,
+// and the old one stops working. For a purchase or a renewal paid and never
+// collected, it collects it instead: a renewal's reissue code renews the Pass
+// it was for and hands over no code, or makes a new Pass and hands over its
+// code if that one has gone.
 //
 // The owner never sees a Pass code, so reading Stripe's records beside the
 // Pass tables gives them nothing to post with. Only a Pass's origin, the
@@ -1276,8 +1285,7 @@ func (a *App) handlePassReissue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
-	deadline := passClaimDeadline(now)
-	state, err := a.store.createPassReissue(r.Context(), a.passPaymentHash(pi), hashToken(code), deadline, now)
+	state, deadline, err := a.store.createPassReissue(r.Context(), a.passPaymentHash(pi), hashToken(code), passClaimDeadline(now), now)
 	if err != nil {
 		a.fail(w, r, err, "could not make a reissue code")
 		return
@@ -1359,16 +1367,17 @@ func (a *App) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if outcome == paidUnmatched {
-			// Neither an order kept nor a Pass still there has this payment: a
-			// checkout of something else sold on the same Stripe account, say,
-			// an unpaid order pruned after its deadline and paid after all, or
-			// a delivery repeated after the Pass it bought has gone (a month
-			// past its expiry, or ended by a refund or dispute of another of
-			// its payments). Nothing here can tell which, and none should
-			// become a Pass; the owner checks the payment against the receipt
-			// before refunding it. A repeated delivery while its order or the
-			// Pass it bought is still there, or one for a payment refunded
-			// first, is no news, and is not logged.
+			// No order still there to be paid or still kept, and no Pass still
+			// there, has this payment: a checkout of something else sold on the
+			// same Stripe account, say, an unpaid order pruned after its
+			// deadline and paid after all, or a delivery repeated after the
+			// order or Pass it bought has gone (an order its own term past its
+			// deadline, a Pass a month past its expiry or ended by a refund or
+			// dispute of another of its payments). Nothing here can tell which,
+			// and none should become a Pass; the owner checks the payment
+			// against the receipt before refunding it. A repeated delivery
+			// while its order or the Pass it bought is still there, or one for
+			// a payment refunded first, is no news, and is not logged.
 			a.log.Warn("a paid Stripe checkout matched no open Pass order")
 		}
 	case stripeCheckoutExpired, stripeCheckoutAsyncFailure:
@@ -1436,7 +1445,7 @@ func (a *App) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 const passLockID int32 = 0x50617373 // "Pass"
 
 // passTx runs fn in a transaction holding the Pass lock. A function that runs
-// it and holds a lookup to a bound of now (passCutoff) is given
+// it and holds a lookup to a bound of now (passCutoff, passOrderKept) is given
 // a now its caller reads just before calling it, so the bound is the moment
 // the request reached the store, earlier than the lookup by no more than the
 // wait for the lock. The prune, which only frees rows past such bounds, can be
@@ -1518,14 +1527,16 @@ const (
 )
 
 // markPassOrderPaid records the payment behind an order. It is idempotent,
-// since Stripe may deliver one event more than once, also after the order was
-// collected, when the payment is found on its Pass instead, while that Pass has
-// not gone (passCutoff). A payment already refunded is refused, since Stripe
-// may deliver a refund before a retried "paid", and its order, which can never
-// be paid now, is deleted, so the browser that started it stops waiting for it.
-// An order past its claim deadline is still marked while it is kept, until the
-// next prune: the money has been taken, and a paid order waits to be collected
-// or reissued (prunePasses).
+// since Stripe may deliver one event more than once: before the order is
+// collected, while it is kept (passOrderKept), and after, when the payment is
+// found on its Pass instead, while that Pass has not gone (passCutoff); once
+// either has gone, a delivery again finds nothing, as once it is pruned. A
+// payment already refunded is refused, since Stripe may deliver a refund
+// before a retried "paid", and its order, which can never be paid now, is
+// deleted, so the browser that started it stops waiting for it. An unpaid
+// order past its claim deadline is still marked until something deletes it,
+// the next prune say: the money has been taken, and a paid order waits to be
+// collected or reissued for its own term past that deadline (prunePasses).
 func (s *Store) markPassOrderPaid(ctx context.Context, sessionHash, paymentHash []byte, now time.Time) (paidOutcome, error) {
 	var outcome paidOutcome
 	err := s.passTx(ctx, func(tx pgx.Tx) error {
@@ -1543,8 +1554,8 @@ func (s *Store) markPassOrderPaid(ctx context.Context, sessionHash, paymentHash 
 		tag, err := tx.Exec(ctx, `
 			UPDATE pass_orders SET payment_hash = $2
 			WHERE session_hash = $1
-			  AND (payment_hash IS NULL OR payment_hash = $2)`,
-			sessionHash, paymentHash)
+			  AND (payment_hash IS NULL OR payment_hash = $2 AND `+passOrderKept("", "$3")+`)`,
+			sessionHash, paymentHash, now)
 		if err != nil {
 			return err
 		}
@@ -1591,13 +1602,13 @@ func (s *Store) dropUnpaidPassOrder(ctx context.Context, sessionHash []byte) err
 }
 
 // passClaimWaiting reports whether any of a browser's claims has anything to
-// collect: a paid order, or an unpaid one still inside its deadline. It reads
+// collect: an order still kept (passOrderKept), so a paid one until its own
+// term past its deadline, or an unpaid one still inside its deadline. It reads
 // without the lock, as passByToken does.
 func (s *Store) passClaimWaiting(ctx context.Context, claimHashes [][]byte, now time.Time) (bool, error) {
 	var waiting bool
 	err := s.pool.QueryRow(ctx, `
-		SELECT EXISTS (SELECT 1 FROM pass_orders
-		               WHERE claim_hash = ANY($1) AND (payment_hash IS NOT NULL OR expires_at > $2))`,
+		SELECT EXISTS (SELECT 1 FROM pass_orders WHERE claim_hash = ANY($1) AND `+passOrderKept("", "$2")+`)`,
 		claimHashes, now).Scan(&waiting)
 	return waiting, err
 }
@@ -1648,6 +1659,45 @@ func paymentRevoked(ctx context.Context, tx pgx.Tx, paymentHash []byte) (bool, e
 // it by its id without the bound, which moves nothing for one past its month,
 // since none of its terms still runs.
 func passCutoff(now time.Time) time.Time { return now.Add(-passExpiredGrace) }
+
+// passGoneAt is the moment a Pass that runs out at expires has gone: the first
+// now whose passCutoff is not before expires.
+func passGoneAt(expires time.Time) time.Time { return expires.Add(passExpiredGrace) }
+
+// passOrderEnd is, in SQL, when the pass_orders row that alias names ("o." in
+// a join, or "" for the table's own columns) stops being kept: an unpaid order
+// at its deadline, and a paid one, which waits to be collected or reissued, its
+// own term (days) after that, by when a Pass bought with it at its deadline
+// would have run out. The term counts in whole 24-hour days, so a UTC midnight
+// stays one whatever the session's time zone.
+func passOrderEnd(alias string) string {
+	return "CASE WHEN " + alias + "payment_hash IS NULL THEN " + alias + "expires_at " +
+		"ELSE " + alias + "expires_at + make_interval(hours => 24 * " + alias + "days) END"
+}
+
+// passOrderKept is, in SQL, whether that order is still kept at the time in the
+// parameter now names ("$2", say). A paid order no longer kept has gone for
+// every purpose, exactly as if prunePasses, which deletes it by the same bound,
+// had run already, so the prune only frees its row. Every read of a paid order
+// that decides what to do holds it to this, and anything new that reads one
+// must too; a write that only moves its claim (dropPassClaims) or clears the
+// Pass it names (revokeTerm, prunePasses), and so decides nothing for it, need
+// not. So collecting it, by its claim (claimOne) or by a reissue code
+// (redeemPassReissue), making a reissue code for it (createPassReissue), Stripe
+// reporting it paid again (markPassOrderPaid), a refund of it
+// (revokePassPayment), and counting it as something for a browser to collect
+// (passClaimWaiting, claimPass) or as a renewal waiting to land on its Pass
+// (moveOrigin, renewalUnderWay), for example, each find no order, as once it is
+// pruned. An unpaid order is nothing to collect from its deadline on (claimOne,
+// passClaimWaiting), but a payment Stripe reports for it still counts until it
+// is deleted, by the prune or by a claim from its own browser, say: so marking
+// it paid (markPassOrderPaid), holding it for a slow payment (holdPassOrder),
+// counting it as a renewal under way (renewalUnderWay) and dropping it once
+// Stripe closes its checkout unpaid (dropUnpaidPassOrder), for example, take an
+// unpaid order whatever its deadline.
+func passOrderKept(alias, now string) string {
+	return passOrderEnd(alias) + " > " + now
+}
 
 // passByToken returns the Pass a code hash belongs to at now, run out or not,
 // or errNotFound once it has gone (passCutoff). It reads without the lock.
@@ -1767,8 +1817,7 @@ func (s *Store) claimPass(ctx context.Context, claims []passClaimant, now time.T
 			hashes[i] = c.ClaimHash
 		}
 		return tx.QueryRow(ctx, `
-			SELECT EXISTS (SELECT 1 FROM pass_orders
-			               WHERE claim_hash = ANY($1) AND (payment_hash IS NOT NULL OR expires_at > $2))`,
+			SELECT EXISTS (SELECT 1 FROM pass_orders WHERE claim_hash = ANY($1) AND `+passOrderKept("", "$2")+`)`,
 			hashes, now).Scan(&res.More)
 	})
 	return res, err
@@ -1784,16 +1833,18 @@ func (s *Store) claimPass(ctx context.Context, claims []passClaimant, now time.T
 // a month past its expiry (passCutoff) is under no such code any more, and
 // nothing comes back for it.
 //
-// An unpaid order past its deadline is deleted, as prunePasses would. A paid
-// order is collected whatever its deadline: it was paid for.
+// An order no longer kept (passOrderKept) is deleted, as prunePasses would,
+// and nothing comes of it: an unpaid one past its deadline, and a paid one its
+// own term past that. A paid order is collected past its deadline until then:
+// it was paid for.
 func claimOne(ctx context.Context, tx pgx.Tx, claimHash []byte, c passCompletion) (claimResult, error) {
 	var payment []byte
 	var renewID *int64
 	var days int
-	var deadline time.Time
+	var kept bool
 	err := tx.QueryRow(ctx, `
-		SELECT payment_hash, renew_pass_id, days, expires_at FROM pass_orders
-		WHERE claim_hash = $1`, claimHash).Scan(&payment, &renewID, &days, &deadline)
+		SELECT payment_hash, renew_pass_id, days, `+passOrderKept("", "$2")+` FROM pass_orders
+		WHERE claim_hash = $1`, claimHash, c.Now).Scan(&payment, &renewID, &days, &kept)
 	if errors.Is(err, pgx.ErrNoRows) {
 		id, expires, err := passWithToken(ctx, tx, c.TokenHash, c.Now)
 		return claimResult{Issued: id != 0, IssuedExpiresAt: expires, pass: id}, err
@@ -1801,13 +1852,13 @@ func claimOne(ctx context.Context, tx pgx.Tx, claimHash []byte, c passCompletion
 	if err != nil {
 		return claimResult{}, err
 	}
-	if payment == nil && c.Now.Before(deadline) {
+	if payment == nil && kept {
 		return claimResult{Waiting: true}, nil
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM pass_orders WHERE claim_hash = $1`, claimHash); err != nil {
 		return claimResult{}, err
 	}
-	if payment == nil {
+	if payment == nil || !kept {
 		return claimResult{}, nil
 	}
 	// Revoking deletes the order, so this never holds while the lock does its
@@ -1902,29 +1953,44 @@ const (
 
 // createPassReissue records a reissue code for a payment: a Pass's origin, or
 // a paid order nobody collected. A Pass that has gone (passCutoff) is no
-// payment's. A newer reissue code for the same payment replaces the one
-// before it. A right that moved to a renewal (moveOrigin) gives no reissue
-// code while the Pass is being renewed (renewalUnderWay).
-func (s *Store) createPassReissue(ctx context.Context, paymentHash, tokenHash []byte, deadline, now time.Time) (reissueState, error) {
+// payment's, nor is a paid order no longer kept (passOrderKept). A newer
+// reissue code for the same payment replaces the one before it. A right that
+// moved to a renewal (moveOrigin) gives no reissue code while the Pass is
+// being renewed (renewalUnderWay).
+//
+// The reissue code is good until deadline, the caller's week, or sooner when
+// what it is for goes sooner, so it never outlives that: for an order, the end
+// of its keep (passOrderEnd), and for a Pass, the moment it has gone, a month
+// past its expiry as it is now (passGoneAt), which a renewal of the Pass
+// afterwards does not move for the code. The deadline the code is given is
+// returned, to answer.
+func (s *Store) createPassReissue(ctx context.Context, paymentHash, tokenHash []byte, deadline, now time.Time) (reissueState, time.Time, error) {
 	var state reissueState
+	var until time.Time
 	err := s.passTx(ctx, func(tx pgx.Tx) error {
-		state = reissueMissing
+		state, until = reissueMissing, deadline
 		if revoked, err := paymentRevoked(ctx, tx, paymentHash); err != nil || revoked {
 			return err
 		}
-		var uncollected bool
-		if err := tx.QueryRow(ctx, `
-			SELECT EXISTS (SELECT 1 FROM pass_orders WHERE payment_hash = $1)`, paymentHash).Scan(&uncollected); err != nil {
+		var keptUntil time.Time
+		err := tx.QueryRow(ctx, `
+			SELECT `+passOrderEnd("")+` FROM pass_orders WHERE payment_hash = $1 AND `+passOrderKept("", "$2"),
+			paymentHash, now).Scan(&keptUntil)
+		switch {
+		case err == nil:
+			until = minTime(until, keptUntil)
+		case !errors.Is(err, pgx.ErrNoRows):
 			return err
-		}
-		if !uncollected {
+		default:
 			var origin, orphaned bool
+			var expires time.Time
 			err := tx.QueryRow(ctx, `
 				SELECT p.origin IS NOT NULL,
-				       NOT EXISTS (SELECT 1 FROM pass_payments o WHERE o.pass_id = p.pass_id AND o.origin IS NOT NULL)
+				       NOT EXISTS (SELECT 1 FROM pass_payments o WHERE o.pass_id = p.pass_id AND o.origin IS NOT NULL),
+				       s.expires_at
 				FROM pass_payments p JOIN passes s ON s.id = p.pass_id
 				WHERE p.payment_hash = $1 AND s.expires_at > $2`,
-				paymentHash, passCutoff(now)).Scan(&origin, &orphaned)
+				paymentHash, passCutoff(now)).Scan(&origin, &orphaned, &expires)
 			switch {
 			case errors.Is(err, pgx.ErrNoRows):
 				return nil
@@ -1945,15 +2011,16 @@ func (s *Store) createPassReissue(ctx context.Context, paymentHash, tokenHash []
 				state = reissueNoOrigin
 				return nil
 			}
+			until = minTime(until, passGoneAt(expires))
 		}
 		state = reissueReady
-		_, err := tx.Exec(ctx, `
+		_, err = tx.Exec(ctx, `
 			INSERT INTO pass_reissues (token_hash, payment_hash, expires_at) VALUES ($1, $2, $3)
 			ON CONFLICT (payment_hash) DO UPDATE SET token_hash = EXCLUDED.token_hash, expires_at = EXCLUDED.expires_at`,
-			tokenHash, paymentHash, deadline)
+			tokenHash, paymentHash, until)
 		return err
 	})
-	return state, err
+	return state, until, err
 }
 
 // renewalUnderWay reports whether a payment holds the right to reissue its
@@ -1963,17 +2030,19 @@ func (s *Store) createPassReissue(ctx context.Context, paymentHash, tokenHash []
 // and somebody else's time with it, so it waits: an unpaid order goes when
 // Stripe closes its checkout, or once it is past its deadline and pruned, by
 // prunePasses or by a claim from its own browser (claimOne), since Stripe can
-// still report it paid until then (markPassOrderPaid); a refunded or disputed
-// one goes at once; and a collected one takes the right away (renewPass). A
-// Pass that has gone (passCutoff) has no renewal under way, as once the
-// prune has cleared it from its orders.
+// still report it paid until then (markPassOrderPaid); a paid one, once it is
+// no longer kept (passOrderKept); a refunded or disputed one goes at once; and
+// a collected one takes the right away (renewPass). A Pass that has gone
+// (passCutoff) has no renewal under way, as once the prune has cleared it from
+// its orders.
 func renewalUnderWay(ctx context.Context, tx pgx.Tx, paymentHash []byte, now time.Time) (bool, error) {
 	var renewing bool
 	err := tx.QueryRow(ctx, `
 		SELECT EXISTS (SELECT 1 FROM pass_payments p JOIN passes s ON s.id = p.pass_id
 		                                             JOIN pass_orders o ON o.renew_pass_id = p.pass_id
-		               WHERE p.payment_hash = $1 AND p.origin = 'moved' AND s.expires_at > $2)`,
-		paymentHash, passCutoff(now)).Scan(&renewing)
+		               WHERE p.payment_hash = $1 AND p.origin = 'moved' AND s.expires_at > $2
+		                 AND (o.payment_hash IS NULL OR `+passOrderKept("o.", "$3")+`))`,
+		paymentHash, passCutoff(now), now).Scan(&renewing)
 	return renewing, err
 }
 
@@ -1990,7 +2059,9 @@ func renewalUnderWay(ctx context.Context, tx pgx.Tx, paymentHash []byte, now tim
 // no such code, and nothing comes back for it; nor does a renewal that renewed
 // its Pass, which made none under that code. A reissue code made for a Pass's
 // origin and used once that Pass has gone is spent on nothing, as once the Pass
-// is pruned.
+// is pruned. One made for a paid order runs out when the order stops being
+// kept (createPassReissue), and the order is collected here only while it is
+// kept (passOrderKept) all the same.
 //
 // A reissue code for a right that moved to a renewal (moveOrigin) is not used
 // while the Pass is being renewed, paid or not yet (renewalUnderWay): the
@@ -2034,7 +2105,8 @@ func (s *Store) redeemPassReissue(ctx context.Context, tokenHash []byte, c passC
 		var renewID *int64
 		var days int
 		err = tx.QueryRow(ctx, `
-			DELETE FROM pass_orders WHERE payment_hash = $1 RETURNING renew_pass_id, days`, payment).Scan(&renewID, &days)
+			DELETE FROM pass_orders WHERE payment_hash = $1 AND `+passOrderKept("", "$2")+`
+			RETURNING renew_pass_id, days`, payment, c.Now).Scan(&renewID, &days)
 		switch {
 		case err == nil:
 			res, err = collectPassOrder(ctx, tx, payment, renewID, days, c)
@@ -2063,6 +2135,13 @@ func maxTime(a, b time.Time) time.Time {
 	return b
 }
 
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
+}
+
 // What revoking a payment undid.
 type revocation int
 
@@ -2086,9 +2165,12 @@ func (s *Store) revokePassPayment(ctx context.Context, paymentHash []byte, now t
 	var res revocation
 	err := s.passTx(ctx, func(tx pgx.Tx) error {
 		res = revokedNothing
+		// An order no longer kept (passOrderKept) is taken back as none, as
+		// once it is pruned, and its row is left to that prune.
 		var renewID *int64
 		err := tx.QueryRow(ctx, `
-			DELETE FROM pass_orders WHERE payment_hash = $1 RETURNING renew_pass_id`, paymentHash).Scan(&renewID)
+			DELETE FROM pass_orders WHERE payment_hash = $1 AND `+passOrderKept("", "$2")+`
+			RETURNING renew_pass_id`, paymentHash, now).Scan(&renewID)
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 		case err != nil:
@@ -2224,18 +2306,20 @@ func moveOrigin(ctx context.Context, tx pgx.Tx, passID int64, now time.Time) err
 		UPDATE pass_payments SET origin = 'moved'
 		WHERE pass_id = $1 AND ends_at > $2
 		  AND NOT EXISTS (SELECT 1 FROM pass_payments WHERE pass_id = $1 AND origin IS NOT NULL)
-		  AND NOT EXISTS (SELECT 1 FROM pass_orders WHERE renew_pass_id = $1 AND payment_hash IS NOT NULL)
+		  AND NOT EXISTS (SELECT 1 FROM pass_orders o
+		                  WHERE o.renew_pass_id = $1 AND o.payment_hash IS NOT NULL AND `+passOrderKept("o.", "$2")+`)
 		  AND (SELECT count(*) FROM pass_payments WHERE pass_id = $1 AND ends_at > $2) = 1`,
 		passID, now)
 	return err
 }
 
-// prunePasses deletes what has outlived its use: unpaid orders past their
-// deadline; paid orders nobody collected, once a Pass bought with one at its
-// deadline would have run out too (the deadline plus the order's own term);
-// reissue codes past their deadline; remembered refunds past their month; and
-// Passes a month past expiry, which can no longer be renewed and are bought
-// anew instead, and which count as gone from that moment (passCutoff), so this
+// prunePasses deletes what has outlived its use: orders no longer kept
+// (passOrderKept), unpaid ones past their deadline and paid ones nobody
+// collected once a Pass bought with one at its deadline would have run out too
+// (the deadline plus the order's own term); reissue codes past their deadline;
+// remembered refunds past their month; and Passes a month past expiry, which
+// can no longer be renewed and are bought anew instead. A paid order and a
+// Pass count as gone from that moment (passOrderKept, passCutoff), so this
 // only frees their rows. A Pass that goes is cleared from every order that
 // renews it, as revokeTerm clears one, so no order kept names a deleted Pass,
 // and collecting one makes a new Pass. Checkout runs it, and so does the daily
@@ -2245,9 +2329,7 @@ func (s *Store) prunePasses(ctx context.Context, now time.Time) error {
 		_, err := tx.Exec(ctx, `
 			WITH r AS (DELETE FROM pass_revocations WHERE expires_at <= $1),
 			     i AS (DELETE FROM pass_reissues WHERE expires_at <= $1)
-			DELETE FROM pass_orders
-			WHERE CASE WHEN payment_hash IS NULL THEN expires_at
-			           ELSE expires_at + make_interval(hours => 24 * days) END <= $1`, now)
+			DELETE FROM pass_orders WHERE NOT (`+passOrderKept("", "$1")+`)`, now)
 		if err != nil {
 			return err
 		}

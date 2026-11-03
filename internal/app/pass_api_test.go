@@ -5314,6 +5314,238 @@ func TestPassPastItsGraceMonthIsGone(t *testing.T) {
 	}
 }
 
+// TestPassOrderPastItsKeepIsGone holds a paid order nobody collected to one
+// keep rule, as TestPassPastItsGraceMonthIsGone holds a Pass to one grace
+// rule: once it is its own term past its deadline (passOrderKept), it has gone
+// for every purpose, before any prune, exactly as once the prune has deleted
+// it, and an hour before that it is there for every purpose. Collecting it by
+// its claim or by a reissue code made before, telling the browser it has
+// something to collect, making a reissue code for it, Stripe reporting it paid
+// again, a refund of it, and counting it as a renewal waiting to land on its
+// Pass, when the right to reissue that Pass moves and while it has moved, all
+// agree.
+func TestPassOrderPastItsKeepIsGone(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		past bool
+	}{
+		{"an hour inside its keep", false},
+		{"an hour past its keep", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
+			ctx := context.Background()
+
+			// Each order is paid in a browser of its own and nobody collects
+			// it. The first gets a reissue code once it has aged, the second
+			// had one made before.
+			made := p.otherBrowser()
+			made.paid(made.checkout(""), "pi_made")
+			redeemed := p.otherBrowser()
+			redeemed.paid(redeemed.checkout(""), "pi_redeemed")
+			_, _, redeemedCode := p.reissueCode("mod-key", "pi_redeemed")
+			// The third is collected by its claim.
+			claimed := p.otherBrowser()
+			claimed.paid(claimed.checkout(""), "pi_claimed")
+			// The fourth is beside one that has not aged, under another
+			// claim cookie of the same browser.
+			fresh := p.otherBrowser()
+			freshSession := fresh.checkout("")
+			fresh.paid(freshSession, "pi_fresh")
+			freshToken, _ := fresh.claimCookie()
+			beside := p.otherBrowser()
+			beside.paid(beside.checkout(""), "pi_beside")
+			besideToken, _ := beside.claimCookie()
+			// The fifth is reported paid again, and the sixth refunded.
+			again := p.otherBrowser()
+			againSession := again.checkout("")
+			again.paid(againSession, "pi_again")
+			refunded := p.otherBrowser()
+			refunded.paid(refunded.checkout(""), "pi_refunded")
+			// The seventh renews a Pass whose purchase is refunded once it has
+			// aged, with a renewal collected before it: the right to reissue
+			// that Pass moves to the renewal only once no paid renewal waits.
+			moving := p.otherBrowser()
+			movingPass := moving.buy("pi_moving")
+			moving.renew(movingPass.Pass, "pi_moving_renewal")
+			waiting := p.otherBrowser()
+			waiting.paid(waiting.checkout(movingPass.Pass), "pi_moving_waiting")
+			// The eighth renews a Pass whose right has moved already.
+			moved := p.otherBrowser()
+			movedPass := moved.buy("pi_moved")
+			moved.renew(movedPass.Pass, "pi_moved_renewal")
+			p.refund("pi_moved")
+			if got := p.originOf("pi_moved_renewal"); got != "moved" {
+				t.Fatalf("the moved Pass's renewal is the origin %q, want moved", got)
+			}
+			underWay := p.otherBrowser()
+			underWay.paid(underWay.checkout(movedPass.Pass), "pi_moved_waiting")
+			if redeemedCode == "" {
+				t.Fatal("a reissue code was not made")
+			}
+
+			// Every order but the one beside the aged one is kept until an
+			// hour from now, or was until an hour ago, and nothing has pruned
+			// it since.
+			end := time.Now().Add(time.Hour)
+			if c.past {
+				end = time.Now().Add(-time.Hour)
+			}
+			p.exec(`UPDATE pass_orders SET expires_at = $1::timestamptz - make_interval(hours => 24 * days) WHERE session_hash <> $2`,
+				end, p.app.passSessionHash(freshSession))
+			var keptUntil time.Time
+			if err := p.app.pool.QueryRow(ctx, `SELECT expires_at + make_interval(hours => 24 * days) FROM pass_orders WHERE payment_hash = $1`,
+				p.app.passPaymentHash("pi_made")).Scan(&keptUntil); err != nil {
+				t.Fatal(err)
+			}
+
+			status, out, _ := p.reissueCode("mod-key", "pi_made")
+			if c.past && (status != http.StatusNotFound || out.Error != passReissueMissing) ||
+				!c.past && (status != http.StatusOK || !out.ExpiresAt.Equal(keptUntil)) {
+				t.Errorf("a reissue code for it: status %d, %+v; want it good until %v, the end of its keep", status, out, keptUntil)
+			}
+
+			status, out = p.otherBrowser().redeem(redeemedCode)
+			if c.past && (status != http.StatusForbidden || out.Error != passReissueSpent) ||
+				!c.past && (status != http.StatusOK || out.Status != "issued" || !passCodeShape(out.Pass)) {
+				t.Errorf("a reissue code made for it before, redeemed: status %d, %+v", status, out)
+			}
+
+			if got := claimed.reportsClaim(); got == c.past {
+				t.Errorf("GET /api/pass says there is something to collect: %v", got)
+			}
+			nonce := claimed.collectNonce()
+			status, out = claimed.claimWith(nonce)
+			if c.past && status != http.StatusBadRequest ||
+				!c.past && (status != http.StatusOK || out.Status != "issued" || !passCodeShape(out.Pass)) {
+				t.Errorf("its claim: status %d, %+v", status, out)
+			}
+			code := out.Pass
+			if status, out := claimed.claimWith(nonce); c.past && status != http.StatusBadRequest ||
+				!c.past && (status != http.StatusOK || out.Status != "issued" || out.Pass != code) {
+				t.Errorf("its claim asked again with the same nonce: status %d, %+v", status, out)
+			}
+
+			status, out = fresh.sendingClaimCookies(freshToken, besideToken).claim()
+			if status != http.StatusOK || out.Status != "issued" || out.Claim == c.past {
+				t.Errorf("a claim beside it, under another cookie: status %d, %+v; want the other order collected and more to come %v",
+					status, out, !c.past)
+			}
+
+			if outcome, err := p.app.store.markPassOrderPaid(ctx, p.app.passSessionHash(againSession),
+				p.app.passPaymentHash("pi_again"), time.Now()); err != nil ||
+				outcome != map[bool]paidOutcome{false: paidRecorded, true: paidUnmatched}[c.past] {
+				t.Errorf("reported paid again: %v, %v", outcome, err)
+			}
+
+			if res, err := p.app.store.revokePassPayment(ctx, p.app.passPaymentHash("pi_refunded"), time.Now()); err != nil ||
+				res != map[bool]revocation{false: revokedOrder, true: revokedNothing}[c.past] {
+				t.Errorf("refunding it: %v, %v", res, err)
+			}
+
+			p.refund("pi_moving")
+			if got := p.originOf("pi_moving_renewal"); got != map[bool]string{false: "", true: "moved"}[c.past] {
+				t.Errorf("with it waiting to renew a Pass whose purchase is refunded, that Pass's renewal is the origin %q", got)
+			}
+
+			status, out, _ = p.reissueCode("mod-key", "pi_moved_renewal")
+			if c.past && status != http.StatusOK || !c.past && (status != http.StatusConflict || out.Error != passReissueNoOrigin) {
+				t.Errorf("a reissue code for a right that moved, with it waiting to renew that Pass: status %d, %+v", status, out)
+			}
+
+			if !c.past {
+				return
+			}
+			// Nothing above deleted the orders that aged but the claimed one,
+			// which its claim did as the prune would; the prune deletes them,
+			// and nothing answers differently once it has.
+			if n := p.count("pass_orders"); n != 7 {
+				t.Fatalf("%d orders left before the prune, want the 7 that aged and were not claimed", n)
+			}
+			if err := p.app.store.prunePasses(ctx, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			if n := p.count("pass_orders"); n != 0 {
+				t.Fatalf("%d orders left after the prune, want none", n)
+			}
+			if status, out, _ := p.reissueCode("mod-key", "pi_made"); status != http.StatusNotFound || out.Error != passReissueMissing {
+				t.Errorf("a reissue code for it once pruned: status %d, %+v", status, out)
+			}
+			if outcome, err := p.app.store.markPassOrderPaid(ctx, p.app.passSessionHash(againSession),
+				p.app.passPaymentHash("pi_again"), time.Now()); err != nil || outcome != paidUnmatched {
+				t.Errorf("reported paid again once pruned: %v, %v", outcome, err)
+			}
+		})
+	}
+}
+
+// TestPassReissueCodeOutlivesNothing holds a reissue code's deadline, stored
+// and answered, to what it is for: a week, to the next midnight UTC, unless a
+// paid order's keep ends sooner, or the Pass it gives a new code has gone
+// sooner, a month past its expiry as it was when the code was made. A renewal
+// of that Pass afterwards does not lengthen the code.
+func TestPassReissueCodeOutlivesNothing(t *testing.T) {
+	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
+	ctx := context.Background()
+	stored := func(paymentIntent string) time.Time {
+		t.Helper()
+		var at time.Time
+		if err := p.app.pool.QueryRow(ctx, `SELECT expires_at FROM pass_reissues WHERE payment_hash = $1`,
+			p.app.passPaymentHash(paymentIntent)).Scan(&at); err != nil {
+			t.Fatalf("the reissue code for %s: %v", paymentIntent, err)
+		}
+		return at
+	}
+
+	// A paid order kept two days more.
+	orders := p.otherBrowser()
+	orders.paid(orders.checkout(""), "pi_order_ending")
+	p.exec(`UPDATE pass_orders SET expires_at = $1::timestamptz - make_interval(hours => 24 * days)`, dayCeil(time.Now().Add(48*time.Hour)))
+	var keptUntil time.Time
+	if err := p.app.pool.QueryRow(ctx, `SELECT expires_at + make_interval(hours => 24 * days) FROM pass_orders`).Scan(&keptUntil); err != nil {
+		t.Fatal(err)
+	}
+	status, out, code := p.reissueCode("mod-key", "pi_order_ending")
+	if status != http.StatusOK || !out.ExpiresAt.Equal(keptUntil) || !stored("pi_order_ending").Equal(keptUntil) {
+		t.Fatalf("a reissue code for an order kept two days more: status %d, %+v; want it good until %v", status, out, keptUntil)
+	}
+	if status, out := p.otherBrowser().redeem(code); status != http.StatusOK || out.Status != "issued" {
+		t.Fatalf("redeeming it: status %d, %+v", status, out)
+	}
+
+	// A Pass that has gone in two days, and one in two weeks, whose code is a
+	// week's.
+	ending := p.otherBrowser()
+	endingPass := ending.buy("pi_pass_ending")
+	goneAt := dayCeil(time.Now().Add(48 * time.Hour))
+	p.exec(`UPDATE passes SET expires_at = $1 WHERE token_hash = $2`, goneAt.Add(-passExpiredGrace),
+		p.app.passTokenHash(strings.ReplaceAll(endingPass.Pass, "-", "")))
+	p.exec(`UPDATE pass_payments SET ends_at = $1 WHERE payment_hash = $2`, goneAt.Add(-passExpiredGrace),
+		p.app.passPaymentHash("pi_pass_ending"))
+	later := p.otherBrowser()
+	laterPass := later.buy("pi_pass_later")
+	p.exec(`UPDATE passes SET expires_at = $1 WHERE token_hash = $2`, dayCeil(time.Now().Add(14*24*time.Hour)).Add(-passExpiredGrace),
+		p.app.passTokenHash(strings.ReplaceAll(laterPass.Pass, "-", "")))
+	status, out, code = p.reissueCode("mod-key", "pi_pass_ending")
+	if status != http.StatusOK || !out.ExpiresAt.Equal(goneAt) || !stored("pi_pass_ending").Equal(goneAt) {
+		t.Fatalf("a reissue code for a Pass that has gone in two days: status %d, %+v; want it good until %v", status, out, goneAt)
+	}
+	asked := time.Now()
+	if status, out, _ := p.reissueCode("mod-key", "pi_pass_later"); status != http.StatusOK || !withinAWeek(out.ExpiresAt, asked) {
+		t.Fatalf("a reissue code for a Pass that has gone in two weeks: status %d, %+v; want the first UTC midnight a week on", status, out)
+	}
+
+	// Renewed, the Pass runs a year more, and the code made before stays
+	// good only until the moment the Pass would have gone without it.
+	ending.renew(endingPass.Pass, "pi_pass_ending_renewal")
+	if got := stored("pi_pass_ending"); !got.Equal(goneAt) {
+		t.Fatalf("the renewal moved the reissue code's deadline to %v, want %v", got, goneAt)
+	}
+	if status, out := p.otherBrowser().redeem(code); status != http.StatusOK || out.Status != "issued" || out.Pass == endingPass.Pass {
+		t.Fatalf("redeeming it after the renewal: status %d, %+v", status, out)
+	}
+}
+
 // TestPassLostRenewalAnswer holds what the page relies on when the answer to
 // a renewal never arrives. A renewal that renews its Pass hands over no code,
 // so nothing is kept to answer it again from: asked again with the cookie and
