@@ -10038,10 +10038,12 @@ func pupilsReached(next []string) bool {
 // it's a secret from the other section", "secret santa", "a private discord
 // for the batch", "i have the notes, don't tell anyone"; teacherErrands,
 // for a teacher who is not kept out: "a party for sir"; a surprise for a
-// teacher, a classmate, a group or an occasion: "a surprise for ma'am,
-// don't tell the teachers"), or with a lure beside it (pupilLures: "for
-// free robux", "i'll pay you", "i'll send you gifts", "i'll send gifts"; a
-// surprise for the reader: "i have a surprise for you"); a meeting is none
+// teacher, a classmate, a group, an occasion or a name: "a surprise for
+// ma'am, don't tell the teachers", "a surprise for kabir"), or with a lure
+// beside it (pupilLures: "for free robux", "i'll pay you", "i'll send you
+// gifts", "i'll send gifts", not "we'll buy gifts" or "i'll send gifts to
+// everyone" (pupilGiven); a surprise for the reader: "i have a surprise for
+// you", "a surprise for my juniors" (pupilReader)); a meeting is none
 // in a school's or a group's place ("meeting at lunch", "lets meet in the
 // library", "in room 12"). "Just us" is secrecy unless a group follows it
 // ("just us girls", "just us no seniors"). So "class 7 kids dm me, it's a
@@ -10059,21 +10061,21 @@ func pupilsSought(ws []string) bool {
 			// "i'll send you gifts", "i'll pay you", "gifts for you",
 			// "free money", "i'll send gifts"; not "ma'am's gift".
 			before := ws[max(0, i-2):i]
-			lured = lured || anyIn(before, objectWords) || hasWord(before, "free") || anyIn(before, pupilGivers) ||
+			lured = lured || anyIn(before, objectWords) || hasWord(before, "free") || pupilGiven(ws, i) ||
 				i+2 < len(ws) && is(ws[i+1], "for") && objectWords[ws[i+2]] ||
 				is(w, "pay") && i+1 < len(ws) && objectWords[ws[i+1]]
 		case is(w, "surprise") || is(w, "something") && i+1 < len(ws) && pupilTreats[ws[i+1]]:
 			// For the reader, a lure: "a surprise for you", "something
 			// special for you", "a surprise for whoever dms first".
-			lured = lured || pupilReaders[forWhom(ws[i+1:])]
+			lured = lured || pupilReader(ws[i+1:])
 		case is(w, "for"):
 			// A surprise is an errand in a post that is for a teacher, a
-			// classmate, a group or an occasion: "a surprise for ma'am",
-			// "for riya's birthday", "dm me for the class party ... it's a
-			// surprise".
-			who := forWhom(ws[i:])
+			// classmate, a group, an occasion or a name: "a surprise for
+			// ma'am", "for riya's birthday", "a surprise for kabir", "dm me
+			// for the class party ... it's a surprise".
+			who, at := forWhom(ws[i:])
 			surprise = surprise || teacherWords[who] || pupilGroups[who] || pupilMates[who] ||
-				pupilErrands[who] || teacherErrands[who]
+				pupilErrands[who] || teacherErrands[who] || pupilNamed(ws[i:], at)
 		}
 	}
 	surprise = surprise && hasWord(ws, "surprise")
@@ -10128,21 +10130,117 @@ func pupilsSought(ws []string) bool {
 }
 
 // forWhom reads, in the three words at the start of ws, "for" and whom it
-// names after any determiner or owner: "for ma'am" is "ma'am", "party for
-// sir's birthday" is "birthday", "for you" is "you"; "" when there is none.
-func forWhom(ws []string) string {
+// names after any determiner or owner, and where in ws that word is: "for
+// ma'am" is "ma'am", "party for sir's birthday" is "birthday", "for you" is
+// "you"; "" and -1 when there is none.
+func forWhom(ws []string) (string, int) {
 	for i := 0; i < len(ws) && i < 3; i++ {
 		if !is(ws[i], "for") {
 			continue
 		}
-		for _, w := range ws[i+1 : min(len(ws), i+4)] {
-			if !determiners[w] && !ownerWord(w) {
-				return w
+		for k := i + 1; k < min(len(ws), i+4); k++ {
+			if !determiners[ws[k]] && !ownerWord(ws[k]) {
+				return ws[k], k
 			}
 		}
-		return ""
+		return "", -1
 	}
-	return ""
+	return "", -1
+}
+
+// pupilReader reports the reader named after "for" in the three words at
+// the start of ws (forWhom): "for you", "for whoever dms first", and "for
+// my juniors", the year asked to get in touch being the poster's juniors;
+// not "for my juniors' farewell" or "for my juniors farewell".
+func pupilReader(ws []string) bool {
+	who, at := forWhom(ws)
+	if pupilReaders[who] {
+		return true
+	}
+	if at < 1 || !is(ws[at-1], "my") || !is(who, "junior") && !is(who, "juniors") {
+		return false
+	}
+	return at+1 == len(ws) || !pupilErrands[ws[at+1]] && !teacherErrands[ws[at+1]] && !pupilOccasions[ws[at+1]]
+}
+
+// pupilNamed reports a name at ws[at], whom "for" names with no determiner
+// or owner before it (forWhom) and with the clause ending after it: "a
+// surprise for kabir, keep it secret". A name in small letters is told
+// from other words only by lowerName, which takes many adjectives, so it
+// is one only with a clause after it that does not go on as a noun phrase
+// would (pupilNameEnds: not "for new friends") and when it is none of
+// pupilNotNames, which are said after "for" to the reader or of nobody
+// ("for free", "for cutie").
+func pupilNamed(ws []string, at int) bool {
+	return at > 0 && is(ws[at-1], "for") && lowerName(ws[at]) && !pupilNotNames[ws[at]] &&
+		(at+1 == len(ws) || pupilNameEnds[ws[at+1]])
+}
+
+// pupilGiven reports gifts (ws[i]) after one of pupilGivers in the two
+// words before them, given by the poster with no one but the reader to
+// receive them: "i'll send gifts", "i'll give gifts to all of you". The
+// poster's group giving them is a class's plan ("we'll buy gifts", "we are
+// buying gifts", pupilWe nearer the giver than "i"), and so are gifts to a
+// teacher, a group, everyone, an occasion or a name (pupilRecipient:
+// "i'll send gifts to everyone", "gifts for teachers day"). Money and
+// other lures after a giver stay one whoever gives them.
+func pupilGiven(ws []string, i int) bool {
+	g := -1
+	for k := max(0, i-2); k < i; k++ {
+		if pupilGivers[ws[k]] {
+			g = k
+		}
+	}
+	if g < 0 {
+		return false
+	}
+	if !is(ws[i], "gift") && !is(ws[i], "gifts") {
+		return true
+	}
+	for k := g - 1; k >= max(0, g-3); k-- {
+		if pupilWe[ws[k]] {
+			return false
+		}
+		if firstPersonSubjects[ws[k]] {
+			break
+		}
+	}
+	return !pupilRecipient(ws[i+1:])
+}
+
+// pupilRecipient reports someone other than the reader named after "to"
+// or "for" at the start of ws, after any determiner or owner: a teacher
+// ("to the teachers", "for teachers day"), a group of the school's that
+// is not the reader's kind (pupilGiftGroups: "the class", "the seniors",
+// not "the girls" or "my juniors"), everyone, an occasion (pupilOccasions,
+// "secret santa") or a name (pupilNamed). Not when "who", "that" or "of"
+// follows them: "everyone who dms", "all of you".
+func pupilRecipient(ws []string) bool {
+	if len(ws) < 2 || !is(ws[0], "to") && !is(ws[0], "for") {
+		return false
+	}
+	k := 1
+	for k < len(ws) && k < 4 && (determiners[ws[k]] || ownerWord(ws[k])) {
+		k++
+	}
+	if k == len(ws) {
+		return false
+	}
+	who, next := ws[k], ""
+	if k+1 < len(ws) {
+		next = ws[k+1]
+	}
+	if relativeWords[next] || is(next, "of") {
+		return false
+	}
+	switch {
+	case teacherWords[who], is(who, "everyone"), is(who, "everybody"), pupilOccasions[who],
+		is(who, "secret") && is(next, "santa"):
+		return true
+	case pupilGiftGroups[who]:
+		return !(is(ws[k-1], "my") && (is(who, "junior") || is(who, "juniors")))
+	}
+	return pupilNamed(ws, k)
 }
 
 var (
@@ -10179,7 +10277,7 @@ var (
 	// ("a surprise for ma'am", "for our classmate", "for the farewell"),
 	// and a lure for pupilReaders, as "something" and one of pupilTreats
 	// is ("a surprise for you", "something special for you"); so are gifts
-	// after pupilGivers with no one named ("i'll send gifts").
+	// after pupilGivers with no one named ("i'll send gifts", pupilGiven).
 	pupilErrands = canonSetOf(`notes note doubts doubt help jee neet exam exams test tests paper papers syllabus
 		study studying homework hw assignment assignments quiz form forms project projects team teams book books
 		tuition tuitions revision revise revising olympiad competition trip fee fees result results timetable
@@ -10190,6 +10288,19 @@ var (
 	pupilReaders   = canonSetOf(`you u ya yall y'all whoever anyone anybody`)
 	pupilTreats    = canonSetOf(`special nice cool fun`)
 	pupilGivers    = canonSetOf(`send sending sent give giving buy buying`)
+	// pupilWe are the poster's group as the subject of pupilGivers ("we'll
+	// buy gifts"); pupilGiftGroups and pupilOccasions are groups and
+	// occasions gifts are for, not the reader ("gifts for the class", "for
+	// the farewell"). pupilNameEnds may start the clause after a name
+	// ("for kabir, keep it secret"), and pupilNotNames, which lowerName
+	// takes, are said after "for" of the reader or of nobody.
+	pupilWe         = canonSetOf(`we we're we'll we've we'd let's lets`)
+	pupilGiftGroups = canonSetOf(`class batch section team squad seniors senior juniors junior`)
+	pupilOccasions  = canonSetOf(`birthday bday farewell party fest celebration diwali christmas xmas eid holi rakhi`)
+	pupilNameEnds   = canonSetOf(`keep dont don't do it it's its pls plz please so but shh tell from on at this
+		tomorrow today tonight we we're i i'm i'll she he they is will ok okay`)
+	pupilNotNames = canonSetOf(`free sure once good real best special lucky cute cutie baby babe dear darling love
+		sweetie sweetheart honey favourite favorite fav crush new`)
 )
 
 // canonSetOf is setOf for words looked up in the loose view as well.
