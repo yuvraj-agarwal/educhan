@@ -309,13 +309,14 @@ answer's retry is refused, an answer about a Pass that has left the browser drop
 every Pass answer drawn only on the Pass page, a claim's nonce and the forgetting of a
 claim, a reissue code's nonce kept through a refusal and dropped by Remove and Forget
 but not by Stop, nothing collected while a claim is being dropped, a code copied here
-with Copy the code emptied from the clipboard by Remove and Forget, another tab's
-removal and forgetting followed, the age screen storing its outcome alone and sending
-nothing, the badge's 18+ box and the Pass's never ticked in advance or kept, `/api/site`
-fetched only past the age screen, the header's Pass link only where there is a Pass, the
-paused wording the server's own, KaTeX's options, and the highlighting cap. They are a
-floor, not a proof; a change that trips one has changed one of those properties and
-needs a browser check before the test changes.
+with Copy the code emptied from the clipboard by Forget, and by Remove when it is the
+code of the Pass removed, a notice about the Pass held taken off once it is no longer
+held as it was said, another tab's removal and forgetting followed, the age screen
+storing its outcome alone and sending nothing, the badge's 18+ box and the Pass's never
+ticked in advance or kept, `/api/site` fetched only past the age screen, the header's
+Pass link only where there is a Pass, the paused wording the server's own, KaTeX's
+options, and the highlighting cap. They are a floor, not a proof; a change that trips one
+has changed one of those properties and needs a browser check before the test changes.
 
 ### Front end conventions
 
@@ -503,14 +504,17 @@ needs a browser check before the test changes.
   page sends it in the body of the requests that use it on purpose: checking a code
   (`/api/pass/activate`, one typed in or the one held, checked again) and renewing
   (`/api/pass/checkout`). "Show the code" puts it on the screen and nowhere else, and
-  "Copy the code" on the clipboard, which Remove the Pass and Forget this browser empty
-  again inside their click, whatever is on it by then, when this tab copied it with Copy
-  the code since it was loaded and no copy or cut in this tab has certainly put something
-  on the clipboard since, unless another tab has since taken that code itself out of
-  storage, removing it or storing another in its place, or storage was cleared from
-  outside the page with that code gone (`passCodeCopied`, `emptyCopiedPassCode`,
-  `followPassStorage`); another tab storing the same code again, renewed say, or changing
-  a Pass whose code is not the one copied, leaves it to be emptied. Each Copy the code
+  "Copy the code" on the clipboard, which Forget this browser empties again inside its
+  click, whatever is on it by then, when this tab copied it with Copy the code since it
+  was loaded and no copy or cut in this tab has certainly put something on the clipboard
+  since, unless another tab has since taken that code itself out of storage, removing it
+  or storing another in its place, or storage was cleared from outside the page with that
+  code gone (`passCodeCopied`, `emptyCopiedPassCode`, `followPassStorage`); another tab
+  storing the same code again, renewed say, or changing a Pass whose code is not the one
+  copied, leaves it to be emptied. Remove the Pass does the same when the code copied
+  is the one it removes (`emptyCopiedHeldCode`), and leaves another code copied with
+  the button there, a new code the browser could not store say, which removing the Pass
+  does not take, so the steps that enter it afterwards still work. Each Copy the code
   copies the code in its own panel, and the held Pass's code, shown, has an id of its own
   (`pass-held-code`), which Show the code focuses, since a code just handed over
   (`pass-code`) can be on the page beside it. A document event that may have put nothing
@@ -612,8 +616,15 @@ needs a browser check before the test changes.
   code on the panel still needed, remove that Pass, which takes the panel off the page,
   and enter it, and otherwise to allow the site to store data and enter it, never that
   the browser stores nothing, which the page cannot tell from a full store
-  (`PASS_NOT_KEPT` the same). `has` is a Pass held or a code shown that the browser could
-  not keep and has not held since, the panel's own or one carried (`unkept`). Buy is held
+  (`PASS_NOT_KEPT` the same). A code not held whose Pass's expiry has passed (`ranOut`),
+  as it came, a reissue code's for a Pass in its month of grace say, or since, is never
+  called ready: kept and gone, it says its Pass has run out and needs it to renew; not
+  kept, it says it has run out, with what would let it be renewed where the box is drawn,
+  the site allowed to store data and the code entered with no good Pass held, and beside
+  a good Pass held, in a browser that holds no good Pass, with no step to give that
+  Pass up for it (`PASS_RUN_OUT_NOT_KEPT` says the same of a run-out code typed in that
+  could not be stored). `has` is a Pass held or a code shown that the browser could not
+  keep and has not held since, the panel's own or one carried (`unkept`). Buy is held
   back while `has`, while the page shows a purchase being collected (`open` and not
   `has`, which draws the collecting panel in place of the forms) and while sales are
   paused, and none is drawn when the page could not be read or the Pass is not on sale;
@@ -756,13 +767,23 @@ needs a browser check before the test changes.
   (`passRunOutText`): Renew below while the Pass is on sale, `PASS_PAUSED` while sales are
   paused, on a page that could not be read that it can be renewed once the page loads, and
   no more than that it ran out on one from a server without the Pass. Once the drawing
-  `refreshFailedPass` sets off has landed, or come to nothing, a notice still saying them
-  (`noticeSays`) is said again from what it brought only if its words change, so never
-  twice alike, and taken off (`clearNotice`) if this browser no longer holds that Pass run
-  out, removed, replaced or renewed meanwhile, say; said again, it does not scroll the
-  page (`showNotice`), since the reader may have scrolled away since the press, and focus
-  stays where that drawing left it, on Check it again or the held Pass's panel, say. The
-  held panel's Check it again and the steps beside a code the browser could not keep are
+  `refreshFailedPass` sets off has landed, or come to nothing, its own notice, while on
+  screen, told by the node its words are in and not by its words (`noticeShows`), so a
+  later press's in the same words is left be, is said again from what it brought only if
+  its words change, so never twice alike, and goes if this browser no longer holds that
+  Pass as it was stored (`dropStalePassNotice`), removed, replaced or renewed meanwhile,
+  say; said again, it does not scroll the page (`showNotice`), since the reader may have
+  scrolled away since the press, and focus stays where that drawing left it, on Check it
+  again or the held Pass's panel, say. Every notice that says what this browser holds (a
+  Pass taken on, good until a date, run out or renewed, one it could not store, or none)
+  is noted beside the Pass stored as it was said (`notePassHeld` into `passNoticesHeld`,
+  keyed by the notice's node; `passHeldRecord`, the code with its stored expiry or run-out
+  mark, read without the clock, so a slow clock keeps a true notice), and every drawing of
+  the Pass page, whatever set it off (`drawPass`), takes it off once the browser no longer
+  holds that; any other notice, a refusal say, stays. Another tab's Remove or Forget
+  takes the notice off this tab's Pass page at once, by its mark (`stopForPassForget`)
+  or by the removal itself (`followPassStorage`), and Stop's mark leaves it. The held
+  panel's Check it again and the steps beside a code the browser could not keep are
   offered only where the code box is drawn (`box`). Another tab's Remove, Forget, new code
   or finding that its code is no longer valid reaches this one by the `storage` event.
   Remove and Forget set their mark (`forgetPassClaim`) before they take the Pass from

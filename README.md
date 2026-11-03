@@ -1113,15 +1113,23 @@ not-found view.
   Pass is not on sale; over a checkout left behind (Start again, back from Stripe's
   cancel link, or a checkout not followed to Stripe), which the page goes on collecting,
   Buy is drawn again by those rules. So it is offered beside the code of a Pass the
-  browser no longer holds only once no other Pass is held here, its data cleared say. A
-  code handed over that the browser could not store, and has not held since, is said to
-  be not sent with posts and not shown again once the reader leaves the page, with what
-  would keep it here wherever the code box is drawn: with no good Pass held, to allow the
-  site to store data and enter it below; with a good Pass held, which a code typed in
-  will not replace, to write down the new code, the one held and any other code on the
-  panel still needed, remove that Pass, which takes the panel off the page, and enter it
-  below. A code educhan finds no longer valid as the Pass held here, answering Check it
-  again, the check after a reissue code or a renewal, Renew or a post, in any tab of the
+  browser no longer holds only once no other Pass is held here, its data cleared say.
+  The code just handed over, when the browser could not store it and has not held it
+  since, is said to be not sent with posts and not shown again once the reader leaves
+  the page, with what would keep it here wherever the code box is drawn: with no good
+  Pass held, to allow the site to store data and enter it below; with a good Pass held,
+  which a Pass code typed in will not replace, to write down the new code, the one
+  held and any other code on the panel still needed, remove that Pass, which takes the
+  panel off the page, and enter it below. A code carried from an earlier panel that the
+  browser could not store is said not to be in this browser, to be written down now,
+  since it won't be shown again once the reader leaves the page. A code handed over
+  whose Pass has already run out, as it came (a reissue code's, for a Pass in its month
+  of grace, say) or since, is never called ready, kept or not: it is said to have run
+  out and to need renewing, and, not stored, to be renewed once the site may store data
+  and it is entered below, with no good Pass held, or, beside a good Pass held, in a
+  browser that holds no good Pass, so no step says to give a good Pass up for it. A
+  code educhan finds no longer valid as the Pass held here, answering Check it again,
+  the check after a reissue code or a renewal, Renew or a post, in any tab of the
   browser, is worth nothing to write down and goes from its panel at once, in every tab
   that shows it, even when it is a code that one just handed over took the place of, or
   one carried from an earlier panel, typed back in. Any other code stays there until the
@@ -1137,13 +1145,23 @@ not-found view.
   is on another page, or that they leave before it is drawn, is shown when they come back
   to the Pass page, beside any code it took the place of or carried. A code typed in
   after it ran out, until a month past its expiry, is kept as run out, with its date, to
-  renew. A Pass that has run out here can be checked again, in case it was renewed
-  elsewhere, wherever the code box is drawn. When that check, or a code typed in, finds
-  it has run out, the notice says so with what the page beside it offers: Renew below,
-  the word that sales are paused, or, on a page that could not be read, that it can be
-  renewed once the page loads. That page is asked for again; a notice still on screen is
-  then said again from what comes back if its words change, without moving the page, and
-  taken off if this browser no longer holds that Pass, run out. A renewal the page
+  renew, where the browser can store it; one it cannot store is said to have run out as
+  well as not to be stored, so it can't be renewed here until the site may store data and
+  it is entered again. A Pass that has run out here can be checked again, in case it was
+  renewed elsewhere, wherever the code box is drawn. When that check, or a code typed in
+  and kept, finds it has run out, the notice says so with what the page beside it offers:
+  Renew below, the word that sales are paused, or, on a page that could not be read, that
+  it can be renewed once the page loads. That page is asked for again; the notice, while
+  it is still the one that press put up (a later press's in the same words is another),
+  is then said again from what comes back if its words change, without moving the page.
+  A notice that says what the browser holds (a Pass taken on, good until a date, run
+  out or renewed, one the browser could not store, or none) goes when the Pass page is
+  drawn again, whatever sets that off, once the browser no longer holds that Pass as it
+  was stored when the notice was said: the same code with the same date, or still marked
+  run out, judged by what is stored and never by this computer's clock, so a slow clock
+  does not take off a true notice. Remove the Pass or Forget this browser pressed in
+  another tab, or any other removal of the Pass there, takes whatever notice is on this
+  tab's Pass page off at once; Stop collecting it here leaves it. A renewal the page
   collects is checked against the Pass it holds (`/api/pass/activate`) before it says
   that Pass is renewed; one it cannot match to the Pass it holds is reported as a renewal
   of a Pass, by a payment from this browser or by the reissue code that brought it, with
@@ -1194,18 +1212,22 @@ not-found view.
   the request, and a Buy or a Renew still waiting on another checkout does so too when
   Stop is pressed while it waits, in this tab or another. A press still waiting when the
   tab leaves educhan sends nothing and gives its button back without a word, so a page
-  brought back from the back-forward cache has it ready. Remove and Forget also empty the
-  clipboard, whatever is on it by then, when the code was copied with **Copy the code**
-  in the same tab since educhan was last opened there and no copy or cut in that tab has
-  certainly put something there since, unless another tab has since taken that code
+  brought back from the back-forward cache has it ready. Forget also empties the
+  clipboard, whatever is on it by then, when a code was copied with **Copy the code**
+  in the same tab since educhan was last opened there and no copy or cut in that tab
+  has certainly put something there since, unless another tab has since taken that code
   itself out of the browser's storage, removing it or storing another in its place, or
   storage has been cleared from outside the page and does not hold that code; another
   tab storing the same code again, renewed say, or changing a Pass whose code is not
-  the one copied, leaves it to be emptied. A copy counts when what is selected holds
-  something (a text box's own selection where the box says, the document's for an email
-  or number box, and otherwise text the page itself has selected), and a cut only that
-  way and in a box that can be typed in, or in editable text; one the page cannot be sure
-  of, such as a copy from an email box in some browsers, does not count, so the clipboard
+  the one copied, leaves it to be emptied. Remove does the same when the code copied
+  is that of the Pass it removes, and leaves any other code copied with the button on
+  the clipboard, such as a new code the browser could not store or one it no longer
+  holds, since removing the Pass doesn't take that code, so the steps that enter it
+  afterwards can be followed. A copy counts when what is selected holds something (a
+  text box's own selection where the box says, the document's for an email or number
+  box, and otherwise text the page itself has selected), and a cut only that way and
+  in a box that can be typed in, or in editable text; one the page cannot be sure of,
+  such as a copy from an email box in some browsers, does not count, so the clipboard
   is emptied after it too. A code copied any other way, by hand included, stays until
   something else is copied. Removing the Pass, or forgetting the browser, in another tab
   takes every code just handed over off this tab's screen, kept or not, with any code it
