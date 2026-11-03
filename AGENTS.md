@@ -1005,8 +1005,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   payment and counting it as a renewal under way all hold it to `passOrderPayable`, one
   bound, which ends where a paid order's keep does, so none of them takes an order the
   others have let go (`TestPassOrderPastItsKeepIsGone`,
-  `TestPassReissueWaitsForARenewalUnderWay`). Anything new that reads a paid order, or
-  decides what to do with an unpaid one past its deadline, must do the same. A reissue
+  `TestPassReissueWaitsForARenewalUnderWay`,
+  `TestPassUnpaidOrderIsPayableUntilItsKeepEnds`). Anything new that reads a paid order,
+  or decides what to do with an unpaid one past its deadline, must do the same. A reissue
   code's deadline never runs past what it is for as that stands when the code is made: a
   week, the end of its order's keep, or the moment its Pass would be a month past its
   expiry, whichever comes first; a renewal afterwards does not move it, and a Pass ended

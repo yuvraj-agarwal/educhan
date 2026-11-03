@@ -5586,9 +5586,10 @@ func TestPassOrderPastItsKeepIsGone(t *testing.T) {
 			if !c.past {
 				return
 			}
-			// Nothing above deleted the orders that aged but the two claimed
-			// ones, which their claims did as the prune would; the prune
-			// deletes them, and nothing answers differently once it has.
+			// Nothing above deleted the orders that aged but the third, the
+			// ninth and the eleventh, which their refused claims did as the
+			// prune would; the prune deletes them, and nothing answers
+			// differently once it has.
 			if n := p.count("pass_orders"); n != 8 {
 				t.Fatalf("%d orders left before the prune, want the 8 that aged and were not claimed", n)
 			}
@@ -5611,6 +5612,74 @@ func TestPassOrderPastItsKeepIsGone(t *testing.T) {
 				t.Errorf("left unpaid and reported paid late once pruned, it was warned about %d times", got)
 			}
 		})
+	}
+}
+
+// TestPassUnpaidOrderIsPayableUntilItsKeepEnds holds marking an unpaid order
+// paid (markPassOrderPaid), holding it for a slow payment (holdPassOrder) and
+// counting it as a renewal under way (renewalUnderWay) to their one bound
+// (passOrderPayable) to the microsecond, where TestPassOrderPastItsKeepIsGone
+// and TestPassReissueWaitsForARenewalUnderWay hold them to an hour either side
+// of it: each takes an unpaid order past its deadline a microsecond before the
+// keep it would have once paid ends, and none takes it at that moment.
+func TestPassUnpaidOrderIsPayableUntilItsKeepEnds(t *testing.T) {
+	p := passServer(t, nil)
+	ctx := context.Background()
+	// A right that moved to a renewal when the purchase was refunded, with
+	// the holder's renewal of that Pass left unpaid, and a purchase left
+	// unpaid in another browser.
+	bought := p.buy("pi_bought")
+	p.otherBrowser().renew(bought.Pass, "pi_onlooker")
+	p.refund("pi_bought")
+	if got := p.originOf("pi_onlooker"); got != "moved" {
+		t.Fatalf("the onlooker's renewal is the origin %q, want moved", got)
+	}
+	renewal := p.app.passSessionHash(p.checkout(bought.Pass))
+	purchase := p.app.passSessionHash(p.otherBrowser().checkout(""))
+
+	// Both are past their deadline, with the keep each would have once paid
+	// ending in an hour, at end.
+	p.exec(`UPDATE pass_orders SET expires_at = $1::timestamptz - make_interval(hours => 24 * days) WHERE payment_hash IS NULL`,
+		time.Now().Add(time.Hour))
+	kept := func(session []byte) (deadline, end time.Time) {
+		t.Helper()
+		if err := p.app.pool.QueryRow(ctx, `SELECT expires_at, expires_at + make_interval(hours => 24 * days) FROM pass_orders
+			WHERE session_hash = $1`, session).Scan(&deadline, &end); err != nil {
+			t.Fatal(err)
+		}
+		return deadline, end
+	}
+	deadline, end := kept(renewal)
+	if _, purchaseEnd := kept(purchase); !purchaseEnd.Equal(end) || !deadline.Before(time.Now()) {
+		t.Fatalf("the orders' keeps end at %v and %v, from a deadline of %v; want the same end, past the deadline", end, purchaseEnd, deadline)
+	}
+	onlooker := p.app.passPaymentHash("pi_onlooker")
+	held := end.Add(passPendingPaymentTTL)
+
+	for _, c := range []struct {
+		name   string
+		now    time.Time
+		inside bool
+	}{
+		// At the end first, which takes nothing, then a microsecond before it.
+		{"as the keep it would have once paid ends", end, false},
+		{"a microsecond before that", end.Add(-time.Microsecond), true},
+	} {
+		state, _, err := p.app.store.createPassReissue(ctx, onlooker, hashToken("a reissue code "+c.name), end.Add(7*24*time.Hour), c.now)
+		if err != nil || state != map[bool]reissueState{false: reissueReady, true: reissueNoOrigin}[c.inside] {
+			t.Errorf("a reissue code for the right that moved, %s: %v, %v; want the holder's renewal counted as under way %v",
+				c.name, state, err, c.inside)
+		}
+		if err := p.app.store.holdPassOrder(ctx, renewal, held, c.now); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := kept(renewal); c.inside && !got.Equal(held) || !c.inside && !got.Equal(deadline) {
+			t.Errorf("held for a slow payment %s, the renewal's deadline is %v, from %v; want it held %v", c.name, got, deadline, c.inside)
+		}
+		outcome, err := p.app.store.markPassOrderPaid(ctx, purchase, p.app.passPaymentHash("pi_purchase"), c.now)
+		if err != nil || outcome != map[bool]paidOutcome{false: paidUnmatched, true: paidRecorded}[c.inside] {
+			t.Errorf("the purchase reported paid %s: %v, %v; want it marked %v", c.name, outcome, err, c.inside)
+		}
 	}
 }
 
