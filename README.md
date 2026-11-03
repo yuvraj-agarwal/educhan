@@ -865,9 +865,10 @@ answer is spent, though the response, a `500` saying the server could not check
 the captcha, carries no header. The page keeps its answer through any other
 refusal without that header (the captcha's own refusals carry none, and drop
 it), so the next press goes straight out, and starts the next puzzle as soon as
-one with it arrives, while its form is on screen. A request that brought no
-response at all puts its answer back too, which may have been spent, so the next
-press can be told it was used and solve a fresh one, as after that `500`.
+one with it arrives, while its form is on screen in a browser not forgotten
+since the press. A request that brought no response at all puts its answer back
+too, which may have been spent, so the next press can be told it was used and
+solve a fresh one, as after that `500`.
 
 While a post or a code request waits for its puzzle and its answer, its form
 is held: its boxes and buttons are switched off, and look it, so what is sent

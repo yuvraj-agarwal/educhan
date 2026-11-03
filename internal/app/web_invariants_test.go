@@ -845,7 +845,8 @@ func TestClientAndServerAgreeOnTheCaptcha(t *testing.T) {
 		t.Error("sendWithCaptcha no longer drops a refused answer and resends exactly once")
 	}
 	// Any other refusal keeps the answer unless the server says it spent it,
-	// and then, while its form is on screen, the next puzzle starts at once.
+	// and then, while its form is on screen and the browser not forgotten since
+	// the press, the next puzzle starts at once.
 	if !strings.Contains(code, `const CAPTCHA_SPENT_HEADER = "`+captchaSpentHeader+`";`) ||
 		!strings.Contains(send, `err.headers.get(CAPTCHA_SPENT_HEADER) === "spent"`) ||
 		!strings.Contains(withoutComments(jsFunction(t, script, "api")), "err.headers = res.headers;") {
@@ -1117,7 +1118,8 @@ func TestEachCaptchaAnswerGoesOnOneRequest(t *testing.T) {
 		"try { return await send(answer); } catch (err) {",
 		// Refused without the spent header or a captcha reason, or never
 		// answered: put back. Refused with the header: the next puzzle starts,
-		// for a form still on screen.
+		// for a form still on screen, in a browser not forgotten since the
+		// press.
 		`const reason = err.payload && err.payload.captcha; if (!reason) { ` +
 			`if (!(err.headers && err.headers.get(CAPTCHA_SPENT_HEADER) === "spent")) { keepCaptcha(taken); } ` +
 			`else if (answer && needsIt() && onScreen()) { prepareCaptcha(); } throw err; }`,
@@ -1836,8 +1838,9 @@ func TestAFormSendsOnlyTheBadgeItWasDrawnFor(t *testing.T) {
 // that switching off took back to the form's button, unless the reader has
 // put it somewhere since, without scrolling a reader who has scrolled away
 // from the form back to it; nothing writes into a held form from outside it:
-// not a quote, not a dropped image, whose drop leaves the notice on screen as
-// it was; and app.css shows the held controls switched off.
+// not a quote, not a dropped image, whose drop on a picker only the hold
+// switched off leaves the notice on screen as it was; and app.css shows the
+// held controls switched off.
 func TestAPendingFormIsHeld(t *testing.T) {
 	script := appScript(t)
 	hold := squash(withoutComments(jsFunction(t, script, "holdForm")))

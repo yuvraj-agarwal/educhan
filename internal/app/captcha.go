@@ -568,9 +568,10 @@ func (a *App) checkCaptcha(w http.ResponseWriter, r *http.Request, payload strin
 // reply was lost: spendCaptcha then answers 500 "could not check the captcha"
 // without the header, though the answer is spent. The client keeps its answer
 // through any other refusal without it (the captcha's own refusals carry none,
-// and drop it), so after that 500 its next send is refused as used and it
-// solves again, and, while the request's form is still on screen, it solves the
-// next puzzle as soon as a refusal with it arrives.
+// and drop it), so after that 500 the answer it keeps is refused as used when
+// next sent, and it solves again. While the request's form is still on screen,
+// and the browser has not been forgotten since the press, it solves the next
+// puzzle as soon as a refusal with the header arrives.
 const captchaSpentHeader = "Educhan-Captcha"
 
 // spendCaptcha marks a checked answer used, refusing a second use of it. It

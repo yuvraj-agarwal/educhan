@@ -4533,8 +4533,8 @@ function runCaptchaWorkers(challenge, signal) {
 // can refuse the resend; that refusal keeps the fresh answer, as below.) Any
 // other refusal but that one says whether the server spent the answer before
 // refusing, with the Educhan-Captcha: spent header. A refusal with the header
-// drops the answer and, while its form is on screen, starts the next puzzle at
-// once, so it is ready, or nearly, when the reader presses again: an image
+// drops the answer and, while onScreen() holds (below), starts the next puzzle
+// at once, so it is ready, or nearly, when the reader presses again: an image
 // whose pixels failed to decode once the answer was spent, say, or a cooldown
 // that another request from this address started between flood control's check
 // before the spend and its check after it, a 429 like the one for a cooldown
@@ -4542,9 +4542,10 @@ function runCaptchaWorkers(challenge, signal) {
 // written or for a cooldown found before the spend, leaves the answer held: it
 // is put back for the next press, which then goes straight out. With no answer
 // from the server at all the answer is put back too; if it had been spent, the
-// next request is refused as "used" and solves a fresh one here. So it is after
-// the one refusal that cannot say: a 500 for a spend the database applied but
-// whose reply was lost, which carries no header though the answer is spent.
+// request that next sends it is refused as "used" and solves a fresh one here.
+// So it is after the one refusal that cannot say: a 500 for a spend the
+// database applied but whose reply was lost, which carries no header though the
+// answer is spent.
 // solving(true) and solving(false) bracket the time spent on the puzzle.
 // onScreen() says whether the form the request came from is still on screen
 // (formOnScreen), and the browser not forgotten since the press. A request
@@ -4897,26 +4898,25 @@ el.main.addEventListener("submit", async (event) => {
     // else's, and the note would tell the next person there had been one.
     // What was refused is the credential this post sent (held), and only that
     // one goes: storage may hold another by now, verified since in this
-    // browser, in another tab or in this one by a confirmation answered after
-    // the reader left /verify, or none, forgotten in another tab, and the page
-    // follows that as it follows any such change (followCredentialStorage,
-    // submitVerification). The form offered the one refused, so its option goes
-    // either way. Its box was ticked, so the post it goes on to is one the box
-    // no longer skips the puzzle for: that starts now, as for the reader's own
-    // untick (captchaBadgeToggled), on a form still on screen with some of the
-    // post in it. A form still on screen is told by the refusal's notice
-    // (below). One off the screen, while a post link's lookup loads say, is
-    // told nothing here, so it is noted as for any ticked badge that goes from
-    // under a form (withdrawBadgeOption, starting nothing): the redraw that
-    // draws its page again reads the note with its values (formDraft) and notes
-    // the form it draws (restoreDraft), whose next press is refused once,
-    // rather than posting without the badge unsaid. When storage holds another
-    // badge, which the page keeps, and the browser was not forgotten meanwhile,
-    // a form on screen is told so in its own words (badgeReplacedNotice), not
-    // the server's, and that notice is its one refusal for the badge: a note
-    // left on it while the post was on its way goes, whatever left it
-    // (followCredentialStorage, submitVerification, restoreDraft), so the next
-    // press is not refused for the badge again.
+    // browser, in another tab or by a confirmation in this one, or none,
+    // forgotten since, and the page follows that as it follows any such change
+    // (followCredentialStorage, submitVerification). The form offered the one
+    // refused, so its option goes either way. Its box was ticked, so the post
+    // it goes on to is one the box no longer skips the puzzle for: that starts
+    // now, as for the reader's own untick (captchaBadgeToggled), on a form
+    // still on screen with some of the post in it. A form still on screen is
+    // told by the refusal's notice (below). One off the screen, while a post
+    // link's lookup loads say, is told nothing here, so it is noted as for any
+    // ticked badge that goes from under a form (withdrawBadgeOption, starting
+    // nothing): the redraw that draws its page again reads the note with its
+    // values (formDraft) and notes the form it draws (restoreDraft), whose next
+    // press is refused once, rather than posting without the badge unsaid. When
+    // storage holds another badge, which the page keeps, and the browser was
+    // not forgotten meanwhile, a form on screen is told so in its own words
+    // (badgeReplacedNotice), not the server's, and that notice is its one
+    // refusal for the badge: a note left on it while the post was on its way
+    // goes, whatever left it (followCredentialStorage, submitVerification,
+    // restoreDraft), so the next press is not refused for the badge again.
     const reason = err.payload && err.payload.credential;
     let replaced = false;
     if (held && (reason === "expired" || reason === "revoked")) {

@@ -458,19 +458,19 @@ before the test changes.
   never the index page) keeps the page, dimmed, in place of the skeleton (`keepPage` in
   `render`), with the thread its controls read and the open image left as they are until
   something is drawn in its place (`leavePage`), as every render leaves them, a post
-  link's lookup included, so a refusal answered meanwhile updates the page on screen,
-  and puts the held form itself into the new page in place of the one drawn there, its
-  `<details>` opened (`heldForms`, `captureDraft`, `restoreDraft`); a form answered by
-  then is read for its values like any draft, emptied after a success, and one whose
-  ticked badge the server refused as expired or revoked while it was away is noted
-  (`badgeWithdrawn`), so its next press is refused once. A draft, held or not, is keyed
-  by the page on screen (`drawnFor` in `captureDraft`), never by a render begun since
-  that has not drawn yet, so the second of a double click neither carries the form into
-  the page it goes to nor keeps the page on screen under that page's address. A redraw
-  that fails to load leaves the kept page on screen, held form and all, with the address
-  bar, `renderedPath`, `state.route` and `state.thread` put back as that page was drawn
-  for them (`drawnFor`, noted by the render that drew it, however many redraws of it
-  have failed since) and the error in a notice. The address bar goes back
+  link's lookup included, so a refusal answered while that redraw loads updates the page
+  on screen, and puts the held form itself into the new page in place of the one drawn
+  there, its `<details>` opened (`heldForms`, `captureDraft`, `restoreDraft`); a form
+  answered by then is read for its values like any draft, emptied after a success, and
+  one whose ticked badge the server refused as expired or revoked while it was away is
+  noted (`badgeWithdrawn`), so its next press is refused once. A draft, held or not, is
+  keyed by the page on screen (`drawnFor` in `captureDraft`), never by a render begun
+  since that has not drawn yet, so the second of a double click neither carries the form
+  into the page it goes to nor keeps the page on screen under that page's address. A
+  redraw that fails to load leaves the kept page on screen, held form and all, with the
+  address bar, `renderedPath`, `state.route` and `state.thread` put back as that page
+  was drawn for them (`drawnFor`, noted by the render that drew it, however many redraws
+  of it have failed since) and the error in a notice. The address bar goes back
   (`history.replaceState`) by replacing the history entry the reader is on when the
   redraw fails, so after a link, with nothing pressed while the redraw loads, the
   history holds the kept page twice and the first Back stays on it (`popstate` finds
@@ -512,9 +512,10 @@ before the test changes.
   `404` from `GET /api/captcha` turns it off, the request then going without an answer.
   Any other refusal, or no response at all, puts the answer back, unless it carries
   `Educhan-Captcha: spent` (`CAPTCHA_SPENT_HEADER`, set by `spendCaptcha`, a `429` from
-  the second flood-control check included), which drops it and starts the next puzzle
-  at once if the form is on screen. A post that carries the badge never waits for or
-  sends an answer (`() => state.site.captcha && !held`), and a code request always does.
+  the second flood-control check included), which drops it and starts the next puzzle at
+  once if the form is on screen and the browser not forgotten since the press. A post
+  that carries the badge never waits for or sends an answer
+  (`() => state.site.captcha && !held`), and a code request always does.
   `CAPTCHA_LIFETIME_MS` must be no more than the server's `captchaTTL` less a minute.
   `TestCaptchaAnswerStaysInMemory`, `TestCaptchaIsAskedForOnlyWhenSomeoneWrites`,
   `TestCaptchaIsSkippedOnlyByABadgedPost`, `TestClientAndServerAgreeOnTheCaptcha` (which
