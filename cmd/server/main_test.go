@@ -104,6 +104,15 @@ func sweepEnv(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
+// sweepsOwnTime is what a whole sweep can take of its own, past anything a
+// test holds it up with: it waits a minute and five seconds after its
+// credential rewrite to read the verification tables a last time
+// (statsHandOver in internal/app), and its vacuum tries again for up to a
+// minute (vacuumPatience) while something holds it off, such as a transaction
+// older than the rewrite, which another test's can be, anywhere on the
+// instance. A test that waits for a sweep to exit gives it that and more.
+const sweepsOwnTime = 65*time.Second + time.Minute
+
 // migrateSchema applies every migration to the schema sweepEnv set up, as the
 // sweeper's startup does, and stops there, for a test that needs the schema
 // before the sweep it is about. A sweep run for that would take a minute and
@@ -705,11 +714,10 @@ func TestASlowCommitIsWaitedOnWithoutAStop(t *testing.T) {
 	var err error
 	select {
 	case err = <-sweep.exited:
-	// A minute and five seconds of that is the sweep's wait after its
-	// credential rewrite (statsHandOver in internal/app).
-	case <-time.After(2 * time.Minute):
+	case <-time.After(sweepsOwnTime + time.Minute):
 		sweep.kill()
-		t.Fatalf("the sweep had not exited two minutes after it started; its log:\n%s", sweep.log(started))
+		t.Fatalf("the sweep had not exited %v after it started; its log:\n%s", sweepsOwnTime+time.Minute,
+			sweep.log(started))
 	}
 	text := sweep.log(started)
 	select {
@@ -739,17 +747,14 @@ func TestASlowCommitIsWaitedOnWithoutAStop(t *testing.T) {
 // it, and sweeps. Bounded only from the stop, the unlock would be waited on
 // until two seconds after startup's thirty-second bound, and the sweep would
 // fail then, as a server's startup would, 32 seconds after the unlock was sent.
+//
+// That shows in the exit status, the warning's time and the log's fatal line
+// and missing sweep record, so the exit itself is not timed: what comes after
+// an unlock given up in time is the sweep's own, its wait after the
+// credential rewrite and the vacuum's tries, which no unlock changes.
 func TestAnUnansweredUnlockIsGivenUpWithoutAStop(t *testing.T) {
 	// The two seconds from the unlock, and some to spare.
 	const quickly = 3 * time.Second
-	// Well inside startup's thirty seconds, which the unlock would wait out
-	// were it bounded only from a stop, once the sweep's own wait is added:
-	// every sweep waits a minute and five seconds after its credential
-	// rewrite before it reads the verification tables a last time
-	// (statsHandOver in internal/app), so its exit comes at least that long
-	// after the unlock.
-	const sweepsOwnWait = 65 * time.Second
-	const wellInside = sweepsOwnWait + 10*time.Second
 
 	db := sweepEnv(t)
 	// Migrated here, so the sweep's last statement under the lock is the
@@ -780,18 +785,16 @@ func TestAnUnansweredUnlockIsGivenUpWithoutAStop(t *testing.T) {
 	var err error
 	select {
 	case err = <-sweep.exited:
-	case <-time.After(sweepsOwnWait + time.Minute):
+	case <-time.After(sweepsOwnTime + time.Minute):
 		sweep.kill()
-		t.Fatalf("the sweep had not exited %v after it sent the unlock; its log:\n%s", sweepsOwnWait+time.Minute, sweep.log(sent))
+		t.Fatalf("the sweep had not exited %v after it sent the unlock; its log:\n%s", sweepsOwnTime+time.Minute,
+			sweep.log(sent))
 	}
 	took := time.Since(sent)
 	text := sweep.log(sent)
 
 	if err != nil {
 		t.Errorf("the sweep whose unlock went unanswered ended with %v, want exit status 0; its log:\n%s", err, text)
-	}
-	if took >= wellInside {
-		t.Errorf("the sweep whose unlock went unanswered exited %v after sending it, want under %v", took, wellInside)
 	}
 	// Timed from when the proxy saw the unlock, not from the exit, which
 	// comes after the sweep.

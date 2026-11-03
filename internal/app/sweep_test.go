@@ -612,9 +612,17 @@ func TestSweepStoppedWhileItPrunesEndsAsIfNotStopped(t *testing.T) {
 // is the sweep's part in a stopped Job writing its error and exiting before
 // Cloud Run kills it; the process's part, the close, is cmd/server's
 // (TestStoppedSweepExitsWhenTheDatabaseStopsAnswering).
+//
+// The bound is the prune's alone, so the upper side is timed from when the
+// prune is seen waiting, and close enough that twice the bound shows: the
+// steps before the prune, the credential rewrite and the vacuum, which tries
+// again while something holds it off, such as a transaction older than the
+// rewrite anywhere on the instance, take what they take. The prune starts
+// after the sweep does and before it is seen, so the lower side is timed from
+// the sweep's start.
 func TestSweepsPruneGivesUpAtItsBound(t *testing.T) {
 	var logs syncBuffer
-	const bound = 500 * time.Millisecond
+	const bound = time.Second
 	h := testServerLogging(t, func(cfg *Config) { cfg.spentPruneWithin = bound }, &logs)
 	spentKey := sha256.Sum256([]byte("an answer spent behind a lock that outlasts the prune"))
 	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
@@ -627,15 +635,17 @@ func TestSweepsPruneGivesUpAtItsBound(t *testing.T) {
 	started := time.Now()
 	done := sweepInBackground(h, ctx)
 	h.waitForSpends(pid, 1)
+	seen := time.Now()
 	cancel()
 	report, err := sweepEnded(t, done, bound+5*time.Second)
-	took := time.Since(started)
+	took, waited := time.Since(started), time.Since(seen)
 	release()
 	if !errors.Is(err, context.DeadlineExceeded) || !strings.HasPrefix(err.Error(), "sweep spent captchas: ") {
 		t.Errorf("a prune held past its bound returned %v, want the prune running out of time", err)
 	}
-	if took < bound || took > bound+2*time.Second {
-		t.Errorf("the prune gave up after %v, want about its bound of %v", took, bound)
+	if took < bound || waited > bound+bound/2 {
+		t.Errorf("the prune gave up %v after it was seen waiting, %v into the sweep, want about its bound of %v",
+			waited, took, bound)
 	}
 	if report != (SweepReport{}) {
 		t.Errorf("sweep report = %+v, want nothing done", report)
