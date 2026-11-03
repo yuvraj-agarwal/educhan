@@ -1153,9 +1153,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   own bytes have a budget of their own, `media.UploadBudget` (64 MiB), which
   `parseSubmission` takes from (`media.ReserveUpload`) as it reads a multipart body, for
   what has arrived until an eighth of it has and then for as much as the request's
-  `Content-Length` says, up to the most a body may be (`admitBody`, below), and which
-  the handler gives back when the post is answered (`submission.release`). For that to be
-  what the body costs, `readMultipart` reads the body itself rather than through
+  `Content-Length` says, up to the most a body may be (`admitBody`, below), and which the
+  handler gives back when the post is answered (`submission.release`). For that to be what
+  the body costs, `readMultipart` reads the body itself rather than through
   `ParseMultipartForm`, which keeps a file over its memory limit in a temporary file
   (memory again on Cloud Run) and then hands it over to be copied: the image is read once
   into a buffer the size of what is left of the body (`TestAnUploadIsReadOnce`). Its text
@@ -1264,10 +1264,10 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   the deadline. Its body has `uploadReadTimeout` (30 s) to arrive, counted from its first
   bytes and moved on by each wait for room, so time spent waiting for room is not taken
   out of the body's: read deadlines set on the connection through an
-  `http.ResponseController` (`pacedBody`), moved on once `ReserveUpload`
-  has returned, whatever it returned (the logging middleware's `statusRecorder` carries an
-  `Unwrap` so the controller reaches the connection underneath); a body slower than that
-  is the client's doing, answered `400` (`upload too slow`, `uploadTooSlowStatus`,
+  `http.ResponseController` (`pacedBody`), moved on once `ReserveUpload` has returned,
+  whatever it returned (the logging middleware's `statusRecorder` carries an `Unwrap` so
+  the controller reaches the connection underneath); a body slower than that is the
+  client's doing, answered `400` (`upload too slow`, `uploadTooSlowStatus`,
   `isReadTimeout`), as is one that falls behind its pace (`pacedBody`), not the `503` a
   server with no room gives, and a body that waited for room is not answered `upload too
   slow` for the server's load. It is not `408`: Chromium takes a `408` on a reused
