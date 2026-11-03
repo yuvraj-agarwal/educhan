@@ -9751,30 +9751,47 @@ func pupilsReached(next []string) bool {
 // us", being alone and a meeting are secrecy only with nothing they would
 // study, sign up for or do as a group (pupilErrands: "for the quiz team,
 // it's a secret from the other section", "secret santa", "a private discord
-// for the batch", "a surprise for ma'am, don't tell the teachers", "i have
-// the notes, don't tell anyone"; teacherErrands, for a teacher who is not
-// kept out: "a party for sir"), or with a lure beside it (pupilLures: "for
-// free robux", "i'll pay you", "i'll send you gifts"); a meeting is none in
-// a school's or a group's place ("meeting at lunch", "lets meet in the
+// for the batch", "i have the notes, don't tell anyone"; teacherErrands,
+// for a teacher who is not kept out: "a party for sir"; a surprise for a
+// teacher, a classmate, a group or an occasion: "a surprise for ma'am,
+// don't tell the teachers"), or with a lure beside it (pupilLures: "for
+// free robux", "i'll pay you", "i'll send you gifts", "i'll send gifts"; a
+// surprise for the reader: "i have a surprise for you"); a meeting is none
+// in a school's or a group's place ("meeting at lunch", "lets meet in the
 // library", "in room 12"). "Just us" is secrecy unless a group follows it
 // ("just us girls", "just us no seniors"). So "class 7 kids dm me, it's a
-// secret", "lets meet after school, just us" and "i'll send you gifts, keep
-// it between us" are held.
+// secret", "class 7 kids dm me, it's a surprise, don't tell anyone", "lets
+// meet after school, just us" and "i'll send you gifts, keep it between
+// us" are held.
 func pupilsSought(ws []string) bool {
-	lured := false
+	lured, surprise := false, false
 	for i, w := range ws {
 		switch {
 		case is(w, "robux") || is(w, "vbucks") || is(w, "v-bucks"):
 			lured = true
 		case pupilLures[w]:
-			// Given to the reader: "i'll send you gifts", "i'll pay you",
-			// "gifts for you", "free money"; not "ma'am's gift".
+			// Given to the reader or by the poster with no one named:
+			// "i'll send you gifts", "i'll pay you", "gifts for you",
+			// "free money", "i'll send gifts"; not "ma'am's gift".
 			before := ws[max(0, i-2):i]
-			lured = lured || anyIn(before, objectWords) || hasWord(before, "free") ||
+			lured = lured || anyIn(before, objectWords) || hasWord(before, "free") || anyIn(before, pupilGivers) ||
 				i+2 < len(ws) && is(ws[i+1], "for") && objectWords[ws[i+2]] ||
 				is(w, "pay") && i+1 < len(ws) && objectWords[ws[i+1]]
+		case is(w, "surprise") || is(w, "something") && i+1 < len(ws) && pupilTreats[ws[i+1]]:
+			// For the reader, a lure: "a surprise for you", "something
+			// special for you", "a surprise for whoever dms first".
+			lured = lured || pupilReaders[forWhom(ws[i+1:])]
+		case is(w, "for"):
+			// A surprise is an errand in a post that is for a teacher, a
+			// classmate, a group or an occasion: "a surprise for ma'am",
+			// "for riya's birthday", "dm me for the class party ... it's a
+			// surprise".
+			who := forWhom(ws[i:])
+			surprise = surprise || teacherWords[who] || pupilGroups[who] || pupilMates[who] ||
+				pupilErrands[who] || teacherErrands[who]
 		}
 	}
+	surprise = surprise && hasWord(ws, "surprise")
 	kept := func(i int) bool {
 		for _, p := range ws[max(0, i-3):i] {
 			if keptFrom[p] {
@@ -9789,7 +9806,7 @@ func pupilsSought(ws []string) bool {
 	for i, w := range ws {
 		forTeacher = forTeacher || teacherWords[strings.TrimSuffix(w, "'s")] && !kept(i)
 	}
-	errand := (anyIn(ws, pupilErrands) || forTeacher && anyIn(ws, teacherErrands)) && !lured
+	errand := (anyIn(ws, pupilErrands) || surprise || forTeacher && anyIn(ws, teacherErrands)) && !lured
 	for i, w := range ws {
 		var next string
 		if i+1 < len(ws) {
@@ -9825,6 +9842,24 @@ func pupilsSought(ws []string) bool {
 	return false
 }
 
+// forWhom reads, in the three words at the start of ws, "for" and whom it
+// names after any determiner or owner: "for ma'am" is "ma'am", "party for
+// sir's birthday" is "birthday", "for you" is "you"; "" when there is none.
+func forWhom(ws []string) string {
+	for i := 0; i < len(ws) && i < 3; i++ {
+		if !is(ws[i], "for") {
+			continue
+		}
+		for _, w := range ws[i+1 : min(len(ws), i+4)] {
+			if !determiners[w] && !ownerWord(w) {
+				return w
+			}
+		}
+		return ""
+	}
+	return ""
+}
+
 var (
 	// pupilWords are a school year's students or kids, offered notes as
 	// often as looked for (pupilsSought).
@@ -9853,14 +9888,23 @@ var (
 	pupilLures  = canonSetOf(`money cash pay gift gifts reward rewards`)
 	// pupilErrands are what a year's students are got in touch with for:
 	// notes, doubts, an exam, a form, a team, a club, a debate, a group
-	// chat for the class, secret santa, a surprise; teacherErrands are
-	// errands only with a teacher named: a gift, a party or a plan for one.
+	// chat for the class, secret santa; teacherErrands are errands only
+	// with a teacher named: a gift, a party or a plan for one. A surprise
+	// is an errand only for one of these, a teacher, a group or pupilMates
+	// ("a surprise for ma'am", "for our classmate", "for the farewell"),
+	// and a lure for pupilReaders, as "something" and one of pupilTreats
+	// is ("a surprise for you", "something special for you"); so are gifts
+	// after pupilGivers with no one named ("i'll send gifts").
 	pupilErrands = canonSetOf(`notes note doubts doubt help jee neet exam exams test tests paper papers syllabus
 		study studying homework hw assignment assignments quiz form forms project projects team teams book books
 		tuition tuitions revision revise revising olympiad competition trip fee fees result results timetable
 		practical sample farewell fest event committee council election santa club clubs debate debates mun
-		surprise discord gc formula formulas sheet sheets chess choir band match tournament`)
+		discord gc formula formulas sheet sheets chess choir band match tournament`)
 	teacherErrands = canonSetOf(`gift gifts present presents birthday card cake party plan plans planning`)
+	pupilMates     = canonSetOf(`classmate classmates friend friends bestie bff senior seniors junior juniors`)
+	pupilReaders   = canonSetOf(`you u ya yall y'all whoever anyone anybody`)
+	pupilTreats    = canonSetOf(`special nice cool fun`)
+	pupilGivers    = canonSetOf(`send sending sent give giving buy buying`)
 )
 
 // canonSetOf is setOf for words looked up in the loose view as well.
