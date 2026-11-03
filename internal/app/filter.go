@@ -7191,7 +7191,9 @@ func stagedIn(ws []string) bool {
 // not "in the school play" or "in the auditorium"); or, unless the clause
 // sets the act on the stage (staged), a time of day ("tomorrow", "tonight",
 // "now"), though one straight after a play is the play's own ("the school
-// play tomorrow").
+// play tomorrow"), or a day of the week, though not one with a night or a
+// show after it or after "the end" ("on Friday night", "at the end on
+// Saturday"): "I'm Brutus in the school play. I stab Rahul on monday".
 func offStage(ws []string, staged bool) bool {
 	for i, w := range ws {
 		switch {
@@ -7201,6 +7203,14 @@ func offStage(ws []string, staged bool) bool {
 			return true
 		case offStageTimes[w] && !staged && !(i > 0 && (playNouns[ws[i-1]] || is(ws[i-1], "play"))):
 			return true
+		case stageDays[w] && !staged && !(i+1 < len(ws) && dayShows[ws[i+1]]):
+			end := false
+			for k := 1; k < i; k++ {
+				end = end || is(ws[k], "end") && is(ws[k-1], "the")
+			}
+			if !end {
+				return true
+			}
 		case stagePrepositions[w] && i+1 < len(ws):
 			np := readNoun(ws[i+1:])
 			if np.place() && !stagePlaces[np.head] && !(i+1+np.n < len(ws) && (playNouns[ws[i+1+np.n]] ||
@@ -7238,6 +7248,11 @@ var (
 	offStageTimes     = canonSetOf(`tomorrow tmrw tmr tonight today now kal aaj morning evening afternoon lunch recess`)
 	stagePrepositions = canonSetOf(`at in to near outside behind inside into by`)
 	stagePlaces       = canonSetOf(`auditorium hall halls assembly`)
+	// stageDays are the days of the week, and dayShows, after one, make
+	// it a performance's: "on Friday night".
+	stageDays = canonSetOf(`monday tuesday wednesday thursday friday saturday sunday mon tue tues wed thu thurs
+		fri sat sun`)
+	dayShows = canonSetOf(`night nights evening show shows performance matinee`)
 )
 
 // labMishap reports a lab, named in the words named, blown up, set on fire
