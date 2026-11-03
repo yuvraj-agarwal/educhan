@@ -560,17 +560,17 @@ has changed one of those properties and needs a browser check before the test ch
   alone, since it sets no mark, moves no counter and clears no cookie, so a checkout
   started after the forget, in any tab, keeps its claim. The dropped claim's cookie can
   stay with nothing under it, and a drop that cannot reach educhan says so on whatever
-  page the tab is on, as every claim notice is (below), in words for the forget
-  pressed in the other tab (`PASS_ORDER_KEPT`, by what its mark holds,
+  page the tab is on, as every claim notice but Stop's is (below), in words for the
+  forget pressed in the other tab (`PASS_ORDER_KEPT`, by what its mark holds,
   `passForgetHeardLast`) that drop the claim with no more than it did: Stop collecting
-  it here again after a Stop, Stop collecting it here after Remove, which leaves no
-  Pass to remove, and Forget this browser again after Forget. Checkouts go one
-  at a time, since each answer's cookie takes the place of the one before, whichever
-  started first: each keeps a mark while its request is on its way (`openPassCheckout`,
-  under `educhan:pass-checkout:` and a random token, holding the time), and a checkout
-  waits in `passForgetsSettled` until no other's mark is left (`passCheckoutLeft`, each
-  for at most `PASS_FORGET_WAIT_MS`), so one pressed after a forget is never overtaken by
-  one the forget overtook. Leaving the document (`pagehide`) calls off a checkout not yet
+  it here again after a Stop, Stop collecting it here after Remove, which leaves no Pass
+  to remove, and Forget this browser again after Forget. Checkouts go one at a time,
+  since each answer's cookie takes the place of the one before, whichever started first:
+  each keeps a mark while its request is on its way (`openPassCheckout`, under
+  `educhan:pass-checkout:` and a random token, holding the time), and a checkout waits
+  in `passForgetsSettled` until no other's mark is left (`passCheckoutLeft`, each for at
+  most `PASS_FORGET_WAIT_MS`), so one pressed after a forget is never overtaken by one
+  the forget overtook. Leaving the document (`pagehide`) calls off a checkout not yet
   answered too, and moves `passLeft`, so a press still waiting in `passForgetsSettled`
   then sends nothing (`PASS_LEFT_MEANWHILE`): its button comes back without a notice, and
   a page brought back from the back-forward cache has it ready. A mark older than the
@@ -715,9 +715,9 @@ has changed one of those properties and needs a browser check before the test ch
   after it does not draw back the claim Stop dropped (`passForgets`, read before the
   request). Until the server has that request (`passForgetting`), nothing collects:
   `renderPass` and `collectPass` wait on it, and Check now and Stop collecting it here
-  stay off meanwhile, in every tab and in anything drawn meanwhile
-  (`PASS_COLLECT_BUTTONS`, which `drawPass` and `stopForPassForget` turn off); turned
-  away, Stop turns them back on, says so and goes on collecting. The browser's other tabs
+  stay off meanwhile, in every tab and anything drawn meanwhile (`PASS_COLLECT_BUTTONS`,
+  which `drawPass` and `stopForPassForget` turn off); turned away, Stop turns them back
+  on, says so (a claim notice, below) and goes on collecting. The browser's other tabs
   do all of this too: each forget keeps a mark of its own while its request is on its way,
   under `educhan:pass-forget:` and a random token, holding the forget pressed (`remove:`,
   `browser:` or `stop:`) and the time it was set, so two forgets at once never share one.
@@ -784,15 +784,17 @@ has changed one of those properties and needs a browser check before the test ch
   Pass as it was stored (`dropStalePassNotice`), removed, replaced or renewed meanwhile,
   say; said again, it does not scroll the page (`showNotice`), since the reader may have
   scrolled away since the press, and focus stays where that drawing left it, on Check it
-  again or the held Pass's panel, say. Pass notices follow one set of rules, written
-  once above `passNoticesHeld`. A held notice says what this browser holds (a Pass taken
-  on, good until a date, run out or renewed, one it could not store, or none), on
-  whatever page: the Pass page's, a post's that its Pass has run out or is no longer
-  valid, put up once the thread is drawn, and Forget this browser's, said only over the
-  Verify page its press drew (that drawing's `forget-browser` block still on the page
-  and the route still `verify` once the forget is answered). It is noted beside the Pass
-  as stored straight after the press or the answer set what it says (`notePassHeld` into
-  `passNoticesHeld`, keyed by the notice's node; `passHeldRecord`, the code with its
+  again or the held Pass's panel, say. Pass notices follow one set of rules, written once
+  above `passNoticesHeld`. A held notice says what this browser holds (a Pass taken on,
+  good until a date, run out or renewed, one it could not store, or none) on the Pass
+  page, beside a post whose Pass has run out or is no longer valid, put up once the
+  thread is drawn, or over the Verify page a press of Forget this browser drew, said
+  there only while the reader is still on it (that drawing's `forget-browser` block still
+  on the page and the route still `verify` once the forget is answered), except Remove's
+  and Forget's when educhan could not be reached for their forget, which are claim
+  notices too (below) and said on whatever page the tab is on. It is noted beside the
+  Pass as stored straight after the press or the answer set what it says (`notePassHeld`
+  into `passNoticesHeld`, keyed by the notice's node; `passHeldRecord`, the code with its
   stored expiry, or with the run-out mark alone while that is on it, read without a
   clock, so a slow clock keeps a true notice and a check that gives the mark a date
   changes nothing), taken before any await (`said` in the post's answer, Remove and
@@ -800,28 +802,35 @@ has changed one of those properties and needs a browser check before the test ch
   renewal stored in another tab while the thread loads takes it off then. Every drawing
   of the Pass page, whatever set it off (`drawPass`), and every change another tab makes
   to the Pass, on whatever page this tab is on (`followPassStorage`), takes it off once
-  the browser no longer holds that (`dropStalePassNotice`, reading `passNoticeHeld`);
-  any other notice, a refusal say, stays. A claim notice says a claim of this browser
-  may still be collected and what to press once back online (`passClaimNotices`, holding
-  the claim's warning alone): `forgetPassOrder`'s (`noteClaimNotice`), and Remove's and
-  Forget's when educhan could not be reached for their forget (`PASS_CLAIM_KEPT`, noted
-  by `notePassHeld(said, alone)`). It is said on whatever page the tab is on, since it
-  asks for a step, and a Pass stored or changed in another tab leaves it; Remove's and
-  Forget's, held notices too since they say the browser holds no Pass, then give way to
-  the claim's warning alone (`dropStalePassNotice`, through `showNotice`, which keeps
-  focus on the dismiss button). Another tab's forget takes a notice off by what was
-  pressed there (`passNoticeForgotten`), from its mark (`stopForPassForget`) or, with
-  nothing pressed, its removal of the Pass (`followPassStorage`): a claim notice on
-  every mark, Stop's included, since each asks educhan to drop every claim of the
-  browser, and not on a removal, which drops none (an invalid code found there, or a
-  Remove whose mark this tab missed); any other notice on Remove's or Forget's mark or a
-  removal, on the Pass page whatever it says and on any other page a held notice, and
-  not on Stop's mark. Taken off by anything but the reader (`takePassNoticeOff`, which
-  `dropStalePassNotice` uses too), it hands focus on its dismiss button to `el.main`,
-  with `preventScroll`, rather than drop it to the top of the document, and the drawing
-  after keeps it there (`redrawPass`, by its id).
-  The held panel's Check it again and the steps beside a code the browser could not keep
-  are offered only where the code box is drawn (`box`). Another tab's Remove, Forget, new
+  the browser no longer holds that (`dropStalePassNotice`, reading `passNoticeHeld`); any
+  other notice, a refusal say, stays. A claim notice says a claim of this browser may
+  still be collected and what to press once back online (`passClaimNotices`, holding the
+  claim's warning alone): `forgetPassOrder`'s (`noteClaimNotice`), Remove's and Forget's
+  when educhan could not be reached for their forget (`PASS_CLAIM_KEPT`, noted by
+  `notePassHeld(said, alone)`), and Stop collecting it here's when educhan could not be
+  reached for its own (`noteClaimNotice`). Each but Stop's is said on whatever page the
+  tab is on, since it asks for a step; Stop's is said only on the Pass page, since a
+  reader who left finds that page drawn afresh, still collecting, with Stop offered
+  again. None is put up once a forget has been pressed since its own forget went, here or
+  in another tab (`passForgets`, read as `forgets` straight after the forget), since that
+  forget asks educhan to drop every claim and says itself whether educhan could be
+  reached: Remove then says nothing more, and Forget only what it took, over the Verify
+  page its press drew. A Pass stored or changed in another tab leaves a claim notice;
+  Remove's and Forget's, held notices too since they say the browser holds no Pass, then
+  give way to the claim's warning alone (`dropStalePassNotice`, through `showNotice`,
+  which keeps focus on the dismiss button). Another tab's forget takes a notice off by
+  what was pressed there (`passNoticeForgotten`), from its mark (`stopForPassForget`) or,
+  with nothing pressed, its removal of the Pass (`followPassStorage`): a claim notice on
+  every mark, Stop's included, since each asks educhan to drop every claim of the browser
+  (which is also why none is put up after one), and not on a removal, which drops none
+  (an invalid code found there, or a Remove whose mark this tab missed); any other notice
+  on Remove's or Forget's mark or a removal, on the Pass page whatever it says and on any
+  other page a held notice, and not on Stop's mark. Taken off by anything but the reader
+  (`takePassNoticeOff`, which `dropStalePassNotice` uses too), it hands focus on its
+  dismiss button to `el.main`, with `preventScroll`, rather than drop it to the top of
+  the document, and the drawing after keeps it there (`redrawPass`, by its id). The held
+  panel's Check it again and the steps beside a code the browser could not keep are
+  offered only where the code box is drawn (`box`). Another tab's Remove, Forget, new
   code or finding that its code is no longer valid reaches this one by the `storage`
   event. Remove and Forget set their mark (`forgetPassClaim`) before they take the Pass
   from storage, or, for Forget, the badge, the poster key and the name (only the nonces
