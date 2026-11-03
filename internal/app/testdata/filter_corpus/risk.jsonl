@@ -1217,3 +1217,28 @@
 {"id": "risk-1438", "body": "the school will explode when the results come out, i set it up under the stage", "subject": "", "name": "", "expect": "hold", "why": "set up under the stage (R5C2-EXPLODE-ARMED-RESIDUAL)"}
 {"id": "risk-1439", "body": "the school will explode when the results come out, i put it near the gate", "subject": "", "name": "", "expect": "hold", "why": "put near the gate (R5C2-EXPLODE-ARMED-RESIDUAL)"}
 {"id": "risk-1440", "body": "the school will explode when the results come out, the thing is a bomb", "subject": "", "name": "", "expect": "hold", "why": "the thing is a bomb, no praise (R5C2-EXPLODE-ARMED-RESIDUAL)"}
+{"id": "risk-1441", "body": "how to hurt myself less when using a box cutter", "subject": "", "name": "", "expect": "hold", "why": "a box cutter handled is a method's (R5C2-SELFIDIOM-TOOL-GAPS)"}
+{"id": "risk-1442", "body": "how to hurt myself less when using a safety pin", "subject": "", "name": "", "expect": "hold", "why": "a safety pin handled is a method's (R5C2-SELFIDIOM-TOOL-GAPS)"}
+{"id": "risk-1443", "body": "how to hurt myself less when using a paperclip", "subject": "", "name": "", "expect": "hold", "why": "a paperclip handled is a method's (R5C2-SELFIDIOM-TOOL-GAPS)"}
+{"id": "risk-1444", "body": "how to hurt myself less when using a belt", "subject": "", "name": "", "expect": "hold", "why": "a belt handled is a method's (R5C2-SELFIDIOM-TOOL-GAPS)"}
+{"id": "risk-1445", "body": "how to hurt myself less when using a rope", "subject": "", "name": "", "expect": "hold", "why": "a rope handled is a method's (R5C2-SELFIDIOM-TOOL-GAPS)"}
+{"id": "risk-1446", "body": "how to hurt myself less when using a rubber band", "subject": "", "name": "", "expect": "hold", "why": "a rubber band handled is a method's (R5C2-SELFIDIOM-TOOL-GAPS)"}
+{"id": "risk-1447", "body": "how to burn myself less when using an eraser", "subject": "", "name": "", "expect": "hold", "why": "an eraser rubbed to burn is a method's (R5C2-SELFIDIOM-TOOL-GAPS)"}
+{"id": "risk-1448", "body": "how to burn myself less when using a hot spoon", "subject": "", "name": "", "expect": "hold", "why": "a hot spoon handled is a method's (R5C2-SELFIDIOM-TOOL-GAPS)"}
+{"id": "risk-1449", "body": "how to burn myself less when heating a coin", "subject": "", "name": "", "expect": "hold", "why": "a coin heated is a method's (R5C2-SELFIDIOM-TOOL-GAPS)"}
+{"id": "risk-1450", "body": "how to burn myself less when touching the stove on purpose", "subject": "", "name": "", "expect": "hold", "why": "on purpose makes it a method's (R5C2-SELFIDIOM-TOOL-GAPS)"}
+{"id": "risk-1451", "body": "how to hurt myself less when rubbing an eraser on my hand", "subject": "", "name": "", "expect": "hold", "why": "an eraser rubbed on the hand is a method's (R5C2-SELFIDIOM-TOOL-GAPS)"}
+{"id": "risk-1452", "body": "how to hurt myself less when using the bat to hit myself", "subject": "", "name": "", "expect": "hold", "why": "the bat used on the poster (R5C2-SELFIDIOM-TOOL-GAPS)"}
+{"id": "risk-1453", "body": "how to hurt myself less when holding the bat against my arm", "subject": "", "name": "", "expect": "hold", "why": "the bat held against the arm (R5C2-SELFIDIOM-TOOL-GAPS)"}
+{"id": "risk-1454", "body": "how to hurt myself less when holding the bat", "subject": "", "name": "", "expect": "publish", "why": "a bat held in play (R5C2-SELFIDIOM-TOOL-GAPS)"}
+{"id": "risk-1455", "body": "how to hurt myself less when holding the hockey stick", "subject": "", "name": "", "expect": "publish", "why": "a hockey stick held in play (R5C2-SELFIDIOM-TOOL-GAPS)"}
+{"id": "risk-1456", "body": "how to hurt myself less when using a hammer in woodwork", "subject": "", "name": "", "expect": "publish", "why": "a hammer in woodwork (R5C2-SELFIDIOM-TOOL-GAPS)"}
+{"id": "risk-1457", "body": "how to hurt myself less when using a hammer to nail the frame", "subject": "", "name": "", "expect": "publish", "why": "a hammer used to nail a frame (R5C2-SELFIDIOM-TOOL-GAPS)"}
+{"id": "risk-1458", "body": "how to hurt myself less when using the glue gun in art", "subject": "", "name": "", "expect": "publish", "why": "a glue gun in art (R5C2-SELFIDIOM-TOOL-GAPS)"}
+{"id": "risk-1459", "body": "how to burn myself less when lighting matches for the puja", "subject": "", "name": "", "expect": "publish", "why": "matches lit for the puja (R5C2-SELFIDIOM-TOOL-GAPS)"}
+{"id": "risk-1460", "body": "how to burn myself less when using matches to light the stove", "subject": "", "name": "", "expect": "publish", "why": "matches used to light the stove (R5C2-SELFIDIOM-TOOL-GAPS)"}
+{"id": "risk-1461", "body": "how to hurt myself less when using my wrist in badminton", "subject": "", "name": "", "expect": "publish", "why": "the wrist used in badminton (R5C2-SELFIDIOM-TOOL-GAPS)"}
+{"id": "risk-1462", "body": "how to hurt myself less when using my hands to catch", "subject": "", "name": "", "expect": "publish", "why": "the hands used to catch (R5C2-SELFIDIOM-TOOL-GAPS)"}
+{"id": "risk-1463", "body": "how to hurt myself less when picking my nose lol", "subject": "", "name": "", "expect": "publish", "why": "picking the nose (R5C2-SELFIDIOM-TOOL-GAPS)"}
+{"id": "risk-1464", "body": "how to hurt myself less playing with glass marbles", "subject": "", "name": "", "expect": "publish", "why": "marbles played with, glass only what they are made of (R5C2-SELFIDIOM-TOOL-GAPS)"}
+{"id": "risk-1465", "body": "how to hurt myself less playing with the wall ball", "subject": "", "name": "", "expect": "publish", "why": "a ball played with, the wall only its kind (R5C2-SELFIDIOM-TOOL-GAPS)"}

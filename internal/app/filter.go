@@ -13484,7 +13484,7 @@ var (
 	selfMarks = func() map[string]bool {
 		m := canonSetOf(`visibly visible obviously obvious noticeably unseen secretly quietly secret hidden hide
 			hiding sight see sees seeing notice notices noticing know knows knowing find finds finding nobody deep
-			deeper deeply scar scars scarred`)
+			deeper deeply scar scars scarred purpose purposely deliberately deliberate intentionally`)
 		for w := range selfBody {
 			m[w] = true
 		}
@@ -13511,10 +13511,23 @@ var (
 	selfHiddenAfter = canonSetOf(`getting being leaving letting anyone anybody anything telling`)
 	selfHarmings    = canonSetOf(`bleeding scarring cutting burning hurting showing using holding pressing
 		heating lighting hitting punching banging picking scratching scraping biting carving slicing stabbing
-		applying touching`)
+		applying touching rubbing snapping`)
 	selfHandlings = canonSetOf(`using holding pressing heating lighting hitting punching banging picking applying
-		touching`)
-	selfHarmObjects = canonSetOf(`nail nails glass match matches cigarette cigarettes wall walls scab scabs myself`)
+		touching rubbing snapping`)
+	selfHarmObjects = canonSetOf(`nail nails glass match matches cigarette cigarettes wall walls scab scabs myself
+		cutter cutters pin pins paperclip paperclips belt belts rope ropes rubber rubbers eraser erasers coin coins
+		spoon spoons`)
+	// playGear, held, and playKit before one of playUses, with no place on
+	// the body or "myself" after them, are handled in play, a craft or a
+	// rite, and so is the body used (handsUsed) before one of playUses:
+	// "holding the bat", "a hammer in woodwork", "the glue gun in art",
+	// "matches for the puja", "my wrist in badminton", "my hands to catch".
+	playGear = canonSetOf(`bat bats stick sticks racket rackets racquet racquets club clubs`)
+	playKit  = canonSetOf(`bat bats stick sticks rod rods hammer gun guns match matches`)
+	playUses = canonSetOf(`woodwork carpentry art craft crafts badminton cricket hockey football tennis
+		volleyball basketball baseball golf catch catching practice nets puja pooja diya diyas candle candles
+		stove gas frame frames shelf`)
+	handsUsed = canonSetOf(`using holding`)
 	// selfOften, after "every" with nothing after it, are how often the
 	// harm comes: "hurt myself less every time", "every day".
 	selfOften  = canonSetOf(`time day night week morning evening`)
@@ -16658,32 +16671,33 @@ func unseenAfter(next []string) bool {
 }
 
 // selfIdiom reports the words after "cut myself", "burn myself" or "hurt
-// myself" (next, ws the match) making a phrasal verb or a degree of it, not
-// a method: a particle before "from" or before "of" and something that is no
+// myself" (next, ws the match) making a phrasal verb or a degree of it, not a
+// method: a particle before "from" or before "of" and something that is no
 // place on the body ("cut myself off from social media", "cut myself out of
 // the family group chat without anyone noticing"), "down to" or "back to" an
-// amount ("cut myself down to one coffee a day"), a particle at the end of
-// the clause ("burn myself out"), a particle before what is given up ("cut
-// myself off social media", "cut myself off caffeine"), before an activity
-// or, for "out", a manner ("burn myself out studying", "burn myself out
-// completely"), a degree before an activity named with nothing of harm
-// after "with" (harmWith: "hurt myself less playing football", not "burn
-// myself less playing with matches"), or either before a time ("burn myself
-// out less during exam season", "hurt myself less when i fall", not "every
-// time" or "every day" with nothing after it, selfOften). Anything else
-// after them is a method's, and so is the harm hidden, how deep or a scar
-// anywhere in the clause, a tool, or a place on the body before a clause of
-// its own begins, selfMarked: "cut myself down my arm", "burn myself less
-// visibly", "hurt myself out of sight", "cut myself out deeply", "cut myself
-// back there so no one sees", "hurt myself less when i use a blade", not
-// "hurt myself less when i fall on my knees" or "hurt myself less when using
-// a knife to cut vegetables". So is the handling of a tool straight after
-// either ("hurt myself less using a blade", "burn myself out using a
-// lighter"), and after a degree the harm or "do it" anywhere, or the
-// handling of a tool of harm or the body later in the clause ("hurt myself
-// less after cutting", "burn myself less every time i do it", "hurt myself
-// less when using my nails", not "burn myself less when holding the
-// kettle"). "How to cut myself less" still asks about cutting.
+// amount ("cut myself down to one coffee a day"), a particle at the end of the
+// clause ("burn myself out"), a particle before what is given up ("cut myself
+// off social media", "cut myself off caffeine"), before an activity or, for
+// "out", a manner ("burn myself out studying", "burn myself out completely"),
+// a degree before an activity named with nothing of harm after "with"
+// (harmWith: "hurt myself less playing football", not "burn myself less
+// playing with matches"), or either before a time ("burn myself out less
+// during exam season", "hurt myself less when i fall", not "every time" or
+// "every day" with nothing after it, selfOften). Anything else after them is a
+// method's, and so is the harm hidden, how deep or a scar anywhere in the
+// clause, a tool, or a place on the body before a clause of its own begins,
+// selfMarked: "cut myself down my arm", "burn myself less visibly", "hurt
+// myself out of sight", "cut myself out deeply", "cut myself back there so no
+// one sees", "hurt myself less when i use a blade", not "hurt myself less when
+// i fall on my knees" or "hurt myself less when using a knife to cut
+// vegetables". So is the handling of a tool straight after either ("hurt
+// myself less using a blade", "burn myself out using a lighter"), and after a
+// degree the harm or "do it" anywhere, or the handling of a tool of harm or
+// the body later in the clause ("hurt myself less after cutting", "burn myself
+// less every time i do it", "hurt myself less when using my nails", "hurt
+// myself less when using a box cutter", not "burn myself less when holding the
+// kettle" or "hurt myself less when using a hammer in woodwork"). "How to cut
+// myself less" still asks about cutting.
 func selfIdiom(ws, next []string) bool {
 	if len(next) == 0 || is(next[0], "less") && hasWord(ws, "cut") {
 		return false
@@ -16719,7 +16733,7 @@ func selfIdiom(ws, next []string) bool {
 	}
 	for i, w := range rest {
 		if !phrasal && (selfHarmings[w] && !selfHandlings[w] || is(w, "it") && i > 0 && doForms[rest[i-1]] ||
-			selfHandlings[w] && harmHandled(rest[i+1:])) {
+			selfHandlings[w] && harmHandled(w, rest[i+1:])) {
 			return false // "less after cutting", "less every time i do it", "less when using my nails"
 		}
 	}
@@ -16736,9 +16750,11 @@ func selfIdiom(ws, next []string) bool {
 }
 
 // harmWith reports, in the words ws after an activity and before a clause
-// of its own begins, "with" and one of selfHarmObjects or fire after any
-// determiner or owner: "playing with matches", "playing with fire"; not
-// "playing with my friends".
+// of its own begins, "with" and one of selfHarmObjects or fire as the head
+// of the noun phrase after it, its last word before one of nounEnds:
+// "playing with matches", "playing with fire", "playing with broken glass";
+// not "playing with my friends", "playing with glass marbles" or "playing
+// with the wall ball".
 func harmWith(ws []string) bool {
 	for i, w := range ws {
 		if selfClauses[w] {
@@ -16751,19 +16767,27 @@ func harmWith(ws []string) bool {
 		for k < len(ws) && k < i+3 && (determiners[ws[k]] || ownerWord(ws[k])) {
 			k++
 		}
-		if k < len(ws) && (selfHarmObjects[ws[k]] || is(ws[k], "fire")) {
+		j := k
+		for j < len(ws) && j < k+3 && !nounEnds[ws[j]] && !selfClauses[ws[j]] {
+			j++
+		}
+		if j > k && (selfHarmObjects[ws[j-1]] || is(ws[j-1], "fire")) {
 			return true
 		}
 	}
 	return false
 }
 
-// harmHandled reports, in the words ws after one of selfHandlings and
-// before a clause of its own begins, a tool of harm or the body as what is
-// handled: "my nails", "the lighter", "my head", "walls"; not a hand it is
-// handled with ("with my hands"), and a knife or scissors only without an
-// ordinary use after it (plainUse).
-func harmHandled(ws []string) bool {
+// harmHandled reports, in the words ws after the handling (one of
+// selfHandlings) and before a clause of its own begins, a tool of harm or
+// the body as what is handled: "my nails", "the lighter", "my head",
+// "walls", "a box cutter", "a safety pin", "a belt", "an eraser"; not a hand
+// it is handled with ("with my hands"), a knife or scissors only without an
+// ordinary use after it (plainUse), and not what is handled in play, a
+// craft or a rite, with nothing of harm after it (playGear, playKit and
+// handsUsed: "holding the bat", "using a hammer in woodwork", "lighting
+// matches for the puja", "using my hands to catch"), nor "picking my nose".
+func harmHandled(handling string, ws []string) bool {
 	for i, w := range ws {
 		switch {
 		case selfClauses[w]:
@@ -16772,10 +16796,48 @@ func harmHandled(ws []string) bool {
 			if !plainUse(ws[i+1:]) {
 				return true
 			}
-		case selfTools[w] || weaponHeads[w] || bluntHeads[w] || selfHarmObjects[w]:
+		case selfTools[w]:
 			return true
+		case weaponHeads[w] || bluntHeads[w] || selfHarmObjects[w]:
+			return !(playGear[w] && is(handling, "holding") && !bodyAfter(ws[i+1:]) ||
+				playKit[w] && playUse(ws[i+1:])) // "a hammer to nail the frame": what is handled is the hammer
 		case (selfBody[w] || bodyHeads[w]) && !(i > 0 && (is(ws[i-1], "with") || is(ws[i-1], "bare") ||
 			i > 1 && ownerWord(ws[i-1]) && is(ws[i-2], "with"))):
+			return !(handsUsed[handling] && playUse(ws[i+1:]) || is(handling, "picking") && is(w, "nose"))
+		}
+	}
+	return false
+}
+
+// playUse reports, in the words ws after what is handled and before a
+// clause of its own begins, one of playUses with no place on the body or
+// "myself": "in woodwork", "for the puja", "to catch", not "in practice on
+// my arm".
+func playUse(ws []string) bool {
+	return !bodyAfter(ws) && anyBefore(ws, playUses, selfClauses)
+}
+
+// bodyAfter reports, in the words ws before a clause of its own begins, a
+// place on the body or "myself": "on my arm", "into myself".
+func bodyAfter(ws []string) bool {
+	for _, w := range ws {
+		if selfClauses[w] {
+			return false
+		}
+		if selfBody[w] || bodyHeads[w] || is(w, "myself") {
+			return true
+		}
+	}
+	return false
+}
+
+// anyBefore reports one of set in ws before any of stops.
+func anyBefore(ws []string, set, stops map[string]bool) bool {
+	for _, w := range ws {
+		if stops[w] {
+			return false
+		}
+		if set[w] {
 			return true
 		}
 	}
