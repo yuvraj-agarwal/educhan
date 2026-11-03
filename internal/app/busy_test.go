@@ -1378,6 +1378,17 @@ func TestBodiesWaitingForRoomLeaveRoomForTheFirstOfThem(t *testing.T) {
 		t.Errorf("%d bodies answered 503, want the %d turned away", busy, st.away)
 	}
 	awaitBudgetFree(t, media.UploadBudget)
+	// What the posts waiting held goes back once they no longer wait, which
+	// each does before it reads on, let alone answers: kept, it would add up
+	// over the life of the process until every post that holds room and finds
+	// none free was turned away busy at once.
+	h.app.uploadShares.mu.Lock()
+	held, waiting := h.app.uploadShares.waitHeld, len(h.app.uploadShares.waiting)
+	h.app.uploadShares.mu.Unlock()
+	if held != 0 || waiting != 0 {
+		t.Errorf("once every post is answered, %d posts wait for room holding %d bytes between them, want none and 0",
+			waiting, held)
+	}
 }
 
 // trickle sends body in pieces of at most size bytes with pause after each,

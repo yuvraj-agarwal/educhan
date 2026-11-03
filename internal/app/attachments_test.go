@@ -1,6 +1,11 @@
 package app
 
-import "testing"
+import (
+	"errors"
+	"testing"
+
+	"github.com/yuvraj-agarwal/educhan/internal/media"
+)
 
 // An image is shown under "image" and its stored format's extension. The name
 // comes from the path the server chose, so nothing a poster sent can reach it.
@@ -67,5 +72,66 @@ func TestUploadSharesForgetAClientOnceItHoldsNothing(t *testing.T) {
 	second()
 	if n := len(s.held); n != 0 {
 		t.Errorf("the shares hold %d clients once every share is given back, want none: %v", n, s.held)
+	}
+}
+
+// What the posts waiting for room hold between them is capped (waitingRoom),
+// so it has to go back down as each stops waiting: kept, it would only grow,
+// until every post that holds room and finds none free was turned away busy at
+// once for the life of the process. A client waits once at a time, and is free
+// to wait again once it no longer does; the function that says so says it
+// once, however often it is called.
+func TestUploadSharesGiveBackWhatTheWaitingHeld(t *testing.T) {
+	var s uploadShares
+	const (
+		client = "203.0.113.7"
+		other  = "203.0.113.8"
+		limit  = 10 << 20
+	)
+	waitHeld := func() int64 {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.waitHeld
+	}
+
+	first, err := s.wait(client, limit, limit)
+	if err != nil {
+		t.Fatalf("a wait holding the whole waiting room was refused: %v", err)
+	}
+	if _, err := s.wait(client, 0, limit); !errors.Is(err, errUploadShare) {
+		t.Errorf("a client's second wait at once: %v, want %v", err, errUploadShare)
+	}
+	if _, err := s.wait(other, 1, limit); !errors.Is(err, media.ErrBusy) {
+		t.Errorf("a wait holding a byte past the waiting room: %v, want %v", err, media.ErrBusy)
+	}
+	nothing, err := s.wait(other, 0, limit)
+	if err != nil {
+		t.Fatalf("a wait holding nothing, beside one holding the whole waiting room, was refused: %v", err)
+	}
+	nothing()
+	if got := waitHeld(); got != limit {
+		t.Errorf("the posts waiting hold %d bytes once one holding nothing stops, want %d", got, limit)
+	}
+
+	first()
+	first()
+	if got := waitHeld(); got != 0 {
+		t.Errorf("the posts waiting hold %d bytes once the only one holding any has stopped (said twice), want 0", got)
+	}
+	if n := len(s.waiting); n != 0 {
+		t.Errorf("%d clients wait once none does, want none: %v", n, s.waiting)
+	}
+
+	// The client, and the room, are free again: the same wait is taken, as
+	// often as the room it held was given back.
+	for i := 0; i < 3; i++ {
+		again, err := s.wait(client, limit, limit)
+		if err != nil {
+			t.Fatalf("wait %d, holding what the first held, was refused: %v", i+2, err)
+		}
+		again()
+	}
+	if got := waitHeld(); got != 0 {
+		t.Errorf("the posts waiting hold %d bytes once each has stopped, want 0", got)
 	}
 }
