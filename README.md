@@ -1125,9 +1125,9 @@ not-found view.
   since it won't be shown again once the reader leaves the page. A code handed over
   whose Pass has already run out, as it came (a reissue code's, for a Pass in its month
   of grace, say) or since, is never called ready, kept or not: it is said to have run
-  out and to need renewing, and, not stored, to be renewed once the site may store data
-  and it is entered below, with no good Pass held, or, beside a good Pass held, in a
-  browser that holds no good Pass, so no step says to give a good Pass up for it. A
+  out and to need renewing, and, not stored, where the code box is drawn, to be renewed
+  once the site may store data and it is entered below, with no good Pass held, or,
+  beside one, in a browser holding none, so no step says to give a good Pass up for it. A
   code educhan finds no longer valid as the Pass held here, answering Check it again,
   the check after a reissue code or a renewal, Renew or a post, in any tab of the
   browser, is worth nothing to write down and goes from its panel at once, in every tab
@@ -1248,7 +1248,9 @@ not-found view.
   A drawing something else sets off, another tab's forget say, or the page asked for
   again after it could not be read, keeps focus on the control that had it when it draws
   that control again, without scrolling the page, and otherwise moves it to what was
-  drawn in its place.
+  drawn in its place. Focus on a notice's dismiss button, when something else takes the
+  notice off, such as another tab's Remove or a drawing that finds it no longer true,
+  goes to the page just below it, without scrolling the page.
 - **Phones**: a single fluid column with the catalog at two tiles across, thumbnails that
   never overflow the viewport, and 16px form text so iOS does not zoom on focus.
 - **Accessibility**: a skip link, one visible focus ring on every control, headings and

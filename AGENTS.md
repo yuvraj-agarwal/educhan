@@ -780,19 +780,22 @@ has changed one of those properties and needs a browser check before the test ch
   keyed by the notice's node; `passHeldRecord`, the code with its stored expiry or run-out
   mark, read without the clock, so a slow clock keeps a true notice), and every drawing of
   the Pass page, whatever set it off (`drawPass`), takes it off once the browser no longer
-  holds that; any other notice, a refusal say, stays. Another tab's Remove or Forget
-  takes the notice off this tab's Pass page at once, by its mark (`stopForPassForget`)
-  or by the removal itself (`followPassStorage`), and Stop's mark leaves it. The held
-  panel's Check it again and the steps beside a code the browser could not keep are
-  offered only where the code box is drawn (`box`). Another tab's Remove, Forget, new code
-  or finding that its code is no longer valid reaches this one by the `storage` event.
-  Remove and Forget set their mark (`forgetPassClaim`) before they take the Pass from
-  storage, or, for Forget, the badge, the poster key and the name (only the nonces and
-  this tab's own checkout marks, which other tabs leave be, go first), so this tab hears
-  the mark first and drops every code just handed over, kept or not, with any code it took
-  the place of or carried (`stopForPassForget`), and the removal after it finds nothing
-  left to keep. Any other removal is followed as this tab's own finding that the code is
-  no longer valid (`followPassStorage`, through `forgetInvalidCode`, with the code
+  holds that; any other notice, a refusal say, stays. Another tab's Remove or Forget takes
+  the notice off this tab's Pass page at once, by its mark (`stopForPassForget`) or by the
+  removal itself (`followPassStorage`), and Stop's mark leaves it. Taken off by anything
+  but the reader (`takePassNoticeOff`, which `dropStalePassNotice` uses too), it hands
+  focus on its dismiss button to `el.main`, with `preventScroll`, rather than drop it to
+  the top of the document, and the drawing after keeps it there (`redrawPass`, by its id).
+  The held panel's Check it again and the steps beside a code the browser could not keep
+  are offered only where the code box is drawn (`box`). Another tab's Remove, Forget, new
+  code or finding that its code is no longer valid reaches this one by the `storage`
+  event. Remove and Forget set their mark (`forgetPassClaim`) before they take the Pass
+  from storage, or, for Forget, the badge, the poster key and the name (only the nonces
+  and this tab's own checkout marks, which other tabs leave be, go first), so this tab
+  hears the mark first and drops every code just handed over, kept or not, with any code
+  it took the place of or carried (`stopForPassForget`), and the removal after it finds
+  nothing left to keep. Any other removal is followed as this tab's own finding that the
+  code is no longer valid (`followPassStorage`, through `forgetInvalidCode`, with the code
   `passCodeIn` reads from the event's `oldValue`): only the code removed goes. A removal
   with no code to read, or an event whose `key` is `null` (storage cleared from outside
   the page, which never calls `localStorage.clear()`), takes nothing off, since the panel

@@ -2898,29 +2898,48 @@ func TestPassCopiedHereIsEmptiedFromTheClipboard(t *testing.T) {
 	}
 	// The promise is as narrow as the flag, and says what it costs: the
 	// button named, a code it copied since educhan was last opened in this
-	// tab, with nothing copied in the tab since, and not one another tab has
-	// removed or replaced since; whatever is on the clipboard by then is
-	// emptied, a copy the page cannot see took anything included, and a code
-	// copied by hand is not.
+	// tab, with nothing copied in the tab since, and not the code of a Pass
+	// another tab has removed or replaced since, which is the Pass held where
+	// only Remove is spoken of, and any Pass where Forget empties whichever
+	// code was copied; whatever is on the clipboard by then is emptied, a copy
+	// the page cannot see took anything included, and a code copied by hand is
+	// not.
+	for name, page := range map[string]struct{ text, unless string }{
+		"the held Pass": {words(jsFunction(t, script, "passHeldHTML")),
+			"unless another tab removed or replaced the Pass meanwhile"},
+		"Forget this browser": {words(jsFunction(t, script, "forgetBrowserHTML")),
+			"unless it copied the code of a Pass that another tab removed or replaced meanwhile"},
+		"the FAQ": {words(faqAnswer(t, script, "faq-pass")),
+			"unless you copied the code of a Pass that another tab removed or replaced meanwhile"},
+	} {
+		for _, want := range []string{"Copy the code", "since you last opened educhan in", "copied nothing in",
+			"whatever is on it by then", page.unless, "even after a copy in",
+			"that educhan can't see took anything, such as one from an email box in some browsers",
+			"copied any other way, by hand included, stays"} {
+			if !strings.Contains(page.text, want) {
+				t.Errorf("%s no longer says which copies of the code are emptied from the clipboard (%q)", name, want)
+			}
+		}
+	}
+	// No page says a code copied with the button stays until something else
+	// is copied: Forget this browser empties whichever code it copied.
 	for name, text := range map[string]string{
 		"the held Pass":       words(jsFunction(t, script, "passHeldHTML")),
 		"Forget this browser": words(jsFunction(t, script, "forgetBrowserHTML")),
 		"the FAQ":             words(faqAnswer(t, script, "faq-pass")),
 	} {
-		for _, want := range []string{"Copy the code", "since you last opened educhan in", "copied nothing in",
-			"whatever is on it by then", "unless another tab removed or replaced the Pass meanwhile", "even after a copy in",
-			"that educhan can't see took anything, such as one from an email box in some browsers",
-			"copied any other way, by hand included, stays"} {
-			if !strings.Contains(text, want) {
-				t.Errorf("%s no longer says which copies of the code are emptied from the clipboard (%q)", name, want)
+		for _, sentence := range strings.Split(text, ". ") {
+			if strings.Contains(sentence, "until something else is copied") && strings.Contains(sentence, "Copy the code") {
+				t.Errorf("%s says a code copied with Copy the code stays until something else is copied: %q", name, sentence)
 			}
 		}
 	}
 	// And where Remove is spoken of, that it empties a copy of the Pass it
 	// removes and leaves another code copied with the button, with an example.
 	for text, wants := range map[string][]string{
-		words(jsFunction(t, script, "passHeldHTML")): {"copied this Pass's code", "nother code copied with Copy the code",
-			"a new one this browser couldn't store", "removing this Pass doesn't take that code"},
+		words(jsFunction(t, script, "passHeldHTML")): {"copied this Pass's code",
+			"Removing this Pass also leaves another code copied with Copy the code there",
+			"a new one this browser couldn't store", "since it doesn't take that code"},
 		words(faqAnswer(t, script, "faq-pass")): {"when the code you copied was that Pass's",
 			"nother code copied with Copy the code", "a new one the browser couldn't store", "stays when you remove the Pass"},
 	} {
@@ -2962,7 +2981,7 @@ func TestPassRemovedInAnotherTabLeavesThisOne(t *testing.T) {
 	follow := withoutComments(jsFunction(t, script, "followPassStorage"))
 	if !strings.Contains(follow, "const now = storedPass();\n  const was = passCodeIn(event.oldValue);\n"+
 		"  if (event.key === PASS_STORAGE_KEY && event.newValue === null && was) {\n    forgetInvalidCode(was);\n"+
-		"    if (passPageShown()) {\n      clearNotice();\n    }\n  }") ||
+		"    if (passPageShown()) {\n      takePassNoticeOff();\n    }\n  }") ||
 		strings.Contains(follow, "passJustIssued") || strings.Count(follow, "forgetInvalidCode(") != 1 ||
 		!strings.Contains(follow, `if (passPageShown() && el.main.querySelector("[data-pass-page]")) {`+
 			"\n    redrawPass(lastPassInfo, \"#pass-held\", \"form[data-pass] input\");") {
@@ -3077,7 +3096,7 @@ func TestPassForgottenInAnotherTabStopsThisOne(t *testing.T) {
 		"dropPassNonce(PASS_NONCE_STORAGE_KEY);",
 		"if (code) {\n    passCodeForgets += 1;\n    dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);\n" +
 			"    dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);\n    forgetTypedCode();\n    passLost = \"\";\n    passJustIssued = null;\n" +
-			"    if (passPageShown()) {\n      clearNotice();\n    }\n  }",
+			"    if (passPageShown()) {\n      takePassNoticeOff();\n    }\n  }",
 		"const waited = heedPassForget(key, mark);",
 		"for (const button of el.main.querySelectorAll(PASS_COLLECT_BUTTONS)) {\n    button.disabled = true;", "return waited;\n}"}
 	for at, step := 0, 0; step < len(steps); step++ {
@@ -3460,7 +3479,7 @@ func TestPassNoticeGoesWithWhatItSaid(t *testing.T) {
 	if got := withoutComments(jsFunction(t, script, "dropStalePassNotice")); got != "function dropStalePassNotice() {\n"+
 		"  const text = el.notice.querySelector(\".notice-text\");\n"+
 		"  if (text && noticeShows(text) && passNoticesHeld.has(text) && passNoticesHeld.get(text) !== passHeldRecord()) {\n"+
-		"    clearNotice();\n  }\n}" {
+		"    takePassNoticeOff();\n  }\n}" {
 		t.Errorf("dropStalePassNotice no longer takes off a notice about a Pass this browser no longer holds as it was "+
 			"stored, or takes off another notice:\n%s", got)
 	}
@@ -3497,9 +3516,23 @@ func TestPassNoticeGoesWithWhatItSaid(t *testing.T) {
 	}
 	// Another tab's Remove or Forget takes the notice off here whatever it
 	// says, and nothing else in those two places does.
-	if strings.Count(withoutComments(jsFunction(t, script, "stopForPassForget")), "clearNotice()") != 1 ||
-		strings.Count(withoutComments(jsFunction(t, script, "followPassStorage")), "clearNotice()") != 1 {
-		t.Error("another tab's Stop or change of the Pass takes a notice off this tab's Pass page that is still true")
+	for _, name := range []string{"stopForPassForget", "followPassStorage"} {
+		body := withoutComments(jsFunction(t, script, name))
+		if strings.Count(body, "takePassNoticeOff()") != 1 || strings.Contains(body, "clearNotice()") {
+			t.Errorf("%s: another tab's Stop or change of the Pass takes a notice off this tab's Pass page that is "+
+				"still true, or takes one off another way", name)
+		}
+	}
+	// Taken off by something other than the reader, the notice does not take
+	// focus on its dismiss button to the top of the document with it: focus
+	// goes to the page just below, without scrolling it, where a drawing that
+	// follows keeps it (redrawPass, through passTwin's id).
+	if got := withoutComments(jsFunction(t, script, "takePassNoticeOff")); got != "function takePassNoticeOff() {\n"+
+		"  const focused = el.notice.contains(document.activeElement);\n  clearNotice();\n"+
+		"  if (focused) {\n    el.main.focus({ preventScroll: true });\n  }\n}" ||
+		strings.Count(code, "takePassNoticeOff()") != 4 {
+		t.Errorf("a notice taken off by something other than the reader drops focus on it to the top of the document, "+
+			"or scrolls the page:\n%s", got)
 	}
 }
 
