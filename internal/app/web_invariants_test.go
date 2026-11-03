@@ -2257,32 +2257,37 @@ func TestPassIssuedPanelSaysWhatThisBrowserHolds(t *testing.T) {
 }
 
 // A second code handed over on the same visit, by a claim or a reissue code,
-// takes the place of the first's panel, which may show codes this browser
-// does not hold and the server will not show again: the first code, kept and
-// since displaced, or never kept, and the code of the Pass it took the place
-// of. Each is carried onto the new panel, with words of its own, so none is
-// lost before the reader leaves the page, Remove the Pass or Forget this
-// browser takes it, or educhan finds it no longer valid
-// (TestPassIssuedPanelSaysWhatThisBrowserHolds). The new code and the one held
-// as it comes, which the new panel or the held Pass's panel shows, are not
-// carried, and no code is carried twice, so none is drawn twice and no id is
-// either.
+// takes the place of the first's panel, which may show codes the server will
+// not show again: the first code, kept or not, and the code of the Pass it took
+// the place of. Each is carried onto the new panel, with words of its own, so
+// none is lost before the reader leaves the page, Remove the Pass or Forget
+// this browser takes it, or educhan finds it no longer valid
+// (TestPassIssuedPanelSaysWhatThisBrowserHolds), even the code held as it
+// comes, when the new one could not be kept, since another tab can yet store
+// another in its place. The new code and the code it takes the place of, which
+// the new panel shows, are not carried, and no code is carried twice, so none
+// is drawn twice and no id is either.
 func TestPassCodesShownEarlierAreCarried(t *testing.T) {
 	script := appScript(t)
 	keep := withoutComments(jsFunction(t, script, "keepClaimed"))
-	if !strings.Contains(keep, "      replaced: kept && held ? held.code : \"\",\n"+
-		"      earlier: passCodesCarried(passJustIssued, res.pass, held),\n      reissued,\n") {
+	if !strings.Contains(keep, "    const replaced = kept && held ? held.code : \"\";\n    passJustIssued = {\n"+
+		"      code: res.pass,\n      expires: res.expires_at,\n      kept,\n      replaced,\n"+
+		"      earlier: passCodesCarried(passJustIssued, res.pass, replaced),\n      reissued,\n") {
 		t.Error("a code handed over on the visit of an earlier one no longer carries the codes the earlier panel showed")
 	}
+	// The held code is left to the new panel only when that panel shows it as
+	// the code the new one took the place of: beside a new code this browser
+	// could not keep, it is carried, since another tab can yet store another
+	// in its place.
 	carry := withoutComments(jsFunction(t, script, "passCodesCarried"))
-	if carry != "function passCodesCarried(old, code, held) {\n  const carried = [];\n  if (!old) {\n    return carried;\n  }\n"+
+	if carry != "function passCodesCarried(old, code, replaced) {\n  const carried = [];\n  if (!old) {\n    return carried;\n  }\n"+
 		"  const shown = [\n    { code: old.code, kept: old.kept, was: \"issued\" },\n"+
 		"    { code: old.replaced, kept: true, was: old.reissued ? \"reissued\" : \"replaced\" },\n    ...old.earlier,\n  ];\n"+
-		"  for (const earlier of shown) {\n    const drawn = earlier.code === code || (held && earlier.code === held.code);\n"+
+		"  for (const earlier of shown) {\n    const drawn = earlier.code === code || earlier.code === replaced;\n"+
 		"    if (earlier.code && !drawn && !carried.some((other) => other.code === earlier.code)) {\n      carried.push(earlier);\n    }\n  }\n"+
 		"  return carried;\n}" {
-		t.Errorf("passCodesCarried no longer carries every code an earlier panel showed but the new code, the code held "+
-			"and a code carried already:\n%s", carry)
+		t.Errorf("passCodesCarried no longer carries every code an earlier panel showed but the new code, the code it "+
+			"took the place of and a code carried already:\n%s", carry)
 	}
 	// Each is drawn on the new panel, whether its own code is there or found
 	// no longer valid, and only there.
@@ -2341,7 +2346,7 @@ func TestPassReissueCodeReplacesAPassAndShowsIt(t *testing.T) {
 	if reissue < 0 || refused < reissue || strings.Contains(submit[reissue:refused], "held") {
 		t.Error("a reissue code typed in a browser that holds a Pass is not spent at once")
 	}
-	if !strings.Contains(withoutComments(jsFunction(t, script, "keepClaimed")), `replaced: kept && held ? held.code : "",`) ||
+	if !strings.Contains(withoutComments(jsFunction(t, script, "keepClaimed")), `const replaced = kept && held ? held.code : "";`) ||
 		!strings.Contains(withoutComments(jsFunction(t, script, "passIssuedHTML")), "${esc(issued.replaced)}") {
 		t.Error("a code handed over in place of another no longer shows the one it replaced")
 	}

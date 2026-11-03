@@ -575,9 +575,14 @@ One that leaves the Pass no paid time to come, as one of any of its terms does
 once it has run out, deletes the row, as the prune a month past its expiry does.
 The transaction that deletes a Pass also clears it from every order that renews
 it, paid or not, so no order names a Pass that has gone; that writes only those
-orders, and each then holds that transaction's id, so whoever holds those files
-can still tell which orders one deletion cleared. Stripe keeps the exact time of
-every payment anyway.
+orders, and each then holds that transaction's id, as does the row a refund or
+dispute writes beside them in `pass_revocations`, so whoever holds those files
+can still tell which orders one deletion cleared and, for the month that row is
+kept, which payment's refund or dispute it followed. Those files also hold the
+row versions a write or a deletion left behind until Postgres reuses their
+space, as does a physical backup that copied them, so a gone Pass's rows, and
+each cleared order's earlier version naming it, can outlast the deletion there.
+Stripe keeps the exact time of every payment anyway.
 
 They cannot link a Pass to a post. Posts carry nothing about a Pass, using one
 writes nothing (no "last used"), the code is stored only as a keyed hash, the
@@ -1079,17 +1084,19 @@ not-found view.
   has taken its place, typed in here or stored in another tab, or the browser's data has
   been cleared, that the browser no longer has it and it won't be shown again once the
   reader leaves the page, so they can write it down first. A second code handed over on
-  the same visit, by a claim or a reissue code, carries onto its panel each code the
-  first panel showed that the browser does not hold as it comes: the first code, if the
-  browser never kept it or another has since taken its place, and the code of a Pass it
-  took the place of, with what that panel carried in turn, each worded for what it was
-  and for whether the browser holds it as it is drawn, and none twice, so none is lost
-  before the reader leaves the page, presses Remove the Pass or Forget this browser, or
-  educhan finds it no longer valid. Buy is held back while a Pass is held here, while a
-  code the browser could not keep is shown, while a purchase is being collected and while
-  sales are paused, and none is drawn when the page could not be read or the Pass is not
-  on sale; so it is offered beside the code of a Pass the browser no longer holds only
-  once no other Pass is held here, its data cleared say. A browser that will not store a
+  the same visit, by a claim or a reissue code, carries onto its panel every code the
+  first panel showed, the first code and the code of a Pass it took the place of, with
+  what that panel carried in turn, but the new code and the code the new one takes
+  the place of, which its own panel shows; so the first code is carried unless the new
+  one is kept in its place, even when the browser still holds it beside a new code it
+  could not keep. Each is worded for what it was and for whether the browser holds it
+  as it is drawn, and none is drawn twice, so none is lost before the reader leaves
+  the page, presses Remove the Pass or Forget this browser, or educhan finds it no
+  longer valid. Buy is held back while a Pass is held here, while a code the browser
+  could not keep is shown, while a purchase is being collected and while sales are
+  paused, and none is drawn when the page could not be read or the Pass is not on sale;
+  so it is offered beside the code of a Pass the browser no longer holds only once
+  no other Pass is held here, its data cleared say. A browser that will not store a
   code is told so, and that it won't be shown again once the reader leaves the page. A
   code educhan finds no longer valid as the Pass held here, answering Check it again, the
   check after a reissue code or a renewal, Renew or a post, in any tab of the browser, is
@@ -1164,9 +1171,10 @@ not-found view.
   clipboard, whatever is on it by then, when the code was copied with **Copy the code**
   in the same tab since educhan was last opened there and no copy or cut in that tab has
   certainly put something there since, unless another tab has since taken that code
-  itself out of the browser's storage, removing it or storing another in its place;
-  another tab storing the same code again, renewed say, or changing a Pass whose code is
-  not the one copied, leaves it to be emptied. A copy counts when what is selected holds
+  itself out of the browser's storage, removing it or storing another in its place, or
+  storage has been cleared from outside the page and does not hold that code; another
+  tab storing the same code again, renewed say, or changing a Pass whose code is not
+  the one copied, leaves it to be emptied. A copy counts when what is selected holds
   something (a text box's own selection where the box says, the document's for an email
   or number box, and otherwise text the page itself has selected), and a cut only that
   way and in a box that can be typed in, or in editable text; one the page cannot be sure

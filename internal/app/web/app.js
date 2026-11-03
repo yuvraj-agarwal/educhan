@@ -2364,7 +2364,8 @@ let passCodeTyped = "";
 // the clipboard again (emptyCopiedPassCode). It is forgotten once a copy or a
 // cut in this tab certainly puts something there in the code's place
 // (forgetCopiedPassCode), and once another tab takes that code itself out of
-// the browser's storage, removing it or storing another in its place
+// the browser's storage, removing it or storing another in its place, or
+// storage is cleared from outside the page and does not hold it
 // (followPassStorage). Another tab storing the same code again, renewed or
 // with a new date say, or changing a Pass whose code is not the one copied,
 // leaves it.
@@ -2377,29 +2378,29 @@ const passForgetHeard = new Map();
 // passJustIssued is the code a claim or a reissue code has just handed over,
 // as { code, expires, kept, replaced, earlier, reissued, shown }: replaced is
 // the code of a different Pass it took the place of in this browser, earlier
-// the codes an earlier panel on this visit showed that the browser did not
-// hold when this code came (passCodesCarried), and shown is whether the Pass
-// page has drawn it. It is drawn on every drawing of the Pass page, so no
-// redraw, poll or second code handed over loses a code the server will not
-// show again, until the reader leaves the page (render), or the document, for
-// another site say (pagehide), once drawn, kept or not (forgetShownCode): one
-// this browser could not store goes as its panel says, and a page brought back
-// from the back-forward cache shows neither kind to whoever uses the browser
-// next. One not yet drawn, its answer having come while the reader was
-// elsewhere, or they having left before its drawing came, waits for them to
-// come back to the Pass page: one this browser could not keep is nowhere else,
-// and nor is the code of a Pass one it keeps took the place of (replaced), or
-// a code carried from an earlier panel (earlier). Remove the Pass and Forget
-// this browser, here or in another tab (stopForPassForget), drop it too, with
-// every code beside it. One this browser kept and no longer holds, another
-// code having taken its place, typed in here or stored by another tab, or its
-// data cleared, stays until then, worded as no longer here (passIssuedHTML),
-// since it may be nowhere else. Once educhan tells this tab or another that a
-// code on the panel is no longer valid, as the Pass held here, which another
-// tab's removal of it is taken for (followPassStorage), that code is worth
-// nothing and goes, be it the code handed over, the code it took the place of
-// or a code carried, and every other code stays, worded for whether this
-// browser holds it as it is drawn (forgetInvalidCode).
+// the codes an earlier panel on this visit showed that this one does not show
+// as its own (passCodesCarried), and shown is whether the Pass page has drawn
+// it. It is drawn on every drawing of the Pass page, so no redraw, poll or
+// second code handed over loses a code the server will not show again, until
+// the reader leaves the page (render), or the document, for another site say
+// (pagehide), once drawn, kept or not (forgetShownCode): one this browser
+// could not store goes as its panel says, and a page brought back from the
+// back-forward cache shows neither kind to whoever uses the browser next. One
+// not yet drawn, its answer having come while the reader was elsewhere, or they
+// having left before its drawing came, waits for them to come back to the Pass
+// page: one this browser could not keep is nowhere else, and nor is the code of
+// a Pass one it keeps took the place of (replaced), or a code carried from an
+// earlier panel (earlier). Remove the Pass and Forget this browser, here or in
+// another tab (stopForPassForget), drop it too, with every code beside it. One
+// this browser kept and no longer holds, another code having taken its place,
+// typed in here or stored by another tab, or its data cleared, stays until
+// then, worded as no longer here (passIssuedHTML), since it may be nowhere
+// else. Once educhan tells this tab or another that a code on the panel is no
+// longer valid, as the Pass held here, which another tab's removal of it is
+// taken for (followPassStorage), that code is worth nothing and goes, be it the
+// code handed over, the code it took the place of or a code carried, and every
+// other code stays, worded for whether this browser holds it as it is drawn
+// (forgetInvalidCode).
 let passJustIssued = null;
 
 // lastPassInfo is what GET /api/pass said for the drawing on screen, so a
@@ -3020,9 +3021,9 @@ function forgetShownCode() {
 // reader's click, so it is called inside one; a browser that will not write
 // leaves the clipboard as it was. A code copied any other way, by hand, in
 // another tab, before this tab was last loaded, or before another tab removed
-// that code from storage or stored another in its place (followPassStorage), is
-// beyond it, and the page says so; so is any clipboard history the computer
-// keeps.
+// that code from storage or stored another in its place, or storage was cleared
+// from outside the page without it (followPassStorage), is beyond it, and the
+// page says so; so is any clipboard history the computer keeps.
 function emptyCopiedPassCode() {
   if (!passCodeCopied) {
     return;
@@ -3346,8 +3347,8 @@ function passAttestHTML(id) {
 // once the reader leaves the page, as one the browser could not keep does. It
 // is drawn already filled, so the page moves focus to it (focusPassPanel) for
 // a screen reader to read it out. A different Pass it took the place of in
-// this browser is shown beside it, to be written down, and is all the panel
-// shows once educhan has said the code itself is no longer valid
+// this browser is shown beside it, to be written down, and stays, with any
+// codes carried, once educhan has said the code itself is no longer valid
 // (forgetInvalidCode), worded then, as the code itself is, for whether this
 // browser holds it as it is drawn, typed back in here or stored by another
 // tab say, when it can be shown again from the held Pass's panel. Once educhan
@@ -3426,14 +3427,15 @@ function passIssuedHTML(issued, held) {
 
 // passEarlierHTML is a code carried from an earlier panel on this visit (old,
 // passCodesCarried), worded for what it was there and for whether this
-// browser holds it as it is drawn, typed back in here or stored by another tab
-// say, when the held Pass's panel can show it again: a code handed over here
-// ("issued"), kept and since displaced, or never kept, won't be shown again
-// once the reader leaves the page; the code of a Pass a code handed over here
-// took the place of ("replaced", or "reissued" when a reissue code's new code
-// did) is worded as the panel's own replaced code is, that Pass unaffected,
-// or, after a reissue code, perhaps that code's own Pass, which then no longer
-// works.
+// browser holds it as it is drawn, when the held Pass's panel can show it again
+// (still held beside a new code this browser could not keep, or typed back in
+// here or stored by another tab, say): a code handed over here ("issued") that
+// this browser does not hold, kept and since displaced, or never kept, won't
+// be shown again once the reader leaves the page; the code of a Pass a code
+// handed over here took the place of ("replaced", or "reissued" when a reissue
+// code's new code did) is worded as the panel's own replaced code is, that Pass
+// unaffected, or, after a reissue code, perhaps that code's own Pass, which
+// then no longer works.
 function passEarlierHTML(old, held) {
   const code = `<span class="pass-code-old">${esc(old.code)}</span>`;
   const here = Boolean(held && held.code === old.code);
@@ -3833,12 +3835,13 @@ function keepClaimed(res, reissued = false) {
   const just = passJustIssued && passJustIssued.code === res.pass ? passJustIssued : null;
   if (!just && !(held && held.code === res.pass)) {
     const kept = storePass(res.pass, res.expires_at);
+    const replaced = kept && held ? held.code : "";
     passJustIssued = {
       code: res.pass,
       expires: res.expires_at,
       kept,
-      replaced: kept && held ? held.code : "",
-      earlier: passCodesCarried(passJustIssued, res.pass, held),
+      replaced,
+      earlier: passCodesCarried(passJustIssued, res.pass, replaced),
       reissued,
       shown: false,
     };
@@ -3856,16 +3859,17 @@ function keepClaimed(res, reissued = false) {
 }
 
 // passCodesCarried is what the panel of a code just handed over (old) shows
-// that this browser does not hold as the next code (code) is handed over on
-// the same visit, by a claim or a reissue code, carried onto that code's
-// panel so none is lost before the reader can write it down: old's own code,
-// kept and since displaced, or never kept ("issued"), the code of the Pass it
-// took the place of ("replaced", or "reissued" when a reissue code's new code
-// did), and what old carried in turn. Neither the new code nor the one held as
-// it comes (held), which the new panel shows as the code it takes the place
-// of, or the held Pass's panel can show, is carried, and no code is carried
-// twice.
-function passCodesCarried(old, code, held) {
+// that the panel of the next code (code), handed over on the same visit by a
+// claim or a reissue code, does not show as its own, carried onto that panel
+// so none is lost before the reader can write it down: old's own code
+// ("issued"), the code of the Pass it took the place of ("replaced", or
+// "reissued" when a reissue code's new code did), and what old carried in
+// turn. Neither the new code nor the code the new one takes the place of
+// (replaced), the one held as it comes when the new one is kept, is carried,
+// since the new panel shows both, and no code is carried twice. The one held
+// as it comes is carried too when the new one could not be kept, worded as
+// held (passEarlierHTML), since another tab can yet store another in its place.
+function passCodesCarried(old, code, replaced) {
   const carried = [];
   if (!old) {
     return carried;
@@ -3876,7 +3880,7 @@ function passCodesCarried(old, code, held) {
     ...old.earlier,
   ];
   for (const earlier of shown) {
-    const drawn = earlier.code === code || (held && earlier.code === held.code);
+    const drawn = earlier.code === code || earlier.code === replaced;
     if (earlier.code && !drawn && !carried.some((other) => other.code === earlier.code)) {
       carried.push(earlier);
     }

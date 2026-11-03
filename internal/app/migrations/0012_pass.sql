@@ -101,10 +101,10 @@ CREATE TABLE IF NOT EXISTS pass_orders (
     -- names no Pass any more: the transaction that deletes a Pass (a refund or
     -- a dispute that leaves it no paid time to come, or the prune a month past
     -- its expiry) sets this to NULL in every order naming it, so a paid order
-    -- kept for its owner to reissue ties its payment to no Pass that has gone.
-    -- It is not a foreign key, whose check would lock the Pass's row and leave
-    -- the checkout's transaction id on it (above); clearing it writes to this
-    -- table alone.
+    -- kept for its owner to reissue names no Pass that has gone (the README
+    -- says what the database files still show of it). It is not a foreign key,
+    -- whose check would lock the Pass's row and leave the checkout's
+    -- transaction id on it (above); clearing it writes to this table alone.
     renew_pass_id BIGINT,
     -- The term the order buys, in days: EDUCHAN_PASS_DAYS when the checkout
     -- started. Collecting, renewing and pruning the order all use this, so a

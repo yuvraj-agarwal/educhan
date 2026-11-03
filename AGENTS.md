@@ -588,11 +588,13 @@ needs a browser check before the test changes.
   drawn, waits for them to come back, since one the browser could not keep is nowhere
   else, and nor is the code of a Pass one it keeps took the place of, or a code carried.
   A second code handed over on the same visit, by a claim or a reissue code, carries onto
-  its panel (`passCodesCarried`) each code the first panel showed that the browser does
-  not hold as it comes: the first code, if it was never kept or another has since taken
-  its place, the code of a Pass it took the place of and what that panel carried in turn,
-  but neither the new code nor the code held as it comes, which the new panel or the held
-  Pass's panel shows, and no code twice, so no code is drawn twice and no id either;
+  its panel (`passCodesCarried`) every code the first panel showed, the first code, the
+  code of a Pass it took the place of and what that panel carried in turn, but neither
+  the new code nor the code the new one takes the place of (`replaced`, the code held
+  as it comes once the new one is kept), which the new panel shows, and no code twice,
+  so no code is drawn twice and no id either. The first code is thus carried unless
+  the new one is kept in its place, even while the browser still holds it beside a
+  new code it could not keep, since another tab could yet store another in its place;
   `passEarlierHTML` words each for what it was and for whether the browser holds it as it
   is drawn. A panel on the page goes then even when its code has gone already, dropped by
   another tab's Remove or Forget that found no Pass to remove, whose drawing waits on the
