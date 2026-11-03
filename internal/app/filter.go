@@ -7146,7 +7146,7 @@ func (f *scannedField) playedPart(v *view, m []int, ws, sentence []string) bool 
 	}
 	clause := wordsIn(clauseBefore(text, m[0]) + text[m[0]:m[1]] + clauseAfter(text, m[1]))
 	staged := stagedIn(clause)
-	return (staged || f.partNamed(v, from, end)) && !offStage(clause, staged)
+	return (staged || f.partNamed(v, from, end)) && !offStage(clause, staged, wordsIn(text[from:end]))
 }
 
 // namesAPlay reports a play or a musical named in ws: one of playNouns;
@@ -7238,25 +7238,67 @@ func stagedIn(ws []string) bool {
 	return false
 }
 
-// offStage reports words of an act's clause that set it off the stage:
-// "for real" or "irl"; "after" or "later"; a place after a preposition that
-// is no stage and no play ("at school", "in the canteen", "at her house",
-// not "in the school play" or "in the auditorium"); or, unless the clause
-// sets the act on the stage (staged), a time of day ("tomorrow", "tonight",
-// "now"), though one straight after a play is the play's own ("the school
-// play tomorrow"), or a day of the week, though not one with a night or a
-// show after it or after "the end" ("on Friday night", "at the end on
-// Saturday"): "I'm Brutus in the school play. I stab Rahul on monday".
-func offStage(ws []string, staged bool) bool {
+// offStage reports words of an act's clause (ws) that set it off the stage,
+// with around the words of the sentences the play is named in. Wherever the
+// act is set: "for real" or "irl"; somewhere the poster's day is spent
+// (offStageSettings: "on his way home", "in his sleep"); a place after a
+// preposition that is no stage and no play ("at school", "in the canteen",
+// "at her house", not "in the school play" or "in the auditorium"); or
+// "after" or "later" that is not on the stage (onStageAfter: "later in the
+// play", "after he speaks", "after the senate scene", not "after the school
+// play" or a bare "after"). And unless the clause sets the act on the stage
+// (staged): a clock time ("at 3pm") or a date ("on the 5th"); a time of
+// day or a period (offStageTimes: "tomorrow", "next week", "this weekend",
+// "during the break"), though one straight after a play is the play's own
+// ("the school play tomorrow"); "during" anything but the show; "when",
+// "whenever" or "once" with no stage cue in what follows ("when I see him",
+// not "when he enters"); or a day of the week, though not one with a night
+// or a show after it or after "the end" ("on Friday night", "at the end on
+// Saturday"), nor one the play is said to be on elsewhere ("school play is
+// on friday. I'm Brutus and I stab Caesar on friday"): "I'm Brutus in the
+// school play. I stab Rahul on monday". "Tonight", "today" and "now" are
+// the show's own time once a part is named: "I'm Brutus in the school play
+// and tonight I stab Caesar".
+func offStage(ws []string, staged bool, around []string) bool {
+	if !staged && clockTime(ws) {
+		return true
+	}
+	count := func(ws []string, w string) int {
+		n := 0
+		for _, x := range ws {
+			if x == w {
+				n++
+			}
+		}
+		return n
+	}
 	for i, w := range ws {
+		var next string
+		if i+1 < len(ws) {
+			next = ws[i+1]
+		}
 		switch {
-		case is(w, "irl") || is(w, "after") || is(w, "afterwards") || is(w, "later"):
+		case is(w, "irl") || offStageSettings[w] && !(is(w, "way") && i > 0 && !ownerWords[ws[i-1]]):
 			return true
+		case is(w, "after") || is(w, "afterwards") || is(w, "later"):
+			if !onStageAfter(w, ws[i+1:]) {
+				return true
+			}
 		case is(w, "real") && i > 0 && (is(ws[i-1], "for") || is(ws[i-1], "in")):
 			return true
-		case offStageTimes[w] && !staged && !(i > 0 && (playNouns[ws[i-1]] || is(ws[i-1], "play"))):
+		case staged:
+		case offStageTimes[w] && !(i > 0 && (playNouns[ws[i-1]] || is(ws[i-1], "play"))):
 			return true
-		case stageDays[w] && !staged && !(i+1 < len(ws) && dayShows[ws[i+1]]):
+		case is(w, "during") && !(next != "" && (wholeShows[next] || partShows[next] ||
+			is(next, "the") && i+2 < len(ws) && (wholeShows[ws[i+2]] || partShows[ws[i+2]]))):
+			return true
+		case is(w, "when") || is(w, "whenever") || is(w, "once"):
+			if !anyIn(ws[i+1:], stageCues) && !anyIn(ws[i+1:], partShows) {
+				return true
+			}
+		case is(w, "on") && next != "" && (dateWord(next) || is(next, "the") && i+2 < len(ws) && dateWord(ws[i+2])):
+			return true
+		case stageDays[w] && !(i+1 < len(ws) && dayShows[ws[i+1]]) && count(around, w) <= count(ws, w):
 			end := false
 			for k := 1; k < i; k++ {
 				end = end || is(ws[k], "end") && is(ws[k-1], "the")
@@ -7264,13 +7306,51 @@ func offStage(ws []string, staged bool) bool {
 			if !end {
 				return true
 			}
-		case stagePrepositions[w] && i+1 < len(ws):
+		}
+		if stagePrepositions[w] && i+1 < len(ws) {
 			np := readNoun(ws[i+1:])
 			if np.place() && !stagePlaces[np.head] && !(i+1+np.n < len(ws) && (playNouns[ws[i+1+np.n]] ||
 				is(ws[i+1+np.n], "play") || is(ws[i+1+np.n], "drama"))) {
 				return true
 			}
 		}
+	}
+	return false
+}
+
+// onStageAfter reports "after" or "later" (w) set on the stage by the words
+// that follow it (rest): a part of the show ("after the senate scene",
+// "after his speech", "later in the play"), or another part's cue ("after
+// he speaks", "after Antony enters"); not the whole show ("after the school
+// play", "after the rehearsal") or nothing ("in the car park after").
+func onStageAfter(w string, rest []string) bool {
+	rest = rest[:min(len(rest), 4)]
+	if is(w, "later") {
+		return len(rest) > 1 && is(rest[0], "in") && (anyIn(rest[1:], wholeShows) || anyIn(rest[1:], partShows))
+	}
+	for _, x := range rest {
+		switch {
+		case wholeShows[x] || playNouns[x]:
+			return false
+		case partShows[x] || stageCues[x]:
+			return true
+		}
+	}
+	return false
+}
+
+// dateWord reports a day of the month: "5th", "22nd", "15".
+func dateWord(w string) bool {
+	n := 0
+	for n < len(w) && isASCIIDigit(w[n]) {
+		n++
+	}
+	if n == 0 || n > 2 {
+		return false
+	}
+	switch w[n:] {
+	case "", "st", "nd", "rd", "th":
+		return true
 	}
 	return false
 }
@@ -7295,12 +7375,25 @@ var (
 	stagedWords = canonSetOf(`scene scenes stage onstage finale curtain curtains interval matinee encore performance
 		performances`)
 	actNumbers = canonSetOf(`one two three four five i ii iii iv v`)
-	// offStageTimes are times of day an act is set at off the stage, and
+	// offStageTimes are times of day and periods an act is set at off the
+	// stage, and offStageSettings where the poster's day is spent;
 	// stagePrepositions open a place it is set in; stagePlaces are where a
 	// play is put on.
-	offStageTimes     = canonSetOf(`tomorrow tmrw tmr tonight today now kal aaj morning evening afternoon lunch recess`)
+	offStageTimes = canonSetOf(`tomorrow tmrw tmr kal morning evening afternoon lunch recess break week weekend
+		weekends month term semester holiday holidays vacation`)
+	offStageSettings  = canonSetOf(`home sleep asleep bed way`)
 	stagePrepositions = canonSetOf(`at in to near outside behind inside into by`)
-	stagePlaces       = canonSetOf(`auditorium hall halls assembly`)
+	// wholeShows are a show as a whole, after which an act is off the
+	// stage ("after the school play"); partShows are parts of one, and
+	// stageCues another part's cue, which set an act after them on it
+	// ("after the senate scene", "after he speaks").
+	wholeShows = canonSetOf(`play plays show shows musical musicals performance performances rehearsal rehearsals
+		production drama skit`)
+	partShows = canonSetOf(`scene scenes act acts speech speeches line lines monologue soliloquy interval song
+		entrance exit finale`)
+	stageCues = canonSetOf(`speaks speak says say enters enter exits exit kneels kneel sings sing bows bow turns
+		finishes`)
+	stagePlaces = canonSetOf(`auditorium hall halls assembly`)
 	// stageDays are the days of the week, and dayShows, after one, make
 	// it a performance's: "on Friday night".
 	stageDays = canonSetOf(`monday tuesday wednesday thursday friday saturday sunday mon tue tues wed thu thurs
