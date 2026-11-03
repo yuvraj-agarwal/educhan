@@ -12125,11 +12125,23 @@ var (
 	// give it something to make or send: "cut myself a fringe", "burn
 	// myself a cd", "shoot myself a reminder".
 	secondObjects = canonSetOf(`a an some`)
-	// selfParticles, after "cut myself", "burn myself" or "hurt myself",
-	// make a phrasal verb or a degree of it ("cut myself off", "burn myself
-	// out", "hurt myself less"). "Up" is not one: "cut myself up" is a
-	// method's own phrasing.
-	selfParticles = canonSetOf(`off out loose down short less back`)
+	// selfPhrasal, after "cut myself", "burn myself" or "hurt myself",
+	// make a phrasal verb of it ("cut myself off", "burn myself out"), and
+	// selfDegrees a degree ("hurt myself less"); selfIdiomTimes after
+	// either set it in a time or an activity ("less when i fall", "out
+	// during exams", "off this semester"). selfMarks after them are a
+	// method's: a place on the body, or the harm hidden ("down my arm",
+	// "less visibly", "out of sight", "so no one sees", "without anyone
+	// knowing"). "Up" is no particle: "cut myself up" is a method's own
+	// phrasing.
+	selfPhrasal    = canonSetOf(`off out loose short`)
+	selfDegrees    = canonSetOf(`less down back`)
+	selfIdiomTimes = canonSetOf(`when whenever while during this these next every in at on before after for if until
+		till`)
+	selfMarks = canonSetOf(`arm arms wrist wrists thigh thighs leg legs skin stomach belly hip hips ankle ankles chest
+		neck face hand hands finger fingers knee knees shoulder shoulders body visibly visible obviously obvious
+		noticeably unseen secretly quietly secret hidden hide hiding sight see sees seeing notice notices noticing
+		know knows knowing find finds finding without nobody`)
 	suicideTopics = canonSetOf(`prevention awareness essay essays rates rate statistics stats hotline helpline helplines squad bombing bomber bombers attack attacks mission missions doors door run runs research project report article documentary`)
 	kmsQuantity   = canonSetOf(`many few some several couple more less fewer extra total thousand thousands hundred hundreds lakh lakhs million millions of the those these in kitne kitna`)
 	kmsAfter      = canonSetOf(`away per from long far ahead left of an a hai`)
@@ -14343,13 +14355,8 @@ func methodCheck(v *view, m []int) bool {
 	case is(ws[len(ws)-1], "myself") && len(next) > 0 && (hasWord(ws, "cut") || hasWord(ws, "burn") ||
 		hasWord(ws, "shoot")) && secondObjects[next[0]]:
 		return false // "how to cut myself a fringe", "how to burn myself a cd"
-	case is(ws[len(ws)-1], "myself") && len(next) > 0 && selfParticles[next[0]] &&
-		!(is(next[0], "less") && hasWord(ws, "cut")):
-		// "how to cut myself off from social media", "how to burn myself
-		// out less", "how do i hurt myself less when i fall": a phrasal
-		// verb or a degree, not a method. "How to cut myself less" still
-		// asks about cutting.
-		return false
+	case is(ws[len(ws)-1], "myself") && selfIdiom(ws, next):
+		return false // "how to cut myself off from social media"
 	case is(ws[len(ws)-1], "myself") && len(next) > 0 && is(next[0], "in") && hasWord(ws, "drown"):
 		return anyIn(next[1:min(len(next), 4)], waterWords) // not "in work"
 	case is(ws[len(ws)-1], "myself") && len(next) > 0 && is(next[0], "in") && hasWord(ws, "shoot"):
@@ -14540,6 +14547,44 @@ func unseenAfter(next []string) bool {
 		k = 2
 	}
 	return len(next) > k+1 && unseenBy[next[k]] && unseenVerbs[next[k+1]]
+}
+
+// selfIdiom reports the words after "cut myself", "burn myself" or "hurt
+// myself" (next, ws the match) making a phrasal verb or a degree of it, not
+// a method: a particle before "from" ("cut myself off from social media",
+// "cut myself loose from this group project"), a particle at the end of the
+// clause or before "of" ("burn myself out", "cut myself out of the photo"),
+// or a particle or a degree before a time or an activity ("burn myself out
+// less during exam season", "hurt myself less when i fall"). Anything else
+// after them is a method's, and so is a place on the body or the harm
+// hidden anywhere in the clause, selfMarks: "cut myself down my arm", "burn
+// myself less visibly", "hurt myself out of sight", "cut myself back there
+// so no one sees". "How to cut myself less" still asks about cutting.
+func selfIdiom(ws, next []string) bool {
+	if len(next) == 0 || is(next[0], "less") && hasWord(ws, "cut") {
+		return false
+	}
+	phrasal := selfPhrasal[next[0]]
+	if !phrasal && !selfDegrees[next[0]] {
+		return false
+	}
+	rest := next[1:]
+	if phrasal && len(rest) > 0 && is(rest[0], "from") {
+		return true
+	}
+	if anyIn(rest, selfMarks) {
+		return false
+	}
+	if phrasal && len(rest) > 0 && (is(rest[0], "less") || is(rest[0], "more")) {
+		rest = rest[1:] // "burn myself out less during exams"
+	}
+	switch {
+	case len(rest) == 0:
+		return phrasal // "burn myself out", not "hurt myself less"
+	case phrasal && is(rest[0], "of"):
+		return true
+	}
+	return selfIdiomTimes[rest[0]]
 }
 
 // dieAsked reports the words before "die", nearest first, asking it: "can
