@@ -772,9 +772,76 @@ func TestPassRunOutHereIsCheckedWithTheServer(t *testing.T) {
 	if !strings.Contains(submit, "markPassExpired(sent.code);") || strings.Contains(submit, "storePass(pass.code") {
 		t.Error("a post refused for an expired Pass no longer marks it run out without a date")
 	}
-	if stored := withoutComments(jsFunction(t, script, "storedPass")); !strings.Contains(stored, "if (saved.expired === true) {") ||
-		!strings.Contains(stored, "return { code: saved.code, expires: null, expired: true };") {
+	if stored := withoutComments(jsFunction(t, script, "storedPass")); !strings.Contains(stored, "const marked = saved.expired === true;") ||
+		!strings.Contains(stored, "const expires = marked && saved.expires === undefined ? null : new Date(saved.expires);") ||
+		!strings.Contains(stored, "return { code: saved.code, expires, expired: marked || expires <= serverNow(), marked };") {
 		t.Error("storedPass no longer reads a Pass marked run out")
+	}
+}
+
+// Whether a Pass has run out is the server's to say, and a computer's clock
+// can be minutes off either way. The page keeps, in memory alone, how far the
+// server's clock is from this computer's, from the Date header of the latest
+// answer sent no-store (every JSON answer is), and judges every Pass by that
+// (serverNow): the Pass held (storedPass, which the held panel's status, its
+// "good until" and renewal wording, Check it again and every notice read) and
+// a code just handed over (passIssuedHTML's ranOut). Before any answer has
+// come it has this computer's clock alone. A Pass the server said has run
+// out, answering a check of it, is kept marked so with the date it gave, and
+// counts as run out whatever any clock says until the server says otherwise;
+// a post's answer gives no date, so its mark keeps none.
+func TestPassRunOutIsJudgedByTheServersClock(t *testing.T) {
+	script := appScript(t)
+	code := withoutComments(script)
+	if !strings.Contains(code, "\nlet serverClockOffset = 0;\n") || strings.Count(code, "serverClockOffset = ") != 2 {
+		t.Error("the page no longer starts from this computer's clock, or sets the server's offset other than from an answer")
+	}
+	if got := withoutComments(jsFunction(t, script, "noteServerClock")); got != "function noteServerClock(res) {\n"+
+		"  const date = Date.parse(res.headers.get(\"Date\") || \"\");\n"+
+		"  if (Number.isFinite(date) && /\\bno-store\\b/.test(res.headers.get(\"Cache-Control\") || \"\")) {\n"+
+		"    serverClockOffset = date - Date.now();\n  }\n}" {
+		t.Errorf("noteServerClock no longer keeps the server's offset from the date of an answer no cache kept, and only then:\n%s", got)
+	}
+	if got := withoutComments(jsFunction(t, script, "serverNow")); got != "function serverNow() {\n"+
+		"  return new Date(Date.now() + serverClockOffset);\n}" {
+		t.Errorf("serverNow is no longer this computer's clock moved by the server's offset:\n%s", got)
+	}
+	// Every answer api() has is read, as soon as its headers are in, error
+	// answers included, before anything else is done with it.
+	if !strings.Contains(withoutComments(jsFunction(t, script, "api")),
+		"    err.unreachable = true;\n    throw err;\n  }\n  noteServerClock(res);\n  if (answered) {") ||
+		strings.Count(code, "noteServerClock(") != 2 {
+		t.Error("api() no longer notes the server's clock from every answer as soon as its headers are in")
+	}
+	if !strings.Contains(withoutComments(jsFunction(t, script, "storedPass")),
+		"return { code: saved.code, expires, expired: marked || expires <= serverNow(), marked };") ||
+		!strings.Contains(withoutComments(jsFunction(t, script, "passIssuedHTML")),
+			"const ranOut = !here && new Date(issued.expires) <= serverNow();") {
+		t.Error("a Pass held, or a code just handed over, is judged run out by this computer's clock, or not marked so by the server")
+	}
+	// No Pass judgment reads this computer's clock alone: in the Pass part of
+	// the page, Date.now() is read only for the marks tabs set for one another
+	// (forgetPassClaim, passForgetLeft, openPassCheckout), which every tab of
+	// this browser reads by the same clock, and new Date() not at all.
+	pass := code[strings.Index(code, "/* educhan Pass"):strings.Index(code, "/* Rules and FAQ")]
+	if strings.Contains(pass, "new Date()") || strings.Count(pass, "Date.now()") != 3 || strings.Count(code, "serverNow()") != 3 ||
+		strings.Count(withoutComments(jsFunction(t, script, "forgetPassClaim")), "Date.now()") != 1 ||
+		strings.Count(withoutComments(jsFunction(t, script, "passForgetLeft")), "Date.now()") != 1 ||
+		strings.Count(withoutComments(jsFunction(t, script, "openPassCheckout")), "Date.now()") != 1 {
+		t.Error("a Pass is judged by this computer's clock somewhere, not the server's")
+	}
+	// The server's word that a Pass has run out, answering a check of it, is
+	// kept with its date: by Check it again, a renewal's check and a code
+	// typed in. Stored again without it (renewed, say), the mark goes.
+	if store := withoutComments(jsFunction(t, script, "storePass")); !strings.HasPrefix(store, "function storePass(code, expires, expired = false) {\n"+
+		"  storageSet(PASS_STORAGE_KEY, JSON.stringify(expired ? { code, expires, expired } : { code, expires }));\n") ||
+		strings.Count(code, ", failed.payload.expires_at, true);") != 3 || strings.Count(code, "failed.payload.expires_at") != 3 ||
+		strings.Count(code, "storePass(") != 9 {
+		t.Error("the server's word that a Pass has run out is no longer kept with the date it gave, or is kept for a Pass stored again")
+	}
+	if got := withoutComments(jsFunction(t, script, "markPassExpired")); got != "function markPassExpired(code) {\n"+
+		"  storageSet(PASS_STORAGE_KEY, JSON.stringify({ code, expired: true }));\n}" {
+		t.Errorf("a post's word that its Pass has run out is kept with a date it did not give:\n%s", got)
 	}
 }
 
@@ -1233,8 +1300,9 @@ func TestPassAnswersDrawOnlyOnThePassPage(t *testing.T) {
 // Check now's included: what the first claim of the drawing it asks for comes
 // to answers it. What the page says on its own, later claims' news and the
 // run-out notice said again for the page drawn after its press included, and
-// every other page's notices stay where showNotice puts them, which moves
-// nothing.
+// every other page's notices stay where showNotice puts them, which scrolls
+// nothing and moves focus only from the notice it replaces to the new one
+// (TestNoticeReplacedKeepsFocusOnIt).
 func TestPassNoticesFromAPressAreBroughtIntoView(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -1246,8 +1314,9 @@ func TestPassNoticesFromAPressAreBroughtIntoView(t *testing.T) {
 		"      el.notice.scrollIntoView({ block: \"nearest\" });\n    }\n  });\n}" {
 		t.Errorf("showPassNotice no longer brings a notice out of view into it, and only then, straight and as far as it must:\n%s", shown)
 	}
-	if notice := withoutComments(jsFunction(t, script, "showNotice")); strings.Contains(notice, "scroll") || strings.Contains(notice, "focus") {
-		t.Error("showNotice moves the page or focus, for every page's notices")
+	if notice := withoutComments(jsFunction(t, script, "showNotice")); strings.Contains(notice, "scroll") ||
+		strings.Count(notice, ".focus(") != 1 || !strings.Contains(notice, ".focus({ preventScroll: true });") {
+		t.Error("showNotice moves the page, or moves focus other than from a notice it replaces, for every page's notices")
 	}
 	if strings.Count(code, "el.notice.scrollIntoView(") != 1 || strings.Contains(code, "smooth") {
 		t.Error("the page scrolls to a notice other than in showPassNotice, or scrolls smoothly")
@@ -1331,6 +1400,38 @@ func TestPassNoticesFromAPressAreBroughtIntoView(t *testing.T) {
 	}
 	if strings.Contains(withoutComments(jsFunction(t, script, "renderPass")), "showPassNotice(") {
 		t.Error("renderPass moves the page to a notice no press raised")
+	}
+}
+
+// A notice put up in place of another while focus is on the old one's dismiss
+// button, a later answer replacing an earlier one, say, would take that focus
+// to the top of the document with the old button. showNotice gives it to the
+// new dismiss button instead, without scrolling the page, so a keyboard stays
+// where it was. A notice put up while focus is anywhere else takes none, on
+// every page. The reader's own dismissal clears the notice as it did before
+// the Pass, and focus goes where the browser leaves it.
+func TestNoticeReplacedKeepsFocusOnIt(t *testing.T) {
+	script := appScript(t)
+	if got := withoutComments(jsFunction(t, script, "showNotice")); got != "function showNotice(message) {\n"+
+		"  const focused = el.notice.contains(document.activeElement);\n"+
+		"  el.notice.innerHTML =\n"+
+		"    '<span class=\"notice-text\"></span>' +\n"+
+		"    '<button class=\"notice-dismiss\" type=\"button\" data-action=\"dismiss-notice\" aria-label=\"Dismiss\">&times;</button>';\n"+
+		"  el.notice.querySelector(\".notice-text\").textContent = message;\n"+
+		"  el.notice.hidden = false;\n"+
+		"  if (focused) {\n    el.notice.querySelector(\".notice-dismiss\").focus({ preventScroll: true });\n  }\n}" {
+		t.Errorf("showNotice no longer keeps focus that was on the notice it replaces on the new one, without scrolling, "+
+			"or takes focus from elsewhere:\n%s", got)
+	}
+	// A dropped file's refusal is put up in place of the notice before it,
+	// which is taken down only when nothing replaced it: taken down first,
+	// focus resting on its dismiss button would fall to the top of the page.
+	drop := words(withoutComments(jsBlock(t, script, `document.addEventListener("drop", (event) => {`, "});")))
+	if !strings.HasSuffix(drop, `field.classList.remove("dragging"); const before = el.notice.querySelector(".notice-text"); `+
+		`setFile(field, event.dataTransfer.files[0]); if (before && noticeShows(before)) { clearNotice(); } });`) ||
+		strings.Count(drop, "clearNotice()") != 1 {
+		t.Errorf("a dropped file no longer has its refusal put up in place of the notice before it, "+
+			"or takes that notice down first:\n%s", drop)
 	}
 }
 
@@ -2901,16 +3002,21 @@ func TestPassCopiedHereIsEmptiedFromTheClipboard(t *testing.T) {
 	// tab, with nothing copied in the tab since, and not the code of a Pass
 	// another tab has removed or replaced since, which is the Pass held where
 	// only Remove is spoken of, and any Pass where Forget empties whichever
-	// code was copied; whatever is on the clipboard by then is emptied, a copy
-	// the page cannot see took anything included, and a code copied by hand is
-	// not.
+	// code was copied, nor once this site's stored data was cleared from
+	// outside the page, which the tab hears of as a storage event with no key
+	// and then counts no copy as its own (followPassStorage); whatever is on
+	// the clipboard by then is emptied, a copy the page cannot see took
+	// anything included, and a code copied by hand is not.
 	for name, page := range map[string]struct{ text, unless string }{
 		"the held Pass": {words(jsFunction(t, script, "passHeldHTML")),
-			"unless another tab removed or replaced the Pass meanwhile"},
+			"unless another tab removed or replaced the Pass meanwhile, or this site's stored data was cleared " +
+				"from outside the page."},
 		"Forget this browser": {words(jsFunction(t, script, "forgetBrowserHTML")),
-			"unless it copied the code of a Pass that another tab removed or replaced meanwhile"},
+			"unless it copied the code of a Pass that another tab removed or replaced meanwhile, or this site's " +
+				"stored data was cleared from outside the page."},
 		"the FAQ": {words(faqAnswer(t, script, "faq-pass")),
-			"unless you copied the code of a Pass that another tab removed or replaced meanwhile"},
+			"unless you copied the code of a Pass that another tab removed or replaced meanwhile, or this site's " +
+				"stored data was cleared from outside the page."},
 	} {
 		for _, want := range []string{"Copy the code", "since you last opened educhan in", "copied nothing in",
 			"whatever is on it by then", page.unless, "even after a copy in",
@@ -2975,13 +3081,15 @@ func TestPassRemovedInAnotherTabLeavesThisOne(t *testing.T) {
 	// leaves a code just handed over be, kept or not: one it could not keep was
 	// never the Pass it holds, and may be a spent reissue code's only copy.
 	// Each stays until the reader leaves the page. A removal with a code to
-	// read also takes the notice off the Pass page, whatever it says, as a
-	// Remove or Forget mark does, since it may be one whose mark the browser
-	// would not store (TestPassNoticeGoesWithWhatItSaid).
+	// read also takes the notice off the Pass page, whatever it says, and off
+	// any other page one that says what this browser holds, as a Remove or
+	// Forget mark does, since it may be one whose mark the browser would not
+	// store (TestPassNoticeGoesWithWhatItSaid).
 	follow := withoutComments(jsFunction(t, script, "followPassStorage"))
 	if !strings.Contains(follow, "const now = storedPass();\n  const was = passCodeIn(event.oldValue);\n"+
 		"  if (event.key === PASS_STORAGE_KEY && event.newValue === null && was) {\n    forgetInvalidCode(was);\n"+
-		"    if (passPageShown()) {\n      takePassNoticeOff();\n    }\n  }") ||
+		"    if (passPageShown() || passNoticeHeld() !== undefined) {\n      takePassNoticeOff();\n    }\n  }\n"+
+		"  dropStalePassNotice();\n  showPassLink();\n  if (now) {") ||
 		strings.Contains(follow, "passJustIssued") || strings.Count(follow, "forgetInvalidCode(") != 1 ||
 		!strings.Contains(follow, `if (passPageShown() && el.main.querySelector("[data-pass-page]")) {`+
 			"\n    redrawPass(lastPassInfo, \"#pass-held\", \"form[data-pass] input\");") {
@@ -3096,7 +3204,7 @@ func TestPassForgottenInAnotherTabStopsThisOne(t *testing.T) {
 		"dropPassNonce(PASS_NONCE_STORAGE_KEY);",
 		"if (code) {\n    passCodeForgets += 1;\n    dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);\n" +
 			"    dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);\n    forgetTypedCode();\n    passLost = \"\";\n    passJustIssued = null;\n" +
-			"    if (passPageShown()) {\n      takePassNoticeOff();\n    }\n  }",
+			"    if (passPageShown() || passNoticeHeld() !== undefined) {\n      takePassNoticeOff();\n    }\n  }",
 		"const waited = heedPassForget(key, mark);",
 		"for (const button of el.main.querySelectorAll(PASS_COLLECT_BUTTONS)) {\n    button.disabled = true;", "return waited;\n}"}
 	for at, step := 0, 0; step < len(steps); step++ {
@@ -3326,12 +3434,12 @@ func TestPassCheckoutNeedsABrowserThatKeepsData(t *testing.T) {
 	}
 }
 
-// A code typed in after it ran out is kept, with the date the server has for
-// it, so the page offers to renew it.
+// A code typed in after it ran out is kept, marked run out with the date the
+// server has for it, so the page offers to renew it.
 func TestPassTypedInAfterItRanOutCanBeRenewed(t *testing.T) {
 	submit := withoutComments(jsFunction(t, appScript(t), "submitPass"))
 	if !strings.Contains(submit, `const expired = kind === "activate" && refusal === "expired" && failed.payload.code;`) ||
-		!strings.Contains(submit, "} else if (expired) {\n    forgetTypedCode();\n    kept = storePass(failed.payload.code, failed.payload.expires_at);") {
+		!strings.Contains(submit, "} else if (expired) {\n    forgetTypedCode();\n    kept = storePass(failed.payload.code, failed.payload.expires_at, true);") {
 		t.Error("submitPass no longer keeps a code typed in after it ran out")
 	}
 	if !strings.Contains(withoutComments(jsFunction(t, appScript(t), "passRunOutText")), `"This Pass has run out. You can renew it below."`) {
@@ -3450,16 +3558,20 @@ func TestPassRunOutIsSaidForThePageBesideIt(t *testing.T) {
 }
 
 // A notice about the Pass this browser holds is true of it for as long as it
-// stays. Each one that says what the browser holds (a Pass taken on, good until
-// a date, renewed or run out, one the browser could not store, or none) is noted
-// beside the Pass stored as it was said, by the node its words are in, and goes
-// at the next drawing of the Pass page, whatever set it off, once the browser
-// no longer holds that as stored. That is decided by the stored record, never
-// by this browser's clock, so a Pass the server said has run out is still the
-// one the notice spoke of on a computer whose clock is slow. Another tab's
-// Remove or Forget this browser takes every notice off the Pass page here, by
-// its mark or, if the browser would not store that, by the removal itself; a
-// Stop leaves the notice be (TestPassForgottenInAnotherTabStopsThisOne,
+// stays, on whatever page it is shown. Each one that says what the browser
+// holds (a Pass taken on, good until a date, renewed or run out, one the
+// browser could not store, or none) is noted beside the Pass stored as it was
+// said, by the node its words are in: on the Pass page, beside a post whose
+// answer says its Pass has run out or is no longer valid, and on the Verify
+// page after Forget this browser. It goes at the next drawing of the Pass page,
+// whatever set it off, and at another tab's change to the Pass, on whatever
+// page this tab is on, once the browser no longer holds that as stored. That is
+// decided by the stored record, never by a clock, so a Pass the server said has
+// run out is still the one the notice spoke of on a computer whose clock is
+// slow. Another tab's Remove or Forget this browser takes every notice off the
+// Pass page here, and such a notice off any other page, by its mark or, if the
+// browser would not store that, by the removal itself; a Stop leaves the notice
+// be (TestPassForgottenInAnotherTabStopsThisOne,
 // TestPassRemovedInAnotherTabLeavesThisOne). A late follow-up acts on its own
 // notice alone (TestPassRunOutIsSaidForThePageBesideIt).
 func TestPassNoticeGoesWithWhatItSaid(t *testing.T) {
@@ -3467,8 +3579,9 @@ func TestPassNoticeGoesWithWhatItSaid(t *testing.T) {
 	code := withoutComments(script)
 	if got := withoutComments(jsFunction(t, script, "passHeldRecord")); got != "function passHeldRecord() {\n"+
 		"  const held = storedPass();\n  if (!held) {\n    return \"\";\n  }\n"+
-		"  return held.expires ? `${held.code} ${held.expires.getTime()}` : `${held.code} run out`;\n}" {
-		t.Errorf("passHeldRecord no longer gives the Pass as it is stored, code and expiry or run-out mark, "+
+		"  const until = held.expires ? ` ${held.expires.getTime()}` : \"\";\n"+
+		"  return `${held.code}${until}${held.marked ? \" run out\" : \"\"}`;\n}" {
+		t.Errorf("passHeldRecord no longer gives the Pass as it is stored, code and expiry or run-out mark or both, "+
 			"without reading the clock:\n%s", got)
 	}
 	if got := withoutComments(jsFunction(t, script, "notePassHeld")); got != "function notePassHeld() {\n"+
@@ -3476,9 +3589,15 @@ func TestPassNoticeGoesWithWhatItSaid(t *testing.T) {
 		"  return text;\n}" || !strings.Contains(code, "\nconst passNoticesHeld = new WeakMap();\n") {
 		t.Errorf("notePassHeld no longer notes the notice just put up, by its node, beside the Pass stored now:\n%s", got)
 	}
-	if got := withoutComments(jsFunction(t, script, "dropStalePassNotice")); got != "function dropStalePassNotice() {\n"+
+	if got := withoutComments(jsFunction(t, script, "passNoticeHeld")); got != "function passNoticeHeld() {\n"+
 		"  const text = el.notice.querySelector(\".notice-text\");\n"+
-		"  if (text && noticeShows(text) && passNoticesHeld.has(text) && passNoticesHeld.get(text) !== passHeldRecord()) {\n"+
+		"  return text && noticeShows(text) ? passNoticesHeld.get(text) : undefined;\n}" {
+		t.Errorf("passNoticeHeld no longer gives what the notice on screen said this browser holds, and nothing for "+
+			"another notice:\n%s", got)
+	}
+	if got := withoutComments(jsFunction(t, script, "dropStalePassNotice")); got != "function dropStalePassNotice() {\n"+
+		"  const said = passNoticeHeld();\n"+
+		"  if (said !== undefined && said !== passHeldRecord()) {\n"+
 		"    takePassNoticeOff();\n  }\n}" {
 		t.Errorf("dropStalePassNotice no longer takes off a notice about a Pass this browser no longer holds as it was "+
 			"stored, or takes off another notice:\n%s", got)
@@ -3486,9 +3605,15 @@ func TestPassNoticeGoesWithWhatItSaid(t *testing.T) {
 	// Every drawing of the Pass page asks first, before it takes lastPassInfo
 	// or the page's code box: redrawPass, renderPass and refreshFailedPass
 	// draw through drawPass, as does the drawing another tab's change sets off.
+	// That change asks on whatever page this tab is on (followPassStorage,
+	// pinned in TestPassRemovedInAnotherTabLeavesThisOne), so a post's notice
+	// goes once another tab renews or replaces the Pass it spoke of; and
+	// showPassRunOut asks again once its own drawing has landed.
 	if draw := withoutComments(jsFunction(t, script, "drawPass")); !strings.HasPrefix(draw, "function drawPass(info) {\n  dropStalePassNotice();\n") ||
-		strings.Count(code, "dropStalePassNotice()") != 3 {
-		t.Error("a drawing of the Pass page no longer takes off a notice about a Pass this browser no longer holds as it was stored")
+		strings.Count(code, "dropStalePassNotice()") != 4 ||
+		strings.Count(withoutComments(jsFunction(t, script, "followPassStorage")), "dropStalePassNotice();") != 1 {
+		t.Error("a drawing of the Pass page, or another tab's change to the Pass, no longer takes off a notice about a " +
+			"Pass this browser no longer holds as it was stored")
 	}
 	// Each notice that says what this browser holds is noted at once, after it
 	// is put up and before anything is awaited: here, and in showClaimed and
@@ -3504,21 +3629,35 @@ func TestPassNoticeGoesWithWhatItSaid(t *testing.T) {
 		"a reissue code's answer":   "if (notice) {\n      showPassNotice(notice);",
 		"Remove the Pass":           `showPassNotice("This browser no longer has a Pass.");`,
 		"Remove, unreached":         "\"This browser no longer has a Pass, but educhan couldn't be reached to stop it collecting anything bought here that hasn't arrived yet. Use Forget this browser on the Verify page when you're back online.\"\n        );",
+		"a post's Pass":             "if (passNotice) {\n      showNotice(passNotice);",
+		"Forget this browser":       "so press Forget this browser again when you're back online.\"\n      );",
 	} {
 		at := strings.Index(code, notice)
 		if at < 0 || strings.Count(code, notice) != 1 || !strings.HasPrefix(strings.TrimSpace(code[at+len(notice):]), "notePassHeld();") {
 			t.Errorf("the notice for %s is no longer noted as said beside the Pass this browser holds", name)
 		}
 	}
-	if n := strings.Count(code, "notePassHeld()"); n != 13 {
-		t.Errorf("notePassHeld() appears %d times; want its definition, the nine notices above, showClaimed's and "+
+	if n := strings.Count(code, "notePassHeld()"); n != 15 {
+		t.Errorf("notePassHeld() appears %d times; want its definition, the eleven notices above, showClaimed's and "+
 			"showPassRunOut's two", n)
 	}
+	// A post's notice is the one its answer set: that its Pass has run out, or
+	// is no longer valid and was removed. It is noted once the thread is drawn,
+	// after the navigation, since a drawing takes any notice off (render).
+	submit := withoutComments(submitHandler(t, script))
+	navigated := strings.Index(submit, "await navigate(`${threadPath(created.board, created.thread_no)}#p${created.no}`);\n"+
+		"    if (passNotice) {\n      showNotice(passNotice);\n      notePassHeld();\n    }")
+	if navigated < 0 || strings.Count(submit, "notePassHeld()") != 1 {
+		t.Error("a post's notice that its Pass has run out or is no longer valid is no longer noted as said beside " +
+			"the Pass this browser holds once the thread is drawn")
+	}
 	// Another tab's Remove or Forget takes the notice off here whatever it
-	// says, and nothing else in those two places does.
+	// says, on the Pass page, and on any other page one that says what this
+	// browser holds; nothing else in those two places does.
 	for _, name := range []string{"stopForPassForget", "followPassStorage"} {
 		body := withoutComments(jsFunction(t, script, name))
-		if strings.Count(body, "takePassNoticeOff()") != 1 || strings.Contains(body, "clearNotice()") {
+		if strings.Count(body, "if (passPageShown() || passNoticeHeld() !== undefined) {\n      takePassNoticeOff();\n    }") != 1 ||
+			strings.Count(body, "takePassNoticeOff()") != 1 || strings.Contains(body, "clearNotice()") {
 			t.Errorf("%s: another tab's Stop or change of the Pass takes a notice off this tab's Pass page that is "+
 				"still true, or takes one off another way", name)
 		}
@@ -3536,17 +3675,19 @@ func TestPassNoticeGoesWithWhatItSaid(t *testing.T) {
 	}
 }
 
-// A code handed over whose Pass's expiry has passed, as it came (a reissue
-// code's, for a Pass in its month of grace, say) or since, is never called
-// ready, kept or not: it has run out and needs renewing. Beside a good Pass
-// held, which the code box will not put another code in place of, no step says
-// to give that Pass up for it: it is to be written down and renewed in a
-// browser that holds no good Pass. A code typed in that has run out, and that
-// the browser cannot store, is said to have run out as well as not stored.
+// A code handed over whose Pass's expiry has passed by the server's clock, as
+// it came (a reissue code's, for a Pass in its month of grace, say) or since,
+// is never called ready, kept or not, whatever this computer's clock says: it
+// has run out and needs renewing (TestPassRunOutIsJudgedByTheServersClock).
+// Beside a good Pass held, which the code box will not put another code in
+// place of, no step says to give that Pass up for it: it is to be written down
+// and renewed in a browser that holds no good Pass. A code typed in that has
+// run out, and that the browser cannot store, is said to have run out as well
+// as not stored.
 func TestPassRunOutCodeHandedOverIsNeverReady(t *testing.T) {
 	script := appScript(t)
 	issued := withoutComments(jsFunction(t, script, "passIssuedHTML"))
-	ranOut := strings.Index(issued, "\n  const ranOut = !here && new Date(issued.expires) <= new Date();\n")
+	ranOut := strings.Index(issued, "\n  const ranOut = !here && new Date(issued.expires) <= serverNow();\n")
 	if ranOut < 0 || ranOut > strings.Index(issued, "let status = ") {
 		t.Error("the panel of a code just handed over no longer tells whether its Pass has run out")
 	}
@@ -3808,6 +3949,37 @@ func TestHeaderLinksToThePassOnlyWhereItIs(t *testing.T) {
 	}
 }
 
+// The header's Pass link follows the Pass this browser holds as soon as that
+// changes, not at the next drawing of the page: every write of the Pass goes
+// through storePass, markPassExpired or forgetPass, and storePass and
+// forgetPass each ask showPassLink once they have written, as does a change
+// another tab makes (followPassStorage), so on a server without the Pass the
+// link goes with the Pass, in this tab and every other, and comes back when
+// one is stored. markPassExpired only marks a Pass held, which keeps the link
+// as it was.
+func TestHeaderPassLinkFollowsThePassHeld(t *testing.T) {
+	script := appScript(t)
+	code := withoutComments(script)
+	if store := withoutComments(jsFunction(t, script, "storePass")); !strings.Contains(store,
+		"  storageSet(PASS_STORAGE_KEY, JSON.stringify(expired ? { code, expires, expired } : { code, expires }));\n"+
+			"  showPassLink();\n  const kept = storedPass();\n") {
+		t.Error("storing a Pass no longer shows the header's Pass link at once")
+	}
+	if got := withoutComments(jsFunction(t, script, "forgetPass")); got != "function forgetPass() {\n  try {\n"+
+		"    localStorage.removeItem(PASS_STORAGE_KEY);\n  } catch {\n\n    return;\n  }\n  showPassLink();\n}" {
+		t.Errorf("removing the Pass no longer hides the header's Pass link at once on a server without the Pass:\n%s", got)
+	}
+	if !strings.Contains(withoutComments(jsFunction(t, script, "followPassStorage")), "  dropStalePassNotice();\n  showPassLink();\n") {
+		t.Error("another tab's change to the Pass no longer shows or hides the header's Pass link here")
+	}
+	if n := strings.Count(code, "showPassLink()"); n != 5 {
+		t.Errorf("showPassLink() appears %d times; want its definition, renderNav, storePass, forgetPass and followPassStorage", n)
+	}
+	if strings.Count(code, "PASS_STORAGE_KEY, ") != 2 || strings.Count(code, "localStorage.removeItem(PASS_STORAGE_KEY)") != 1 {
+		t.Error("the Pass is written somewhere other than storePass, markPassExpired and forgetPass, which the header's link would not follow")
+	}
+}
+
 // What the Pass page and the FAQ say about refunds, reissuing, hours, a
 // server's unknown terms and a Pass that is gone, as the server does it.
 func TestPassCopyMatchesWhatTheServerDoes(t *testing.T) {
@@ -3836,14 +4008,22 @@ func TestPassCopyMatchesWhatTheServerDoes(t *testing.T) {
 	}
 	// A lost code is reissued from the payment that bought the Pass, or, once
 	// that is refunded or disputed, only from one payment left paying for all
-	// its time (passReissueNoOrigin), so every promise of a reissue code for a
-	// lost code says it may no longer be possible then.
+	// its time (passReissueNoOrigin), and not at all for a Pass more than a
+	// month past its expiry, which the server no longer keeps
+	// (passExpiredGrace), so every promise of a reissue code for a lost code
+	// says it may no longer be possible then, in these words.
 	held := words(jsFunction(t, script, "passHeldHTML"))
-	for name, text := range map[string]string{"the held Pass": held, "the FAQ's Pass entry": faq} {
-		if !strings.Contains(text, "you'll be sent a reissue code") ||
-			!strings.Contains(text, "If the payment that bought the Pass was refunded or disputed, that may no longer be possible.") &&
-				!strings.Contains(text, "if the payment that bought it was refunded or disputed, that may no longer be possible.") {
-			t.Errorf("%s promises a reissue code for a lost code without saying a refunded purchase can end it", name)
+	for name, want := range map[string]string{
+		"the held Pass": "you'll be sent a reissue code to enter on this page, which gives your Pass a new code; " +
+			"if the payment that bought it was refunded or disputed, or the Pass ran out more than a month ago, " +
+			"that may no longer be possible.",
+		"the FAQ's Pass entry": "If the payment that bought the Pass was refunded or disputed, or the Pass ran out " +
+			"more than a month ago, that may no longer be possible.",
+	} {
+		text := map[string]string{"the held Pass": held, "the FAQ's Pass entry": faq}[name]
+		if !strings.Contains(text, "you'll be sent a reissue code") || !strings.Contains(text, want) {
+			t.Errorf("%s promises a reissue code for a lost code without saying a refunded purchase, or a Pass run out "+
+				"more than a month ago, can end it", name)
 		}
 	}
 	if !strings.Contains(intro, `const term = info.enabled ? passTermText(info.days) : "a set time";`) {

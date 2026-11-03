@@ -1134,17 +1134,18 @@ not-found view.
   panel off the page, and enter it below. A code carried from an earlier panel that the
   browser could not store is said not to be in this browser, to be written down now,
   since it won't be shown again once the reader leaves the page. A code handed over
-  whose Pass has already run out, as it came (a reissue code's, for a Pass in its month
-  of grace, say) or since, is never called ready, kept or not: it is said to have run
-  out and to need renewing, and, not stored, where the code box is drawn, to be renewed
-  once the site may store data and it is entered below, with no good Pass held, or,
-  beside one, in a browser holding none, so no step says to give a good Pass up for it. A
-  code educhan finds no longer valid as the Pass held here, answering Check it again,
-  the check after a reissue code or a renewal, Renew or a post, in any tab of the
-  browser, is worth nothing to write down and goes from its panel at once, in every tab
-  that shows it, even when it is a code that one just handed over took the place of, or
-  one carried from an earlier panel, typed back in. Any other code stays there until the
-  reader leaves the page: that of another Pass a code just handed over took the place of,
+  whose Pass has already run out by educhan's clock, as it came (a reissue code's, for a
+  Pass in its month of grace, say) or since, is never called ready, kept or not,
+  whatever this computer's clock says: it is said to have run out and to need renewing,
+  and, not stored, where the code box is drawn, to be renewed once the site may store
+  data and it is entered below, with no good Pass held, or, beside one, in a browser
+  holding none, so no step says to give a good Pass up for it. A code educhan finds no
+  longer valid as the Pass held here, answering Check it again, the check after a
+  reissue code or a renewal, Renew or a post, in any tab of the browser, is worth
+  nothing to write down and goes from its panel at once, in every tab that shows it,
+  even when it is a code that one just handed over took the place of, or one carried
+  from an earlier panel, typed back in. Any other code stays there until the reader
+  leaves the page: that of another Pass a code just handed over took the place of,
   said to be in this browser again once it is typed back in, a code carried from an
   earlier panel, worded the same way, and a code just handed over that another code had
   already taken the place of, as no longer in this browser. What the page says about the
@@ -1158,21 +1159,31 @@ not-found view.
   after it ran out, until a month past its expiry, is kept as run out, with its date, to
   renew, where the browser can store it; one it cannot store is said to have run out as
   well as not to be stored, so it can't be renewed here until the site may store data and
-  it is entered again. A Pass that has run out here can be checked again, in case it was
+  it is entered again. Whether a Pass has run out, the one held here or a code handed
+  over, is judged by educhan's clock, since this computer's can be minutes off either
+  way: the page keeps in memory how far apart the two are, from the date on educhan's
+  latest answer, and goes by this computer's clock alone until an answer has come. A Pass
+  educhan says has run out, answering a check of it or a code typed in, stays run out
+  with the date educhan gave, whatever either clock says, until educhan says otherwise;
+  one a post's answer says has run out is kept as run out with no date, since the answer
+  gives none. A Pass that has run out here can be checked again, in case it was
   renewed elsewhere, wherever the code box is drawn. When that check, or a code typed in
   and kept, finds it has run out, the notice says so with what the page beside it offers:
   Renew below, the word that sales are paused, or, on a page that could not be read, that
   it can be renewed once the page loads. That page is asked for again; the notice, while
   it is still the one that press put up (a later press's in the same words is another),
   is then said again from what comes back if its words change, without moving the page.
-  A notice that says what the browser holds (a Pass taken on, good until a date, run
-  out or renewed, one the browser could not store, or none) goes when the Pass page is
-  drawn again, whatever sets that off, once the browser no longer holds that Pass as it
-  was stored when the notice was said: the same code with the same date, or still marked
-  run out, judged by what is stored and never by this computer's clock, so a slow clock
-  does not take off a true notice. Remove the Pass or Forget this browser pressed in
-  another tab, or any other removal of the Pass there, takes whatever notice is on this
-  tab's Pass page off at once; Stop collecting it here leaves it. A renewal the page
+  A notice that says what the browser holds (a Pass taken on, good until a date, run out
+  or renewed, one the browser could not store, or none), on the Pass page, beside a post
+  whose Pass has run out or is no longer valid, or on the Verify page after Forget this
+  browser, goes once the browser no longer holds that Pass as it was stored when the
+  notice was said: the same code with the same date, and with the mark that it has run
+  out if it had one, judged by what is stored and never by a clock, so a slow clock does
+  not take off a true notice. It goes when the Pass page is drawn again, whatever sets
+  that off, or at once when another tab changes the Pass, whatever page this tab shows.
+  Remove the Pass or Forget this browser pressed in another tab, or any other removal of
+  the Pass there, takes whatever notice is on this tab's Pass page off at once, and such
+  a notice off any other page; Stop collecting it here leaves it. A renewal the page
   collects is checked against the Pass it holds (`/api/pass/activate`) before it says
   that Pass is renewed; one it cannot match to the Pass it holds is reported as a renewal
   of a Pass, by a payment from this browser or by the reissue code that brought it, with
@@ -1261,7 +1272,11 @@ not-found view.
   that control again, without scrolling the page, and otherwise moves it to what was
   drawn in its place. Focus on a notice's dismiss button, when something else takes the
   notice off, such as another tab's Remove or a drawing that finds it no longer true,
-  goes to the page just below it, without scrolling the page.
+  goes to the page just below it, without scrolling the page. A notice put up in place
+  of another while focus is on the old one's dismiss button keeps focus on the new
+  one's, without scrolling the page, on every page; one put up while focus is elsewhere
+  takes none. The reader's own dismissal is as it was: the notice goes, and focus goes
+  where the browser puts it.
 - **Phones**: a single fluid column with the catalog at two tiles across, thumbnails that
   never overflow the viewport, and 16px form text so iOS does not zoom on focus.
 - **Accessibility**: a skip link, one visible focus ring on every control, headings and

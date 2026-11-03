@@ -499,26 +499,27 @@ has changed one of those properties and needs a browser check before the test ch
   `TestOnlyThePostingRequestCarriesThePosterKeyOrCredential` reads `app.js` and fails if
   either header is attached anywhere but that one line.
 - The educhan Pass lives in `localStorage` under `educhan:pass`, as the code and its
-  expiry, or the code alone marked run out. `submit` sends it in `X-Educhan-Pass` on
-  unbadged posts only (a badged post sends the credential and nothing else), and the Pass
-  page sends it in the body of the requests that use it on purpose: checking a code
-  (`/api/pass/activate`, one typed in or the one held, checked again) and renewing
-  (`/api/pass/checkout`). "Show the code" puts it on the screen and nowhere else, and
-  "Copy the code" on the clipboard, which Forget this browser empties again inside its
-  click, whatever is on it by then, when this tab copied it with Copy the code since it
-  was loaded and no copy or cut in this tab has certainly put something on the clipboard
-  since, unless another tab has since taken that code itself out of storage, removing it
-  or storing another in its place, or storage was cleared from outside the page with that
-  code gone (`passCodeCopied`, `emptyCopiedPassCode`, `followPassStorage`); another tab
-  storing the same code again, renewed say, or changing a Pass whose code is not the one
-  copied, leaves it to be emptied. Remove the Pass does the same when the code copied
-  is the one it removes (`emptyCopiedHeldCode`), and leaves another code copied with
-  the button there, a new code the browser could not store say, which removing the Pass
-  does not take, so the steps that enter it afterwards still work. Each Copy the code
-  copies the code in its own panel, and the held Pass's code, shown, has an id of its own
-  (`pass-held-code`), which Show the code focuses, since a code just handed over
-  (`pass-code`) can be on the page beside it. A document event that may have put nothing
-  there does not count, so the two err toward emptying the clipboard
+  expiry; as those with the server's mark that it has run out (`expired: true`), once a
+  check of it says so; or as the code alone marked run out, once a post's answer says so.
+  `submit` sends it in `X-Educhan-Pass` on unbadged posts only (a badged post sends the
+  credential and nothing else), and the Pass page sends it in the body of the requests
+  that use it on purpose: checking a code (`/api/pass/activate`, one typed in or the one
+  held, checked again) and renewing (`/api/pass/checkout`). "Show the code" puts it on the
+  screen and nowhere else, and "Copy the code" on the clipboard, which Forget this browser
+  empties again inside its click, whatever is on it by then, when this tab copied it with
+  Copy the code since it was loaded and no copy or cut in this tab has certainly put
+  something on the clipboard since, unless another tab has since taken that code itself
+  out of storage, removing it or storing another in its place, or storage was cleared from
+  outside the page with that code gone (`passCodeCopied`, `emptyCopiedPassCode`,
+  `followPassStorage`); another tab storing the same code again, renewed say, or changing
+  a Pass whose code is not the one copied, leaves it to be emptied. Remove the Pass does
+  the same when the code copied is the one it removes (`emptyCopiedHeldCode`), and leaves
+  another code copied with the button there, a new code the browser could not store say,
+  which removing the Pass does not take, so the steps that enter it afterwards still work.
+  Each Copy the code copies the code in its own panel, and the held Pass's code, shown,
+  has an id of its own (`pass-held-code`), which Show the code focuses, since a code just
+  handed over (`pass-code`) can be on the page beside it. A document event that may have
+  put nothing there does not count, so the two err toward emptying the clipboard
   (`forgetCopiedPassCode`): a `copy` counts when a text box's own selection holds
   something, where the box says, when the document's does for an email or number box, and
   anywhere else (a checkbox, the file picker, a button, a link or the page) when the
@@ -528,11 +529,13 @@ has changed one of those properties and needs a browser check before the test ch
   or in editable content; `navigator.clipboard`'s own write fires neither. A code copied
   any other way, by hand included, stays until something else is copied, and the Pass
   page, the Verify page and the FAQ name the button, say that it empties the clipboard
-  even after a copy educhan can't see took anything (from an email box, in some browsers),
-  and promise no more than that. Buying and renewing leave for Stripe's hosted page by
-  `location.assign`: no Stripe script, frame or stylesheet ever loads on this origin, and
-  the CSP has no exception for Stripe. While `GET /api/pass` says `"claim"`, the page
-  draws a collecting state with no form to pay with (or, with a Pass already here, says a
+  even after a copy educhan can't see took anything (from an email box, in some
+  browsers), give the exceptions above (another tab's removal or replacement of that
+  code, this site's stored data cleared from outside the page), and promise no more than
+  that. Buying and renewing leave for Stripe's hosted page by `location.assign`: no
+  Stripe script, frame or stylesheet ever loads on this origin, and the CSP has no
+  exception for Stripe. While `GET /api/pass` says `"claim"`, the page draws a
+  collecting state with no form to pay with (or, with a Pass already here, says a
   checkout from this browser hasn't been collected yet, which may be a payment Stripe is
   still confirming, and keeps Renew) and asks `/api/pass/claim` on every visit, with a
   pause that grows while it is open (`collectPass`). Each checkout's claim holds its own
@@ -604,11 +607,11 @@ has changed one of those properties and needs a browser check before the test ch
   another tab's Remove or Forget that found no Pass to remove, whose drawing waits on the
   forget (`stopForPassForget`). The panel is worded from the Pass stored here as it is
   drawn (`passIssuedHTML(issued, held, box)`), not from `kept` alone: held and good, the
-  code is ready and sent with posts; held and run out, by its date or marked so by a
-  post's answer, it is not sent with posts until it is renewed; kept, as it came or held
-  here since (`keepShownCode`, from `storePass` and `followPassStorage`), but no longer
-  held, another code having been typed in here or stored by another tab, or the data
-  cleared, the browser no longer has it and it won't be shown again once the reader
+  code is ready and sent with posts; held and run out, past its date by the server's clock
+  or marked so by the server, it is not sent with posts until it is renewed; kept, as it
+  came or held here since (`keepShownCode`, from `storePass` and `followPassStorage`), but
+  no longer held, another code having been typed in here or stored by another tab, or the
+  data cleared, the browser no longer has it and it won't be shown again once the reader
   leaves; and one the browser could not keep and has not held since says so, with what
   would keep it here only where the code box is drawn (`box`, on a page from a server
   with the Pass or one that could not be read): beside a good Pass held, which
@@ -616,19 +619,20 @@ has changed one of those properties and needs a browser check before the test ch
   code on the panel still needed, remove that Pass, which takes the panel off the page,
   and enter it, and otherwise to allow the site to store data and enter it, never that
   the browser stores nothing, which the page cannot tell from a full store
-  (`PASS_NOT_KEPT` the same). A code not held whose Pass's expiry has passed (`ranOut`),
-  as it came, a reissue code's for a Pass in its month of grace say, or since, is never
-  called ready: kept and gone, it says its Pass has run out and needs it to renew; not
-  kept, it says it has run out, with what would let it be renewed where the box is drawn,
-  the site allowed to store data and the code entered with no good Pass held, and beside
-  a good Pass held, in a browser that holds no good Pass, with no step to give that
-  Pass up for it (`PASS_RUN_OUT_NOT_KEPT` says the same of a run-out code typed in that
-  could not be stored). `has` is a Pass held or a code shown that the browser could not
-  keep and has not held since, the panel's own or one carried (`unkept`). Buy is held
-  back while `has`, while the page shows a purchase being collected (`open` and not
-  `has`, which draws the collecting panel in place of the forms) and while sales are
-  paused, and none is drawn when the page could not be read or the Pass is not on sale;
-  over a checkout set aside (`passStartedAgain`: Start again, back from Stripe's cancel
+  (`PASS_NOT_KEPT` the same). A code not held whose Pass's expiry has passed by the
+  server's clock (`ranOut`, through `serverNow`), as it came, a reissue code's for a
+  Pass in its month of grace say, or since, is never called ready: kept and gone, it
+  says its Pass has run out and needs it to renew; not kept, it says it has run out,
+  with what would let it be renewed where the box is drawn, the site allowed to store
+  data and the code entered with no good Pass held, and beside a good Pass held, in a
+  browser that holds no good Pass, with no step to give that Pass up for it
+  (`PASS_RUN_OUT_NOT_KEPT` says the same of a run-out code typed in that could not be
+  stored). `has` is a Pass held or a code shown that the browser could not keep and has
+  not held since, the panel's own or one carried (`unkept`). Buy is held back while
+  `has`, while the page shows a purchase being collected (`open` and not `has`, which
+  draws the collecting panel in place of the forms) and while sales are paused, and
+  none is drawn when the page could not be read or the Pass is not on sale; over a
+  checkout set aside (`passStartedAgain`: Start again, back from Stripe's cancel
   link, or a checkout not followed to Stripe), which the page goes on collecting, it is
   drawn again by those rules. So it is offered beside the code of a Pass the browser no
   longer holds only once no other Pass is held here. When educhan tells a tab the held
@@ -750,14 +754,20 @@ has changed one of those properties and needs a browser check before the test ch
   that way too while this tab is on the Pass page, where it answers this tab's own Buy or
   Renew; what the page says on its own, later claims' news included, `forgetPassOrder`'s
   notice on any other page and every other page's notices go through `showNotice`, which
-  moves nothing. A press whose button the page was drawn again over while it waited, by
-  another tab's forget say, gives focus to the same button drawn again (`refocus`, through
-  `passTwin`), else the first control of the Pass forms, else the first panel, never the
-  top of the document. Whatever a Pass answer stores, it draws, focuses or announces only
-  while the reader is on the Pass page (`passPageShown`, the one test of the route in the
-  Pass section), so an answer that arrives after they left draws nothing over the page
-  they went to. When `GET /api/pass` fails, a Pass held here is still drawn, with Show and
-  Remove and no Renew, above the code box and the error, and the page is asked for again
+  scrolls nothing and moves focus only from the dismiss button of the notice it replaces
+  to the new one's, with `preventScroll`, so a keyboard stays where it was; a notice put
+  up while focus is elsewhere takes none. A dropped file's refusal is put up in place of
+  the notice before the drop, which the drop takes down only when nothing replaced it.
+  The reader's own dismissal (`clearNotice`, from the `dismiss-notice` click) is as it
+  was before the Pass, and focus goes where the browser puts it. A press whose button
+  the page was drawn again over while it waited, by another tab's forget say, gives
+  focus to the same button drawn again (`refocus`, through `passTwin`), else the first
+  control of the Pass forms, else the first panel, never the top of the document.
+  Whatever a Pass answer stores, it draws, focuses or announces only while the reader is
+  on the Pass page (`passPageShown`, the one test of the route in the Pass section), so
+  an answer that arrives after they left draws nothing over the page they went to. When
+  `GET /api/pass` fails, a Pass held here is still drawn, with Show and Remove and no
+  Renew, above the code box and the error, and the page is asked for again
   (`refreshFailedPass`) once educhan answers a code typed in or checked there, so the
   error does not stay under the answer; that drawing is set off by the answer, not the
   reader, so it draws as `redrawPass` does (`renderPass` given the selectors), and focus
@@ -775,17 +785,22 @@ has changed one of those properties and needs a browser check before the test ch
   say; said again, it does not scroll the page (`showNotice`), since the reader may have
   scrolled away since the press, and focus stays where that drawing left it, on Check it
   again or the held Pass's panel, say. Every notice that says what this browser holds (a
-  Pass taken on, good until a date, run out or renewed, one it could not store, or none)
-  is noted beside the Pass stored as it was said (`notePassHeld` into `passNoticesHeld`,
-  keyed by the notice's node; `passHeldRecord`, the code with its stored expiry or run-out
-  mark, read without the clock, so a slow clock keeps a true notice), and every drawing of
-  the Pass page, whatever set it off (`drawPass`), takes it off once the browser no longer
-  holds that; any other notice, a refusal say, stays. Another tab's Remove or Forget takes
-  the notice off this tab's Pass page at once, by its mark (`stopForPassForget`) or by the
-  removal itself (`followPassStorage`), and Stop's mark leaves it. Taken off by anything
-  but the reader (`takePassNoticeOff`, which `dropStalePassNotice` uses too), it hands
-  focus on its dismiss button to `el.main`, with `preventScroll`, rather than drop it to
-  the top of the document, and the drawing after keeps it there (`redrawPass`, by its id).
+  Pass taken on, good until a date, run out or renewed, one it could not store, or none),
+  on whatever page, is noted beside the Pass stored as it was said (`notePassHeld` into
+  `passNoticesHeld`, keyed by the notice's node; `passHeldRecord`, the code with its
+  stored expiry, run-out mark or both, read without a clock, so a slow clock keeps a true
+  notice): the Pass page's, a post's that its Pass has run out or is no longer valid,
+  noted once the thread is drawn, and Forget this browser's on the Verify page. Every
+  drawing of the Pass page, whatever set it off (`drawPass`), and every change another
+  tab makes to the Pass, on whatever page this tab is on (`followPassStorage`), takes it
+  off once the browser no longer holds that (`dropStalePassNotice`, reading
+  `passNoticeHeld`); any other notice, a refusal say, stays. Another tab's Remove or
+  Forget takes the notice off this tab's Pass page at once, whatever it says, and such a
+  notice off any other page, by its mark (`stopForPassForget`) or by the removal itself
+  (`followPassStorage`), and Stop's mark leaves it. Taken off by anything but the reader
+  (`takePassNoticeOff`, which `dropStalePassNotice` uses too), it hands focus on its
+  dismiss button to `el.main`, with `preventScroll`, rather than drop it to the top of
+  the document, and the drawing after keeps it there (`redrawPass`, by its id).
   The held panel's Check it again and the steps beside a code the browser could not keep
   are offered only where the code box is drawn (`box`). Another tab's Remove, Forget, new
   code or finding that its code is no longer valid reaches this one by the `storage`
@@ -808,21 +823,39 @@ has changed one of those properties and needs a browser check before the test ch
   valid. A page brought back from the back-forward cache is drawn again through `render`
   (the `pageshow` listener), so the age screen still comes first. A post whose Pass was no
   good is a `201` like any other, carrying `"pass": "invalid"` or `"expired"`: the page
-  forgets the first, marks the second run out without a date, and says the post was sent.
-  A code typed in after it ran out, until a month past its expiry, is kept with the date
-  the server gives. While sales are paused the page says `PASS_PAUSED` where Buy and Renew
+  forgets the first, marks the second run out without a date, and says the post was
+  sent, in a notice noted as one that says what the browser holds. A code typed in after
+  it ran out, until a month past its expiry, is kept with the date the server gives.
+  Whether a Pass has run out is the server's to say, so the page judges it by the
+  server's clock (`serverNow`: this computer's clock moved by `serverClockOffset`, which
+  `noteServerClock` keeps, in memory only, from the `Date` header of the latest
+  `no-store` answer `api()` reads, every JSON answer being one), and by this computer's
+  clock alone until an answer has come; the header is in whole seconds, so it is good to
+  a second or two. `storedPass`'s `expired`, which the held panel's status, its "good
+  until" and renewal wording, Check it again and every notice read, and
+  `passIssuedHTML`'s `ranOut` go by it, so a slow clock does not call a run-out Pass
+  good, nor a fast one a good Pass run out. A Pass the server says has run out,
+  answering Check it again, a renewal's check (`recheckPass`) or a code typed in, is
+  stored with its date and `expired: true` (`storePass(code, expires, true)`), and
+  counts as run out whatever either clock says until it is stored again without the
+  mark, renewed say; a post's answer gives no date, so `markPassExpired` keeps the code
+  alone, marked. While sales are paused the page says `PASS_PAUSED` where Buy and Renew
   were; `PASS_NOT_ON_SALE` is the server's `passNotOnSale` word for word
   (`TestPassPageWhileSalesArePaused`), and `PASS_REISSUE_SPENT` its `passReissueSpent`. A
   browser that keeps no cookies or storage is not sent to Stripe (`passCanBeKept`). The
-  header's Pass link (`data-pass-link`) stays hidden until `GET /api/site` says `"pass"`
-  or the browser holds one (`showPassLink`). The price is Stripe's amount divided by ten
-  to the exponent `GET /api/pass` sends beside it, Stripe's own count of the currency's
-  decimals and not the browser's, which has ISK and UGX whole where Stripe keeps them in
-  hundredths, and an amount with a part of a unit is written with that many decimals,
-  which the browser's usual digits for the currency could round away (`passPriceText`,
-  `TestPassPriceIsWrittenWithStripesDecimals`). `TestOnlyThePostingRequestCarriesThePass`
-  pins the header and every read of the held code; the Pass page's other promises have
-  their own tests beside it.
+  header's Pass link (`data-pass-link`) is hidden unless `GET /api/site` says `"pass"` or
+  the browser holds one (`showPassLink`), asked at every drawing (`renderNav`) and
+  wherever the Pass stored here changes: `storePass` and `forgetPass`, through which every
+  write of the Pass goes but `markPassExpired`'s (it only marks a Pass held as run out),
+  and `followPassStorage` for another tab's, so on a server without the Pass the link goes
+  with the Pass in every tab and comes back when one is stored. The price is Stripe's
+  amount divided by ten to the exponent `GET /api/pass` sends beside it, Stripe's own
+  count of the currency's decimals and not the browser's, which has ISK and UGX whole
+  where Stripe keeps them in hundredths, and an amount with a part of a unit is written
+  with that many decimals, which the browser's usual digits for the currency could round
+  away (`passPriceText`, `TestPassPriceIsWrittenWithStripesDecimals`).
+  `TestOnlyThePostingRequestCarriesThePass` pins the header and every read of the held
+  code; the Pass page's other promises have their own tests beside it.
 - The remembered name (`educhan:name`) is the unbadged posts' name. Ticking the badge
   empties the Name field (`badgeToggled`), and a badged post's name is never remembered:
   a tripcode on both kinds of post would publicly tie the unbadged ones to the
