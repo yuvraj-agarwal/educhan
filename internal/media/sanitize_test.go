@@ -2543,8 +2543,14 @@ func TestMalformedWebPIsRefused(t *testing.T) {
 	brokenAfter := append(append(append([]byte(nil), clean...), "EXIF"...), 100, 0, 0, 0)
 	brokenAfter = append(brokenAfter, make([]byte, 10)...)
 	binary.LittleEndian.PutUint32(brokenAfter[4:8], uint32(len(brokenAfter)-8))
-	// An extended file whose chunk after the VP8X, before the picture,
-	// claims 100000 bytes, inside a RIFF that covers the file.
+	// Extended files with a chunk after the VP8X that claims 100000 bytes,
+	// inside a RIFF that covers the file. After the picture, it is refused
+	// only because the walk of the chunks does not hold together; before
+	// it, it hides the bitstream too, so the file has none.
+	brokenAfterExtended := append(webpFile(vp8xChunk(0, 320, 200), bitstream), "EXIF"...)
+	brokenAfterExtended = binary.LittleEndian.AppendUint32(brokenAfterExtended, 100000)
+	brokenAfterExtended = append(brokenAfterExtended, make([]byte, 10)...)
+	binary.LittleEndian.PutUint32(brokenAfterExtended[4:8], uint32(len(brokenAfterExtended)-8))
 	brokenBefore := webpFile(vp8xChunk(0, 320, 200), riffChunk{id: "ICCP", payload: []byte("icc")}, bitstream)
 	binary.LittleEndian.PutUint32(brokenBefore[12+8+10+4:], 100000)
 	// lossy-alpha.webp is VP8X, ALPH and VP8, 64×48.
@@ -2566,20 +2572,21 @@ func TestMalformedWebPIsRefused(t *testing.T) {
 		"chunk past the end":     chunkPastEnd,
 		// The canvas says 10×10 and the bitstream 320×200; decoders size
 		// their buffers from one or the other.
-		"canvas and bitstream disagree":       webpFile(vp8xChunk(0, 10, 10), bitstream),
-		"canvas two pixels wider":             webpFile(vp8xChunk(0, 322, 200), bitstream),
-		"VP8X of the wrong length":            webpFile(riffChunk{id: "VP8X", payload: make([]byte, 9)}, bitstream),
-		"two bitstreams":                      webpFile(vp8xChunk(0, 320, 200), bitstream, bitstream),
-		"extended, no bitstream":              webpFile(vp8xChunk(0, 320, 200)),
-		"no bitstream":                        webpFile(riffChunk{id: "EXIF", payload: []byte("x")}),
-		"alpha in the simple format":          webpFile(riffChunk{id: "ALPH", payload: []byte{0}}, bitstream),
-		"a malformed chunk after the picture": brokenAfter,
-		"a malformed chunk after the VP8X":    brokenBefore,
-		"alpha after the bitstream":           webpFile(vp8xChunk(vp8xFlagAlpha, 64, 48), vp8, alph),
-		"two alpha planes":                    webpFile(vp8xChunk(vp8xFlagAlpha, 64, 48), alph, alph, vp8),
-		"alpha beside a lossless bitstream":   webpFile(vp8xChunk(vp8xFlagAlpha, 320, 200), alph, bitstream),
-		"a second VP8X":                       webpFile(vp8xChunk(0, 320, 200), vp8xChunk(0, 320, 200), bitstream),
-		"ANIM in a still":                     webpFile(vp8xChunk(0, 320, 200), riffChunk{id: "ANIM", payload: make([]byte, 6)}, bitstream),
+		"canvas and bitstream disagree":                  webpFile(vp8xChunk(0, 10, 10), bitstream),
+		"canvas two pixels wider":                        webpFile(vp8xChunk(0, 322, 200), bitstream),
+		"VP8X of the wrong length":                       webpFile(riffChunk{id: "VP8X", payload: make([]byte, 9)}, bitstream),
+		"two bitstreams":                                 webpFile(vp8xChunk(0, 320, 200), bitstream, bitstream),
+		"extended, no bitstream":                         webpFile(vp8xChunk(0, 320, 200)),
+		"no bitstream":                                   webpFile(riffChunk{id: "EXIF", payload: []byte("x")}),
+		"alpha in the simple format":                     webpFile(riffChunk{id: "ALPH", payload: []byte{0}}, bitstream),
+		"a malformed chunk after the picture":            brokenAfter,
+		"extended, a malformed chunk after the picture":  brokenAfterExtended,
+		"extended, a malformed chunk before the picture": brokenBefore,
+		"alpha after the bitstream":                      webpFile(vp8xChunk(vp8xFlagAlpha, 64, 48), vp8, alph),
+		"two alpha planes":                               webpFile(vp8xChunk(vp8xFlagAlpha, 64, 48), alph, alph, vp8),
+		"alpha beside a lossless bitstream":              webpFile(vp8xChunk(vp8xFlagAlpha, 320, 200), alph, bitstream),
+		"a second VP8X":                                  webpFile(vp8xChunk(0, 320, 200), vp8xChunk(0, 320, 200), bitstream),
+		"ANIM in a still":                                webpFile(vp8xChunk(0, 320, 200), riffChunk{id: "ANIM", payload: make([]byte, 6)}, bitstream),
 		"frame outside the canvas": webpFile(vp8xChunk(vp8xFlagAnimation, 320, 200),
 			riffChunk{id: "ANIM", payload: make([]byte, 6)}, anmfChunk(2, 0, 320, 200, bitstream)),
 	}
