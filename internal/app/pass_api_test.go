@@ -5374,9 +5374,10 @@ func TestPassPastItsGraceMonthIsGone(t *testing.T) {
 // again, a refund of it, and counting it as a renewal waiting to land on its
 // Pass, when the right to reissue that Pass moves and while it has moved, all
 // agree. So does an order left unpaid past its deadline that Stripe reports
-// paid late: marked and collected while the keep it would have once paid has
-// not ended, and past that matching nothing, with the owner warned, whether
-// the prune has run first or not.
+// completed late with its payment still clearing, then paid: held for that
+// payment through a prune, marked and collected while the keep it would have
+// once paid has not ended, and past that not held and matching nothing, with
+// the owner warned, whether the prune has run first or not.
 func TestPassOrderPastItsKeepIsGone(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -5498,6 +5499,42 @@ func TestPassOrderPastItsKeepIsGone(t *testing.T) {
 				p.app.passPaymentHash("pi_again"), time.Now()); err != nil ||
 				outcome != map[bool]paidOutcome{false: paidRecorded, true: paidUnmatched}[c.past] {
 				t.Errorf("reported paid again: %v, %v", outcome, err)
+			}
+
+			// Reported completed with its payment still clearing, the ninth is
+			// held for that payment inside the keep it would have once paid,
+			// until the first UTC midnight 30 days on, which a prune leaves,
+			// and not at all past it.
+			lateDeadline := func() time.Time {
+				t.Helper()
+				var at time.Time
+				if err := p.app.pool.QueryRow(ctx, `SELECT expires_at FROM pass_orders WHERE session_hash = $1`,
+					p.app.passSessionHash(lateSession)).Scan(&at); err != nil {
+					t.Fatalf("the order left unpaid: %v", err)
+				}
+				return at
+			}
+			unheld := lateDeadline()
+			before := time.Now()
+			if status := p.webhook(stripeCheckoutCompleted, map[string]any{"id": lateSession, "object": "checkout.session",
+				"mode": "payment", "payment_status": "unpaid", "payment_intent": "pi_late"}); status != http.StatusOK {
+				t.Fatalf("left unpaid and reported completed late with its payment still clearing: status %d", status)
+			}
+			after := time.Now()
+			if held := lateDeadline(); c.past && !held.Equal(unheld) ||
+				!c.past && !dayRoundedAfter(held, before, after, passPendingPaymentTTL) {
+				t.Errorf("left unpaid and reported completed late with its payment still clearing, it is kept until %v, "+
+					"from %v; want it held for that payment %v", held.UTC(), unheld.UTC(), !c.past)
+			}
+			if !c.past {
+				if err := p.app.store.prunePasses(ctx, time.Now()); err != nil {
+					t.Fatal(err)
+				}
+				var n int
+				if err := p.app.pool.QueryRow(ctx, `SELECT count(*) FROM pass_orders WHERE session_hash = $1`,
+					p.app.passSessionHash(lateSession)).Scan(&n); err != nil || n != 1 {
+					t.Fatalf("the order held for its payment, once pruned: %d left, %v", n, err)
+				}
 			}
 
 			warned := warnings()
