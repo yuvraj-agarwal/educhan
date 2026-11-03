@@ -1110,11 +1110,12 @@ not-found view.
   from another site, though one the browser still holds can be shown again from the held
   Pass's panel to write down. Its panel says what the browser holds as it is drawn: that
   the code is ready and sent with posts; that it has run out and is not sent with posts
-  until it is renewed, as it came or once a post's answer says so; or, once the browser
-  has held it, as it came or since, and another code has taken its place, typed in here
-  or stored in another tab, or the browser's data has been cleared, that the browser no
-  longer has it and it won't be shown again once the reader leaves the page, so they can
-  write it down first. A second code handed over on the same visit, by a claim or a
+  until it is renewed, as it came or since, by educhan's clock or on educhan's word
+  in answer to a check or a post; or, once the browser has held it, as it came or
+  since, and another code has taken its place, typed in here or stored in another
+  tab, or the browser's data has been cleared, that the browser no longer has it
+  and it won't be shown again once the reader leaves the page, so they can write it
+  down first. A second code handed over on the same visit, by a claim or a
   reissue code, carries onto its panel every code the first panel showed, the first code
   and the code of a Pass it took the place of, with what that panel carried in turn, but
   the new code and the code the new one takes the place of, which its own panel shows; so
