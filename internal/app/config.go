@@ -119,7 +119,7 @@ const defaultMaxUploadBytes int64 = 8 << 20
 // been read, reserved a second time (admitBody): a body whose room came to
 // more than that budget would be reserved as the whole of it and read past
 // it, and the budget would no longer bound what the uploads hold. That allows
-// a body of eight ninths of the budget, an image of about 55 MiB, so the
+// a body of eight ninths of the budget, an image of just under 56 MiB, so the
 // processing budget is what decides.
 const maxUploadLimit = min(media.MaxUploadBytes,
 	media.UploadBudget/(uploadAdmitPart+1)*uploadAdmitPart-multipartOverhead)
