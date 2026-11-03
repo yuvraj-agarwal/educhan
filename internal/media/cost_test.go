@@ -238,6 +238,60 @@ func paddedBitstream(t *testing.T, data []byte, n int) []byte {
 	return webpFile(chunks...)
 }
 
+// unpaddedBitstream is paddedBitstream to an odd length, n bytes more or one
+// more than that, with the pad byte after the lossy bitstream, the file's
+// last chunk, left off the end of the file and the RIFF size made to match.
+// nextChunk takes a last chunk without its pad, and stripWebP writes the pad
+// back, so its copy is a byte longer than the file.
+func unpaddedBitstream(t *testing.T, data []byte, n int) []byte {
+	t.Helper()
+	padded := paddedBitstream(t, data, n)
+	chunks := webpChunks(t, padded)
+	if last := chunks[len(chunks)-1]; last.id != "VP8 " {
+		t.Fatalf("chunks %v, want the lossy bitstream last", chunkIDs(chunks))
+	} else if len(last.payload)%2 == 0 {
+		padded = paddedBitstream(t, data, n+1)
+	}
+	out := padded[:len(padded)-1]
+	binary.LittleEndian.PutUint32(out[4:8], uint32(len(out)-8))
+	return out
+}
+
+// stripWebP makes its copy of a WebP at the size it writes, so the copy is
+// never grown as it is written: grown, it would be held twice over for a
+// moment and stay up to a quarter larger than the file while it is decoded,
+// where webpPhases charges the file's size. A file whose last chunk is odd
+// and has left its pad byte off is the one whose copy comes to more than the
+// file, by that byte; append grew the copy of one such by a quarter of the
+// file when the copy was made the file's size.
+func TestStripWebPCopiesTheFileAtTheSizeItWrites(t *testing.T) {
+	swatches, alpha := readTestdata(t, "webp-swatches.webp"), readTestdata(t, "lossy-alpha.webp")
+	ext := webpChunks(t, alpha) // VP8X, ALPH and VP8
+	tagged := webpFile(append([]riffChunk{ext[0], {id: "EXIF", payload: make([]byte, 1<<20)}}, ext[1:]...)...)
+	for name, data := range map[string][]byte{
+		"simple":                              paddedBitstream(t, swatches, 1<<20),
+		"simple, its last pad left off":       unpaddedBitstream(t, swatches, 1<<20),
+		"with alpha":                          paddedBitstream(t, alpha, 1<<20),
+		"with alpha, its last pad left off":   unpaddedBitstream(t, alpha, 1<<20),
+		"with metadata dropped":               tagged,
+		"with metadata dropped, pad left off": unpaddedBitstream(t, tagged, 1<<10),
+	} {
+		out, _, err := stripWebP(data)
+		if err != nil {
+			t.Fatalf("%s: stripWebP: %v", name, err)
+		}
+		if cap(out) != len(out) {
+			t.Errorf("%s: stripWebP wrote %d bytes of a %d-byte file into %d: the copy was grown, or made larger than what is written", name, len(out), len(data), cap(out))
+		}
+		if len(out) > len(data)+1 {
+			t.Errorf("%s: stripWebP wrote %d bytes of a %d-byte file, more than a pad byte longer", name, len(out), len(data))
+		}
+		if _, err := Process(context.Background(), data); err != nil {
+			t.Errorf("%s: Process: %v", name, err)
+		}
+	}
+}
+
 // manyChunkWebP is a simple lossy WebP with n empty unknown chunks after its
 // bitstream. The picture is unchanged and stripping drops the empties, but a
 // walker that built a struct for every chunk would hold n of them, far more
@@ -334,22 +388,29 @@ func greyQuadrants(w, h int) *image.Gray {
 // others somewhere: 2400×1800 as Pillow made it, whose planes are megabytes
 // and whose file is not; 144×48 with 8 MiB more at the end of its bitstream
 // (paddedBitstream), whose two copies are megabytes and whose planes are not;
-// and 2400×1800 padded, where both are. The PNG strip is a row of 524288 grey
-// pixels four deep, whose thumbnail scaler holds tables of weights of 64 bytes
-// for each of them (thumbScratch); turned on its side, it is stored four
-// pixels wide, so its thumbnail is a pixel wide and the scaler's buffer is 32
-// bytes for every one of its rows as well, which only reading the orientation
-// charges. The 16-bit RGBA strip, a row of 1048576 pixels, is decoded through
-// two rows of the file of 8 MiB each beside its picture (pngRowBytes). Two
-// more JPEGs of YCbCr samples, both turned on their side, are converted to
-// RGB, a copy of 4 bytes a pixel that the turn copies again whole, by segments
-// image/jpeg reads where a walk that stopped at the first scan would not see
-// them: the progressive 4:2:0 file, without its JFIF APP0, with an Adobe
-// segment of transform 0 after its last scan, and a baseline 4:2:0 one whose
-// JFIF APP0 is followed by another APP0, which clears what the first said, so
-// that the Adobe segment after it counts. Those marked "o6" carry an EXIF
-// orientation of 6, so they are turned on their side too, and "o3" one of 3,
-// turned around.
+// and 2400×1800 padded, where both are. A fourth is 144×48 with all but 1 KiB
+// of 16 MiB more at the end of its bitstream, about the most x/image decodes,
+// made odd and with the pad byte after it left off the end of the file
+// (unpaddedBitstream), which stripWebP writes back: its copy is a byte longer
+// than the file. A copy made the file's size and grown for that byte came to
+// a quarter more, which here is about the slack, so it is
+// TestStripWebPCopiesTheFileAtTheSizeItWrites that holds the copy to its
+// size. The PNG strip is a row of 524288 grey pixels four deep, whose
+// thumbnail scaler holds tables of weights of 64 bytes for each of them
+// (thumbScratch); turned on its side, it is stored four pixels wide, so its
+// thumbnail is a pixel wide and the scaler's buffer is 32 bytes for every one
+// of its rows as well, which only reading the orientation charges. The 16-bit
+// RGBA strip, a row of 1048576 pixels, is decoded through two rows of the
+// file of 8 MiB each beside its picture (pngRowBytes). Two more JPEGs of
+// YCbCr samples, both turned on their side, are converted to RGB, a copy of 4
+// bytes a pixel that the turn copies again whole, by segments image/jpeg
+// reads where a walk that stopped at the first scan would not see them: the
+// progressive 4:2:0 file, without its JFIF APP0, with an Adobe segment of
+// transform 0 after its last scan, and a baseline 4:2:0 one whose JFIF APP0
+// is followed by another APP0, which clears what the first said, so that the
+// Adobe segment after it counts. Those marked "o6" carry an EXIF orientation
+// of 6, so they are turned on their side too, and "o3" one of 3, turned
+// around.
 func costFixtures(t *testing.T) map[string][]byte {
 	t.Helper()
 	turned := func(jpg []byte, o uint16) []byte {
@@ -391,6 +452,7 @@ func costFixtures(t *testing.T) map[string][]byte {
 		"WebP lossy":                   readTestdata(t, "cost-lossy.webp"),
 		"WebP lossy, small, padded":    paddedBitstream(t, readTestdata(t, "webp-swatches.webp"), 8<<20),
 		"WebP lossy, padded":           paddedBitstream(t, readTestdata(t, "cost-lossy.webp"), 8<<20),
+		"WebP lossy, unpadded":         unpaddedBitstream(t, readTestdata(t, "webp-swatches.webp"), 16<<20-1024),
 		"WebP lossy with alpha":        readTestdata(t, "cost-alpha.webp"),
 		"WebP lossless":                readTestdata(t, "cost-lossless.webp"),
 		"WebP lossless, unpacked":      unpackedWebP(10000, 2500),

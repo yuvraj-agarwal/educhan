@@ -66,7 +66,13 @@ func stripWebP(data []byte) ([]byte, webpInfo, error) {
 	if err != nil {
 		return nil, webpInfo{}, err
 	}
-	out := make([]byte, 12, len(data))
+	// The copy is made the size of what is written, so it is never grown:
+	// growing it would hold the copy twice over for a moment, and leave it
+	// up to a quarter larger than it need be for as long as it is decoded,
+	// where webpPhases charges it at the file's size. What is written is no
+	// longer than the file, but for the pad byte a last chunk with an odd
+	// payload may have left off (nextChunk), which appendChunk writes.
+	out := make([]byte, 12, 12+chunksLen(kept))
 	copy(out, "RIFF\x00\x00\x00\x00WEBP")
 	for _, c := range kept {
 		out = appendChunk(out, c)
@@ -302,7 +308,7 @@ func stripFrame(payload []byte, canvas webpInfo) ([]byte, bool) {
 	if !ok {
 		return nil, false
 	}
-	out := append(make([]byte, 0, len(payload)), payload[:anmfHeaderLen]...)
+	out := append(make([]byte, 0, anmfHeaderLen+chunksLen(picture)), payload[:anmfHeaderLen]...)
 	for _, c := range picture {
 		out = appendChunk(out, c)
 	}
@@ -404,6 +410,16 @@ func walkChunks(b []byte, visit func(riffChunk)) bool {
 		b = rest
 	}
 	return true
+}
+
+// chunksLen is how many bytes appendChunk writes of the chunks: each one's
+// code, length and payload, and a pad byte after an odd payload.
+func chunksLen(chunks []riffChunk) int {
+	n := 0
+	for _, c := range chunks {
+		n += 8 + len(c.payload) + len(c.payload)&1
+	}
+	return n
 }
 
 func appendChunk(out []byte, c riffChunk) []byte {

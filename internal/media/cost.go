@@ -936,17 +936,20 @@ func pngPassRows(data []byte, w, h int64) int64 {
 }
 
 // webpPhases models golang.org/x/image/webp and what sanitizeWebP does after
-// it, starting from stripWebP's copy of the file. A lossy picture decodes to
-// YCbCr at its size in whole 16-pixel macroblocks, 1.5 bytes a pixel, from a
-// copy the decoder makes of its compressed partitions. An opaque one is taken
-// to full range in those planes (expandLimitedRange) and encoded from them as
-// a JPEG; one with an alpha plane is converted to NRGBA, 4 bytes a pixel, for
-// its PNG (lossyWebPToNRGBA), which the header cannot tell apart from one
-// whose alpha turns out opaque throughout, so it is charged either way. A
-// lossless picture decodes to NRGBA, 4 bytes a pixel, and holds more than that
-// on the way (vp8lPixels). An alpha plane, decoded first, is a byte a pixel,
-// but a compressed one is decoded as a lossless picture first and copied out
-// of it, which is no more than the lossless picture's own peak.
+// it, starting from stripWebP's copy of the file, charged at the file's size:
+// stripWebP makes it at the size it writes, which is no more than that but
+// for the pad byte a last chunk may have left off, and never grows it. A
+// lossy picture decodes to YCbCr at its size in whole 16-pixel macroblocks,
+// 1.5 bytes a pixel, from a copy the decoder makes of its compressed
+// partitions. An opaque one is taken to full range in those planes
+// (expandLimitedRange) and encoded from them as a JPEG; one with an alpha
+// plane is converted to NRGBA, 4 bytes a pixel, for its PNG
+// (lossyWebPToNRGBA), which the header cannot tell apart from one whose alpha
+// turns out opaque throughout, so it is charged either way. A lossless
+// picture decodes to NRGBA, 4 bytes a pixel, and holds more than that on the
+// way (vp8lPixels). An alpha plane, decoded first, is a byte a pixel, but a
+// compressed one is decoded as a lossless picture first and copied out of it,
+// which is no more than the lossless picture's own peak.
 //
 // A lossless bitstream, and a VP8L-compressed alpha plane, also make the
 // decoder hold its Huffman groups (vp8lMemory), alive while the pixels are
