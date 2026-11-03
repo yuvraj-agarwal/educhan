@@ -6,10 +6,12 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"image"
 	"image/color"
+	"image/gif"
 	"image/jpeg"
 	"image/png"
 	"io"
@@ -555,14 +557,91 @@ func pngDeepClaiming(t *testing.T, w, h uint32) []byte {
 	return data
 }
 
+// animatedWebP is an animated WebP of the given number of frames, each the
+// picture of internal/media's lossy.webp with pad bytes of an unknown chunk
+// beside it, on a canvas of that picture's size.
+func animatedWebP(t *testing.T, frames, pad int) []byte {
+	t.Helper()
+	still, err := os.ReadFile(filepath.Join("..", "media", "testdata", "lossy.webp"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	if string(still[12:16]) != "VP8 " {
+		t.Fatal("lossy.webp is not a simple-format lossy WebP")
+	}
+	picture := still[12:]
+	w := int(binary.LittleEndian.Uint16(still[26:28]) & 0x3FFF)
+	h := int(binary.LittleEndian.Uint16(still[28:30]) & 0x3FFF)
+	chunk := func(id string, payload []byte) []byte {
+		out := binary.LittleEndian.AppendUint32([]byte(id), uint32(len(payload)))
+		out = append(out, payload...)
+		if len(payload)%2 == 1 {
+			out = append(out, 0)
+		}
+		return out
+	}
+	put24 := func(b []byte, v int) []byte { return append(b, byte(v), byte(v>>8), byte(v>>16)) }
+	vp8x := put24(put24([]byte{0x02, 0, 0, 0}, w-1), h-1) // the animation flag
+	out := append([]byte("RIFF\x00\x00\x00\x00WEBP"), chunk("VP8X", vp8x)...)
+	out = append(out, chunk("ANIM", make([]byte, 6))...)
+	for i := 0; i < frames; i++ {
+		frame := put24(put24(put24(put24(make([]byte, 0, 16), 0), 0), w-1), h-1)
+		frame = append(put24(frame, 100), 0) // a tenth of a second
+		frame = append(frame, picture...)
+		frame = append(frame, chunk("ZZZZ", make([]byte, pad))...)
+		out = append(out, chunk("ANMF", frame)...)
+	}
+	binary.LittleEndian.PutUint32(out[4:8], uint32(len(out)-8))
+	return out
+}
+
+// webpOnAWiderCanvas is internal/media's lossy.webp under a VP8X whose canvas
+// is two pixels wider than its picture: a file whose chunks do not make one
+// picture, which nothing here decodes, and which is known from its chunks.
+func webpOnAWiderCanvas(t *testing.T) []byte {
+	t.Helper()
+	still, err := os.ReadFile(filepath.Join("..", "media", "testdata", "lossy.webp"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	if string(still[12:16]) != "VP8 " {
+		t.Fatal("lossy.webp is not a simple-format lossy WebP")
+	}
+	w := int(binary.LittleEndian.Uint16(still[26:28]) & 0x3FFF)
+	h := int(binary.LittleEndian.Uint16(still[28:30]) & 0x3FFF)
+	put24 := func(b []byte, v int) []byte { return append(b, byte(v), byte(v>>8), byte(v>>16)) }
+	vp8x := put24(put24([]byte{0, 0, 0, 0}, w+2-1), h-1)
+	out := append([]byte("RIFF\x00\x00\x00\x00WEBPVP8X"), binary.LittleEndian.AppendUint32(nil, uint32(len(vp8x)))...)
+	out = append(append(out, vp8x...), still[12:]...)
+	binary.LittleEndian.PutUint32(out[4:8], uint32(len(out)-8))
+	return out
+}
+
+// losslessWebPClaiming is the header of a lossless WebP of w×h and n bytes of
+// bitstream, which Go's decoder would hold Huffman tables for out of all
+// proportion to the picture (see the README's Formats).
+func losslessWebPClaiming(w, h, n int) []byte {
+	bits := uint32(w-1) | uint32(h-1)<<14
+	payload := binary.LittleEndian.AppendUint32([]byte{0x2F}, bits)
+	payload = append(payload, make([]byte, n-len(payload))...)
+	out := append([]byte("RIFF\x00\x00\x00\x00WEBPVP8L"), binary.LittleEndian.AppendUint32(nil, uint32(n))...)
+	out = append(out, payload...)
+	binary.LittleEndian.PutUint32(out[4:8], uint32(len(out)-8))
+	return out
+}
+
 // A file whose header shows it cannot be used, because it is not an accepted
-// image, has too many pixels, or is encoded in a way that would take more
-// memory to decode than the server has for it, is refused before flood
-// control, so the poster
-// can send the text on its own at once. An image whose header is sound but
-// whose pixels do not decode, or that would be stored many times larger than
-// it came in, is found only by decoding and encoding it, after the cooldowns
-// have started, which are the exceptions the README names.
+// image, has too many pixels, is encoded in a way that would take more
+// memory to decode than the server has for it, or is an animated WebP, which
+// nothing here can decode, or a WebP whose chunks do not make one picture of
+// its canvas, is refused before flood control, so the poster
+// can send the text on its own at once. Each gets an answer that says which:
+// a picture of too many pixels is too large a resolution, one dear to decode
+// for its encoding is too large to process, and an animated WebP cannot be
+// decoded whatever its size. An image whose header is sound but whose pixels
+// do not decode, or that would be stored many times larger than it came in,
+// is found only by decoding and encoding it, after the cooldowns have
+// started, which are the exceptions the README names.
 func TestImagesRefusedByTheirHeaderStartNoCooldown(t *testing.T) {
 	c := testServer(t, func(cfg *Config) {
 		cfg.TrustedProxyHops = 1
@@ -572,6 +651,11 @@ func TestImagesRefusedByTheirHeaderStartNoCooldown(t *testing.T) {
 	})
 	c.addBoard("general")
 	threads := "/api/boards/general/threads"
+	lossyWebP, err := os.ReadFile(filepath.Join("..", "media", "testdata", "lossy.webp"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	cutShort := func(b []byte) []byte { return b[:len(b)-len(b)/10] }
 	unusable := []struct {
 		name, filename string
 		data           []byte
@@ -579,7 +663,17 @@ func TestImagesRefusedByTheirHeaderStartNoCooldown(t *testing.T) {
 	}{
 		{"not an image", "notes.png", []byte("#!/bin/sh\necho hello\n"), "unsupported image format"},
 		{"too many pixels", "huge.png", pngClaiming(t, 10000, 10000), "image resolution is too large"},
-		{"too costly to decode", "deep.png", pngDeepClaiming(t, 6000, 4000), "image resolution is too large"},
+		{"too costly to decode", "deep.png", pngDeepClaiming(t, 6000, 4000), "image too large to process"},
+		{"a lossless WebP too costly to decode", "screenshot.webp", losslessWebPClaiming(1920, 1080, 317<<10), "image too large to process"},
+		{"an animated WebP", "moving.webp", animatedWebP(t, 2, 0), "image could not be decoded"},
+		{"a long animated WebP", "longer.webp", animatedWebP(t, 6, 50<<10), "image could not be decoded"},
+		// Files cut short in transfer: each RIFF runs past the end of its file.
+		{"an animated WebP cut short", "moving-cut.webp", cutShort(animatedWebP(t, 2, 0)), "image could not be decoded"},
+		{"a long animated WebP cut short", "longer-cut.webp", cutShort(animatedWebP(t, 6, 50<<10)), "image could not be decoded"},
+		{"a WebP cut short", "still-cut.webp", cutShort(lossyWebP), "image could not be decoded"},
+		// Chunks that do not make one picture, which a decoder reading no
+		// further than the VP8X does not see.
+		{"a WebP on a canvas wider than its picture", "wider.webp", webpOnAWiderCanvas(t), "image could not be decoded"},
 	}
 
 	const poster = "198.51.100.21"
@@ -614,7 +708,7 @@ func TestImagesRefusedByTheirHeaderStartNoCooldown(t *testing.T) {
 		"cut.png", pngBytes(t, 24, 24)[:33], &out); status != http.StatusBadRequest || !strings.Contains(out.Error, "image could not be decoded") {
 		t.Fatalf("reply with pixels missing: %d %q, want 400 %q", status, out.Error, "image could not be decoded")
 	}
-	if status := c.postFrom(another, replies, map[string]any{"body": "and no image"}, &out); status != http.StatusTooManyRequests {
+	if status := c.postFrom(another, replies, map[string]any{"body": "and no image"}, &createdPost{}); status != http.StatusTooManyRequests {
 		t.Errorf("text reply after an image that failed to decode: %d, want 429: decoding comes after flood control", status)
 	}
 
@@ -625,12 +719,171 @@ func TestImagesRefusedByTheirHeaderStartNoCooldown(t *testing.T) {
 		t.Fatalf("read fixture: %v", err)
 	}
 	const third = "198.51.100.23"
+	out = createdPost{}
 	if status := c.uploadWithHeaders(http.Header{"X-Forwarded-For": {third}}, replies, map[string]string{"body": "look"},
 		"repeat.webp", repeat, &out); status != http.StatusBadRequest || out.Error != media.ErrStoredTooLarge.Error() {
 		t.Fatalf("reply with a file that outgrows its upload: %d %q, want 400 %q", status, out.Error, media.ErrStoredTooLarge.Error())
 	}
-	if status := c.postFrom(third, replies, map[string]any{"body": "and no image"}, &out); status != http.StatusTooManyRequests {
+	if status := c.postFrom(third, replies, map[string]any{"body": "and no image"}, &createdPost{}); status != http.StatusTooManyRequests {
 		t.Errorf("text reply after an image too large once re-encoded: %d, want 429: encoding comes after flood control", status)
+	}
+
+	// A GIF that cannot be stored one frame to a picture, which only playing
+	// it can find, is refused after flood control too.
+	const fourth = "198.51.100.24"
+	out = createdPost{}
+	if status := c.uploadWithHeaders(http.Header{"X-Forwarded-For": {fourth}}, replies, map[string]string{"body": "look"},
+		"colours.gif", gifOfTooManyColoursAtOnce(t), &out); status != http.StatusBadRequest || out.Error != media.ErrImageTooCostly.Error() {
+		t.Fatalf("reply with a GIF of too many colours at once: %d %q, want 400 %q", status, out.Error, media.ErrImageTooCostly.Error())
+	}
+	if status := c.postFrom(fourth, replies, map[string]any{"body": "and no image"}, &createdPost{}); status != http.StatusTooManyRequests {
+		t.Errorf("text reply after a GIF of too many colours at once: %d, want 429: playing a GIF comes after flood control", status)
+	}
+}
+
+// gifOfTooManyColoursAtOnce is a 300×1 GIF whose fourth picture changes 300
+// pixels to 300 colours at once: the first frame draws 150 colours, the
+// second and the third each draw 150 others over them and are put back, and
+// the fourth draws 150 more beside them. The stored file leaves the second
+// picture's frame in place, since nothing after it needs otherwise, so
+// putting back the third's leaves the second picture's colours where the
+// first's show again: whichever way the third is disposed of, the fourth
+// picture's stored frame has to draw 300 colours, and the GIF cannot be
+// stored one frame to a picture.
+func gifOfTooManyColoursAtOnce(t *testing.T) []byte {
+	t.Helper()
+	frame := func(x0, first int) *image.Paletted {
+		pal := make(color.Palette, 150)
+		for i := range pal {
+			pal[i] = color.RGBA{byte(first + i), byte((first + i) >> 8), 0x55, 0xFF}
+		}
+		m := image.NewPaletted(image.Rect(x0, 0, x0+150, 1), pal)
+		for i := range m.Pix {
+			m.Pix[i] = uint8(i)
+		}
+		return m
+	}
+	g := &gif.GIF{
+		Image:    []*image.Paletted{frame(0, 0), frame(0, 1000), frame(0, 2000), frame(150, 3000)},
+		Delay:    []int{10, 10, 10, 10},
+		Disposal: []byte{gif.DisposalNone, gif.DisposalPrevious, gif.DisposalPrevious, gif.DisposalNone},
+		Config:   image.Config{Width: 300, Height: 1},
+	}
+	var buf bytes.Buffer
+	if err := gif.EncodeAll(&buf, g); err != nil {
+		t.Fatalf("encode gif: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// cheapestUpload is a file of the given format of exactly size bytes that is
+// about as cheap to process as a file that size can be: a picture of one pixel
+// (for a WebP, the 64×48 of internal/media's lossy.webp, the smallest to hand,
+// since nothing here encodes one), made up to size by what its decoder skips:
+// comment segments after a JPEG's start, a chunk of no known kind before a
+// PNG's pixels, a comment extension after a GIF's frame, and a chunk of no
+// known kind after a WebP's picture. Its stored file and its thumbnail are
+// small, but nothing tells that from its header: what processing it is
+// estimated to hold grows with its size whatever it carries.
+func cheapestUpload(t *testing.T, format string, size int) []byte {
+	t.Helper()
+	be := binary.BigEndian
+	out := make([]byte, 0, size)
+	switch format {
+	case "jpeg":
+		small := jpegBytes(t, 1, 1)
+		out = append(out, small[:2]...)
+		for rest := size - len(small); rest > 0; {
+			n := min(rest, 4+0xFFFD) // a marker, a length, and at most 65,533 bytes
+			if rest-n > 0 && rest-n < 4 {
+				n -= 4
+			}
+			out = be.AppendUint16(append(out, 0xFF, 0xFE), uint16(n-2))
+			out = append(out, make([]byte, n-4)...)
+			rest -= n
+		}
+		out = append(out, small[2:]...)
+	case "png":
+		small := pngBytes(t, 1, 1)
+		const ihdrEnd = 8 + 25 // the signature, then IHDR's length, type, 13 bytes and CRC
+		out = append(out, small[:ihdrEnd]...)
+		start := len(out)
+		out = be.AppendUint32(out, uint32(size-len(small)-12))
+		out = append(out, "zzzz"...)
+		out = append(out, make([]byte, size-len(small)-12)...)
+		out = be.AppendUint32(out, crc32.ChecksumIEEE(out[start+4:]))
+		out = append(out, small[ihdrEnd:]...)
+	case "gif":
+		var buf bytes.Buffer
+		pixel := image.NewPaletted(image.Rect(0, 0, 1, 1), color.Palette{color.Black, color.White})
+		if err := gif.Encode(&buf, pixel, nil); err != nil {
+			t.Fatalf("encode gif: %v", err)
+		}
+		small := buf.Bytes()
+		out = append(out, small[:len(small)-1]...) // all but the trailer
+		out = append(out, 0x21, 0xFE)
+		// Sub-blocks of a length byte and up to 255 bytes, then a zero length
+		// to end them: never one of no bytes but that one.
+		for rest := size - len(small) - 3; rest > 0; {
+			n := min(rest, 256)
+			if rest-n == 1 {
+				n--
+			}
+			out = append(append(out, byte(n-1)), make([]byte, n-1)...)
+			rest -= n
+		}
+		out = append(out, 0x00, small[len(small)-1])
+	case "webp":
+		small, err := os.ReadFile(filepath.Join("..", "media", "testdata", "lossy.webp"))
+		if err != nil {
+			t.Fatalf("read fixture: %v", err)
+		}
+		if size%2 != 0 {
+			t.Fatalf("a WebP is made of chunks of even length, so it cannot be %d bytes", size)
+		}
+		out = append(out, small...)
+		out = binary.LittleEndian.AppendUint32(append(out, "zzzz"...), uint32(size-len(small)-8))
+		out = append(out, make([]byte, size-len(small)-8)...)
+		binary.LittleEndian.PutUint32(out[4:8], uint32(size-8))
+	default:
+		t.Fatalf("cheapestUpload: no format %q", format)
+	}
+	if len(out) != size {
+		t.Fatalf("cheapest %s is %d bytes, want %d", format, len(out), size)
+	}
+	return out
+}
+
+// TestLargestAttachmentLimitIsReachable: the most EDUCHAN_MAX_UPLOAD_BYTES
+// may be is a size a file can be posted at. The cheapest file of that size in
+// each format is processed and stored, and the same file a MiB larger is
+// refused from its header as too costly to process, so the next whole MiB is
+// not a size a file can be posted at. An upload costs about eight times its
+// size whatever its picture, because its stored file may come to four times
+// its size and the encoder's buffer holds two of those as it grows
+// (media.MaxUploadBytes).
+func TestLargestAttachmentLimitIsReachable(t *testing.T) {
+	c := testServer(t, func(cfg *Config) { cfg.MaxUploadBytes = maxUploadLimit })
+	c.addBoard("largest")
+	for _, format := range []string{"jpeg", "png", "gif", "webp"} {
+		var out createdPost
+		status := c.upload("/api/boards/largest/threads", map[string]string{"body": format},
+			"largest."+format, cheapestUpload(t, format, int(maxUploadLimit)), &out)
+		if status != http.StatusCreated {
+			t.Errorf("the cheapest %s of %d bytes, the most an attachment may be: status = %d (%s), want 201",
+				format, maxUploadLimit, status, out.Error)
+		}
+		larger := cheapestUpload(t, format, int(maxUploadLimit+1<<20))
+		if _, err := media.Inspect(larger); !errors.Is(err, media.ErrImageTooCostly) {
+			t.Errorf("the cheapest %s a MiB larger: Inspect = %v, want %v", format, err, media.ErrImageTooCostly)
+		}
+	}
+	var stored int
+	if err := c.app.pool.QueryRow(context.Background(), `SELECT count(*) FROM attachments`).Scan(&stored); err != nil {
+		t.Fatalf("count attachments: %v", err)
+	}
+	if stored != 4 {
+		t.Errorf("stored %d attachments, want one of each format", stored)
 	}
 }
 

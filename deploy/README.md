@@ -34,7 +34,8 @@ EDUCHAN_MOD_KEY=dev-mod-key go run ./cmd/server   # http://localhost:8080
 at startup, and `0006` seeds twenty boards: thirteen subject boards (`/math/` to
 `/lang/`), then seven student-life ones (`/adm/` to `/meta/`).
 Attachments go to `./data/uploads`, because `EDUCHAN_MEDIA_BACKEND` defaults to
-`local`.
+`local`, but image posts answer `403` until the server is started with
+`EDUCHAN_UPLOADS_ENABLED=1` as well, as the attachment example below needs.
 
 ```bash
 curl -s localhost:8080/healthz     # {"status":"ok"}
@@ -72,9 +73,16 @@ by submitting a build (section 2.5), not by building locally.
 **The short way.** In [Cloud Shell](https://shell.cloud.google.com), with a
 project that has billing linked, one script does every step in this section:
 APIs, Artifact Registry, service accounts, Cloud SQL, the media bucket, secrets,
-the build, the deploy, and the request-log exclusion. It leaves image uploads
-and verification off, keeps one instance warm for a demo (`MIN_INSTANCES=0` in
-the environment turns that off), prints the service URL, and is safe to re-run.
+the build, the deploy, the request-log exclusion, and the archive sweeper Job
+with its daily schedule. Re-running it from a newer checkout is how an update
+ships: it moves the service and the Job onto the new image together, sets the
+variables and secrets it names, and keeps any others added by hand since. Every
+run still turns image uploads and verification off, and sets the warm instance
+count: one, for a demo, unless `MIN_INSTANCES=0` is in the environment. It
+prints the service URL and is safe to re-run. To take a setting off on purpose,
+use `gcloud run services update educhan --region "$REGION"` with
+`--remove-env-vars NAME` or, for a secret, `--remove-secrets NAME`; the sweeper
+takes the same flags through `gcloud run jobs update educhan-sweep`.
 
 ```bash
 git clone https://github.com/yuvraj-agarwal/educhan.git && cd educhan
@@ -191,7 +199,8 @@ gcloud sql instances create educhan-db \
   --edition=ENTERPRISE \
   --tier=db-f1-micro \
   --region="$REGION" \
-  --storage-size=10GB
+  --storage-size=10GB \
+  --backup --backup-start-time=05:00 --retained-backups-count=7
 
 gcloud sql databases create educhan --instance=educhan-db
 
@@ -208,6 +217,54 @@ export CLOUDSQL_INSTANCE="$(gcloud sql instances describe educhan-db \
 Cloud SQL defaults to Enterprise Plus, which has no shared-core tiers, and the
 create fails without it. Shared-core tiers carry no SLA and allow about 25
 connections; section 3 covers how the pool size and `maxScale` add up.
+
+**Leave `track_commit_timestamp` off.** It is off by default, in PostgreSQL and
+in Cloud SQL, and none of the commands here set it. Switched on, it records when
+each transaction committed, and `pg_xact_commit_timestamp(xmin)` turns that into
+the time any row was last written, to well under a second. A verification
+credential issued while it was on could then be dated to that moment, not just
+placed between the two posts its own transaction id falls between, until the
+next sweep rewrites it and gives it the sweep's id, and in a backup taken before
+then for as long as that backup is kept; and so could each committed transaction
+id missing from the posts' sequence, for as long as PostgreSQL keeps its commit
+time, which turns the gap a code request or confirmation leaves among the posts'
+ids from the minutes between two posts into the moment of the write. The root
+README's [Transaction ids, and the nightly
+rewrite](../README.md#transaction-ids-and-the-nightly-rewrite) has the rest.
+Never add it to `--database-flags`; this shows the instance's flags, and should
+print nothing about it:
+
+```bash
+gcloud sql instances describe educhan-db --format='value(settings.databaseFlags)'
+```
+
+**Backups.** The three backup flags spell out the backup schedule and how many
+backups are kept, rather than leaning on defaults. The instance keeps a daily
+backup, the last seven of them, so a deleted row can sit in a backup for about a
+week. Each backup starts somewhere in a four-hour window opening at 05:00 UTC,
+after the archive sweeper's run at 03:17 and its one retry (section 2.9), so a
+backup holds as little as possible of what the sweep deletes or rewrites. 05:00
+UTC is also when the day a verification credential is dated to ends
+(`credentialDayStart` in `internal/app/verify.go`), and it ends then so that the
+sweep, which rewrites every credential, runs inside it, near its end; the
+root README's [Transaction ids, and the nightly
+rewrite](../README.md#transaction-ids-and-the-nightly-rewrite) says why. So move
+none of the three times without the others: section 2.9 says how far the
+schedule may move. On an instance that already has backups on, re-running
+`first-deploy.sh` moves the window to 05:00 and changes nothing else; it leaves
+alone an instance whose backups were turned off.
+
+Point-in-time recovery is off: `gcloud sql instances create` leaves it off for
+the Enterprise edition, where the Console would have turned it on. It would keep
+seven days of write-ahead log, and every commit record in that log carries its
+commit time, which would date each write exactly within those seven days,
+whatever `track_commit_timestamp` (above) says. Turning it on is a trade between
+recovery and that record, so it is a decision, not a default. To check what an
+instance keeps:
+
+```bash
+gcloud sql instances describe educhan-db --format='yaml(settings.backupConfiguration)'
+```
 
 ### 2.3 The media bucket
 
@@ -378,8 +435,9 @@ Once the service exists, every later release is just the new image:
 make cloud-build && make cloud-deploy
 ```
 
-`make cloud-deploy` is `gcloud run deploy educhan --image <the tag just built>`
-and nothing more. Cloud Run carries the rest of the configuration — the service
+`make cloud-deploy` is `gcloud run deploy educhan --image <the tag just built>`,
+plus moving the archive sweeper Job onto the same image once it exists (section
+2.9), and nothing more. Cloud Run carries the rest of the configuration — the service
 account, the Cloud SQL instance, the secrets, the environment — over from the
 current revision, so it is not duplicated in the Makefile and cannot drift from
 it. Changing any of that is a change to `service.yaml` (or to the long form
@@ -391,8 +449,8 @@ than quietly creating a bare one with no database attached.
 
 ```bash
 URL="$(gcloud run services describe educhan --region "$REGION" --format='value(status.url)')"
-curl -s "$URL/healthz"     # {"status":"ok"} — this also pings PostgreSQL
-curl -s "$URL/api/boards"  # the seeded boards, so migrations ran
+# Not /healthz: Cloud Run reserves some paths ending in "z" on run.app URLs.
+curl -s "$URL/api/boards"  # the seeded boards: the database answers and migrations ran
 open "$URL"                # the UI
 
 # Media round-trips through the bucket. Post an image, read its URL back, and
@@ -446,16 +504,23 @@ the app keeps addresses out of them itself.
 ### 2.9 The archive sweeper
 
 A thread that falls off the end of its board is archived, and the sweeper
-deletes it, with its images, once its board's `archive_days` (7 by default)
-have passed. It is the same image run as `educhan -sweep`: one pass, then it
-exits. It runs as a Cloud Run **Job**, started once a day by Cloud Scheduler,
-because a Cloud Run service only has CPU while it answers a request, so a timer
-inside it would fire whenever it happened to.
+deletes it, with its images, once its board's `archive_days` (7 by default) have
+passed. Each run also rewrites the verification tables, so that every credential
+issued before it carries the run's transaction id rather than its own; the root
+README's [Transaction ids, and the nightly
+rewrite](../README.md#transaction-ids-and-the-nightly-rewrite) says how closely
+that still dates it. It is the same image run as `educhan -sweep`: one pass,
+then it exits. It runs as a Cloud Run **Job**, started once a day by Cloud
+Scheduler, because a Cloud Run service only has CPU while it answers a request,
+so a timer inside it would fire whenever it happened to.
 
-The Job runs as the service's account and needs only what deleting takes: the
-database, and `storage.objects.get` and `storage.objects.delete` on the bucket,
-both already in the `roles/storage.objectAdmin` grant from section 2.3 (it checks
-that each file is there before deleting it). It gets neither the moderation key nor
+The Job runs as the service's account and needs only what its work takes: the
+database, and `storage.objects.list`, `.get` and `.delete` on the bucket, all
+already in the `roles/storage.objectAdmin` grant from section 2.3 (startup lists
+the bucket to check it is usable, and the sweep checks that each file is there
+before deleting it). It connects with the service's `DATABASE_URL`, so as the
+service's database role, which ran the migrations and owns the tables the sweep
+rewrites. It gets neither the moderation key nor
 `EDUCHAN_VERIFY_SECRET`, which it has no use for (and the server refuses to start
 with that secret set and no mail sender). The poster-ID salt is left out too, as
 nothing the sweeper does touches a poster ID.
@@ -491,6 +556,53 @@ gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name=
   --freshness=1h --limit=1 --format='value(jsonPayload)'
 ```
 
+That first run also checks the database role. The sweep runs `VACUUM FULL` on
+the `pg_statistic` catalog, which only the database's owner, or a member of the
+owner's role that inherits its privileges, may vacuum, so a role without that
+fails every sweep. A database made with `gcloud sql databases create`, as in
+section 2.2, should belong to Cloud SQL's `cloudsqlsuperuser` role, and the
+`educhan` user, like every user `gcloud sql users create` makes, is a member of
+it, so the run should pass; but no sweep has run on Cloud SQL yet. If `--wait`
+says the execution failed, this prints why:
+
+```bash
+gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="educhan-sweep" AND (jsonPayload.msg="fatal" OR textPayload:"ERROR fatal")' \
+  --freshness=1h --limit=1 --format='value(timestamp,jsonPayload.error,textPayload)'
+```
+
+An error saying `VACUUM FULL left pg_catalog.pg_statistic in its old file` is
+the role: it names the query that says whether the role has the owner's
+privileges, and the root README's [archive
+sweeper](../README.md#the-archive-sweeper) says what the role needs. Any other
+is most likely the media settings or the store (below). A stray argument, or a
+setting the image refuses as soon as it reads it (a bad `EDUCHAN_LOG_FORMAT` or
+`EDUCHAN_MEDIA_BACKEND`, say), is reported before the image starts logging JSON,
+so it is printed as plain text at the end of the line; a `DATABASE_URL`, Cloud
+SQL instance or bucket that does not work is reported as JSON, like any other
+error. If it prints nothing, the execution ended without a word from the image,
+killed for want of memory, say, or before it started: `gcloud run jobs
+executions describe NAME --region "$REGION"`, with the failed execution's name
+from `gcloud run jobs executions list --job educhan-sweep --region "$REGION"`,
+says how.
+
+Once verification is on, start the sweep by hand only after that night's
+scheduled run has finished and no later than 04:00 UTC, which leaves it and its
+one retry the half hour to spare before 05:00 that the schedule has (below); or
+else when nobody has verified since the last 05:00 UTC and nobody will until it,
+and its retry if it fails, has finished, since its rewrite comes last and takes
+in every credential issued before it. Otherwise its last rewrite splits the day
+it falls in: until the next night's sweep, and in the backups taken meanwhile,
+its transaction id dates the credentials issued between 05:00 and that rewrite
+to those hours. The server logs a `verification issued` line, and nothing about
+whose, for each credential it hands out, so this prints when the latest one in
+the past day was; nothing, or a time before the last 05:00 UTC, means nobody has
+verified since:
+
+```bash
+gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="educhan" AND jsonPayload.msg="verification issued"' \
+  --freshness=1d --limit=1 --format='value(timestamp)'
+```
+
 Then schedule it. Cloud Scheduler calls the Run API as its own service account,
 which may run this one Job and nothing else:
 
@@ -507,6 +619,39 @@ gcloud scheduler jobs create http educhan-sweep-daily \
   --uri "https://run.googleapis.com/v2/projects/${PROJECT_ID}/locations/${REGION}/jobs/educhan-sweep:run" \
   --oauth-service-account-email "$SCHEDULER_SA"
 ```
+
+03:17 UTC leaves the sweep and its one retry, up to 15 minutes each, time to
+finish before 05:00 UTC, when the database's backup window opens and a
+verification credential's day ends (section 2.2). The day the sweep runs in has
+to end half an hour or more after the latest the sweep and its retry can still
+be running, and two hours at most after the scheduled time, so with this retry
+and timeout the schedule can move only between 03:00 and 04:00 UTC.
+`TestCredentialDaysEndAfterTheSweep` reads `--schedule`, `--max-retries` and
+`--task-timeout` from this guide and from `first-deploy.sh`, and fails outside
+that. Beyond it, move `credentialDayStart` in `internal/app/verify.go` and the
+backup window with the schedule, and ship the three together by re-running
+`first-deploy.sh` with its `--schedule` and its `BACKUP_START` edited to match,
+which moves the image, the Scheduler job and the backup window in one run;
+`make cloud-deploy` moves only the images. Afterwards `gcloud sql instances
+describe educhan-db --format='value(settings.backupConfiguration.startTime)'`
+should print the new start; a re-run leaves alone an instance whose backups were
+turned off (section 2.2). A new `credentialDayStart` splits the credential day
+it is deployed in (the root README's [Transaction ids, and the nightly
+rewrite](../README.md#transaction-ids-and-the-nightly-rewrite) says what that
+dates), so deploy it soon after the later of the old start and the new, once the
+`verification issued` lines in the server's log (the command above prints the
+latest) show that nobody has verified since the old start. The credentials
+issued from the deploy until the next new start share their expiry with no
+others, so a later deploy dates them to the fewer hours left in between, for as
+long as they are kept. A credential issued on the old revision while the new one
+rolls out still gets the old expiry, and is dated with those issued before the
+deploy. A start moved earlier can instead go out at any time between that day's
+new start and its old one, whether or not anyone has verified, once that night's
+sweep on the old schedule, and its retry if it fails, has finished, and with the
+deploy over before the old start: the credentials issued before the deploy and
+those after it then each span at least a day less the move. A deploy before that
+sweep has finished would have it split the new day, or move the Scheduler job
+past it and leave that night without one.
 
 A sweep that could not remove a file exits non-zero, so the execution shows as
 failed in the console (`gcloud run jobs executions list --job educhan-sweep

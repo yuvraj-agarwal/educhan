@@ -23,19 +23,67 @@ var ErrBusy = errors.New("media: no room to take the image in time")
 // Run's containerConcurrency) could be holding one. A body is reserved whole,
 // so none may be larger than this: a reservation is capped at the budget, and
 // a body past it would be read beyond what was reserved. The server refuses
-// to start with an upload size limit that allows one.
+// to start with an upload size limit that allows one, and with any over
+// MaxUploadBytes (cost.go), which is lower.
 const UploadBudget int64 = 64 << 20
 
 // processingAllowance is how long before its deadline an upload stops waiting
-// for room, in either budget, so that what is left is time to decode,
-// re-encode and thumbnail it and to store both renditions. The slowest
-// upload measured of those Inspect admits from an 8 MiB limit, a GIF of four
-// 25-megapixel frames (as many pixels as maxGIFFramePixels lets its frames
-// come to), took about six seconds to process on one core of a development
-// machine, and a 25-megapixel PNG with transparency about three and a half.
-// A slower core, or other uploads beside it, makes that longer, so the
-// deadline still has the last word: Save stores nothing once it has passed.
-// A context without a deadline waits for as long as it lasts.
+// for room, in either budget, so that what is left is time to decode, re-encode
+// and thumbnail it and to store both renditions. What bounds that work is not
+// the upload's size — a few dozen bytes of a progressive JPEG's scan can make
+// image/jpeg revisit every block of a 25-megapixel picture — but its shape,
+// which Inspect reads from the header: the pixel cap (MaxPixels), the memory
+// estimate (processingCost), and, for a JPEG, the scan cap
+// (maxJPEGScanRevisits); and a PNG is written at deflate's fastest level
+// (storedPNG), whose work follows the length of the rows rather than what they
+// hold. So no admitted upload is processed for more than about ten seconds of
+// CPU on one core. The slowest kinds measured, each on one core:
+//   - a 25-megapixel 16-bit PNG: ~4-5 s; at 8 bits, one with transparency of
+//     about 7 MiB, ~2-3 s. Written at deflate's default level, rows crafted to
+//     make it search took a 16-bit one of 1.4 MB ~17 s.
+//   - a WebP stored as a PNG: a lossless one of 25 megapixels, which a crafted
+//     file of a few dozen bytes can be, as a lossless bitstream can spend no
+//     bits on a pixel, ~4-5 s, and ~5.5-6.5 s with its predictor, cross-colour
+//     and subtract-green transforms; and a lossy one with transparency of 19
+//     megapixels (4362×4362), the largest square the memory estimate admits, or
+//     of 21 megapixels in a strip (1300×16178), about the most pixels it
+//     admits, which with the CMYK JPEG below is the slowest upload admitted:
+//     ~4.5-5.5 s for a photograph half transparent throughout, ~6.5-7.5 s for
+//     noise that fills the default size limit (8 MiB), and ~8-9.5 s with an
+//     alpha plane crafted as a lossless bitstream that runs every transform. Of
+//     that, decoding takes ~1-4 s, converting the picture for image/png
+//     (lossyWebPToNRGBA) ~1 s, writing the PNG, of up to ~70 MB, ~2-4 s, and
+//     the thumbnail ~1 s; with an alpha opaque but for rounded corners, or
+//     clear throughout, it takes ~3.5-4.5 s. Those were measured in runs in
+//     which the 16-bit PNG took its ~4-5 s and the CMYK JPEG ~8.5-10 s, as on a
+//     busy host (below).
+//   - a JPEG at the scan cap (jpegScanBlockVisits weighs each scan by its
+//     work): a progressive one of ~0.8 million blocks, the most the memory
+//     estimate admits of one (a 25-megapixel 4:2:2 picture or ~17 megapixels
+//     at 4:4:4), decodes in ~3-4 s and Process takes ~4-6 s, whether 64 first
+//     passes (~50 million block visits) or ~32 refinement passes fill it. A
+//     baseline one is admitted at 25 megapixels whatever its sampling, and its
+//     10 scans at the cap decode in ~3.5-4.5 s at 4:4:4 (1.2 million blocks)
+//     and ~5-6 s with four components at full resolution (an Adobe CMYK file,
+//     1.6 million, the most of any JPEG), whose Process takes ~5.5-7.5 s; a
+//     25-megapixel grey or 4:2:0 one decodes in ~2-3 s. A file past the cap is
+//     refused from its header, before any cooldown — before the cap one could
+//     repeat a cheap scan thousands of times and decode for thousands of
+//     seconds.
+//   - a GIF of many colours: 25 frames of a 2000×2000 canvas each drawn from a
+//     table of its own and each leaving a pixel to clear, 4.5 MB, which the
+//     frame cap (maxGIFFramePixels) lets come to 100 million pixels, ~4 s.
+//     Four 5000×5000 frames of one table take ~2.5 s, and frames a pixel wide,
+//     whose rows the cap counts as 64 pixels each (gifRowPixels), a few tenths.
+//
+// A slower core, or other uploads beside it, makes that longer (with the
+// host's other cores busy, the CMYK JPEG's decode took about 1.4 times the
+// time above, and the 16-bit PNG and the lossless WebP barely more), so the
+// deadline still has the last word: Save stores nothing once it has passed,
+// and the work stops when the context ends, at the next point that asks
+// (Process) — which for a decode that read its whole input before its costly
+// passes, as image/jpeg does a small progressive file, is the end of the
+// decode. A context without a deadline waits for as long as it lasts.
 const processingAllowance = 15 * time.Second
 
 // budget shares out memory among the uploads using it at once, each taking

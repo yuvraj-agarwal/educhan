@@ -3,9 +3,11 @@ package jpegenc
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"image"
 	"image/color"
 	"image/jpeg"
+	"math/rand"
 	"testing"
 )
 
@@ -221,4 +223,88 @@ func abs(x int) int {
 		return -x
 	}
 	return x
+}
+
+// errRefused is the error refusingWriter gives every write.
+var errRefused = errors.New("write refused")
+
+// refusingWriter refuses every write.
+type refusingWriter struct{}
+
+func (refusingWriter) Write([]byte) (int, error) { return 0, errRefused }
+
+// shortPicture is a picture whose pixels stop after its first rows: At
+// panics below them, as reading the planes of the concrete pictures cut
+// short below does.
+type shortPicture struct {
+	image.Image
+	rows int
+}
+
+func (p shortPicture) At(x, y int) color.Color {
+	if y >= p.Image.Bounds().Min.Y+p.rows {
+		panic("read a pixel below the rows the picture has")
+	}
+	return p.Image.At(x, y)
+}
+
+// A failed write is the end of an encode — Encode returns its error, and
+// nothing coded after it is ever used — so writeSOS stops at the end of the
+// row of units it is in rather than transforming and coding the rest of the
+// picture. For media, which encodes into a buffer that refuses every write
+// once the post's context has ended, that is up to a second of CPU on a
+// 25-megapixel picture spent for nothing. Each picture here has pixels only
+// in its first rows and claims thousands more: its planes, or its At, stop
+// there, so an encoder that read on after the write failed would panic.
+// Encode's own buffer passes its first write on at 4 KiB, which the noise in
+// those rows comes to well before their last row of units.
+func TestEncodeStopsAtAFailedWrite(t *testing.T) {
+	const w, rows, h = 512, 64, 4096
+	noise := rand.New(rand.NewSource(3))
+	fill := func(b []byte) []byte {
+		for i := range b {
+			b[i] = byte(noise.Intn(256))
+		}
+		return b
+	}
+	grey := image.NewGray(image.Rect(0, 0, w, rows))
+	fill(grey.Pix)
+	rgba := image.NewRGBA(image.Rect(0, 0, w, rows))
+	fill(rgba.Pix)
+	pictures := map[string]struct{ have, short image.Image }{
+		"grey": {grey, &image.Gray{Pix: grey.Pix, Stride: grey.Stride, Rect: image.Rect(0, 0, w, h)}},
+		"RGBA": {rgba, &image.RGBA{Pix: rgba.Pix, Stride: rgba.Stride, Rect: image.Rect(0, 0, w, h)}},
+		"any other picture": {rgba, shortPicture{
+			&image.RGBA{Pix: append(rgba.Pix, make([]byte, 4*w*(h-rows))...), Stride: rgba.Stride, Rect: image.Rect(0, 0, w, h)}, rows}},
+	}
+	for _, r := range ratios {
+		m := image.NewYCbCr(image.Rect(0, 0, w, rows), r.ratio)
+		fill(m.Y)
+		fill(m.Cb)
+		fill(m.Cr)
+		short := *m
+		short.Rect = image.Rect(0, 0, w, h)
+		pictures[r.ratio.String()] = struct{ have, short image.Image }{m, &short}
+	}
+	for name, p := range pictures {
+		// The rows there are, short of the last two rows of units, code to
+		// well over the 4 KiB that reaches the writer first.
+		have := p.have.(interface {
+			SubImage(image.Rectangle) image.Image
+		}).SubImage(image.Rect(0, 0, w, rows-16))
+		var buf bytes.Buffer
+		if err := Encode(&buf, have, nil); err != nil || buf.Len() < 8<<10 {
+			t.Fatalf("%s: the rows there are code to %d bytes (%v); the first write would not fail among them", name, buf.Len(), err)
+		}
+		func() {
+			defer func() {
+				if v := recover(); v != nil {
+					t.Errorf("%s: the encode read on after its write failed: %v", name, v)
+				}
+			}()
+			if err := Encode(refusingWriter{}, p.short, nil); !errors.Is(err, errRefused) {
+				t.Errorf("%s: Encode = %v, want the writer's error", name, err)
+			}
+		}()
+	}
 }

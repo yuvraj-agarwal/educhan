@@ -84,6 +84,12 @@ func testServerLogging(t *testing.T, tune func(*Config), logs io.Writer) *harnes
 		t.Fatalf("start app: %v", err)
 	}
 	t.Cleanup(app.Close)
+	// A sweep reads the verification tables a last time a minute after its
+	// rewrite (statsHandOver). Only TestSweepLeavesNoScanTimeFromBeforeIt
+	// checks what that is for, and it sweeps from an App of its own, which
+	// waits the minute out; a sweep here makes the read at once, rather than
+	// wait a minute for nothing its test looks at.
+	app.store.statsHandOver = 0
 
 	srv := httptest.NewServer(app.Routes())
 	t.Cleanup(srv.Close)

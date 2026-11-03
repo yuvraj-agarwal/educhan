@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/color/palette"
@@ -162,7 +163,10 @@ func TestJPEGIsStoredWithoutMetadata(t *testing.T) {
 // Every orientation, read from EXIF in either byte order, turns the stored
 // pixels upright. The table is the TIFF definition, not this package's code:
 // where the stored picture's first pixel, the end of its first row, and the
-// start of its last row appear once it is viewed correctly.
+// start of its last row appear once it is viewed correctly. The Exif segment
+// is read wherever the decoder and a browser find it: straight after the SOI
+// marker, and after bytes between segments that both skip — an extraneous
+// byte, or an 0xFF00 pair — where a browser turns the picture as well.
 func TestEveryOrientationIsApplied(t *testing.T) {
 	const w, h = 64, 32
 	visual := map[int][3]string{
@@ -183,47 +187,67 @@ func TestEveryOrientationIsApplied(t *testing.T) {
 		}
 	}
 	pictures := map[string]image.Image{"colour": colour, "grayscale": gray}
+	// What comes before the Exif segment. A comment segment first keeps the
+	// file starting as a JPEG does (DetectFormat), so the skipped bytes sit
+	// between two segments.
+	comment := jpegSegment(0xFE, []byte("before"))
+	placements := []struct {
+		name   string
+		before [][]byte
+	}{
+		{"after SOI", nil},
+		{"after an extraneous byte", [][]byte{comment, {0x00}}},
+		{"after an 0xFF00 pair", [][]byte{comment, {0xFF, 0x00}}},
+	}
 
-	for name, stored := range pictures {
-		for o := 1; o <= 8; o++ {
-			order := tiffOrder(binary.LittleEndian)
-			if o%2 == 0 {
-				order = binary.BigEndian
-			}
-			upload := withSegments(encodeJPEGImage(t, stored), exifSegment(orientationTIFF(order, uint16(o))))
-			if got := jpegOrientation(upload); got != o {
-				t.Fatalf("%s: jpegOrientation = %d, want %d", name, got, o)
-			}
-			got := process(t, upload)
-			wantW, wantH := w, h
-			if o >= 5 {
-				wantW, wantH = h, w
-			}
-			if got.Width != wantW || got.Height != wantH {
-				t.Errorf("%s orientation %d: dimensions = %dx%d, want %dx%d", name, o, got.Width, got.Height, wantW, wantH)
-			}
-			out := decodeStored(t, got.Data)
-			if b := out.Bounds(); b.Dx() != wantW || b.Dy() != wantH {
-				t.Fatalf("%s orientation %d: stored file is %dx%d, want %dx%d", name, o, b.Dx(), b.Dy(), wantW, wantH)
-			}
-			for i, want := range []color.Color{
-				stored.At(0, 0), stored.At(w-1, 0), stored.At(0, h-1),
-			} {
-				if c := cornerColour(out, visual[o][i]); !near(c, want) {
-					t.Errorf("%s orientation %d: %s corner = %v, want %v", name, o, visual[o][i], c, want)
+	for _, place := range placements {
+		for name, stored := range pictures {
+			name := name + " " + place.name
+			for o := 1; o <= 8; o++ {
+				order := tiffOrder(binary.LittleEndian)
+				if o%2 == 0 {
+					order = binary.BigEndian
+				}
+				segments := append(append([][]byte(nil), place.before...), exifSegment(orientationTIFF(order, uint16(o))))
+				upload := withSegments(encodeJPEGImage(t, stored), segments...)
+				if got := jpegOrientation(upload); got != o {
+					t.Fatalf("%s: jpegOrientation = %d, want %d", name, got, o)
+				}
+				got := process(t, upload)
+				wantW, wantH := w, h
+				if o >= 5 {
+					wantW, wantH = h, w
+				}
+				if got.Width != wantW || got.Height != wantH {
+					t.Errorf("%s orientation %d: dimensions = %dx%d, want %dx%d", name, o, got.Width, got.Height, wantW, wantH)
+				}
+				out := decodeStored(t, got.Data)
+				if b := out.Bounds(); b.Dx() != wantW || b.Dy() != wantH {
+					t.Fatalf("%s orientation %d: stored file is %dx%d, want %dx%d", name, o, b.Dx(), b.Dy(), wantW, wantH)
+				}
+				for i, want := range []color.Color{
+					stored.At(0, 0), stored.At(w-1, 0), stored.At(0, h-1),
+				} {
+					if c := cornerColour(out, visual[o][i]); !near(c, want) {
+						t.Errorf("%s orientation %d: %s corner = %v, want %v", name, o, visual[o][i], c, want)
+					}
 				}
 			}
 		}
 	}
 }
 
-// Turning a YCbCr picture keeps every pixel's colour exactly, whatever its
-// subsampling and size. Where the chroma samples line up with the turned
-// picture, the planes are turned as they are and keep their subsampling; an
-// odd side mirrored at 4:2:0, a side that is not a multiple of four mirrored
-// at 4:1:1, and 4:1:1 or 4:1:0 on its side do not, and are turned a pixel at
-// a time into 4:4:4, where before the colours along the side shifted a pixel.
-func TestOrientKeepsEverySubsamplingExact(t *testing.T) {
+// Turning a YCbCr picture keeps every pixel's colour as a browser shows it,
+// whatever its subsampling and size. Where the chroma samples line up with
+// the turned picture, the planes are turned as they are and keep their
+// subsampling, every sample exactly. An odd side mirrored at 4:2:0, a side
+// that is not a multiple of four mirrored at 4:1:1, and 4:1:1 or 4:1:0 on its
+// side do not line up, and are turned a pixel at a time into 4:4:4, where
+// before the colours along the side shifted a pixel: each pixel's luma
+// exactly, and its chroma widened as libjpeg-turbo widens it for display
+// (libjpegUpsampled), not the sample it lies in, which at a sharp colour edge
+// is far from what the poster saw.
+func TestOrientTurnsEverySubsamplingAsShown(t *testing.T) {
 	ratios := []image.YCbCrSubsampleRatio{
 		image.YCbCrSubsampleRatio444, image.YCbCrSubsampleRatio422, image.YCbCrSubsampleRatio420,
 		image.YCbCrSubsampleRatio440, image.YCbCrSubsampleRatio411, image.YCbCrSubsampleRatio410,
@@ -235,26 +259,22 @@ func TestOrientKeepsEverySubsamplingExact(t *testing.T) {
 		image.YCbCrSubsampleRatio440: image.YCbCrSubsampleRatio422,
 	}
 	rng := rand.New(rand.NewSource(1))
-	for _, size := range []image.Point{{8, 12}, {7, 5}, {5, 7}, {9, 6}, {6, 9}, {10, 13}, {1, 1}, {3, 2}} {
+	blended := 0 // widened pixels whose chroma is not the sample they lie in
+	sizes := []image.Point{{8, 12}, {7, 5}, {5, 7}, {9, 6}, {6, 9}, {10, 13}, {1, 1}, {3, 2}, {4, 3}, {17, 9}, {2, 7}}
+	for _, size := range sizes {
 		w, h := size.X, size.Y
 		for _, ratio := range ratios {
 			src := image.NewYCbCr(image.Rect(0, 0, w, h), ratio)
 			rng.Read(src.Y)
 			rng.Read(src.Cb)
 			rng.Read(src.Cr)
+			shownCb := libjpegUpsampled(src.Cb, src.CStride, ratio, w, h)
+			shownCr := libjpegUpsampled(src.Cr, src.CStride, ratio, w, h)
 			fx, fy := subsampling(ratio)
 			for o := 1; o <= 8; o++ {
 				dst, ok := orient(src, o).(*image.YCbCr)
 				if !ok {
 					t.Fatalf("%dx%d %v orientation %d: turned into %T, want YCbCr", w, h, ratio, o, orient(src, o))
-				}
-				for y := 0; y < h; y++ {
-					for x := 0; x < w; x++ {
-						dx, dy := orientedPoint(o, x, y, w, h)
-						if got, want := dst.YCbCrAt(dx, dy), src.YCbCrAt(x, y); got != want {
-							t.Fatalf("%dx%d %v orientation %d: (%d,%d) landed as %v, want %v", w, h, ratio, o, x, y, got, want)
-						}
-					}
 				}
 				mirrorsX := o == 2 || o == 3 || o == 7 || o == 8
 				mirrorsY := o == 3 || o == 4 || o == 6 || o == 7
@@ -270,11 +290,90 @@ func TestOrientKeepsEverySubsamplingExact(t *testing.T) {
 					}
 				}
 				if dst.SubsampleRatio != want {
-					t.Errorf("%dx%d %v orientation %d: turned at %v, want %v", w, h, ratio, o, dst.SubsampleRatio, want)
+					t.Fatalf("%dx%d %v orientation %d: turned at %v, want %v", w, h, ratio, o, dst.SubsampleRatio, want)
+				}
+				widened := want != ratio && want == image.YCbCrSubsampleRatio444
+				for y := 0; y < h; y++ {
+					for x := 0; x < w; x++ {
+						dx, dy := orientedPoint(o, x, y, w, h)
+						want := src.YCbCrAt(x, y)
+						if widened {
+							if shownCb[y][x] != want.Cb || shownCr[y][x] != want.Cr {
+								blended++
+							}
+							want.Cb, want.Cr = shownCb[y][x], shownCr[y][x]
+						}
+						if got := dst.YCbCrAt(dx, dy); got != want {
+							t.Fatalf("%dx%d %v orientation %d: (%d,%d) landed as %v, want %v", w, h, ratio, o, x, y, got, want)
+						}
+					}
 				}
 			}
 		}
 	}
+	if blended == 0 {
+		t.Fatal("no widened pixel's chroma differed from the sample it lies in: the cases test nothing")
+	}
+}
+
+// libjpegUpsampled is one chroma plane of a w×h JPEG at ratio, held with
+// stride stride, widened to a sample a pixel as libjpeg-turbo widens it with
+// do_fancy_upsampling on, its default and Chromium's: jdsample.c's C methods
+// transcribed (the SIMD ones compute the same), h2v2_fancy_upsample and
+// h2v1_fancy_upsample when the plane is more than two samples wide and the
+// box filters h2v2_upsample and h2v1_upsample when not, h1v2_fancy_upsample,
+// and int_upsample's replication for 4:1:1 and 4:1:0, with the context rows
+// jdmainct.c supplies around the picture: the first sample row again above
+// it and the last again below.
+func libjpegUpsampled(plane []uint8, stride int, ratio image.YCbCrSubsampleRatio, w, h int) [][]uint8 {
+	fx, fy := subsampling(ratio)
+	cw, ch := chromaSize(ratio, w, h)
+	row := func(i int) []uint8 {
+		i = max(0, min(i, ch-1))
+		return plane[i*stride : i*stride+cw]
+	}
+	var shown [][]uint8
+	for in := 0; in < ch; in++ {
+		for v := 0; v < fy; v++ {
+			near, far, bias := row(in), row(in-1), 1 // the next nearest row is the one above
+			if v == 1 {
+				far, bias = row(in+1), 2 // and for the second output row, the one below
+			}
+			var out []uint8
+			switch {
+			case fx == 2 && fy == 2 && cw > 2: // h2v2_fancy_upsample
+				this := 3*int(near[0]) + int(far[0])
+				next := 3*int(near[1]) + int(far[1])
+				out = append(out, uint8((this*4+8)>>4), uint8((this*3+next+7)>>4))
+				last := this
+				this = next
+				for c := 2; c < cw; c++ {
+					next = 3*int(near[c]) + int(far[c])
+					out = append(out, uint8((this*3+last+8)>>4), uint8((this*3+next+7)>>4))
+					last, this = this, next
+				}
+				out = append(out, uint8((this*3+last+8)>>4), uint8((this*4+7)>>4))
+			case fx == 2 && fy == 1 && cw > 2: // h2v1_fancy_upsample
+				out = append(out, near[0], uint8((3*int(near[0])+int(near[1])+2)>>2))
+				for c := 1; c < cw-1; c++ {
+					out = append(out, uint8((3*int(near[c])+int(near[c-1])+1)>>2), uint8((3*int(near[c])+int(near[c+1])+2)>>2))
+				}
+				out = append(out, uint8((3*int(near[cw-1])+int(near[cw-2])+1)>>2), near[cw-1])
+			case fx == 1 && fy == 2: // h1v2_fancy_upsample
+				for c := 0; c < cw; c++ {
+					out = append(out, uint8((3*int(near[c])+int(far[c])+bias)>>2))
+				}
+			default: // h2v2_upsample, h2v1_upsample, int_upsample: each sample repeated
+				for c := 0; c < cw; c++ {
+					for i := 0; i < fx; i++ {
+						out = append(out, near[c])
+					}
+				}
+			}
+			shown = append(shown, out[:w])
+		}
+	}
+	return shown[:h]
 }
 
 // Every other kind of picture a JPEG or a PNG decodes to is turned into a
@@ -322,10 +421,11 @@ func TestOrientKeepsEveryPixelKindExact(t *testing.T) {
 }
 
 // The orientation reader works on whatever an upload holds. Broken EXIF is
-// read as upright, never as a panic, a hang or an allocation, and the decoder
-// alone decides whether the file is an image: one whose segment runs off the
-// end is refused as corrupt, one whose EXIF is merely nonsense is stored
-// upright, with the nonsense gone.
+// read for what Chromium reads of it (TestOrientationIsReadAsChromiumReadsIt)
+// and as upright where it cannot be read, never as a panic, a hang or an
+// allocation, and the decoder alone decides whether the file is an image: one
+// whose segment runs off the end is refused as corrupt, one whose EXIF is
+// merely nonsense is stored upright, with the nonsense gone.
 func TestHostileEXIF(t *testing.T) {
 	base := encodeJPEGImage(t, quadrants(64, 32))
 	le := binary.LittleEndian
@@ -344,6 +444,11 @@ func TestHostileEXIF(t *testing.T) {
 	outside := append([]byte(nil), header...)
 	le.PutUint32(outside[4:8], 0xFFFFFFF0)
 
+	// IFD0 names itself as its Exif sub-IFD, and the sub-IFD, read once,
+	// names itself again; or names a sub-IFD past the end of the segment.
+	exifLoop := appendIFD(append([]byte(nil), header...), le, []tiffEntry{longEntry(le, 0x8769, 8)}, 8)
+	exifOutside := appendIFD(append([]byte(nil), header...), le, []tiffEntry{longEntry(le, 0x8769, 0xFFFFFFF0)}, 0)
+
 	wrongType := appendIFD(append([]byte(nil), header...), le, []tiffEntry{longEntry(le, 0x0112, 6)}, 0)
 	outOfRange := orientationTIFF(le, 9)
 
@@ -356,8 +461,11 @@ func TestHostileEXIF(t *testing.T) {
 		{"truncated TIFF", withSegments(base, exifSegment(header[:6])), 1, false},
 		{"IFD with no room for its count", withSegments(base, exifSegment(header)), 1, false},
 		{"IFD offset outside the segment", withSegments(base, exifSegment(outside)), 1, false},
-		{"huge entry count", withSegments(base, exifSegment(hugeCount)), 1, false},
+		// Read for the one entry it holds, as Chromium reads it.
+		{"huge entry count", withSegments(base, exifSegment(hugeCount)), 6, false},
 		{"IFD offsets in a loop", withSegments(base, exifSegment(loop)), 6, false},
+		{"Exif sub-IFD offsets in a loop", withSegments(base, exifSegment(exifLoop)), 1, false},
+		{"Exif sub-IFD offset outside the segment", withSegments(base, exifSegment(exifOutside)), 1, false},
 		{"orientation of the wrong type", withSegments(base, exifSegment(wrongType)), 1, false},
 		{"orientation out of range", withSegments(base, exifSegment(outOfRange)), 1, false},
 		{"bad byte order", withSegments(base, exifSegment([]byte("XX\x00\x2a\x00\x00\x00\x08"))), 1, false},
@@ -396,12 +504,257 @@ func TestHostileEXIF(t *testing.T) {
 	}
 }
 
+// The orientation is read from EXIF as Chromium reads it, so that the stored
+// picture is turned as the poster's browser showed it, in a JPEG's Exif
+// segment and a PNG's eXIf chunk alike: IFD0's entries are read in order, and
+// the Exif sub-IFD's where IFD0's entry naming it, a single LONG, stands; the
+// first Orientation entry that is a single SHORT from 1 to 8 counts, and one
+// that is not is passed over rather than read as upright. An IFD that claims
+// more entries than it holds is read for the ones it holds, IFD0 is read at
+// any offset, overlapping the header too, every Exif sub-IFD IFD0 names is
+// followed, in turn, and nothing else is: not a sub-IFD named by a SHORT or by
+// the sub-IFD, nor the next IFD. Each want is what Chromium 141 did with both
+// files, loaded as images: turned them by it, or, for 1, left them as they
+// were. Past maxEXIFEntries entries the reader stops where Chromium does not
+// (TestEXIFReadIsBounded).
+func TestOrientationIsReadAsChromiumReadsIt(t *testing.T) {
+	le := binary.LittleEndian
+	o := func(v uint16) tiffEntry { return shortEntry(le, 0x0112, v) }
+	ifd0 := func(entries ...tiffEntry) []byte { return appendIFD(tiffHeader(le), le, entries, 0) }
+	// claiming says an IFD0 holds count entries, whatever it holds.
+	claiming := func(count uint16, tiff []byte) []byte {
+		out := append([]byte(nil), tiff...)
+		le.PutUint16(out[8:], count)
+		return out
+	}
+	twoShorts := tiffEntry{tag: 0x0112, typ: tiffTypeShort, count: 2, value: le.AppendUint16(le.AppendUint16(nil, 6), 6)}
+	// ifds lays IFDs out one after another from offset 8, and after is where
+	// the one after IFDs of so many entries each starts. exif names the Exif
+	// sub-IFD at an offset.
+	ifds := func(lists ...[]tiffEntry) []byte {
+		b := tiffHeader(le)
+		for _, l := range lists {
+			b = appendIFD(b, le, l, 0)
+		}
+		return b
+	}
+	after := func(entries ...int) uint32 {
+		at := 8
+		for _, n := range entries {
+			at += 2 + 12*n + 4
+		}
+		return uint32(at)
+	}
+	exif := func(at uint32) tiffEntry { return longEntry(le, 0x8769, at) }
+	// other is an entry of no interest to the reader: the image width.
+	other := shortEntry(le, 0x0100, 64)
+	// nextIFD is IFD0 holding the camera's make, followed by IFD1 holding
+	// the orientation, as the next IFD in the chain.
+	nextIFD := appendIFD(appendIFD(tiffHeader(le), le, []tiffEntry{asciiEntry(0x010F, "A")}, after(1)), le, []tiffEntry{o(6)}, 0)
+	// at4 and at0 put IFD0 at offsets 4 and 0, so that its count is read from
+	// the header (4, from the offset itself; 0x4949, from "II") and its
+	// entries start inside it; the orientation is the second entry.
+	entry := appendIFD(nil, le, []tiffEntry{o(6)}, 0)[2:14]
+	at4 := append(append(append([]byte("II*\x00\x04\x00\x00\x00"), make([]byte, 10)...), entry...), 0, 0, 0, 0)
+	at0 := append(append([]byte("II*\x00\x00\x00\x00\x00"), make([]byte, 6)...), entry...)
+	cases := []struct {
+		name string
+		tiff []byte
+		want int
+	}{
+		{"one orientation", ifd0(o(6)), 6},
+		{"five entries claimed, one held and no next offset", claiming(5, ifd0(o(6))[:8+2+12]), 6},
+		{"65535 entries claimed, one held", claiming(65535, ifd0(o(6))), 6},
+		{"orientation 9, then 6", ifd0(o(9), o(6)), 6},
+		{"orientation 0, then 6", ifd0(o(0), o(6)), 6},
+		{"orientation as a LONG, then as a SHORT", ifd0(longEntry(le, 0x0112, 6), o(6)), 6},
+		{"orientation of two SHORTs, then of one", ifd0(twoShorts, o(6)), 6},
+		{"orientation 1, then 6", ifd0(o(1), o(6)), 1},
+		{"orientation 9 alone", ifd0(o(9)), 1},
+		{"orientation as a LONG alone", ifd0(longEntry(le, 0x0112, 6)), 1},
+		{"orientation of two SHORTs alone", ifd0(twoShorts), 1},
+		{"IFD0 at offset 4", at4, 6},
+		{"IFD0 at offset 0", at0, 6},
+		{"orientation in the Exif sub-IFD alone", ifds([]tiffEntry{exif(after(1))}, []tiffEntry{o(6)}), 6},
+		{"the Exif sub-IFD's orientation, then IFD0's", ifds([]tiffEntry{exif(after(2)), o(1)}, []tiffEntry{o(6)}), 6},
+		{"IFD0's orientation, then the Exif sub-IFD's", ifds([]tiffEntry{o(1), exif(after(2))}, []tiffEntry{o(6)}), 1},
+		{"orientation 9, then the Exif sub-IFD's", ifds([]tiffEntry{o(9), exif(after(2))}, []tiffEntry{o(6)}), 6},
+		{"the Exif sub-IFD's orientation 9, then its 6", ifds([]tiffEntry{exif(after(1))}, []tiffEntry{o(9), o(6)}), 6},
+		{"an Exif sub-IFD named by a SHORT", ifds([]tiffEntry{shortEntry(le, 0x8769, uint16(after(1)))}, []tiffEntry{o(6)}), 1},
+		{"an Exif sub-IFD named by the sub-IFD", ifds([]tiffEntry{exif(after(1))}, []tiffEntry{exif(after(1, 1))}, []tiffEntry{o(6)}), 1},
+		{"orientation in the next IFD", nextIFD, 1},
+		{"an Exif sub-IFD that is IFD0, then IFD0's orientation", ifd0(exif(8), o(6)), 6},
+		{"two Exif sub-IFDs, the second's orientation", ifds([]tiffEntry{exif(after(2)), exif(after(2, 1))}, []tiffEntry{other}, []tiffEntry{o(6)}), 6},
+		{"two Exif sub-IFDs, the first's orientation 9, the second's 6", ifds([]tiffEntry{exif(after(2)), exif(after(2, 1))}, []tiffEntry{o(9)}, []tiffEntry{o(6)}), 6},
+		{"an empty Exif sub-IFD, then one with an orientation", ifds([]tiffEntry{exif(after(2)), exif(after(2, 0))}, []tiffEntry{}, []tiffEntry{o(6)}), 6},
+		{"an Exif sub-IFD past the segment, then one inside it", ifds([]tiffEntry{exif(0xFFFFFFF0), exif(after(2))}, []tiffEntry{o(6)}), 6},
+		{"an Exif sub-IFD that is IFD0, then another", ifds([]tiffEntry{exif(8), exif(after(2))}, []tiffEntry{o(6)}), 6},
+		{"an Exif sub-IFD named by a SHORT, then by a LONG", ifds([]tiffEntry{shortEntry(le, 0x8769, uint16(after(2))), exif(after(2))}, []tiffEntry{o(6)}), 6},
+		{"three Exif sub-IFDs, the third's orientation", ifds([]tiffEntry{exif(after(3)), exif(after(3, 1)), exif(after(3, 1, 1))}, []tiffEntry{other}, []tiffEntry{other}, []tiffEntry{o(6)}), 6},
+	}
+	pic := quadrants(64, 32)
+	jpg, pngFile := encodeJPEGImage(t, pic), pngOf(t, pic)
+	for _, c := range cases {
+		jpgUpload := withSegments(jpg, exifSegment(c.tiff))
+		pngUpload := withPNGChunks(pngFile, pngChunk("eXIf", c.tiff))
+		if got := jpegOrientation(jpgUpload); got != c.want {
+			t.Errorf("%s: jpegOrientation = %d, want %d", c.name, got, c.want)
+		}
+		if got := pngOrientation(pngUpload); got != c.want {
+			t.Errorf("%s: pngOrientation = %d, want %d", c.name, got, c.want)
+		}
+		wantW, wantH := 64, 32
+		if c.want >= 5 {
+			wantW, wantH = 32, 64
+		}
+		for format, upload := range map[string][]byte{"JPEG": jpgUpload, "PNG": pngUpload} {
+			if got := process(t, upload); got.Width != wantW || got.Height != wantH {
+				t.Errorf("%s: the %s is stored %dx%d, want %dx%d", c.name, format, got.Width, got.Height, wantW, wantH)
+			}
+		}
+	}
+}
+
+// Chromium reads the orientation from the first EXIF block in a file that
+// holds anything: it passes over a JPEG's Exif segment of the six-byte header
+// alone, whatever its sixth byte, and a PNG's empty eXIf chunk, for a later
+// one, but takes the first that holds a byte more, even one too short to read,
+// and reads no other. Each want is what Chromium 141 did with the file.
+func TestEmptyEXIFBlocksArePassedOver(t *testing.T) {
+	le := binary.LittleEndian
+	o6, o3 := orientationTIFF(le, 6), orientationTIFF(le, 3)
+	app1 := func(payload string) []byte { return jpegSegment(0xE1, []byte(payload)) }
+	exif := func(tiff []byte) []byte { return pngChunk("eXIf", tiff) }
+	pic := quadrants(64, 32)
+	jpg, pngFile := encodeJPEGImage(t, pic), pngOf(t, pic)
+	cases := []struct {
+		name   string
+		upload []byte
+		want   int
+	}{
+		{"JPEG: an Exif header alone, then orientation 6", withSegments(jpg, app1("Exif\x00\x00"), exifSegment(o6)), 6},
+		{"JPEG: two Exif headers alone, then orientation 6", withSegments(jpg, app1("Exif\x00\x00"), app1("Exif\x00\x00"), exifSegment(o6)), 6},
+		{"JPEG: an Exif header ending in X alone, then orientation 6", withSegments(jpg, app1("Exif\x00X"), exifSegment(o6)), 6},
+		{"JPEG: orientation 6 after an Exif header ending in X", withSegments(jpg, app1("Exif\x00X"+string(o6))), 6},
+		{"JPEG: an Exif block of one byte, then orientation 6", withSegments(jpg, app1("Exif\x00\x00I"), exifSegment(o6)), 1},
+		{"JPEG: an Exif block of one byte after an X, then orientation 6", withSegments(jpg, app1("Exif\x00XI"), exifSegment(o6)), 1},
+		{"JPEG: a TIFF header alone after an X, then orientation 6", withSegments(jpg, app1("Exif\x00XII*\x00"), exifSegment(o6)), 1},
+		{"PNG: an empty eXIf, then orientation 6", withPNGChunks(pngFile, exif(nil), exif(o6)), 6},
+		{"PNG: two empty eXIfs, then orientation 6", withPNGChunks(pngFile, exif(nil), exif(nil), exif(o6)), 6},
+		{"PNG: an eXIf of one byte, then orientation 6", withPNGChunks(pngFile, exif([]byte("I")), exif(o6)), 1},
+		{"PNG: orientation 6, then 3", withPNGChunks(pngFile, exif(o6), exif(o3)), 6},
+	}
+	for _, c := range cases {
+		read := jpegOrientation
+		if strings.HasPrefix(c.name, "PNG") {
+			read = pngOrientation
+		}
+		if got := read(c.upload); got != c.want {
+			t.Errorf("%s: orientation read = %d, want %d", c.name, got, c.want)
+		}
+		wantW, wantH := 64, 32
+		if c.want >= 5 {
+			wantW, wantH = 32, 64
+		}
+		if got := process(t, c.upload); got.Width != wantW || got.Height != wantH {
+			t.Errorf("%s: stored %dx%d, want %dx%d", c.name, got.Width, got.Height, wantW, wantH)
+		}
+	}
+}
+
+// Chromium follows every Exif sub-IFD entry in IFD0 into a scan of the sub-IFD
+// it names, so an IFD0 of 65535 entries that each name IFD0 is 4.3 billion
+// entries to read: a PNG of 768 KB that took ~26-27 s of CPU before the reader
+// was bounded, and Inspect reads its orientation more than once, all before
+// any cooldown. The reader stops after maxEXIFEntries entries in all, the
+// 131070th read and the 131071st not, and still reads every entry of IFD0 and
+// of one sub-IFD however many each holds. That leaves the file whose
+// orientation is the 131071st entry, and the one of 65534 entries naming IFD0
+// and a last naming an orientation, upright where Chromium 141, reading on,
+// turned them. The file of 65535 entries naming IFD0 holds no orientation: it
+// is here to show that reading it stays prompt.
+func TestEXIFReadIsBounded(t *testing.T) {
+	le := binary.LittleEndian
+	o6 := shortEntry(le, 0x0112, 6)
+	other := shortEntry(le, 0x0100, 64)
+	exif := func(at uint32) tiffEntry { return longEntry(le, 0x8769, at) }
+	repeat := func(e tiffEntry, n int) []tiffEntry {
+		out := make([]tiffEntry, n)
+		for i := range out {
+			out[i] = e
+		}
+		return out
+	}
+	// subIFDTwice is IFD0 holding lead entries of no interest, then two
+	// entries naming one Exif sub-IFD of n such entries, then orientation 6:
+	// lead + n + 1 + n + 1 entries to read to reach the orientation.
+	subIFDTwice := func(lead, n int) []byte {
+		sub := uint32(8 + 2 + 12*(lead+3) + 4)
+		entries := append(repeat(other, lead), exif(sub), exif(sub), o6)
+		b := appendIFD(tiffHeader(le), le, entries, 0)
+		return appendIFD(b, le, repeat(other, n), 0)
+	}
+	// selfNaming is IFD0 of n entries naming IFD0 as the Exif sub-IFD, then,
+	// if tail, one naming a sub-IFD that holds orientation 6.
+	selfNaming := func(n int, tail bool) []byte {
+		entries := repeat(exif(8), n)
+		if !tail {
+			return appendIFD(tiffHeader(le), le, entries, 0)
+		}
+		entries = append(entries, exif(uint32(8+2+12*(n+1)+4)))
+		return appendIFD(appendIFD(tiffHeader(le), le, entries, 0), le, []tiffEntry{o6}, 0)
+	}
+	if maxEXIFEntries != 131070 {
+		t.Fatalf("maxEXIFEntries = %d; the cases below are laid out for 131070", maxEXIFEntries)
+	}
+	pngFile := pngOf(t, quadrants(64, 32))
+	cases := []struct {
+		name string
+		tiff []byte
+		want int
+	}{
+		// The bound is checked first, so that a reader without it fails here
+		// rather than spending minutes on the files below.
+		{"the orientation as the 131070th entry read", subIFDTwice(1, 65533), 6},
+		{"the orientation as the 131071st entry read", subIFDTwice(2, 65533), 1},
+		{"IFD0 of 65535 entries naming IFD0", selfNaming(65535, false), 1},
+		{"IFD0 of 65534 entries naming IFD0, then one naming an orientation", selfNaming(65534, true), 1},
+	}
+	for _, c := range cases {
+		upload := withPNGChunks(pngFile, pngChunk("eXIf", c.tiff))
+		done := make(chan int, 1)
+		go func() { done <- pngOrientation(upload) }()
+		select {
+		case got := <-done:
+			if got != c.want {
+				t.Fatalf("%s: pngOrientation = %d, want %d", c.name, got, c.want)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s: pngOrientation still reading after 10 s", c.name)
+		}
+		if allocs := testing.AllocsPerRun(3, func() { pngOrientation(upload) }); allocs != 0 {
+			t.Errorf("%s: pngOrientation allocated %v times, want none", c.name, allocs)
+		}
+		wantW, wantH := 64, 32
+		if c.want >= 5 {
+			wantW, wantH = 32, 64
+		}
+		if got := process(t, upload); got.Width != wantW || got.Height != wantH {
+			t.Errorf("%s: stored %dx%d, want %dx%d", c.name, got.Width, got.Height, wantW, wantH)
+		}
+	}
+}
+
 // Fuzzing the reader with the fixtures as seeds: whatever the bytes, it
 // answers with an orientation and does not panic.
 func FuzzJPEGOrientation(f *testing.F) {
 	f.Add(withSegments([]byte{0xFF, 0xD8, 0xFF, 0xD9}, exifSegment(gpsTIFF(binary.BigEndian, 6))))
 	f.Add(withSegments([]byte{0xFF, 0xD8, 0xFF, 0xD9}, exifSegment(orientationTIFF(binary.LittleEndian, 8))))
 	f.Add([]byte{0xFF, 0xD8, 0xFF, 0xE1, 0x00, 0x08, 'E', 'x', 'i', 'f', 0, 0})
+	// Exif after bytes the decoder skips between segments.
+	comment := jpegSegment(0xFE, []byte("before"))
+	f.Add(withSegments([]byte{0xFF, 0xD8, 0xFF, 0xD9}, comment, []byte{0x00}, exifSegment(orientationTIFF(binary.BigEndian, 6))))
+	f.Add(withSegments([]byte{0xFF, 0xD8, 0xFF, 0xD9}, comment, []byte{0xFF, 0x00}, exifSegment(orientationTIFF(binary.LittleEndian, 5))))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if o := jpegOrientation(data); o < 1 || o > 8 {
 			t.Fatalf("jpegOrientation = %d, outside 1–8", o)
@@ -560,12 +913,12 @@ func TestPNGIsStoredInTheFormItDecodesTo(t *testing.T) {
 	}
 }
 
-// A PNG's EXIF orientation, in an eXIf chunk before its pixels, is applied
-// as a JPEG's is, because browsers show the picture turned by it: every kind
-// of PNG is stored turned, pixel for pixel, in the form image/png decodes it
-// to, and its dimensions are the turned ones. An eXIf chunk after the pixels, which
-// browsers do not read, or one holding anything but a TIFF structure, turns
-// nothing. None of them is stored.
+// A PNG's EXIF orientation, in an eXIf chunk before its pixels, is applied as
+// a JPEG's is, because browsers show the picture turned by it: every kind of
+// PNG is stored turned, pixel for pixel, in the form image/png decodes it to,
+// and its dimensions are the turned ones. An eXIf chunk after the pixels,
+// which browsers do not read, or one holding anything but a TIFF structure,
+// turns nothing. None of them is stored.
 func TestPNGOrientationIsApplied(t *testing.T) {
 	const w, h = 12, 7
 	rng := rand.New(rand.NewSource(4))
@@ -715,19 +1068,20 @@ func nearPremul(u, v uint32) bool {
 
 /* GIF ---------------------------------------------------------------------- */
 
-// animatedGIF is three frames on a 60×40 canvas, the second covering only part
-// of it, with distinct delays and disposals and the given loop count.
+// animatedGIF is four frames on a 60×40 canvas, the second covering only part
+// of it, with distinct delays and disposals and the given loop count, each
+// showing a picture of its own.
 func animatedGIF(t *testing.T, loop int) *gif.GIF {
 	t.Helper()
 	pal := color.Palette(palette.WebSafe[:32])
 	g := &gif.GIF{
 		LoopCount:       loop,
-		Delay:           []int{10, 20, 30},
-		Disposal:        []byte{gif.DisposalNone, gif.DisposalBackground, gif.DisposalPrevious},
+		Delay:           []int{10, 20, 30, 40},
+		Disposal:        []byte{gif.DisposalNone, gif.DisposalBackground, gif.DisposalPrevious, gif.DisposalNone},
 		Config:          image.Config{ColorModel: pal, Width: 60, Height: 40},
 		BackgroundIndex: 2,
 	}
-	for i, r := range []image.Rectangle{image.Rect(0, 0, 60, 40), image.Rect(10, 5, 30, 25), image.Rect(0, 0, 60, 40)} {
+	for i, r := range []image.Rectangle{image.Rect(0, 0, 60, 40), image.Rect(10, 5, 30, 25), image.Rect(0, 0, 60, 40), image.Rect(0, 0, 60, 40)} {
 		frame := image.NewPaletted(r, pal)
 		for j := range frame.Pix {
 			frame.Pix[j] = uint8((j/7 + i*5) % len(pal))
@@ -766,8 +1120,10 @@ func withGIFExtras(t *testing.T, data []byte) []byte {
 	return append(out, 0x3B)
 }
 
-// An animated GIF stays animated: frames, positions, delays, disposals and the
-// loop count survive, and the comments and the XMP do not.
+// An animated GIF stays animated: what it shows survives, each picture for
+// as long as it shows, and the loop count, and the comments and the XMP do
+// not, nor does the background colour, which browsers never draw: it is
+// written as entry 0.
 func TestGIFKeepsItsAnimationAndDropsItsExtensions(t *testing.T) {
 	for _, loop := range []int{0, 3} {
 		original := animatedGIF(t, loop)
@@ -787,6 +1143,7 @@ func TestGIFKeepsItsAnimationAndDropsItsExtensions(t *testing.T) {
 		if got.Width != 60 || got.Height != 40 {
 			t.Errorf("dimensions = %dx%d, want the 60x40 canvas", got.Width, got.Height)
 		}
+		requireSamePlay(t, "with its extensions", upload, got.Data)
 		stored, err := gif.DecodeAll(bytes.NewReader(got.Data))
 		if err != nil {
 			t.Fatalf("decode stored gif: %v", err)
@@ -794,21 +1151,11 @@ func TestGIFKeepsItsAnimationAndDropsItsExtensions(t *testing.T) {
 		if stored.LoopCount != loop {
 			t.Errorf("loop count = %d, want %d", stored.LoopCount, loop)
 		}
-		if len(stored.Image) != 3 {
-			t.Fatalf("stored gif has %d frames, want 3", len(stored.Image))
+		if len(stored.Image) != 4 {
+			t.Errorf("stored gif has %d frames, want one for each of its 4 pictures", len(stored.Image))
 		}
-		for i := range original.Image {
-			if stored.Delay[i] != original.Delay[i] || stored.Disposal[i] != original.Disposal[i] {
-				t.Errorf("frame %d: delay %d disposal %d, want %d and %d", i,
-					stored.Delay[i], stored.Disposal[i], original.Delay[i], original.Disposal[i])
-			}
-			if stored.Image[i].Bounds() != original.Image[i].Bounds() {
-				t.Errorf("frame %d: bounds %v, want %v", i, stored.Image[i].Bounds(), original.Image[i].Bounds())
-			}
-			requireSamePixels(t, original.Image[i], stored.Image[i])
-		}
-		if stored.BackgroundIndex != original.BackgroundIndex {
-			t.Errorf("background index = %d, want %d", stored.BackgroundIndex, original.BackgroundIndex)
+		if stored.BackgroundIndex != 0 {
+			t.Errorf("background index = %d, want 0 whatever the upload's (%d)", stored.BackgroundIndex, original.BackgroundIndex)
 		}
 	}
 }
@@ -896,6 +1243,92 @@ func TestGIFThumbnailPlacesTheFirstFrameOnTheCanvas(t *testing.T) {
 	}
 }
 
+// A GIF's thumbnail is the first picture it shows, at the size of its canvas:
+// its first frame drawn where it is on a transparent canvas, scaled down as a
+// whole, as a still picture of the same pixels would be. A frame that covers
+// the canvas but draws only a line two pixels wide, or a square in its middle,
+// is thumbnailed with the line, a half pixel wide, and with the square's edges
+// where they fall, a quarter of the way into a pixel; neither is placed by
+// the part of the frame that draws.
+func TestGIFThumbnailIsTheFirstPictureAtTheSizeOfItsCanvas(t *testing.T) {
+	pal := color.Palette{color.RGBA{}, color.RGBA{20, 20, 20, 255}, color.RGBA{230, 40, 40, 255}, color.RGBA{40, 40, 230, 255}}
+	const side = 1000
+	for _, tc := range []struct {
+		name  string
+		drawn func(x, y int) uint8
+	}{
+		{"a line two pixels wide", func(x, y int) uint8 {
+			if x == 501 || x == 502 {
+				return 1
+			}
+			return 0
+		}},
+		{"a square in the middle", func(x, y int) uint8 {
+			if x >= 349 && x < 650 && y >= 349 && y < 650 {
+				return uint8(1 + (x/7+y/7)%2)
+			}
+			return 0
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			first := image.NewPaletted(image.Rect(0, 0, side, side), pal)
+			want := image.NewNRGBA(first.Rect)
+			for y := 0; y < side; y++ {
+				for x := 0; x < side; x++ {
+					v := tc.drawn(x, y)
+					first.SetColorIndex(x, y, v)
+					want.Set(x, y, pal[v])
+				}
+			}
+			second := image.NewPaletted(image.Rect(0, 0, 10, 10), pal)
+			for i := range second.Pix {
+				second.Pix[i] = 3
+			}
+			g := &gif.GIF{
+				Image:    []*image.Paletted{first, second},
+				Delay:    []int{50, 50},
+				Disposal: []byte{gif.DisposalNone, gif.DisposalNone},
+				Config:   image.Config{ColorModel: pal, Width: side, Height: side},
+			}
+			var buf bytes.Buffer
+			if err := gif.EncodeAll(&buf, g); err != nil {
+				t.Fatalf("encode: %v", err)
+			}
+			got := decodeStored(t, process(t, buf.Bytes()).Thumb.Data)
+			still, err := makeThumbnail(want, FormatGIF)
+			if err != nil {
+				t.Fatalf("thumbnail of the picture: %v", err)
+			}
+			expected := decodeStored(t, still.Data)
+			if got.Bounds() != expected.Bounds() {
+				t.Fatalf("thumbnail is %v, want %v", got.Bounds(), expected.Bounds())
+			}
+			// The scaler takes a different path for a picture of its own
+			// kind than for an NRGBA one, which can round a channel apart.
+			worst, shown := 0, 0
+			b := got.Bounds()
+			for y := b.Min.Y; y < b.Max.Y; y++ {
+				for x := b.Min.X; x < b.Max.X; x++ {
+					gr, gg, gb, ga := got.At(x, y).RGBA()
+					er, eg, eb, ea := expected.At(x, y).RGBA()
+					if ga != 0 {
+						shown++
+					}
+					for _, d := range []int{int(gr>>8) - int(er>>8), int(gg>>8) - int(eg>>8), int(gb>>8) - int(eb>>8), int(ga>>8) - int(ea>>8)} {
+						worst = max(worst, d, -d)
+					}
+				}
+			}
+			if shown == 0 {
+				t.Fatal("the thumbnail is transparent all over")
+			}
+			if worst > 2 {
+				t.Errorf("the thumbnail differs from that of the first picture by up to %d in a channel", worst)
+			}
+		})
+	}
+}
+
 // tinyFrames is a GIF of n one-pixel frames, each marking a colour of its
 // 256-colour global table transparent, which makes image/gif keep a copy of
 // the table for every frame: the most a frame can cost for the fewest bytes
@@ -945,11 +1378,11 @@ func TestGIFFrameBudget(t *testing.T) {
 	}
 
 	over := gifOf(5)
-	if _, err := Inspect(over); !errors.Is(err, ErrImageTooLarge) {
-		t.Errorf("Inspect(five canvases of frames) = %v, want ErrImageTooLarge", err)
+	if _, err := Inspect(over); !errors.Is(err, ErrImageTooCostly) {
+		t.Errorf("Inspect(five canvases of frames) = %v, want ErrImageTooCostly", err)
 	}
-	if _, err := Process(context.Background(), over); !errors.Is(err, ErrImageTooLarge) {
-		t.Errorf("Process(five canvases of frames) = %v, want ErrImageTooLarge", err)
+	if _, err := Process(context.Background(), over); !errors.Is(err, ErrImageTooCostly) {
+		t.Errorf("Process(five canvases of frames) = %v, want ErrImageTooCostly", err)
 	}
 	many := gifOf(2000)
 	if allocs := testing.AllocsPerRun(10, func() { gifFramePixels(many, maxGIFFramePixels) }); allocs != 0 {
@@ -964,30 +1397,95 @@ func TestGIFFrameBudget(t *testing.T) {
 	if err != nil || len(g.Image) != 3 || &g.Image[0].Palette[0] == &g.Image[1].Palette[0] {
 		t.Fatalf("the fixture does not decode to three frames with palettes of their own (%v)", err)
 	}
-	if _, err := Inspect(tinyFrames(20_000)); !errors.Is(err, ErrImageTooLarge) {
-		t.Errorf("Inspect(20,000 one-pixel frames) = %v, want ErrImageTooLarge", err)
+	if _, err := Inspect(tinyFrames(20_000)); !errors.Is(err, ErrImageTooCostly) {
+		t.Errorf("Inspect(20,000 one-pixel frames) = %v, want ErrImageTooCostly", err)
 	}
 	if _, err := Inspect(tinyFrames(2_000)); err != nil {
 		t.Errorf("Inspect(2,000 one-pixel frames) = %v, want it within the budget", err)
 	}
 }
 
-// gifExtensions are extensions image/gif reads past, each spelled the way the
-// decoder reads it rather than the way the specification lays it out where
-// the two differ. A walk that read every extension as a run of sub-blocks
-// lost its place at the first two and counted none of the frames after them.
+// The walk charges a GIF's frames against maxGIFFramePixels by their pixels,
+// but every row as at least gifRowPixels (gifCharge): decoding, playing and
+// writing a frame go through it a row at a time, and a row a pixel wide costs
+// about what a wide one does. Frames a pixel wide and 65,535 tall are charged
+// 64 pixels a row, so 23 of them are admitted and 24 refused from the header,
+// where by their pixels alone 1,525 were admitted, and took 21 seconds of
+// CPU on one core to play. A frame 63 pixels wide is charged as one of 64,
+// and one 64 wide or wider by its pixels, as before (four canvases' worth of
+// 5000×5000 frames still come to the cap exactly, TestGIFFrameBudget).
+func TestGIFFrameRowsAreChargedAsAtLeastGIFRowPixels(t *testing.T) {
+	const h = 65535
+	for _, c := range []struct {
+		w, n            int
+		pixels, charged int64
+		admitted        bool
+	}{
+		{1, 23, 23 * h, 23 * 64 * h, true},
+		{1, 24, 0, 0, false},
+		{63, 23, 23 * 63 * h, 23 * 64 * h, true},
+		{64, 23, 23 * 64 * h, 23 * 64 * h, true},
+		{64, 24, 0, 0, false},
+	} {
+		name := fmt.Sprintf("%d frames %d×%d", c.n, c.w, h)
+		// Each frame's pixel data is one sub-block of nonsense the walk
+		// never looks at, as in TestGIFFrameBudget.
+		data := []byte("GIF89a")
+		data = binary.LittleEndian.AppendUint16(data, uint16(c.w))
+		data = binary.LittleEndian.AppendUint16(data, h)
+		data = append(data, 0x80, 0, 0, 0, 0, 0, 255, 255, 255)
+		for i := 0; i < c.n; i++ {
+			data = append(data, 0x21, 0xF9, 4, 0, 10, 0, 0, 0, 0x2C, 0, 0, 0, 0)
+			data = binary.LittleEndian.AppendUint16(data, uint16(c.w))
+			data = binary.LittleEndian.AppendUint16(data, h)
+			data = append(data, 0, 2, 1, 0x44, 0)
+		}
+		data = append(data, 0x3B)
+		frames, err := gifFramePixels(data, maxGIFFramePixels)
+		_, inspected := Inspect(data)
+		if !c.admitted {
+			if !errors.Is(err, ErrImageTooCostly) || !errors.Is(inspected, ErrImageTooCostly) {
+				t.Errorf("%s: gifFramePixels = %v, Inspect = %v; want both ErrImageTooCostly", name, err, inspected)
+			}
+			continue
+		}
+		if err != nil || inspected != nil {
+			t.Errorf("%s: gifFramePixels = %v, Inspect = %v; want both admitted", name, err, inspected)
+		}
+		if frames.pixels != c.pixels || frames.charged != c.charged {
+			t.Errorf("%s: pixels %d, charged %d; want %d and %d", name, frames.pixels, frames.charged, c.pixels, c.charged)
+		}
+	}
+}
+
+// gifExtensions are extensions image/gif and Chromium both read past, ending
+// each in the same place.
 var gifExtensions = map[string][]byte{
-	// An application extension whose identifier is zero bytes long: the
-	// decoder reads the zero as that length, then reads sub-blocks after it.
+	"plain text as specified":     append(append([]byte{0x21, 0x01, 0x0C}, make([]byte, 12)...), 0x03, 'a', 'b', 'c', 0x00),
+	"application as specified":    append(append([]byte{0x21, 0xFF, 0x0B}, "XMP DataXMP"...), 0x01, 'x', 0x00),
+	"comment":                     {0x21, 0xFE, 0x02, 'h', 'i', 0x00},
+	"a loop count as ANIMEXTS1.0": loopExtension("ANIMEXTS1.0", 7),
+	"graphic control":             {0x21, 0xF9, 0x04, 0x00, 0x0A, 0x00, 0x00, 0x00},
+}
+
+// gifExtensionsReadApart are extensions image/gif reads past that Chromium
+// ends somewhere else, so that the two read the rest of the file differently
+// and Chromium stops showing frames there (walkGIF). image/gif reads a
+// plain-text extension as a fixed thirteen bytes whatever its block size byte
+// says, where Chromium reads that byte as a sub-block's length; it reads
+// sub-blocks after an application extension whose block size byte is 0,
+// where Chromium ends it at once; and it ends a loop extension at a
+// terminator straight after its identifier, which Chromium takes for the
+// loop sub-block before reading on. A walk that read the first two as a run
+// of sub-blocks once lost its place in image/gif's reading and counted none
+// of the frames after them; it now refuses all of these.
+var gifExtensionsReadApart = map[string][]byte{
 	"application with an empty identifier": {0x21, 0xFF, 0x00, 0x02, 'x', 'x', 0x00},
-	// A plain-text extension is read as a fixed thirteen bytes, whatever its
-	// block size byte says, then sub-blocks.
-	"plain text with a zero block size": append(append([]byte{0x21, 0x01, 0x00}, make([]byte, 12)...), 0x00),
-	"plain text as specified":           append(append([]byte{0x21, 0x01, 0x0C}, make([]byte, 12)...), 0x03, 'a', 'b', 'c', 0x00),
-	"application as specified":          append(append([]byte{0x21, 0xFF, 0x0B}, "XMP DataXMP"...), 0x01, 'x', 0x00),
-	"comment":                           {0x21, 0xFE, 0x02, 'h', 'i', 0x00},
-	"a loop count as ANIMEXTS1.0":       loopExtension("ANIMEXTS1.0", 7),
-	"graphic control":                   {0x21, 0xF9, 0x04, 0x00, 0x0A, 0x00, 0x00, 0x00},
+	"application of no bytes":              {0x21, 0xFF, 0x00, 0x00},
+	"plain text with a zero block size":    append(append([]byte{0x21, 0x01, 0x00}, make([]byte, 12)...), 0x00),
+	"plain text with a block size of 0x61": append(append([]byte{0x21, 0x01, 0x61}, make([]byte, 12)...), 0x00),
+	"NETSCAPE2.0 with no sub-block":        append(append([]byte{0x21, 0xFF, 0x0B}, "NETSCAPE2.0"...), 0x00),
+	"ANIMEXTS1.0 with no sub-block":        append(append([]byte{0x21, 0xFF, 0x0B}, "ANIMEXTS1.0"...), 0x00),
 }
 
 // framesDecoded is what gifFramePixels should make of a GIF image/gif
@@ -1088,18 +1586,29 @@ func withFrameAt(t *testing.T, data []byte, k, left, top int) []byte {
 // A file that ends after its last frame without the trailer plays in a
 // browser, and is stored as if it had one. A frame after the first that
 // reaches past the canvas is drawn by a browser only where it is on the
-// canvas, and is stored cut to that; one wholly off the canvas shows nothing
-// for its delay, and is stored as one transparent pixel left in place for
-// the same delay. A first frame past the canvas is refused before any
-// cooldown: Chromium widens the canvas to show it, Firefox moves it to the
-// corner, and there is no one picture to store.
+// canvas, and is stored as the same GIF with that frame cut to it would be.
+// One wholly off the canvas draws nothing, so what shows for its delay is
+// what the frame before it left once disposed of: after a frame that is kept
+// (disposal 0 or 1), that frame's picture, which shows on for both delays,
+// as the GIF without the frame off the canvas would show it; after one
+// restored to the background (2), the canvas with that frame's area cleared;
+// after one restored to the previous picture (3), the canvas as it was before
+// that frame. Either of the last two is stored as the GIF whose frame off the
+// canvas is replaced by one drawing nothing on it would be. A first frame
+// past the canvas is refused before any cooldown: Chromium widens the canvas
+// to show it, Firefox moves it to the corner, and there is no one picture to
+// store.
 func TestGIFIsStoredAsBrowsersShowIt(t *testing.T) {
 	src := animatedGIF(t, 0) // 60×40; frame 1 is 20×20 at (10,5)
-	var buf bytes.Buffer
-	if err := gif.EncodeAll(&buf, src); err != nil {
-		t.Fatalf("encode: %v", err)
+	encode := func(t *testing.T, g *gif.GIF) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		if err := gif.EncodeAll(&buf, g); err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		return buf.Bytes()
 	}
-	whole := buf.Bytes()
+	whole := encode(t, src)
 	want := process(t, whole)
 
 	t.Run("no trailer", func(t *testing.T) {
@@ -1109,55 +1618,62 @@ func TestGIFIsStoredAsBrowsersShowIt(t *testing.T) {
 		}
 	})
 
-	// frame decodes the stored GIF and checks it has the source's frames,
-	// delays and disposal but for frame 1, which it returns.
-	frame := func(t *testing.T, data []byte) (*image.Paletted, *gif.GIF) {
+	// requireStoredAs checks that an upload past the canvas is stored as
+	// the GIF a browser shows of it, and that that shows what the upload
+	// does, decoded as sanitizeGIF decodes it (gifReader) and played on the
+	// canvas.
+	requireStoredAs := func(t *testing.T, upload []byte, shown *gif.GIF) {
 		t.Helper()
-		g, err := gif.DecodeAll(bytes.NewReader(process(t, data).Data))
-		if err != nil {
-			t.Fatalf("the stored GIF does not decode: %v", err)
+		got, as := process(t, upload).Data, process(t, encode(t, shown)).Data
+		if !bytes.Equal(got, as) {
+			t.Error("stored differently from the GIF a browser shows of it")
 		}
-		if g.Config.Width != 60 || g.Config.Height != 40 || len(g.Image) != 3 {
-			t.Fatalf("stored a %dx%d GIF of %d frames, want the 60x40 canvas and all 3", g.Config.Width, g.Config.Height, len(g.Image))
+		up, _ := decodeAsStored(t, upload)
+		up.Config.Width, up.Config.Height = 60, 40
+		requirePlays(t, "past the canvas", up, got)
+	}
+	// without is src with frame k replaced, or left out if m is nil.
+	without := func(k int, m *image.Paletted) *gif.GIF {
+		g := *src
+		g.Image = append([]*image.Paletted(nil), src.Image...)
+		g.Delay = append([]int(nil), src.Delay...)
+		g.Disposal = append([]byte(nil), src.Disposal...)
+		if m != nil {
+			g.Image[k] = m
+			return &g
 		}
-		for _, k := range []int{0, 2} {
-			if g.Image[k].Rect != src.Image[k].Rect || g.Delay[k] != src.Delay[k] || g.Disposal[k] != src.Disposal[k] {
-				t.Errorf("frame %d stored at %v, delay %d, disposal %d; want it as it was", k, g.Image[k].Rect, g.Delay[k], g.Disposal[k])
-			}
-		}
-		return g.Image[1], g
+		g.Delay[k-1] += g.Delay[k]
+		g.Image = append(g.Image[:k], g.Image[k+1:]...)
+		g.Delay = append(g.Delay[:k], g.Delay[k+1:]...)
+		g.Disposal = append(g.Disposal[:k], g.Disposal[k+1:]...)
+		return &g
 	}
 
 	t.Run("a later frame past the canvas", func(t *testing.T) {
-		m, g := frame(t, withFrameAt(t, whole, 1, 50, 30))
-		if m.Rect != image.Rect(50, 30, 60, 40) {
-			t.Fatalf("frame 1 stored at %v, want the part on the canvas, (50,30)-(60,40)", m.Rect)
-		}
-		if g.Delay[1] != src.Delay[1] || g.Disposal[1] != src.Disposal[1] {
-			t.Errorf("frame 1 stored with delay %d and disposal %d, want them as they were", g.Delay[1], g.Disposal[1])
-		}
-		// Moved, frame 1's pixel (x, y) is the source's (x-40, y-25).
-		orig := src.Image[1]
+		// Moved to (50,30), frame 1's pixel (x, y) is the source's
+		// (x-40, y-25), and the part on the canvas is (50,30)-(60,40).
+		cut := image.NewPaletted(image.Rect(50, 30, 60, 40), src.Image[1].Palette)
 		for y := 30; y < 40; y++ {
 			for x := 50; x < 60; x++ {
-				if a, b := m.At(x, y), orig.At(x-40, y-25); !sameColour(a, b) {
-					t.Fatalf("frame 1 at (%d,%d) = %v, want %v", x, y, a, b)
-				}
+				cut.SetColorIndex(x, y, src.Image[1].ColorIndexAt(x-40, y-25))
 			}
 		}
+		requireStoredAs(t, withFrameAt(t, whole, 1, 50, 30), without(1, cut))
 	})
 
 	t.Run("a later frame wholly off the canvas", func(t *testing.T) {
-		m, g := frame(t, withFrameAt(t, whole, 1, 61, 41))
-		if m.Rect != image.Rect(0, 0, 1, 1) {
-			t.Fatalf("frame 1 stored at %v, want one pixel at the origin", m.Rect)
-		}
-		if _, _, _, a := m.At(0, 0).RGBA(); a != 0 {
-			t.Errorf("frame 1's one pixel has alpha %d, want it transparent", a)
-		}
-		if g.Delay[1] != src.Delay[1] || g.Disposal[1] != gif.DisposalNone {
-			t.Errorf("frame 1 stored with delay %d and disposal %d, want delay %d left in place", g.Delay[1], g.Disposal[1], src.Delay[1])
-		}
+		requireStoredAs(t, withFrameAt(t, whole, 1, 61, 41), without(1, nil))
+	})
+
+	// Frame 1 is restored to the background and frame 2 to the previous
+	// picture. A frame that draws nothing on the canvas is a pixel of the
+	// one transparent colour of its own palette.
+	nothing := image.NewPaletted(image.Rect(0, 0, 1, 1), color.Palette{color.RGBA{}})
+	t.Run("a frame wholly off the canvas after one restored to the background", func(t *testing.T) {
+		requireStoredAs(t, withFrameAt(t, whole, 2, 61, 41), without(2, nothing))
+	})
+	t.Run("a frame wholly off the canvas after one restored to the previous picture", func(t *testing.T) {
+		requireStoredAs(t, withFrameAt(t, whole, 3, 61, 41), without(3, nothing))
 	})
 
 	t.Run("a first frame past the canvas", func(t *testing.T) {
@@ -1166,13 +1682,6 @@ func TestGIFIsStoredAsBrowsersShowIt(t *testing.T) {
 			t.Errorf("Inspect = %v, want ErrCorruptImage before any cooldown", err)
 		}
 	})
-}
-
-// sameColour reports whether two colours are the same, alpha included.
-func sameColour(a, b color.Color) bool {
-	r1, g1, b1, a1 := a.RGBA()
-	r2, g2, b2, a2 := b.RGBA()
-	return r1 == r2 && g1 == g2 && b1 == b2 && a1 == a2
 }
 
 // The frame count reads a GIF block for block as image/gif does, so no
@@ -1208,8 +1717,24 @@ func TestGIFFramePixelsReadsWhatTheDecoderReads(t *testing.T) {
 		if got, err := gifFramePixels(data, math.MaxInt64); counted(got) != framesDecoded(g) || !got.trailed || err != nil {
 			t.Errorf("%s: gifFramePixels = %+v, %v; the decoder read %+v", name, got, err, framesDecoded(g))
 		}
-		if _, err := Inspect(spliceAfterHeader(huge, ext)); !errors.Is(err, ErrImageTooLarge) {
-			t.Errorf("%s: Inspect(five canvases of frames after it) = %v, want ErrImageTooLarge", name, err)
+		if _, err := Inspect(spliceAfterHeader(huge, ext)); !errors.Is(err, ErrImageTooCostly) {
+			t.Errorf("%s: Inspect(five canvases of frames after it) = %v, want ErrImageTooCostly", name, err)
+		}
+	}
+	// image/gif decodes every frame after each of these, and Chromium none:
+	// the walk refuses the file there, before anything is decoded.
+	for name, ext := range gifExtensionsReadApart {
+		data := spliceAfterHeader(small.Bytes(), ext)
+		if _, err := gif.DecodeAll(bytes.NewReader(data)); err != nil {
+			t.Fatalf("%s: the fixture does not decode: %v", name, err)
+		}
+		if got, err := gifFramePixels(data, math.MaxInt64); !errors.Is(err, ErrCorruptImage) || !got.apart || got.count != 0 {
+			t.Errorf("%s: gifFramePixels = %+v, %v; want ErrCorruptImage at the extension, with apart set", name, got, err)
+		}
+		for _, data := range [][]byte{data, spliceAfterHeader(huge, ext)} {
+			if _, err := Inspect(data); !errors.Is(err, ErrCorruptImage) {
+				t.Errorf("%s: Inspect = %v, want ErrCorruptImage", name, err)
+			}
 		}
 	}
 
@@ -1283,6 +1808,9 @@ func FuzzGIFFramePixels(f *testing.F) {
 	for _, ext := range gifExtensions {
 		f.Add(spliceAfterHeader(buf.Bytes(), ext))
 	}
+	for _, ext := range gifExtensionsReadApart {
+		f.Add(spliceAfterHeader(buf.Bytes(), ext))
+	}
 	f.Add([]byte("GIF89a\x01\x00\x01\x00\xff\x00\x00"))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		n, err := gifFramePixels(data, math.MaxInt64)
@@ -1294,7 +1822,12 @@ func FuzzGIFFramePixels(f *testing.F) {
 			return
 		}
 		// A file the walk takes is decoded as sanitizeGIF decodes it; one it
-		// refuses, as it is, which the decoder must refuse too.
+		// refuses, as it is, which the decoder must refuse too — but for a
+		// file refused at an extension Chromium ends elsewhere (apart),
+		// which image/gif reads past.
+		if err != nil && n.apart {
+			return
+		}
 		r := io.Reader(bytes.NewReader(data))
 		if err == nil {
 			r = gifReader(data, n)
@@ -1333,12 +1866,12 @@ func sampleBitstream(t *testing.T) riffChunk {
 	return chunks[0]
 }
 
-// readTestdata reads a fixture from testdata. Of the WebPs, sample.webp is lossless
-// (VP8L, 320×200). lossy.webp and lossy-alpha.webp are 64×48, four flat
-// quadrants (red, green / blue, white) made with Pillow at quality 90, the
-// second with its left 16 columns transparent: a simple-format VP8 file, and
-// VP8X, ALPH and VP8. hidden-lossless.webp and hidden-lossy-alpha.webp are
-// 32×32, made with Pillow with exact=True so the colour under transparent
+// readTestdata reads a fixture from testdata. Of the WebPs, sample.webp is
+// lossless (VP8L, 320×200). lossy.webp and lossy-alpha.webp are 64×48, four
+// flat quadrants (red, green / blue, white) made with Pillow at quality 90,
+// the second with its left 16 columns transparent: a simple-format VP8 file,
+// and VP8X, ALPH and VP8. hidden-lossless.webp and hidden-lossy-alpha.webp
+// are 32×32, made with Pillow with exact=True so the colour under transparent
 // pixels is kept (the second lossy, at quality 90): the left half fully
 // transparent over random colours (seed 7), the right half opaque
 // (200, 30, 30). cutout-alpha.webp is a cut-out photo as a lossy WebP with
@@ -1348,7 +1881,9 @@ func sampleBitstream(t *testing.T) riffChunk {
 // than built in code. photo-q30.jpg is a JPEG as libjpeg saves one for the
 // web, from Pillow at quality 30 with optimize=True (Huffman tables fitted
 // to the picture), 4:2:0: 640×480 of the same ramp and noise as the cut-out,
-// softened the same way, opaque.
+// softened the same way, opaque. lossy-alpha.libwebp.png is lossy-alpha.webp
+// as libwebp 1.6.0 decodes it to RGBA, through Pillow 12.3.0: what a browser
+// shows of it.
 func readTestdata(t testing.TB, name string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("testdata", name))
@@ -1418,12 +1953,14 @@ func TestWebPIsStrippedChunkByChunk(t *testing.T) {
 	requireSamePixels(t, want, decodeStored(t, got.Data))
 }
 
-// A VP8X's alpha flag is a hint: libwebp, and so every browser, shows what
-// the chunks hold whatever it says. libwebp writes a lossless picture with
+// A VP8X's alpha flag decides whether Chromium shows a lossy picture's alpha
+// plane: without the flag the picture shows opaque, the plane ignored, and so
+// it is stored. Otherwise the flag is a hint, and Chromium shows what the
+// chunks hold whatever it says. libwebp writes a lossless picture with
 // transparency and metadata under it, though the lossless bitstream carries
 // its own alpha and golang.org/x/image refuses the flag beside one, as it
-// refuses the flag over a lossy picture with no alpha plane and a plane
-// without the flag. Each is stored as the same picture with the flag right.
+// refuses the flag over a lossy picture with no alpha plane. Each is stored as
+// the picture Chromium 141 showed, and costed as it is decoded.
 func TestWebPAlphaFlagFollowsTheChunks(t *testing.T) {
 	lossless := webpChunks(t, readTestdata(t, "hidden-lossless.webp")) // VP8L, half transparent
 	lossy := webpChunks(t, readTestdata(t, "lossy.webp"))              // VP8, opaque
@@ -1449,9 +1986,13 @@ func TestWebPAlphaFlagFollowsTheChunks(t *testing.T) {
 			webpFile(lossy[0])},
 		{"an alpha plane without the flag",
 			webpFile(vp8xChunk(0, 64, 48), lossyAlpha[1], lossyAlpha[2]),
-			webpFile(lossyAlpha...)},
+			webpFile(lossyAlpha[2])},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			_, gotAlpha, _ := webpPicture(tc.upload)
+			if _, wantAlpha, _ := webpPicture(tc.as); gotAlpha != wantAlpha {
+				t.Errorf("costed with an alpha plane: %v, want %v", gotAlpha, wantAlpha)
+			}
 			want := process(t, tc.as)
 			got, err := Process(context.Background(), tc.upload)
 			if err != nil {
@@ -1518,6 +2059,63 @@ func TestWebPIsStoredAsPNGOrJPEG(t *testing.T) {
 						}
 					}
 				}
+			}
+		})
+	}
+}
+
+// Every stored PNG is deflated at BestSpeed (storedPNG), whatever it was
+// made from: at the default level, deflate's search for matches makes the
+// encoding's CPU depend on what the rows hold, many times over for rows of a
+// few repeated byte values. compress/zlib's header says which: its second
+// byte is 0x01 at BestSpeed and 0x9C at the default level.
+func TestStoredPNGsAreDeflatedAtBestSpeed(t *testing.T) {
+	encode := func(m image.Image) []byte {
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, m); err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		return buf.Bytes()
+	}
+	rgba := image.NewNRGBA(image.Rect(0, 0, 64, 48))
+	deep := image.NewNRGBA64(image.Rect(0, 0, 64, 48))
+	pal := image.NewPaletted(image.Rect(0, 0, 64, 48), palette.Plan9)
+	for y := 0; y < 48; y++ {
+		for x := 0; x < 64; x++ {
+			rgba.SetNRGBA(x, y, color.NRGBA{uint8(x * 4), uint8(y * 5), 0x40, uint8(0xFF - x)})
+			deep.SetNRGBA64(x, y, color.NRGBA64{uint16(x * 1001), uint16(y * 1303), 0x1234, uint16(0xFFFF - x*500)})
+			pal.SetColorIndex(x, y, uint8(x+y))
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		upload []byte
+	}{
+		{"8-bit PNG with transparency", encode(rgba)},
+		{"16-bit PNG", encode(deep)},
+		{"palette PNG", encode(pal)},
+		{"lossless WebP", readTestdata(t, "sample.webp")},
+		{"lossy WebP with transparency", readTestdata(t, "lossy-alpha.webp")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := process(t, tc.upload)
+			if got.Format != FormatPNG {
+				t.Fatalf("stored as %s, want PNG", got.Format.Name)
+			}
+			var idat []byte
+			for i := 8; i+8 <= len(got.Data); {
+				n := int(binary.BigEndian.Uint32(got.Data[i : i+4]))
+				if string(got.Data[i+4:i+8]) == "IDAT" {
+					idat = got.Data[i+8 : i+8+n]
+					break
+				}
+				i += 12 + n
+			}
+			if len(idat) < 2 {
+				t.Fatalf("the stored PNG has no image data: chunks %v", pngChunkTypes(t, got.Data))
+			}
+			if idat[0] != 0x78 || idat[1] != 0x01 {
+				t.Errorf("the stored PNG's zlib header is % x, want 78 01 (BestSpeed)", idat[:2])
 			}
 		})
 	}
@@ -1623,6 +2221,116 @@ func TestLossyWebPIsStoredAtItsOwnColourResolution(t *testing.T) {
 	}
 }
 
+// A lossy WebP with transparency is stored as RGBA, so its half-resolution
+// chroma has to be widened to a sample a pixel, and it is widened as libwebp's
+// fancy upsampler widens it, which is what Chromium shows: a blend of the
+// four nearest samples rather than the nearest alone, which at the colour
+// edges of lossy-alpha.webp's quadrants was 91 levels off what the browser
+// showed, and 151 on a sticker. lossy-alpha.libwebp.png is the fixture as
+// libwebp decodes it; the stored picture is held to it within a level, the
+// rounding of the conversion to RGB (bt601LimitedToRGB, where libwebp's has
+// 14 bits). webpChromaRow is held, bit for bit, to libwebp's own loops
+// (libwebpUpsampled) on planes of every parity, down to a pixel.
+func TestLossyWebPIsUpsampledAsLibwebpDoes(t *testing.T) {
+	got := decodeStored(t, process(t, readTestdata(t, "lossy-alpha.webp")).Data)
+	ref, err := png.Decode(bytes.NewReader(readTestdata(t, "lossy-alpha.libwebp.png")))
+	if err != nil {
+		t.Fatalf("decode the reference: %v", err)
+	}
+	if got.Bounds() != ref.Bounds() {
+		t.Fatalf("stored %v, the reference is %v", got.Bounds(), ref.Bounds())
+	}
+	worst := 0
+	for y := 0; y < 48; y++ {
+		for x := 0; x < 64; x++ {
+			g, r := color.NRGBAModel.Convert(got.At(x, y)).(color.NRGBA), color.NRGBAModel.Convert(ref.At(x, y)).(color.NRGBA)
+			if g.A != r.A {
+				t.Fatalf("(%d,%d): alpha %d, libwebp's %d", x, y, g.A, r.A)
+			}
+			if r.A == 0 {
+				continue // libwebp keeps a colour under a clear pixel; educhan does not
+			}
+			for _, d := range [3]int{int(g.R) - int(r.R), int(g.G) - int(r.G), int(g.B) - int(r.B)} {
+				worst = max(worst, d, -d)
+			}
+			if worst > 1 {
+				t.Fatalf("(%d,%d) stored as %v, libwebp shows %v", x, y, g, r)
+			}
+		}
+	}
+
+	rng := rand.New(rand.NewSource(3))
+	for _, size := range []image.Point{{1, 1}, {1, 6}, {6, 1}, {2, 2}, {3, 3}, {7, 5}, {8, 6}, {9, 10}, {16, 9}} {
+		w, h := size.X, size.Y
+		m := image.NewYCbCr(image.Rect(0, 0, w, h), image.YCbCrSubsampleRatio420)
+		rng.Read(m.Cb)
+		rng.Read(m.Cr)
+		cw, ch := (w+1)/2, (h+1)/2
+		want := [2][][]uint8{libwebpUpsampled(m.Cb, m.CStride, cw, ch, w, h), libwebpUpsampled(m.Cr, m.CStride, cw, ch, w, h)}
+		cb, cr := make([]uint8, w), make([]uint8, w)
+		for y := 0; y < h; y++ {
+			webpChromaRow(cb, cr, m, y)
+			for x := 0; x < w; x++ {
+				if cb[x] != want[0][y][x] || cr[x] != want[1][y][x] {
+					t.Fatalf("%dx%d (%d,%d): chroma %d,%d, libwebp's %d,%d", w, h, x, y, cb[x], cr[x], want[0][y][x], want[1][y][x])
+				}
+			}
+		}
+	}
+}
+
+// libwebpUpsampled is a 4:2:0 chroma plane of cw×ch samples widened to w×h
+// by libwebp's fancy upsampler, transcribed from src/dsp/upsampling.c
+// (UPSAMPLE_FUNC, here for one plane rather than U and V packed together)
+// and the order src/dec/io_dec.c's EmitFancyRGB runs it in: the first row on
+// its own, against its own chroma row, then pairs of rows between two chroma
+// rows, then, for an even height, the last row on its own.
+func libwebpUpsampled(plane []uint8, stride, cw, ch, w, h int) [][]uint8 {
+	out := make([][]uint8, h)
+	for y := range out {
+		out[y] = make([]uint8, w)
+	}
+	row := func(j int) []uint8 { return plane[j*stride : j*stride+cw] }
+	// linePair is UPSAMPLE_FUNC: top and bottom are output rows (bottom may
+	// be nil), between chroma rows topUV and curUV.
+	linePair := func(top, bottom []uint8, topUV, curUV []uint8) {
+		lastPair := (w - 1) >> 1
+		tl, l := int(topUV[0]), int(curUV[0])
+		top[0] = uint8((3*tl + l + 2) >> 2)
+		if bottom != nil {
+			bottom[0] = uint8((3*l + tl + 2) >> 2)
+		}
+		for x := 1; x <= lastPair; x++ {
+			t, uv := int(topUV[x]), int(curUV[x])
+			avg := tl + t + l + uv + 8
+			diag12 := (avg + 2*(t+l)) >> 3
+			diag03 := (avg + 2*(tl+uv)) >> 3
+			top[2*x-1] = uint8((diag12 + tl) >> 1)
+			top[2*x] = uint8((diag03 + t) >> 1)
+			if bottom != nil {
+				bottom[2*x-1] = uint8((diag03 + l) >> 1)
+				bottom[2*x] = uint8((diag12 + uv) >> 1)
+			}
+			tl, l = t, uv
+		}
+		if w&1 == 0 {
+			top[w-1] = uint8((3*tl + l + 2) >> 2)
+			if bottom != nil {
+				bottom[w-1] = uint8((3*l + tl + 2) >> 2)
+			}
+		}
+	}
+	linePair(out[0], nil, row(0), row(0))
+	y := 0
+	for ; y+2 < h; y += 2 {
+		linePair(out[y+1], out[y+2], row(y/2), row(y/2+1))
+	}
+	if h&1 == 0 {
+		linePair(out[h-1], nil, row(ch-1), row(ch-1))
+	}
+	return out
+}
+
 // A decoder stops reading a picture chunk once it has its picture, so a whole
 // second file can ride inside one: here a JPEG carrying a camera's EXIF and GPS
 // position, inside a lossless bitstream, a lossy one, and an alpha plane. The
@@ -1679,8 +2387,10 @@ func TestFilesHiddenInsideWebPChunksAreNotStored(t *testing.T) {
 }
 
 // The rewrite understands animation, keeping ANIM and each frame's picture and
-// dropping everything else inside and around them. Process still refuses an
-// animated WebP, as it always has: x/image cannot decode one.
+// dropping everything else inside and around them. An animated WebP is still
+// refused, as it always has been, since x/image cannot decode one: by Inspect
+// from its header (TestAnimatedWebPIsRefusedFromItsHeader), and by
+// sanitizeWebP should one get that far.
 func TestAnimatedWebP(t *testing.T) {
 	bitstream := sampleBitstream(t)
 	unknown := riffChunk{id: "ZZZZ", payload: []byte(needleComment)}
@@ -1718,28 +2428,129 @@ func TestAnimatedWebP(t *testing.T) {
 	if _, err := Process(context.Background(), upload); !errors.Is(err, ErrCorruptImage) {
 		t.Errorf("Process(animated WebP) = %v, want ErrCorruptImage, as before stripping", err)
 	}
+	if _, err := sanitizeWebP(context.Background(), upload, 1<<20); !errors.Is(err, ErrCorruptImage) {
+		t.Errorf("sanitizeWebP(animated WebP) = %v, want ErrCorruptImage", err)
+	}
+}
+
+// An animated WebP is refused from its header, before anything is decoded
+// and before any cooldown, and with the same answer whatever its size: the
+// animation flag in its VP8X, or, in an extended file, a frame among its
+// chunks, is enough to know that nothing here can decode it. A long one used
+// to be charged as a lossless picture of its whole length and refused as too
+// large, a short one let through to fail as it was decoded.
+func TestAnimatedWebPIsRefusedFromItsHeader(t *testing.T) {
+	bitstream := sampleBitstream(t) // 320×200
+	frames := func(n, pad int) []riffChunk {
+		var out []riffChunk
+		for i := 0; i < n; i++ {
+			out = append(out, anmfChunk(0, 0, 320, 200, bitstream, riffChunk{id: "ZZZZ", payload: make([]byte, pad)}))
+		}
+		return out
+	}
+	animated := func(flags byte, w, h int, chunks ...riffChunk) []byte {
+		return webpFile(append([]riffChunk{vp8xChunk(flags, w, h), {id: "ANIM", payload: make([]byte, 6)}}, chunks...)...)
+	}
+	twoFrames := animated(vp8xFlagAnimation, 320, 200, frames(2, 0)...)
+	sixFrames := animated(vp8xFlagAnimation, 320, 200, frames(6, 50<<10)...)
+	for name, data := range map[string][]byte{
+		"two frames":                   twoFrames,
+		"six frames of 300 KiB in all": sixFrames,
+		"a canvas past MaxPixels":      animated(vp8xFlagAnimation, 10000, 10000, frames(2, 0)...),
+		"the flag and no frames":       animated(vp8xFlagAnimation, 320, 200),
+		"frames without the flag":      animated(0, 320, 200, frames(2, 0)...),
+		"a picture, then a frame":      webpFile(vp8xChunk(0, 320, 200), bitstream, frames(1, 0)[0]),
+		// Cut short, as a partly sent file is: the RIFF size runs past the
+		// end, and the first chunk still says what the file is.
+		"two frames, cut short":              twoFrames[:len(twoFrames)-100],
+		"six frames, cut short":              sixFrames[:len(sixFrames)-100],
+		"frames without the flag, cut short": animated(0, 320, 200, frames(2, 0)...)[:len(twoFrames)-100],
+	} {
+		if !webpAnimated(data) {
+			t.Errorf("%s: webpAnimated = false", name)
+		}
+		if _, err := Inspect(data); !errors.Is(err, ErrCorruptImage) {
+			t.Errorf("%s: Inspect = %v, want ErrCorruptImage before anything is decoded", name, err)
+		}
+	}
+}
+
+// A simple-format WebP (its first chunk the picture) is a still whatever
+// follows its picture: stripWebP keeps the picture and drops the rest, and
+// browsers show the picture alone. A frame after it is not an animation.
+func TestWebPStillWithAFrameAfterItsPictureIsStoredAsAStill(t *testing.T) {
+	bitstream := sampleBitstream(t) // 320×200, lossless
+	data := webpFile(bitstream, riffChunk{id: "ANIM", payload: make([]byte, 6)}, anmfChunk(0, 0, 320, 200, bitstream))
+	if webpAnimated(data) {
+		t.Error("webpAnimated = true for a simple-format still")
+	}
+	if _, err := Inspect(data); err != nil {
+		t.Fatalf("Inspect = %v, want nil", err)
+	}
+	out, err := Process(context.Background(), data)
+	if err != nil {
+		t.Fatalf("Process = %v", err)
+	}
+	if out.Format != FormatPNG || out.Width != 320 || out.Height != 200 {
+		t.Errorf("stored %s %d×%d, want a 320×200 PNG", out.Format.Name, out.Width, out.Height)
+	}
 }
 
 // A WebP whose structure does not hold together is refused, whatever a
-// lenient decoder would have made of it.
+// lenient decoder would have made of it. Every such fault is in its chunks,
+// which Inspect reads as stripWebP does (webpKept), so each is refused there,
+// before any cooldown, as it would be once processed. Some used to pass
+// Inspect, whose decoder reads no further than a VP8X, and were refused only
+// after flood control had charged the poster's cooldowns.
 func TestMalformedWebPIsRefused(t *testing.T) {
-	bitstream := sampleBitstream(t)
+	bitstream := sampleBitstream(t) // 320×200
 	clean := sampleWebP(t)
 	longer := append([]byte(nil), clean...)
 	binary.LittleEndian.PutUint32(longer[4:8], uint32(len(clean)))
 	chunkPastEnd := append([]byte(nil), clean...)
 	binary.LittleEndian.PutUint32(chunkPastEnd[16:20], uint32(len(clean)))
+	// A chunk after the picture whose header claims 100 bytes, followed by
+	// 10, inside a RIFF that covers them.
+	brokenAfter := append(append(append([]byte(nil), clean...), "EXIF"...), 100, 0, 0, 0)
+	brokenAfter = append(brokenAfter, make([]byte, 10)...)
+	binary.LittleEndian.PutUint32(brokenAfter[4:8], uint32(len(brokenAfter)-8))
+	// An extended file whose chunk after the VP8X, before the picture,
+	// claims 100000 bytes, inside a RIFF that covers the file.
+	brokenBefore := webpFile(vp8xChunk(0, 320, 200), riffChunk{id: "ICCP", payload: []byte("icc")}, bitstream)
+	binary.LittleEndian.PutUint32(brokenBefore[12+8+10+4:], 100000)
+	// lossy-alpha.webp is VP8X, ALPH and VP8, 64×48.
+	var vp8, alph riffChunk
+	walkChunks(readTestdata(t, "lossy-alpha.webp")[12:], func(c riffChunk) {
+		switch c.id {
+		case "VP8 ":
+			vp8 = c
+		case "ALPH":
+			alph = c
+		}
+	})
+	if vp8.id == "" || alph.id == "" {
+		t.Fatal("lossy-alpha.webp has no ALPH or VP8 chunk")
+	}
 
 	cases := map[string][]byte{
 		"RIFF size past the end": longer,
 		"chunk past the end":     chunkPastEnd,
 		// The canvas says 10×10 and the bitstream 320×200; decoders size
 		// their buffers from one or the other.
-		"canvas and bitstream disagree": webpFile(vp8xChunk(0, 10, 10), bitstream),
-		"VP8X of the wrong length":      webpFile(riffChunk{id: "VP8X", payload: make([]byte, 9)}, bitstream),
-		"two bitstreams":                webpFile(vp8xChunk(0, 320, 200), bitstream, bitstream),
-		"no bitstream":                  webpFile(riffChunk{id: "EXIF", payload: []byte("x")}),
-		"alpha in the simple format":    webpFile(riffChunk{id: "ALPH", payload: []byte{0}}, bitstream),
+		"canvas and bitstream disagree":       webpFile(vp8xChunk(0, 10, 10), bitstream),
+		"canvas two pixels wider":             webpFile(vp8xChunk(0, 322, 200), bitstream),
+		"VP8X of the wrong length":            webpFile(riffChunk{id: "VP8X", payload: make([]byte, 9)}, bitstream),
+		"two bitstreams":                      webpFile(vp8xChunk(0, 320, 200), bitstream, bitstream),
+		"extended, no bitstream":              webpFile(vp8xChunk(0, 320, 200)),
+		"no bitstream":                        webpFile(riffChunk{id: "EXIF", payload: []byte("x")}),
+		"alpha in the simple format":          webpFile(riffChunk{id: "ALPH", payload: []byte{0}}, bitstream),
+		"a malformed chunk after the picture": brokenAfter,
+		"a malformed chunk after the VP8X":    brokenBefore,
+		"alpha after the bitstream":           webpFile(vp8xChunk(vp8xFlagAlpha, 64, 48), vp8, alph),
+		"two alpha planes":                    webpFile(vp8xChunk(vp8xFlagAlpha, 64, 48), alph, alph, vp8),
+		"alpha beside a lossless bitstream":   webpFile(vp8xChunk(vp8xFlagAlpha, 320, 200), alph, bitstream),
+		"a second VP8X":                       webpFile(vp8xChunk(0, 320, 200), vp8xChunk(0, 320, 200), bitstream),
+		"ANIM in a still":                     webpFile(vp8xChunk(0, 320, 200), riffChunk{id: "ANIM", payload: make([]byte, 6)}, bitstream),
 		"frame outside the canvas": webpFile(vp8xChunk(vp8xFlagAnimation, 320, 200),
 			riffChunk{id: "ANIM", payload: make([]byte, 6)}, anmfChunk(2, 0, 320, 200, bitstream)),
 	}
@@ -1748,8 +2559,11 @@ func TestMalformedWebPIsRefused(t *testing.T) {
 			if _, _, err := stripWebP(upload); !errors.Is(err, ErrCorruptImage) {
 				t.Errorf("stripWebP = %v, want ErrCorruptImage", err)
 			}
-			if _, err := Process(context.Background(), upload); err == nil {
-				t.Error("Process accepted it")
+			if _, err := Inspect(upload); !errors.Is(err, ErrCorruptImage) {
+				t.Errorf("Inspect = %v, want ErrCorruptImage before any cooldown", err)
+			}
+			if _, err := Process(context.Background(), upload); !errors.Is(err, ErrCorruptImage) {
+				t.Errorf("Process = %v, want ErrCorruptImage", err)
 			}
 		})
 	}
@@ -1758,12 +2572,17 @@ func TestMalformedWebPIsRefused(t *testing.T) {
 	if _, _, err := stripWebP(huge); !errors.Is(err, ErrImageTooLarge) {
 		t.Errorf("stripWebP(10000x10000 canvas) = %v, want ErrImageTooLarge", err)
 	}
+	if _, err := Inspect(huge); !errors.Is(err, ErrImageTooLarge) {
+		t.Errorf("Inspect(10000x10000 canvas) = %v, want ErrImageTooLarge", err)
+	}
 }
 
 // Whatever the bytes, the rewrite does not panic, and what it accepts it
-// would accept again unchanged: stripping is idempotent. The seeds are
-// lossless and lossy, simple and extended, with and without an alpha plane,
-// metadata or animation.
+// would accept again unchanged: stripping is idempotent. What it refuses,
+// Inspect does not admit as a WebP, so no WebP is refused for its chunks
+// only after flood control; any other format it refuses, and Inspect may
+// admit as what it is. The seeds are lossless and lossy, simple and
+// extended, with and without an alpha plane, metadata or animation.
 func FuzzStripWebP(f *testing.F) {
 	sample, err := os.ReadFile(filepath.Join("testdata", "sample.webp"))
 	if err != nil {
@@ -1772,6 +2591,8 @@ func FuzzStripWebP(f *testing.F) {
 	f.Add(sample)
 	f.Add(webpFile(vp8xChunk(vp8xFlagEXIF, 320, 200), riffChunk{id: "VP8L", payload: sample[20:]},
 		riffChunk{id: "EXIF", payload: []byte("Exif")}))
+	// A canvas two pixels wider than its picture, which stripWebP refuses.
+	f.Add(webpFile(vp8xChunk(0, 322, 200), riffChunk{id: "VP8L", payload: sample[20:]}))
 	// lossy.webp is a VP8 chunk alone, and lossy-alpha.webp VP8X, ALPH and
 	// VP8, both 64×48.
 	lossy, lossyAlpha := readTestdata(f, "lossy.webp"), readTestdata(f, "lossy-alpha.webp")
@@ -1796,6 +2617,9 @@ func FuzzStripWebP(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		out, info, err := stripWebP(data)
 		if err != nil {
+			if format, ierr := Inspect(data); ierr == nil && format == FormatWebP {
+				t.Fatalf("stripWebP refuses the file (%v) and Inspect admits it as a WebP", err)
+			}
 			return
 		}
 		if int64(info.Width)*int64(info.Height) > MaxPixels {

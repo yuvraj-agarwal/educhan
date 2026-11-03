@@ -41,10 +41,16 @@ const MaxPixels = 25_000_000
 const thumbJPEGQuality = 82
 
 // Errors reported for rejected uploads. Handlers translate these into 4xx
-// responses, so their text is user-facing.
+// responses, so their text is user-facing, and each says what is true of the
+// file it refuses: ErrImageTooLarge is a picture of more than MaxPixels, and
+// ErrImageTooCostly one that would take more to process than the server sets
+// aside (processingCost), which depends on how it is encoded as much as on its
+// size, and a GIF's frames on their number and their area together
+// (gifFramePixels), so that a picture of a few megapixels can be one.
 var (
 	ErrUnsupportedFormat = errors.New("unsupported image format: use JPEG, PNG, WebP, or GIF")
 	ErrImageTooLarge     = errors.New("image resolution is too large")
+	ErrImageTooCostly    = errors.New("image too large to process")
 	ErrCorruptImage      = errors.New("image could not be decoded")
 	// ErrStoredTooLarge is a file that would be stored many times larger than
 	// it came in, which only encoding it can find (storedLimit).
@@ -127,11 +133,16 @@ type Processed struct {
 // enough to run before flood control, so a file that is not an accepted image,
 // or one too large to decode, can be refused without costing its poster a
 // cooldown. For a GIF it also walks the block structure to add up the frames
-// (gifFramePixels), and refuses a file that walk cannot follow to its end. A
-// file whose processing would hold more than the whole processing budget
-// (processingCost) is refused as too large too: that depends on how it is
-// encoded as well as on its resolution. Inspect cannot tell whether the pixels
-// decode; only Process can, and Process runs it first.
+// (gifFramePixels), and refuses a file that walk cannot follow to its end. An
+// animated WebP, which nothing here decodes, is refused as ErrCorruptImage
+// from its chunks (webpAnimated), whatever its size, and so is any WebP whose
+// chunks stripWebP would refuse (webpKept), such as one cut short, whose RIFF
+// runs past the end of the file, one with a chunk that does, and a still whose
+// canvas and bitstream disagree or that has no bitstream or two. A file whose
+// processing would hold more than the whole processing budget (processingCost)
+// is refused as ErrImageTooCostly: that depends on how it is encoded as well
+// as on its resolution, which ErrImageTooLarge is kept for. Inspect cannot
+// tell whether the pixels decode; only Process can, and Process runs it first.
 func Inspect(data []byte) (Format, error) {
 	in, err := inspect(data)
 	return in.format, err
@@ -152,6 +163,19 @@ func inspect(data []byte) (inspection, error) {
 	if !ok {
 		return inspection{}, ErrUnsupportedFormat
 	}
+	// Nothing here decodes an animated WebP, whatever its size, and stripWebP
+	// refuses a still whose chunks do not make one picture of its canvas, so
+	// either is refused as it would be once processed, but from its chunks.
+	// The animation is looked for first, because the walk that checks a
+	// still's chunks would copy an animation's frames.
+	if format == FormatWebP {
+		if webpAnimated(data) {
+			return inspection{}, ErrCorruptImage
+		}
+		if _, _, err := webpKept(data); err != nil {
+			return inspection{}, err
+		}
+	}
 
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
@@ -165,8 +189,8 @@ func inspect(data []byte) (inspection, error) {
 	}
 	// Every frame of a GIF is decoded, so their sizes are added up as well.
 	// Skipping over the blocks is cheap enough to do here, and an animation
-	// too long to decode is refused like an image too large to; so is one
-	// whose blocks the decoder could not read to the end.
+	// too long to decode is refused as too costly to process; one whose
+	// blocks the decoder could not read to the end, as corrupt.
 	var frames gifFrames
 	if format == FormatGIF {
 		if frames, err = gifFramePixels(data, maxGIFFramePixels); err != nil {
@@ -175,7 +199,16 @@ func inspect(data []byte) (inspection, error) {
 	}
 	cost := processingCost(format, data, cfg, frames)
 	if cost > processingBudget {
-		return inspection{}, ErrImageTooLarge
+		return inspection{}, ErrImageTooCostly
+	}
+	// A JPEG can repeat short, cheap scans — a progressive one's a few dozen
+	// bytes each, a baseline one's a couple of bits a block — so that the
+	// decoder revisits every block of the picture many times over: CPU that
+	// holds no more memory and so costs neither the pixel cap nor the memory
+	// estimate anything (jpegScansTooCostly). It is refused here, from its
+	// header, before flood control starts a cooldown for it.
+	if format == FormatJPEG && jpegScansTooCostly(data) {
+		return inspection{}, ErrImageTooCostly
 	}
 	return inspection{
 		format: format,
@@ -187,12 +220,20 @@ func inspect(data []byte) (inspection, error) {
 
 // Process validates the raw upload, rewrites it without its metadata, and
 // derives its thumbnail from the rewritten picture. Animated GIFs are
-// thumbnailed from their first frame.
+// thumbnailed from the first picture they show.
 //
 // The decoding and encoding wait until the upload's estimated cost fits in
 // the processing budget (acquireProcessing): if ctx ends first the wait ends
 // with its error, and if ctx has a deadline it ends with ErrBusy once too
-// little of it is left to do the work (processingAllowance).
+// little of it is left to do the work (processingAllowance). Once the work
+// has begun it stops at the next point that asks after ctx ends — the
+// decode's next read of the upload, the end of the decode, the encode's
+// next write of the stored file, before a GIF's next frame, or before the
+// thumbnail (sanitize, processHeld) — and Process returns ctx's error. A
+// decode that has read all its input already, as image/jpeg has a small
+// progressive file's and x/image a lossy WebP's partitions, asks no more
+// until it is done, so it runs to its end first: a few seconds of CPU at
+// most, holding its share of the budget until then.
 func Process(ctx context.Context, data []byte) (Processed, error) {
 	out, release, err := processHeld(ctx, data)
 	if err != nil {
@@ -224,21 +265,30 @@ func processHeld(ctx context.Context, data []byte) (_ Processed, release func(),
 			give()
 		}
 	}()
-	out, err := sanitize(in, data)
+	out, err := sanitize(ctx, in, data)
 	if err != nil {
 		return Processed{}, nil, err
 	}
-	thumb, err := makeThumbnail(out.pic, out.canvas, out.format)
-	if err != nil {
+	// The thumbnail scaler is one bounded call and cannot be cut mid-scale;
+	// a cancellation that has already arrived skips it, so the budget is
+	// handed back at once rather than after a scale nothing is waiting for.
+	if err := ctx.Err(); err != nil {
 		return Processed{}, nil, err
+	}
+	if out.thumb == nil {
+		thumb, err := makeThumbnail(out.pic, out.format)
+		if err != nil {
+			return Processed{}, nil, err
+		}
+		out.thumb = &thumb
 	}
 	handed = true
 	return Processed{
 		Format: out.format,
 		Data:   out.data,
-		Width:  out.canvas.Dx(),
-		Height: out.canvas.Dy(),
-		Thumb:  thumb,
+		Width:  out.pic.Bounds().Dx(),
+		Height: out.pic.Bounds().Dy(),
+		Thumb:  *out.thumb,
 	}, give, nil
 }
 
@@ -275,22 +325,17 @@ func thumbFormat(src Format) Format {
 	return FormatPNG
 }
 
-// makeThumbnail scales the canvas down to a thumbnail. src is drawn where it
-// sits on the canvas: for everything but a GIF it is the whole canvas, and a
-// GIF's first frame may cover only part of it, leaving the rest transparent.
-func makeThumbnail(src image.Image, canvas image.Rectangle, format Format) (Thumbnail, error) {
-	cw, ch := canvas.Dx(), canvas.Dy()
-	tw, th := ThumbSize(cw, ch, ThumbMaxDim)
+// makeThumbnail scales a picture down to a thumbnail, the whole of it: for a
+// GIF, the first picture it shows at the size of its canvas, transparent
+// where its first frame draws nothing (firstGIFPicture).
+func makeThumbnail(src image.Image, format Format) (Thumbnail, error) {
+	b := src.Bounds()
+	tw, th := ThumbSize(b.Dx(), b.Dy(), ThumbMaxDim)
 
 	dst := image.NewRGBA(image.Rect(0, 0, tw, th))
-	b := src.Bounds()
-	at := image.Rect(
-		(b.Min.X-canvas.Min.X)*tw/cw, (b.Min.Y-canvas.Min.Y)*th/ch,
-		(b.Max.X-canvas.Min.X)*tw/cw, (b.Max.Y-canvas.Min.Y)*th/ch,
-	)
 	// CatmullRom is slower than the nearest-neighbour kernels but keeps small
 	// thumbnails of dense screenshots readable, which is what they are for.
-	xdraw.CatmullRom.Scale(dst, at, src, b, xdraw.Src, nil)
+	xdraw.CatmullRom.Scale(dst, dst.Rect, src, b, xdraw.Src, nil)
 
 	out := thumbFormat(format)
 	var buf bytes.Buffer

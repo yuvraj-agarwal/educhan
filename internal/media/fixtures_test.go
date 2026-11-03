@@ -88,6 +88,30 @@ func withSegments(jpg []byte, segments ...[]byte) []byte {
 	return append(out, jpg[2:]...)
 }
 
+// beforeEOI splices segments in just before a JPEG's closing EOI marker,
+// after all its scans, where image/jpeg still reads them.
+func beforeEOI(jpg []byte, segments ...[]byte) []byte {
+	if !bytes.HasSuffix(jpg, []byte{0xFF, 0xD9}) {
+		panic("beforeEOI: the JPEG does not end with EOI")
+	}
+	out := append([]byte(nil), jpg[:len(jpg)-2]...)
+	for _, s := range segments {
+		out = append(out, s...)
+	}
+	return append(out, 0xFF, 0xD9)
+}
+
+// adobeSegment is an Adobe APP14 segment with the colour transform given: 0
+// for RGB (or CMYK), 1 for YCbCr.
+func adobeSegment(transform byte) []byte {
+	return jpegSegment(0xEE, []byte{'A', 'd', 'o', 'b', 'e', 0, 100, 0, 0, 0, 0, transform})
+}
+
+// jfifSegment is a JFIF APP0 segment, as most encoders write first.
+func jfifSegment() []byte {
+	return jpegSegment(0xE0, []byte("JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"))
+}
+
 func exifSegment(tiff []byte) []byte {
 	return jpegSegment(0xE1, append([]byte("Exif\x00\x00"), tiff...))
 }
@@ -301,6 +325,25 @@ func vp8xChunk(flags byte, w, h int) riffChunk {
 	put24(p[4:7], uint32(w-1))
 	put24(p[7:10], uint32(h-1))
 	return riffChunk{id: "VP8X", payload: p}
+}
+
+// vp8Stub and vp8lStub are the first n bytes of a lossy and a lossless
+// bitstream of w×h, at least the header that says its size, which is all
+// stripWebP and Inspect read of one (bitstreamSize), and zeros after it:
+// a stand-in for a picture that is never decoded.
+func vp8Stub(w, h, n int) []byte {
+	b := make([]byte, max(n, 10))
+	copy(b[3:], []byte{0x9d, 0x01, 0x2a}) // a key frame's tag, then its start code
+	binary.LittleEndian.PutUint16(b[6:], uint16(w))
+	binary.LittleEndian.PutUint16(b[8:], uint16(h))
+	return b
+}
+
+func vp8lStub(w, h, n int) []byte {
+	b := make([]byte, max(n, 5))
+	b[0] = 0x2f
+	binary.LittleEndian.PutUint32(b[1:], uint32(w-1)|uint32(h-1)<<14)
+	return b
 }
 
 // anmfChunk is one animation frame at (x, y), w×h, holding chunks.

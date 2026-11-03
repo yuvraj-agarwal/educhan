@@ -8,10 +8,12 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yuvraj-agarwal/educhan/internal/media"
@@ -20,6 +22,127 @@ import (
 // multipartOverhead is the slack allowed on top of the attachment size limit
 // for MIME headers and the text fields sharing the request body.
 const multipartOverhead = 1 << 20
+
+// clientUploadShare is the most of the upload budget (media.UploadBudget)
+// the bodies of one client's posts may hold at once: half of it. A body holds
+// its room from before it is read until its post is answered, and a post
+// whose body never arrives never reaches flood control, so without a share
+// one client could hold the whole budget with a few connections that declare
+// large bodies and send nothing, turn every other image post away as busy,
+// and be charged nothing for it. Half is one upload of the largest size the
+// server may be configured to take (maxUploadLimit and its
+// multipartOverhead), and three at the default limit: more than one client
+// can post at once, the upload cooldown being per client across the server.
+const clientUploadShare = media.UploadBudget / 2
+
+// errUploadShare is a post refused because its client's other posts hold
+// their share of the upload budget already (clientUploadShare).
+var errUploadShare = errors.New("too many images uploading at once from this client")
+
+// uploadShares counts what each client's posts hold of the upload budget,
+// keyed on shareKey, so that none holds more than clientUploadShare. A
+// client's entry goes once it holds nothing.
+type uploadShares struct {
+	mu   sync.Mutex
+	held map[string]int64
+}
+
+// take records n more bytes held by client and returns the function that
+// gives them back, or reports false, holding nothing, when that would take
+// the client past clientUploadShare.
+func (s *uploadShares) take(client string, n int64) (func(), bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.held[client]+n > clientUploadShare {
+		return nil, false
+	}
+	if s.held == nil {
+		s.held = map[string]int64{}
+	}
+	s.held[client] += n
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if s.held[client] -= n; s.held[client] <= 0 {
+				delete(s.held, client)
+			}
+		})
+	}, true
+}
+
+// shareKey is the client a post's share of the upload budget is counted
+// under: its address as flood control counts it (clientIP), except that an
+// IPv6 address counts as its /64 network. A host on IPv6 can usually take any
+// address in its /64, so counted per address the share would bound nothing:
+// a few addresses would hold the whole budget. The people on one /64, a
+// campus network's say, have one share between them, as those behind one IPv4
+// address do. Flood control is not grouped so: its cooldowns are a wait after
+// each post, which a whole network would feel, where a share is room for a
+// few uploads at once.
+func shareKey(client string) string {
+	addr, err := netip.ParseAddr(client)
+	if err != nil || !addr.Is6() || addr.Is4In6() {
+		return client
+	}
+	network, err := addr.WithZone("").Prefix(64)
+	if err != nil {
+		return client
+	}
+	return network.String()
+}
+
+// of reports what client's posts hold, for tests.
+func (s *uploadShares) of(client string) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.held[client]
+}
+
+// uploadPaceGrace is how far behind an even pace a multipart post's body may
+// fall (pacedBody). App.uploadPaceGrace is this, except in tests.
+const uploadPaceGrace = 5 * time.Second
+
+// pacedBody holds a multipart post's body to an even pace through its read
+// window (uploadReadTimeout), so that a body which is not arriving gives its
+// room in the upload budget back within uploadPaceGrace rather than at the end
+// of the window. Before each read it moves the connection's read deadline to
+// the time by which what has arrived would have arrived at the pace that
+// brings the whole body (size, what was reserved for it) in at the end of the
+// window, plus the grace, and never past the window's end: a connection that
+// sends nothing is cut off after the grace, and one that trickles soon after,
+// while a body on course to arrive inside the window, as every body the window
+// admits must be on average, has the grace to fall behind by on the way. A
+// body cut off is answered 408 (upload too slow), as one past the window is.
+//
+// Every body that holds room in the upload budget has a length, so its pace
+// is its own: with uploads on, a multipart post without a Content-Length is
+// refused before anything is reserved for it (parseSubmission). A body
+// without one is read only with uploads off, holding no room, and is paced as
+// the most it may be, a JSON post's worth (maxRequestBytes).
+type pacedBody struct {
+	io.ReadCloser
+	setDeadline   func(time.Time) error
+	start         time.Time
+	window, grace time.Duration
+	size, n       int64
+}
+
+func (p *pacedBody) Read(b []byte) (int, error) {
+	end := p.start.Add(p.window)
+	due := end
+	if p.size > 0 {
+		due = p.start.Add(p.grace + time.Duration(float64(p.window)*float64(p.n)/float64(p.size)))
+	}
+	if due.After(end) {
+		due = end
+	}
+	_ = p.setDeadline(due)
+	k, err := p.ReadCloser.Read(b)
+	p.n += int64(k)
+	return k, err
+}
 
 // maxFormParts caps the parts of a multipart post. The form has seven at most;
 // past this the body is not a post.
@@ -31,6 +154,26 @@ const uploadFieldName = "image"
 // uploadsSwitchedOff is the refusal of an image post on a server with uploads
 // switched off. Clients match on it, so it does not change.
 const uploadsSwitchedOff = "image uploads are switched off on this server"
+
+// lengthRequired is the refusal of a multipart post sent without a
+// Content-Length while uploads are on (refuseUnsized).
+const lengthRequired = "a post with a file needs a Content-Length"
+
+// uploadTooSlow is the refusal, 408, of a multipart post whose body fell behind
+// its pace (pacedBody), whether it was being read or read past.
+const uploadTooSlow = "upload too slow"
+
+// refuseUnsized answers a multipart post that came without a Content-Length,
+// with uploads on: 411, before anything is reserved for its body or read of
+// it (parseSubmission). Its body is not read past either, because only the
+// client decides when it ends: the connection is closed once the answer is
+// written, and the read deadline set to now, so the server does not wait on
+// the rest of the body to close it.
+func refuseUnsized(w http.ResponseWriter) {
+	w.Header().Set("Connection", "close")
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now())
+	writeError(w, http.StatusLengthRequired, lengthRequired)
+}
 
 // mediaCacheControl is safe to set aggressively: stored names are random and
 // their contents never change.
@@ -99,21 +242,36 @@ type submissionForm interface {
 // A multipart body, with uploads on, is read only once there is room for it
 // in the upload budget (media.ReserveUpload), which counts the bodies being
 // read and held until their posts are answered: as much as the request says
-// it is, or the most it may be. ctx is the post's reserveContext: with no room
-// in time the body is read to its end unkept and the post is answered 503
-// (busy), before flood control has charged it anything.
+// it is. ctx is the post's reserveContext: with no room in time the body is
+// read to its end unkept and the post is answered 503 (busy), before flood
+// control has charged it anything. The room comes out of the client's share
+// of the budget first (reserveUpload): a post whose client's other posts hold
+// that already is read to its end unkept and answered 429 at once, without
+// waiting, and also charged nothing.
+//
+// Such a body has to say how long it is: one without a Content-Length
+// (chunked) is answered 411 before anything is reserved for it or read of it
+// (refuseUnsized), and charged nothing. Its length known only at its end, it
+// would have had room reserved for the most a body may be, and could only be
+// held to the pace of that, which cut a small body sent slowly off, or to
+// none, which let a trickle of a few bytes a second hold that room for the
+// whole read window: three addresses' shares turned every other image post
+// away 503. Browsers send a Content-Length with every form.
 //
 // A multipart body sets its own connection deadlines, because it may take
 // longer than one WriteTimeout from the end of its headers allows: the body
-// has uploadReadTimeout to arrive from when there is room to read it, and a
-// body slower than that is answered 408 (upload too slow), not the 503 a
-// server with no room gives; the write deadline covers that read and the
-// answer to it, and processContext resets it for the processing that follows.
-// The deadlines are set once the wait for room is over, whatever its outcome,
-// so a post that waited has its whole uploadReadTimeout for its body — the
-// wait was the server's, and taken out of the body's time it would turn a
-// busy server into a slow upload — and a post turned away has that long for
-// the rest of its body to be read past and the answer written.
+// has uploadReadTimeout to arrive from when there is room to read it, at an
+// even pace with uploadPaceGrace to spare (pacedBody), and a body slower than
+// that is answered 408 (upload too slow), not the 503 a server with no room
+// gives; the write deadline covers that read and the answer to it, and
+// processContext resets it for the processing that follows. The deadlines are
+// set once the wait for room is over, whatever its outcome, so a post that
+// waited has its whole uploadReadTimeout for its body — the wait was the
+// server's, and taken out of the body's time it would turn a busy server into
+// a slow upload — and a post turned away has that long for the rest of its
+// body to be read past, at the same pace, and the answer written: 408 if it
+// fell behind on the way, as with room, and otherwise why it was turned away
+// (turnAway).
 func (a *App) parseSubmission(ctx context.Context, w http.ResponseWriter, r *http.Request, form submissionForm) (*submission, bool) {
 	if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
 		if !decodeJSON(w, r, form) {
@@ -132,6 +290,9 @@ func (a *App) parseSubmission(ctx context.Context, w http.ResponseWriter, r *htt
 	bodyLimit := a.cfg.MaxUploadBytes + multipartOverhead
 	if !a.cfg.UploadsEnabled {
 		bodyLimit = maxRequestBytes
+	} else if r.ContentLength < 0 {
+		refuseUnsized(w)
+		return nil, false
 	}
 	size := bodyLimit
 	if r.ContentLength >= 0 {
@@ -142,20 +303,22 @@ func (a *App) parseSubmission(ctx context.Context, w http.ResponseWriter, r *htt
 		err      error
 	)
 	if a.cfg.UploadsEnabled {
-		reserved, err = media.ReserveUpload(ctx, size)
+		reserved, err = a.reserveUpload(ctx, r, size)
 	}
 	// Nothing has read the body yet: its time starts now.
 	rc := http.NewResponseController(w)
 	now := time.Now()
 	_ = rc.SetReadDeadline(now.Add(a.uploadReadTimeout))
 	_ = rc.SetWriteDeadline(now.Add(a.uploadReadTimeout + answerAllowance))
+	r.Body = &pacedBody{ReadCloser: r.Body, setDeadline: rc.SetReadDeadline,
+		start: now, window: a.uploadReadTimeout, grace: a.uploadPaceGrace, size: size}
 	if err != nil {
 		// The browser is still sending the body. Answered before it has
 		// finished, a connection closed under it can reach the poster as a
 		// network failure instead of this answer, so the body is read, and
 		// nothing of it kept.
-		_, _ = io.Copy(io.Discard, http.MaxBytesReader(w, r.Body, bodyLimit))
-		a.rejectUpload(w, r, err)
+		_, drained := io.Copy(io.Discard, http.MaxBytesReader(w, r.Body, bodyLimit))
+		a.turnAway(w, r, err, drained)
 		return nil, false
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, bodyLimit)
@@ -169,6 +332,27 @@ func (a *App) parseSubmission(ctx context.Context, w http.ResponseWriter, r *htt
 	}
 	sub.reserved = reserved
 	return sub, true
+}
+
+// reserveUpload takes room for a multipart post's body of at most size bytes:
+// its client's share first (clientUploadShare, the client as shareKey counts
+// it), refused at once with errUploadShare when the client's other posts hold
+// it already, and then the upload budget itself (media.ReserveUpload), waited
+// for under ctx. The function it returns gives both back.
+func (a *App) reserveUpload(ctx context.Context, r *http.Request, size int64) (func(), error) {
+	share, ok := a.uploadShares.take(shareKey(clientIP(r, a.cfg.TrustedProxyHops)), size)
+	if !ok {
+		return nil, errUploadShare
+	}
+	reserved, err := media.ReserveUpload(ctx, size)
+	if err != nil {
+		share()
+		return nil, err
+	}
+	return func() {
+		reserved()
+		share()
+	}, nil
 }
 
 // readMultipart reads a multipart post's text fields and its image, from a
@@ -185,12 +369,21 @@ func (a *App) parseSubmission(ctx context.Context, w http.ResponseWriter, r *htt
 // (maxRequestBytes) between them; the first of each name is the one read, as
 // FormValue would.
 func (a *App) readMultipart(r *http.Request, size int64) (*submission, int, string) {
+	body := &countingReader{r: r.Body}
 	refuse := func(err error) (*submission, int, string) {
+		// A failed read of the body is the answer, whatever the form's
+		// reader made of it: a part's header line that the read deadline
+		// or the body limit cut short inside its name reaches it as a
+		// malformed header, because bufio's ReadLine hands back what it has
+		// of a line and drops the error that cut it.
+		if body.err != nil {
+			err = body.err
+		}
 		switch {
 		case isReadTimeout(err):
 			// The body did not arrive inside uploadReadTimeout: the client's
 			// doing, not the server's load, so 408 rather than the 503 busy.
-			return nil, http.StatusRequestTimeout, "upload too slow"
+			return nil, http.StatusRequestTimeout, uploadTooSlow
 		case tooLarge(err) && !a.cfg.UploadsEnabled:
 			return nil, http.StatusForbidden, uploadsSwitchedOff
 		case tooLarge(err), errors.Is(err, errPartTooLarge):
@@ -203,7 +396,6 @@ func (a *App) readMultipart(r *http.Request, size int64) (*submission, int, stri
 	if err != nil || params["boundary"] == "" {
 		return refuse(err)
 	}
-	body := &countingReader{r: r.Body}
 	mr := multipart.NewReader(body, params["boundary"])
 
 	fields := map[string]string{}
@@ -283,9 +475,10 @@ func (a *App) readMultipart(r *http.Request, size int64) (*submission, int, stri
 		return sub, 0, ""
 	}
 	// What the file says about itself, its format and its decoded size, is
-	// cheap to read, so a file that is not an accepted image, or one too large
-	// to decode, is refused here, before flood control starts a cooldown for
-	// it. Decoding, the cost the upload cooldown is there for, waits until
+	// cheap to read, so a file that is not an accepted image, one of too many
+	// pixels or too costly to process, or an animated WebP, which nothing
+	// here decodes, is refused here, before flood control starts a cooldown
+	// for it. Decoding, the cost the upload cooldown is there for, waits until
 	// after: an image whose pixels then fail to decode has started its
 	// cooldowns.
 	if _, err := media.Inspect(image); err != nil {
@@ -333,15 +526,20 @@ func readAtMost(r io.Reader, hint, limit int64) ([]byte, error) {
 	}
 }
 
-// countingReader counts the bytes read through it.
+// countingReader counts the bytes read through it, and keeps the first error
+// other than io.EOF that a read through it returned.
 type countingReader struct {
-	r io.Reader
-	n int64
+	r   io.Reader
+	n   int64
+	err error
 }
 
 func (c *countingReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
 	c.n += int64(n)
+	if err != nil && err != io.EOF && c.err == nil {
+		c.err = err
+	}
 	return n, err
 }
 
@@ -375,11 +573,39 @@ func (a *App) rejectUpload(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, media.ErrUnsupportedFormat),
 		errors.Is(err, media.ErrCorruptImage),
 		errors.Is(err, media.ErrImageTooLarge),
+		errors.Is(err, media.ErrImageTooCostly),
 		errors.Is(err, media.ErrStoredTooLarge):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case tooBusy(err) && r.Context().Err() == nil:
 		answerBusy(w)
 	default:
+		a.fail(w, r, err, "could not store attachment")
+	}
+}
+
+// turnAway answers a multipart post that reserveUpload turned away with err,
+// once its body has been read past, the read having ended with drained. A body
+// that fell behind its pace on the way is answered 408, whatever the post was
+// turned away for, as it would have been with room to read it: the connection
+// is what the poster has to change. Any other is answered for why it was turned
+// away. The answer is decided from those two errors alone, never from the
+// request's context: net/http cancels that for any failed read of the body, a
+// read deadline's included, so a busy refusal mapped through fail took the slow
+// body for a client gone and answered nothing, which net/http sent as 200 with
+// an empty body, and a client read as its post made.
+func (a *App) turnAway(w http.ResponseWriter, r *http.Request, err, drained error) {
+	switch {
+	case isReadTimeout(drained):
+		writeError(w, http.StatusRequestTimeout, uploadTooSlow)
+	case errors.Is(err, errUploadShare):
+		// The client's own doing, like flood control: 429, with as long to
+		// wait as a busy server asks, and no cooldown started.
+		tooQuickly(w, "uploading images", busyRetryAfter)
+	case tooBusy(err):
+		answerBusy(w)
+	default:
+		// The wait for room ended with the request's context, the client having
+		// gone away while its post waited.
 		a.fail(w, r, err, "could not store attachment")
 	}
 }
@@ -435,7 +661,8 @@ func attachmentInput(sub *submission, img *media.StoredImage) *newAttachment {
 // attachmentName is the name every image is shown under: "image" and the
 // extension of the format it was stored in, whatever the poster's file was
 // called. 0008_attachment_names.sql gave the rows from before the same name,
-// from the same path, and has to agree with this.
+// from the same path, and renameAttachments gives it on every start to any an
+// older release has stored since; both have to agree with this.
 func attachmentName(storedPath string) string {
 	return "image" + path.Ext(storedPath)
 }

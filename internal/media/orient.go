@@ -28,54 +28,64 @@ import (
 
 const (
 	exifOrientationTag = 0x0112
+	exifIFDTag         = 0x8769 // the offset of the Exif sub-IFD
 	tiffTypeShort      = 3
+	tiffTypeLong       = 4
 )
 
+// maxEXIFEntries is how many IFD entries tiffOrientation reads of one file
+// at most, across IFD0 and the sub-IFDs it follows from there: every entry of
+// IFD0 and of one Exif sub-IFD, however many each holds (an IFD's count is 16
+// bits), about a millisecond of CPU. Chromium follows every Exif sub-IFD
+// entry in IFD0, each into a scan of the sub-IFD it names, so the reader
+// follows them too; but then an IFD0 of 65535 such entries, each naming IFD0
+// itself, is 65535 scans of 65535 entries, 4.3 billion in all, which a PNG's
+// eXIf chunk of 768 KB holds and which took ~26-27 s of CPU on one core to
+// read. Past this many the reader stops, and reads the file as upright where
+// Chromium, reading on, may turn it; no file a camera writes comes near
+// (TestEXIFReadIsBounded).
+const maxEXIFEntries = 2 * 0xFFFF
+
 // jpegOrientation reads the Orientation tag from the first Exif APP1 segment
-// of a JPEG, and returns 1, upright, for a file with no such tag, a value
-// outside 1–8, or anything it cannot read. A wrong guess here can only leave a
-// picture turned the way it was stored; whether the file is an image at all is
-// for the decoder to say, so this never fails.
+// of a JPEG that holds anything past its six-byte header, and returns 1,
+// upright, when no Orientation entry it reads is a single SHORT from 1 to 8
+// (tiffOrientation, which passes others over as Chromium does and stops after
+// maxEXIFEntries), or when it cannot read the data. Chromium passes over a
+// segment of the header alone for a later one, but takes the first that holds
+// more, readable or not, and so does this. A wrong guess here can only leave
+// a picture turned the way it was stored; whether the file is an image at all
+// is for the decoder to say, so this never fails.
+//
+// It walks the segments before the first scan as image/jpeg's decoder reads
+// them (jpegNextSegment), which is also how libjpeg, and so Chromium, reads
+// them: bytes between segments that are not a marker, an 0xFF00 pair among
+// them, are skipped rather than ending the walk, so an Exif segment after them
+// turns the stored picture as it turned the one the poster's browser showed.
 //
 // The upload is hostile until proven otherwise, so the reader works on the
 // bytes in place: every offset is checked against the segment before it is
-// used, nothing is allocated, and the only offset followed is the one to IFD0,
-// where the tag lives. With no chain of IFDs walked there is no loop to be
-// caught in, however the offsets point.
+// used, nothing is allocated, and the only offsets followed are the two kinds
+// to where Chromium looks for the tag: IFD0's, and from IFD0 alone, its Exif
+// sub-IFD's (tiffOrientation). Nothing is followed from a sub-IFD, so with no
+// chain of IFDs walked there is no loop to be caught in, however the offsets
+// point, and the reader stops after maxEXIFEntries entries in all, however
+// many sub-IFDs IFD0 names.
 func jpegOrientation(data []byte) int {
 	if len(data) < 2 || data[0] != 0xFF || data[1] != 0xD8 {
 		return 1
 	}
-	i := 2
-	for i+4 <= len(data) {
-		if data[i] != 0xFF {
+	for i := 2; ; {
+		marker, segment, next, ok := jpegNextSegment(data, i)
+		if !ok || marker == 0xDA {
+			// The end of what the decoder reads, or the start of the first
+			// scan: the metadata segments are behind us.
 			return 1
 		}
-		marker := data[i+1]
-		switch {
-		case marker == 0xFF:
-			// A fill byte before the marker proper.
-			i++
-			continue
-		case marker == 0x01 || (marker >= 0xD0 && marker <= 0xD8):
-			// TEM, RSTn and SOI stand alone, with no length.
-			i += 2
-			continue
-		case marker == 0xDA || marker == 0xD9:
-			// Start of scan or end of image: the metadata segments are behind us.
-			return 1
-		}
-		length := int(data[i+2])<<8 | int(data[i+3])
-		if length < 2 || length > len(data)-i-2 {
-			return 1
-		}
-		segment := data[i+4 : i+2+length]
-		if marker == 0xE1 && len(segment) >= 6 && string(segment[:5]) == "Exif\x00" {
+		if marker == 0xE1 && len(segment) > 6 && string(segment[:5]) == "Exif\x00" {
 			return tiffOrientation(segment[6:])
 		}
-		i += 2 + length
+		i = next
 	}
-	return 1
 }
 
 // pngOrientation reads the Orientation tag from a PNG's eXIf chunk, under the
@@ -83,7 +93,9 @@ func jpegOrientation(data []byte) int {
 // or one it cannot read. Only an eXIf chunk before the first IDAT counts:
 // that is where the PNG specification puts it, and the only place browsers
 // read it from, so one further on never turned the picture on screen. The
-// chunk holds the TIFF structure itself, with no "Exif" prefix.
+// chunk holds the TIFF structure itself, with no "Exif" prefix, and as with a
+// JPEG's segments, Chromium passes over an empty one for a later one, but
+// takes the first that holds a byte or more, readable or not.
 func pngOrientation(data []byte) int {
 	i := 8 // the signature
 	for i+8 <= len(data) {
@@ -93,7 +105,9 @@ func pngOrientation(data []byte) int {
 		}
 		switch string(data[i+4 : i+8]) {
 		case "eXIf":
-			return tiffOrientation(data[i+8 : i+8+int(n)])
+			if n > 0 {
+				return tiffOrientation(data[i+8 : i+8+int(n)])
+			}
 		case "IDAT":
 			return 1
 		}
@@ -102,9 +116,17 @@ func pngOrientation(data []byte) int {
 	return 1
 }
 
-// tiffOrientation reads the Orientation entry of IFD0 in a TIFF structure, the
-// body of an Exif segment or an eXIf chunk, under the same rules as
-// jpegOrientation.
+// tiffOrientation reads the Orientation tag of a TIFF structure, the body of
+// an Exif segment or an eXIf chunk, under the same rules as jpegOrientation,
+// and the way Chromium reads it, so that the picture is stored turned as the
+// poster's browser showed it (TestOrientationIsReadAsChromiumReadsIt). It
+// reads IFD0's entries in order, and the Exif sub-IFD's where IFD0's entry
+// for it stands, and the first Orientation entry that is a single SHORT from 1
+// to 8 counts: one that is not (of another type or count, or 0, or 9) is
+// passed over rather than read as upright. An IFD that claims more entries
+// than the segment holds is read for the entries it does hold, IFD0 is read
+// wherever the header puts it, overlapping the header too, and every Exif
+// sub-IFD entry in IFD0 is followed, until maxEXIFEntries have been read.
 func tiffOrientation(tiff []byte) int {
 	if len(tiff) < 8 {
 		return 1
@@ -121,32 +143,46 @@ func tiffOrientation(tiff []byte) int {
 	if order.Uint16(tiff[2:4]) != 42 {
 		return 1
 	}
-	// Compared as 64-bit so an offset near 4 GiB cannot wrap on a 32-bit build.
-	offset := uint64(order.Uint32(tiff[4:8]))
-	if offset < 8 || offset+2 > uint64(len(tiff)) {
-		return 1
-	}
-	entries := tiff[offset+2:]
-	count := int(order.Uint16(tiff[offset : offset+2]))
-	if count > len(entries)/12 {
-		// An IFD claiming more entries than the segment holds is not one we
-		// can trust any part of.
-		return 1
-	}
-	for k := 0; k < count; k++ {
-		entry := entries[12*k : 12*k+12]
-		if order.Uint16(entry[0:2]) != exifOrientationTag {
-			continue
-		}
-		if order.Uint16(entry[2:4]) != tiffTypeShort || order.Uint32(entry[4:8]) != 1 {
-			return 1
-		}
-		if v := int(order.Uint16(entry[8:10])); v >= 1 && v <= 8 {
-			return v
-		}
-		return 1
+	left := maxEXIFEntries
+	if o, ok := ifdOrientation(tiff, order, order.Uint32(tiff[4:8]), true, &left); ok {
+		return o
 	}
 	return 1
+}
+
+// ifdOrientation reads the IFD at offset in tiff for tiffOrientation, and
+// reports whether it found an Orientation entry that counts. In IFD0 (ifd0)
+// an Exif sub-IFD entry, a single LONG, is followed where it stands, and the
+// sub-IFD read the same way but for that: nothing is followed from it. Each
+// entry read takes one from *left, and none is read once it is 0.
+func ifdOrientation(tiff []byte, order binary.ByteOrder, offset uint32, ifd0 bool, left *int) (int, bool) {
+	// Compared as 64-bit so an offset near 4 GiB cannot wrap on a 32-bit build.
+	if uint64(offset)+2 > uint64(len(tiff)) {
+		return 0, false
+	}
+	entries := tiff[offset+2:]
+	count := min(int(order.Uint16(tiff[offset:offset+2])), len(entries)/12)
+	for k := 0; k < count; k++ {
+		if *left == 0 {
+			return 0, false
+		}
+		*left--
+		entry := entries[12*k : 12*k+12]
+		typ, n := order.Uint16(entry[2:4]), order.Uint32(entry[4:8])
+		switch order.Uint16(entry[0:2]) {
+		case exifOrientationTag:
+			if v := int(order.Uint16(entry[8:10])); typ == tiffTypeShort && n == 1 && v >= 1 && v <= 8 {
+				return v, true
+			}
+		case exifIFDTag:
+			if ifd0 && typ == tiffTypeLong && n == 1 {
+				if v, ok := ifdOrientation(tiff, order, order.Uint32(entry[8:12]), false, left); ok {
+					return v, true
+				}
+			}
+		}
+	}
+	return 0, false
 }
 
 // orientedPoint is where pixel (x, y) of a w×h image lands once orientation o
@@ -172,11 +208,11 @@ func orientedPoint(o, x, y, w, h int) (int, int) {
 }
 
 // orient returns src turned upright according to EXIF orientation o, or src
-// itself when o is 1 or unknown. Every pixel keeps its value exactly, in a
-// picture of the same kind: a JPEG's YCbCr (orientYCbCr), grayscale or RGBA
-// (what an RGB or a CMYK JPEG is by the time it gets here), and whatever a
-// PNG decodes to, from a palette to 16-bit colour with alpha, are each turned
-// a pixel's bytes at a time into a copy of the same size. That costs the
+// itself when o is 1 or unknown. A JPEG's YCbCr is turned by orientYCbCr;
+// grayscale and RGBA (what an RGB or a CMYK JPEG is by the time it gets
+// here), and whatever a PNG decodes to, from a palette to 16-bit colour with
+// alpha, are each turned a pixel's bytes at a time into a copy of the same
+// kind and size, every pixel keeping its value exactly. That costs the
 // decoded size again, which is what processingCost counts for it.
 func orient(src image.Image, o int) image.Image {
 	b := src.Bounds()
@@ -251,10 +287,13 @@ func orientedRect(w, h, o int) image.Rectangle {
 // others, and turned within its plane it would land first, covering the wrong
 // ones: every colour along that side would shift by a pixel. Nor has a
 // quarter-width chroma (4:1:1, 4:1:0) any counterpart in the image package
-// once turned on its side. Either way every pixel takes the chroma it was
-// decoded with into a picture with chroma at full resolution (4:4:4), 3 bytes
-// a pixel, and jpegenc stores it at 4:4:4, not the subsampling it came in at:
-// finer chroma than the upload carried and a larger file, but no colour lost.
+// once turned on its side. Either way the picture is turned a pixel at a time
+// into one with chroma at full resolution (4:4:4), 3 bytes a pixel, each
+// pixel keeping its luma and taking its chroma as a browser widens it for
+// display (jpegChromaRow), and jpegenc stores it at 4:4:4, not the
+// subsampling it came in at: finer chroma than the upload carried and a
+// larger file, but the colour its poster saw, at its edges too, rather than
+// blocks of the sample each pixel lies in.
 func orientYCbCr(src *image.YCbCr, o int) *image.YCbCr {
 	w, h := src.Rect.Dx(), src.Rect.Dy()
 	if ratio, ok := turnedSubsampling(src.SubsampleRatio, o, w, h); ok && src.Rect.Min == (image.Point{}) {
@@ -267,12 +306,13 @@ func orientYCbCr(src *image.YCbCr, o int) *image.YCbCr {
 	}
 	dst := image.NewYCbCr(orientedRect(w, h, o), image.YCbCrSubsampleRatio444)
 	b := src.Rect
+	cb, cr := make([]uint8, w), make([]uint8, w)
 	for y := 0; y < h; y++ {
+		jpegChromaRow(cb, cr, src, b.Min.Y+y)
 		for x := 0; x < w; x++ {
-			yi, ci := src.YOffset(b.Min.X+x, b.Min.Y+y), src.COffset(b.Min.X+x, b.Min.Y+y)
 			dx, dy := orientedPoint(o, x, y, w, h)
 			at := dy*dst.YStride + dx // the same offset in all three planes at 4:4:4
-			dst.Y[at], dst.Cb[at], dst.Cr[at] = src.Y[yi], src.Cb[ci], src.Cr[ci]
+			dst.Y[at], dst.Cb[at], dst.Cr[at] = src.Y[src.YOffset(b.Min.X+x, b.Min.Y+y)], cb[x], cr[x]
 		}
 	}
 	return dst

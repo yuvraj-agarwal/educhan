@@ -13,12 +13,16 @@ import (
 	"image/color/palette"
 	"image/draw"
 	"image/gif"
+	"image/jpeg"
 	"image/png"
+	"io"
 	"math"
 	"math/rand"
 	"runtime"
 	"runtime/debug"
 	"runtime/metrics"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -101,6 +105,43 @@ func gifOfFrames(t *testing.T, w, h, n int) []byte {
 	for i := 0; i < n; i++ {
 		g.Image = append(g.Image, image.NewPaletted(image.Rect(0, 0, w, h), pal))
 		g.Delay = append(g.Delay, 1)
+	}
+	var buf bytes.Buffer
+	if err := gif.EncodeAll(&buf, g); err != nil {
+		t.Fatalf("encode gif: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// gifPutBack is a GIF of five frames on a w×h canvas that is stored with a
+// table a frame and frames put back (playGIF): a background of 256 bands of
+// colour, then a spark of one colour over its left half, put back, then 256
+// bands of other colours over its right half, and the spark and another 256
+// after that. Left in place or cleared, the spark would leave the frame
+// after it to draw the background's left half as well, 512 colours.
+func gifPutBack(t *testing.T, w, h int) []byte {
+	t.Helper()
+	bands := func(r image.Rectangle, red uint8) *image.Paletted {
+		pal := make(color.Palette, 256)
+		for i := range pal {
+			pal[i] = color.RGBA{red, uint8(i), uint8(255 - i), 0xFF}
+		}
+		m := image.NewPaletted(r, pal)
+		for y := r.Min.Y; y < r.Max.Y; y++ {
+			row := m.Pix[m.PixOffset(r.Min.X, y):][:r.Dx()]
+			for x := range row {
+				row[x] = uint8((y - r.Min.Y) * 256 / r.Dy())
+			}
+		}
+		return m
+	}
+	left, right := image.Rect(0, 0, w/2, h), image.Rect(w/2, 0, w, h)
+	spark := image.NewPaletted(left, color.Palette{color.RGBA{0xF0, 0xF0, 0x10, 0xFF}})
+	g := &gif.GIF{
+		Image:    []*image.Paletted{bands(image.Rect(0, 0, w, h), 0), spark, bands(right, 1), spark, bands(right, 2)},
+		Delay:    []int{10, 10, 10, 10, 10},
+		Disposal: []byte{gif.DisposalNone, gif.DisposalPrevious, gif.DisposalNone, gif.DisposalPrevious, gif.DisposalNone},
+		Config:   image.Config{Width: w, Height: h},
 	}
 	var buf bytes.Buffer
 	if err := gif.EncodeAll(&buf, g); err != nil {
@@ -261,11 +302,10 @@ func greyQuadrants(w, h int) *image.Gray {
 // each term the model charges for decoding to come to megabytes more than
 // processingSlack in one of them at least, so that a term left out is seen (a
 // partial cut smaller than the slack it hides instead): 2400×1800, four times
-// a phone screenshot's pixels, for a
-// term of a byte and a half a pixel; 3200×2400 for the three kinds that turn
-// on a term of a byte a pixel; and 1200×900 for the 16-bit colour PNGs,
-// whose least term is eight bytes a pixel, and which take the longest to
-// encode.
+// a phone screenshot's pixels, for a term of a byte and a half a pixel;
+// 3200×2400 for the three kinds that turn on a term of a byte a pixel; and
+// 1200×900 for the 16-bit colour PNGs, whose least term is eight bytes a
+// pixel, and which take the longest to encode.
 //
 // The cost-*.jpg and cost-*.webp files in testdata are 2400×1800, made with
 // Pillow, because Go encodes neither progressive nor CMYK JPEGs nor any WebP:
@@ -274,24 +314,42 @@ func greyQuadrants(w, h int) *image.Gray {
 // components named R, G and B), and the WebPs at Pillow's defaults. The
 // lossless WebP is a grid of nine colours and the transparent one has eight
 // levels of alpha in vertical bands, the first clear, which libwebp writes as
-// a colour index packed two pixels to the byte: the dearest way to decode
-// either. cost-411.jpg is made with ImageMagick (-sampling-factor 4x1
-// -quality 90), because Pillow does not write 4:1:1. The GIF past its canvas
-// has a 3200×2400 interlaced frame on a canvas of 64×64, so that the copy
-// its rows are put in order in is charged on the frame, not the canvas. An
-// opaque lossy WebP is
-// charged for its planes and two copies of its file (the strip's and the
-// decoder's), so it comes three ways, each term megabytes over the others
-// somewhere: 2400×1800 as Pillow made it, whose planes are megabytes and
-// whose file is not; 144×48 with 8 MiB more at the end of its bitstream
+// a colour index packed two pixels to the byte. cost-411.jpg is made with
+// ImageMagick (-sampling-factor 4x1 -quality 90), because Pillow does not
+// write 4:1:1. The dearest lossless picture to decode adds what libwebp did
+// not need for those two, a predictor and a cross-colour transform of 4×4
+// tiles before the colour index, whose images are held beside the packed
+// picture and the unpacked one: "WebP lossless, unpacked" (unpackedWebP) is
+// 42 bytes that decode to 25 megapixels and hold 6.5 bytes a pixel, 12 MiB
+// of it the transforms' images. It is four times as wide as it is tall
+// because the thumbnail scaler's scratch grows with the shorter side: as a
+// square, the scratch and the encoder's output beneath it would cost more
+// than decoding it does, and hide a term of its decoding from the cost of the
+// whole. The GIF past its canvas has a 3200×2400 interlaced frame on a canvas
+// of 64×64, so that the copy its rows are put in order in is charged on the
+// frame, not the canvas. The GIF of frames put back is stored with frames
+// put back, for which what was under them is kept (gifPlayScratch). An opaque
+// lossy WebP is charged for its planes and two copies of its file (the strip's
+// and the decoder's), so it comes three ways, each term megabytes over the
+// others somewhere: 2400×1800 as Pillow made it, whose planes are megabytes
+// and whose file is not; 144×48 with 8 MiB more at the end of its bitstream
 // (paddedBitstream), whose two copies are megabytes and whose planes are not;
-// and 2400×1800 padded, where both are. The PNG strip is a row of 524288
-// grey pixels four deep, whose thumbnail scaler holds tables of weights of
-// 64 bytes for each of them (thumbScratch); turned on its side, it is stored
-// four pixels wide, so its thumbnail is a pixel wide and the scaler's buffer
-// is 32 bytes for every one of its rows as well, which only reading the
-// orientation charges. Those marked "o6" carry an EXIF orientation of 6, so
-// they are turned on their side too, and "o3" one of 3, turned around.
+// and 2400×1800 padded, where both are. The PNG strip is a row of 524288 grey
+// pixels four deep, whose thumbnail scaler holds tables of weights of 64 bytes
+// for each of them (thumbScratch); turned on its side, it is stored four
+// pixels wide, so its thumbnail is a pixel wide and the scaler's buffer is 32
+// bytes for every one of its rows as well, which only reading the orientation
+// charges. The 16-bit RGBA strip, a row of 1048576 pixels, is decoded through
+// two rows of the file of 8 MiB each beside its picture (pngRowBytes). Two
+// more JPEGs of YCbCr samples, both turned on their side, are converted to
+// RGB, a copy of 4 bytes a pixel that the turn copies again whole, by segments
+// image/jpeg reads where a walk that stopped at the first scan would not see
+// them: the progressive 4:2:0 file, without its JFIF APP0, with an Adobe
+// segment of transform 0 after its last scan, and a baseline 4:2:0 one whose
+// JFIF APP0 is followed by another APP0, which clears what the first said, so
+// that the Adobe segment after it counts. Those marked "o6" carry an EXIF
+// orientation of 6, so they are turned on their side too, and "o3" one of 3,
+// turned around.
 func costFixtures(t *testing.T) map[string][]byte {
 	t.Helper()
 	turned := func(jpg []byte, o uint16) []byte {
@@ -301,6 +359,7 @@ func costFixtures(t *testing.T) map[string][]byte {
 	const w, h = 2400, 1800
 	const large, tall = 3200, 2400
 	const small, short = 1200, 900
+	notJFIF := jpegSegment(0xE0, []byte("AVI1\x00\x00\x00\x00"))
 	return map[string][]byte{
 		"baseline 4:2:0 o6":          sideways(encodeJPEGImage(t, quadrants(w, h))),
 		"baseline 4:2:0 odd o3":      turned(encodeJPEGImage(t, quadrants(w+1, h+1)), 3),
@@ -312,6 +371,8 @@ func costFixtures(t *testing.T) map[string][]byte {
 		"progressive CMYK o6":        readTestdata(t, "cost-progcmyk.jpg"),
 		"baseline CMYK":              readTestdata(t, "cost-cmyk.jpg"),
 		"RGB":                        readTestdata(t, "cost-rgb.jpg"),
+		"RGB, Adobe after the scans": beforeEOI(withoutJFIF(t, readTestdata(t, "cost-prog420.jpg")), adobeSegment(0)),
+		"RGB, JFIF undone by APP0":   sideways(withSegments(encodeJPEGImage(t, quadrants(w, h)), jfifSegment(), notJFIF, adobeSegment(0))),
 		"PNG palette":                rawPNG(t, large, tall, 3, 8, false, false),
 		"PNG RGB":                    rawPNG(t, w, h, 2, 8, false, false),
 		"PNG grey with transparency": rawPNG(t, w, h, 0, 8, false, true),
@@ -322,16 +383,30 @@ func costFixtures(t *testing.T) map[string][]byte {
 			pngChunk("eXIf", orientationTIFF(binary.BigEndian, 6))),
 		"PNG strip o6": withPNGChunks(rawPNG(t, 1<<19, 4, 0, 8, false, false),
 			pngChunk("eXIf", orientationTIFF(binary.BigEndian, 6))),
+		"PNG RGBA 16-bit strip":        rawPNG(t, 1<<20, 1, 6, 16, false, false),
 		"GIF of four frames":           gifOfFrames(t, w, h, 4),
 		"GIF of two interlaced frames": interlaced(t, gifOfFrames(t, large, tall, 2)),
 		"GIF past its canvas":          interlaced(t, gifPastCanvas(t, large, tall)),
+		"GIF of frames put back":       gifPutBack(t, w, h),
 		"WebP lossy":                   readTestdata(t, "cost-lossy.webp"),
 		"WebP lossy, small, padded":    paddedBitstream(t, readTestdata(t, "webp-swatches.webp"), 8<<20),
 		"WebP lossy, padded":           paddedBitstream(t, readTestdata(t, "cost-lossy.webp"), 8<<20),
 		"WebP lossy with alpha":        readTestdata(t, "cost-alpha.webp"),
 		"WebP lossless":                readTestdata(t, "cost-lossless.webp"),
+		"WebP lossless, unpacked":      unpackedWebP(10000, 2500),
 		"WebP of many chunks":          manyChunkWebP(t, readTestdata(t, "webp-swatches.webp"), 200000),
 	}
+}
+
+// withoutJFIF is a JPEG without the JFIF APP0 segment it starts with, as
+// Pillow and libjpeg write one.
+func withoutJFIF(t *testing.T, jpg []byte) []byte {
+	t.Helper()
+	jfif := jfifSegment()
+	if len(jpg) < 2+len(jfif) || !bytes.Equal(jpg[2:6], jfif[:4]) || string(jpg[6:11]) != "JFIF\x00" {
+		t.Fatal("withoutJFIF: the JPEG does not start with a JFIF APP0 of the usual length")
+	}
+	return append([]byte{0xFF, 0xD8}, jpg[2+len(jfif):]...)
 }
 
 /* Measurement -------------------------------------------------------------- */
@@ -370,7 +445,7 @@ func liveHeap() int64 {
 // settles. peakLive therefore runs on at least two cores, raising GOMAXPROCS
 // for its own length when it has to (a plain `go test` already has more, so
 // only `-cpu=1`, GOMAXPROCS=1, or one allotted core needs this).
-func peakLive(t *testing.T, name string, work func() error) int64 {
+func peakLive(t testing.TB, name string, work func() error) int64 {
 	t.Helper()
 	if runtime.GOMAXPROCS(0) < 2 {
 		defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(2))
@@ -427,7 +502,7 @@ func peakLive(t *testing.T, name string, work func() error) int64 {
 // alone can fail on a busy machine: a collection that runs on across a phase
 // boundary marks the garbage of the phase before it live alongside the next
 // phase's allocations, and it does not fall that way three times running.
-func leastPeak(t *testing.T, name string, want int64, work func() error) int64 {
+func leastPeak(t testing.TB, name string, want int64, work func() error) int64 {
 	t.Helper()
 	least := int64(math.MaxInt64)
 	for run := 0; run < 3 && least > want; run++ {
@@ -453,41 +528,291 @@ func leastPeak(t *testing.T, name string, want int64, work func() error) int64 {
 // and a compressed alpha plane that is the full Huffman-group charge of a
 // bitstream that stops after naming its groups (vp8lStopCost), which would
 // hide any term of theirs left out.
+//
+// The whole is measured first. The limit-0 run makes exactly the same
+// allocations as the whole up to the byte the encoder is refused, and after
+// it does no more than part of what the whole goes on to do — jpegenc stops
+// at the end of the row of units it is coding, image/png and image/gif once
+// their own buffers next pass a write on, and the stored file never grows —
+// so its peak can never exceed the whole's; when the whole is already within
+// the decoding estimate, the limit-0 run must be too, so it is not run.
+// That halves the slowest fixtures, whose peak is all in the decode (an
+// unpacked lossless WebP). It hides nothing: a decoding term left out shrinks
+// `decoding`, and where that lets the real decode peak exceed it, the whole,
+// which includes the decode, exceeds it too, so the whole is not within
+// `decoding`, the limit-0 run is not skipped, and the decoded check still
+// fails (TestDroppedDecodingTermIsStillCaught drops one and watches
+// checkProcessingCost catch it).
 func TestProcessingCostCoversWhatIsHeld(t *testing.T) {
 	for name, data := range costFixtures(t) {
-		in, err := inspect(data)
-		if err != nil {
-			t.Fatalf("%s: inspect: %v", name, err)
-		}
-		cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
-		if err != nil {
-			t.Fatalf("%s: DecodeConfig: %v", name, err)
-		}
+		checkProcessingCost(t, name, data, nil)
+	}
+}
 
-		decoding := peakOf(decodingPhases(in.format, data, cfg, in.frames)...) + processingSlack
-		decoded := leastPeak(t, name, decoding, func() error {
-			unstored := in
-			unstored.limit = 0
-			if _, err := sanitize(unstored, data); !errors.Is(err, ErrStoredTooLarge) {
-				return fmt.Errorf("sanitize with nowhere to store = %v, want ErrStoredTooLarge", err)
+// checkProcessingCost holds one fixture to both bounds, measuring the whole
+// Process run first and the limit-0 decoding run only when the whole is not
+// already within the decoding estimate (see TestProcessingCostCoversWhatIsHeld).
+// The decoding estimate is of decodingPhases' phases, passed through model
+// when it is not nil, which is how TestDroppedDecodingTermIsStillCaught
+// leaves a term out. It returns what the whole held, and whether it measured
+// the decoding run.
+func checkProcessingCost(t testing.TB, name string, data []byte, model func([]phase) []phase) (whole int64, ranDecoding bool) {
+	t.Helper()
+	in, err := inspect(data)
+	if err != nil {
+		t.Fatalf("%s: inspect: %v", name, err)
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("%s: DecodeConfig: %v", name, err)
+	}
+
+	phases := decodingPhases(in.format, data, cfg, in.frames)
+	if model != nil {
+		phases = model(phases)
+	}
+	decoding := peakOf(phases...) + processingSlack
+	completed := completedCost(in.format, data, cfg, in.frames)
+	whole = leastPeak(t, name, completed, func() error {
+		_, err := Process(context.Background(), data)
+		return err
+	})
+	mib := func(n int64) float64 { return float64(n) / (1 << 20) }
+	if whole > completed {
+		t.Errorf("%s: held %d bytes live, over the estimate of decoding it to the end, %d", name, whole, completed)
+	}
+
+	if whole <= decoding {
+		t.Logf("%-28s %4d×%-4d all of it %5.1f MiB of %5.1f (within decoding %5.1f, decoding run skipped)",
+			name, cfg.Width, cfg.Height, mib(whole), mib(completed), mib(decoding))
+		return whole, false
+	}
+
+	decoded := leastPeak(t, name, decoding, func() error {
+		unstored := in
+		unstored.limit = 0
+		if _, err := sanitize(context.Background(), unstored, data); !errors.Is(err, ErrStoredTooLarge) {
+			return fmt.Errorf("sanitize with nowhere to store = %v, want ErrStoredTooLarge", err)
+		}
+		return nil
+	})
+	t.Logf("%-28s %4d×%-4d decoding %5.1f MiB of %5.1f, all of it %5.1f MiB of %5.1f",
+		name, cfg.Width, cfg.Height, mib(decoded), mib(decoding), mib(whole), mib(completed))
+	if decoded > decoding {
+		t.Errorf("%s: held %d bytes live before encoding, over the estimate of its decoding phases, %d", name, decoded, decoding)
+	}
+	return whole, true
+}
+
+// errorsKept is a testing.TB that keeps the errors reported to it instead
+// of failing the test, and passes everything else on: a Fatalf, which only
+// a broken measurement reports, still fails it.
+type errorsKept struct {
+	testing.TB
+	errs []string
+}
+
+func (e *errorsKept) Errorf(format string, args ...any) {
+	e.errs = append(e.errs, fmt.Sprintf(format, args...))
+}
+
+// TestDroppedDecodingTermIsStillCaught proves that the skip in
+// checkProcessingCost — not measuring the limit-0 decoding run when the whole
+// is already within the decoding estimate — cannot hide a decoding term left
+// out of the model. The fixture, a lossless WebP, is one the skip is taken
+// for: its full decoding estimate (about 32.5 MiB) covers the whole process's
+// peak (about 30.7 MiB), so with the model unchanged the decoding run is
+// skipped.
+//
+// The term dropped is a realistic one, not a gross slice of the estimate: the
+// colour-indexed decode's packed picture, 4·⌈w/2⌉·h, about 8 MiB here, which a
+// model that forgot it would omit. That lands the decoding estimate at about
+// 24.3 MiB, just under what the decode actually holds (the limit-0 run
+// measures about 24.7 MiB), which is the point — the skip must not be taken
+// once the estimate drops below the measured whole, however little.
+// checkProcessingCost has to find the whole over the shrunk estimate, run the
+// decoding run it would otherwise skip, and report the decode over the
+// estimate. That holds the skip near the committed condition (whole <=
+// decoding), within the margin the drop leaves: the shrunk estimate is about
+// 6.4 MiB under the whole (24.3 against 30.7 MiB), so a condition widened by
+// more than that — whole <= decoding + 7 MiB, say, or whole <= 2·decoding —
+// would skip the run here and hide the dropped term, and this test fails; one
+// widened by less, + 2 MiB or + 6 MiB, still runs it, and this test does not
+// tell it from the committed one. It does not pin the exact byte boundary; it
+// pins that a realistic forgotten term is caught, which dropping the whole
+// largest phase (a 7× gap) would not establish.
+func TestDroppedDecodingTermIsStillCaught(t *testing.T) {
+	const name = "WebP lossless"
+	data := readTestdata(t, "cost-lossless.webp")
+	in, err := inspect(data)
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("DecodeConfig: %v", err)
+	}
+	full := peakOf(decodingPhases(in.format, data, cfg, in.frames)...) + processingSlack
+
+	// Drop only the vp8l colour-index packed picture (vp8lPixels' 4·⌈w/2⌉·h
+	// term) from the decode phase, the one with the most allocated: a term a
+	// model could plausibly forget, not the whole phase.
+	packed := 4 * ((int64(cfg.Width) + 1) / 2) * int64(cfg.Height)
+	dropPacked := func(phases []phase) []phase {
+		out := append([]phase{}, phases...)
+		largest := 0
+		for i, p := range out {
+			if p.alloc > out[largest].alloc {
+				largest = i
 			}
-			return nil
-		})
-		completed := completedCost(in.format, data, cfg, in.frames)
-		whole := leastPeak(t, name, completed, func() error {
-			_, err := Process(context.Background(), data)
-			return err
-		})
+		}
+		out[largest].first -= packed
+		out[largest].alloc -= packed
+		return out
+	}
+	shrunk := peakOf(dropPacked(decodingPhases(in.format, data, cfg, in.frames))...) + processingSlack
 
-		mib := func(n int64) float64 { return float64(n) / (1 << 20) }
-		t.Logf("%-28s %4d×%-4d decoding %5.1f MiB of %5.1f, all of it %5.1f MiB of %5.1f",
-			name, cfg.Width, cfg.Height, mib(decoded), mib(decoding), mib(whole), mib(completed))
-		if decoded > decoding {
-			t.Errorf("%s: held %d bytes live before encoding, over the estimate of its decoding phases, %d", name, decoded, decoding)
+	kept := &errorsKept{TB: t}
+	whole, ran := checkProcessingCost(kept, name+", packed term dropped", data, dropPacked)
+	// The dropped term must leave the estimate under the whole (so the run is
+	// not skipped) while the full estimate still covers it (so without the
+	// drop the run would be skipped): that the drop crosses the boundary is
+	// what the test turns on.
+	if !(shrunk < whole && whole <= full) {
+		t.Fatalf("whole %d not between the shrunk estimate %d and the full one %d: the drop does not cross the skip boundary, so the test proves nothing", whole, shrunk, full)
+	}
+	if !ran {
+		t.Fatal("checkProcessingCost skipped the decoding run with the packed term left out: a realistic forgotten term is hidden")
+	}
+	caught := false
+	for _, e := range kept.errs {
+		if strings.Contains(e, "over the estimate of its decoding phases") {
+			caught = true
+		} else {
+			t.Errorf("unexpected error: %s", e)
 		}
-		if whole > completed {
-			t.Errorf("%s: held %d bytes live, over the estimate of decoding it to the end, %d", name, whole, completed)
+	}
+	if !caught {
+		t.Errorf("checkProcessingCost reported %q with the packed term left out, want the decode over the estimate of its decoding phases", kept.errs)
+	}
+}
+
+// What playGIF allocates is no more than gifPlayScratch: for a GIF of few
+// colours, what the frames left and the two bit sets; and for an animation
+// of many, which may be stored with frames put back and here is
+// (gifPutBack), what was under the stored frame as well. The frames are
+// decoded before it is measured and held throughout. In the cost of the
+// whole the scratch sits on top of a bound for the stored file that is far
+// above what these need, which would hide a scratch smaller than the
+// player's.
+func TestGIFPlayScratchCoversThePlayer(t *testing.T) {
+	const w, h = 2400, 1800
+	for _, c := range []struct {
+		name string
+		data []byte
+		many bool
+	}{
+		{"few colours", gifOfFrames(t, w, h, 4), false},
+		{"frames put back", gifPutBack(t, w, h), true},
+	} {
+		frames, err := gifFramePixels(c.data, maxGIFFramePixels)
+		if err != nil || frames.many != c.many {
+			t.Fatalf("%s: read as %+v, %v; want many colours %v", c.name, frames, err, c.many)
 		}
+		g, err := gif.DecodeAll(bytes.NewReader(c.data))
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		var heads []gifFrameHead
+		walkGIF(c.data, math.MaxInt64, func(head gifFrameHead) { heads = append(heads, head) })
+		want := gifPlayScratch(w, h, frames) + processingSlack
+		held := leastPeak(t, c.name, want, func() error {
+			// playGIF lets go of the frames in the slice it is given, and
+			// the frames stay held in g.
+			return playGIF(context.Background(), slices.Clone(g.Image), heads, image.Rect(0, 0, w, h), 0, io.Discard)
+		})
+		t.Logf("%s: playing held %.1f MiB of %.1f", c.name, float64(held)/(1<<20), float64(want)/(1<<20))
+		if held > want {
+			t.Errorf("%s: playing the GIF held %d bytes live, over gifPlayScratch and processingSlack, %d", c.name, held, want)
+		}
+	}
+}
+
+// An animation is charged for what putting frames back keeps
+// (gifPlayScratch) when its frames' tables, as Chromium reads them, give more
+// than 255 colours between them (gifFrames.many): a frame's transparent
+// entry shows no colour, and an index past the end of a table of fewer than
+// 256 entries shows black. Only such tables can draw more colours than one
+// table holds beside a transparent entry, which is when playGIF gives each
+// frame a table of its own and may put frames back; so every GIF of random
+// frames or of sprites that is stored so was charged.
+func TestGIFOfManyColoursIsReadFromItsTables(t *testing.T) {
+	distinct := func(first, n int) [][3]byte {
+		c := make([][3]byte, n)
+		for i := range c {
+			c[i] = [3]byte{byte(first + i), byte((first + i) >> 8), 0x77}
+		}
+		return c
+	}
+	frame := func(local [][3]byte, ti int) rawFrame {
+		return rawFrame{controls: []rawControl{{keepFrame, 10, ti}}, at: image.Rect(0, 0, 2, 1), local: local, pix: []uint8{0, 1}}
+	}
+	for _, c := range []struct {
+		name string
+		g    rawGIF
+		many bool
+	}{
+		{"a global table of 256 colours", rawGIF{w: 2, h: 1, global: distinct(0, 256),
+			frames: []rawFrame{frame(nil, -1), frame(nil, -1)}}, true},
+		{"a global table of 256 colours, one of them transparent in every frame", rawGIF{w: 2, h: 1, global: distinct(0, 256),
+			frames: []rawFrame{frame(nil, 7), frame(nil, 7)}}, false},
+		{"a global table of 256 colours, a different one transparent in each frame", rawGIF{w: 2, h: 1, global: distinct(0, 256),
+			frames: []rawFrame{frame(nil, 7), frame(nil, 9)}}, true},
+		{"tables of 128 colours and the black past them", rawGIF{w: 2, h: 1, global: distinct(0, 128),
+			frames: []rawFrame{frame(nil, -1), frame(distinct(0, 127), -1)}}, false},
+		{"two tables of 128 colours and the black past them", rawGIF{w: 2, h: 1,
+			frames: []rawFrame{frame(distinct(0, 128), -1), frame(distinct(128, 128), -1)}}, true},
+	} {
+		frames, err := gifFramePixels(c.g.bytes(), maxGIFFramePixels)
+		if err != nil || frames.many != c.many {
+			t.Errorf("%s: read as many colours %v (%v), want %v", c.name, frames.many, err, c.many)
+		}
+	}
+	// Reading the tables allocates nothing, however many there are: here
+	// 2,000 of 128 colours each, the same ones, so that it reads them all.
+	g := rawGIF{w: 2, h: 1}
+	for len(g.frames) < 2000 {
+		g.frames = append(g.frames, frame(distinct(0, 128), 5))
+	}
+	tables := g.bytes()
+	if frames, err := gifFramePixels(tables, maxGIFFramePixels); err != nil || frames.many {
+		t.Fatalf("2,000 tables of the same 128 colours read as many colours %v (%v)", frames.many, err)
+	}
+	if allocs := testing.AllocsPerRun(10, func() { gifFramePixels(tables, maxGIFFramePixels) }); allocs != 0 {
+		t.Errorf("gifFramePixels allocated %v times reading 2,000 tables, want none", allocs)
+	}
+
+	rng := rand.New(rand.NewSource(3))
+	own := 0
+	for i := 0; i < 600; i++ {
+		g := randomSpritesGIF(rng)
+		if i%2 == 0 {
+			g = randomRawGIF(rng, 600)
+		}
+		data := g.bytes()
+		got, err := Process(context.Background(), data)
+		if err != nil {
+			continue
+		}
+		if _, local := gifTables(t, got.Data); slices.Contains(local, true) && len(local) > 1 {
+			own++
+			if frames, _ := gifFramePixels(data, maxGIFFramePixels); !frames.many {
+				t.Fatalf("GIF %d is stored with a table a frame, but was not read as many colours", i)
+			}
+		}
+	}
+	if own < 300 {
+		t.Errorf("%d GIFs stored with a table a frame; the test shows little", own)
 	}
 }
 
@@ -507,12 +832,251 @@ func TestThumbScratchCoversTheScaler(t *testing.T) {
 		name := fmt.Sprintf("%dx%d", size.X, size.Y)
 		want := thumbScratch(size.X, size.Y) + processingSlack
 		held := leastPeak(t, name, want, func() error {
-			_, err := makeThumbnail(pic, pic.Rect, FormatJPEG)
+			_, err := makeThumbnail(pic, FormatJPEG)
 			return err
 		})
 		t.Logf("%s: thumbnail held %.1f MiB of %.1f", name, float64(held)/(1<<20), float64(want)/(1<<20))
 		if held > want {
 			t.Errorf("%s: making the thumbnail held %d bytes live, over thumbScratch and processingSlack, %d", name, held, want)
+		}
+	}
+}
+
+// image/png's encoder writes a picture through six rows of it, the row under
+// each of its five filters and the row before it, each as wide as the picture;
+// in a strip a million pixels wide they are more than processingSlack, so they
+// are charged (pngEncoderRows), and what the encoder holds is no more than that
+// and the slack. That is so for every kind of PNG as sanitizePNG hands it to
+// the encoder, and for the NRGBA picture a lossless WebP or a lossy one with an
+// alpha plane is stored as. They are measured here, in the encoder alone,
+// because measured over the whole of Process they would not show left out: the
+// scaler's scratch for a strip's thumbnail, made once the encoder is done with
+// them, is larger.
+func TestPNGEncoderRowsAreCharged(t *testing.T) {
+	const w = 1 << 20
+	type strip struct {
+		name   string
+		format Format
+		data   []byte // the upload, which pngEncoderRows reads the kind from
+		pic    image.Image
+	}
+	var strips []strip
+	for _, k := range []struct {
+		name          string
+		colour, depth byte
+		trns          bool
+	}{
+		{"palette PNG", 3, 8, false},
+		{"8-bit grey PNG", 0, 8, false},
+		{"16-bit grey PNG", 0, 16, false},
+		{"8-bit grey+tRNS PNG", 0, 8, true},
+		{"16-bit grey+tRNS PNG", 0, 16, true},
+		{"8-bit grey+alpha PNG", 4, 8, false},
+		{"8-bit RGB PNG", 2, 8, false},
+		{"16-bit RGB PNG", 2, 16, false},
+		{"8-bit RGBA PNG", 6, 8, false},
+		{"16-bit RGBA PNG", 6, 16, false},
+	} {
+		data := rawPNG(t, w, 1, k.colour, k.depth, false, k.trns)
+		pic, err := png.Decode(bytes.NewReader(data))
+		if err != nil {
+			t.Fatalf("%s: %v", k.name, err)
+		}
+		reduceHiddenColour(pic)
+		strips = append(strips, strip{k.name, FormatPNG, data, pic})
+	}
+	nrgba := image.NewNRGBA(image.Rect(0, 0, w, 1))
+	for i := 3; i < len(nrgba.Pix); i += 8 {
+		nrgba.Pix[i] = 0xFF // every other pixel opaque, so it is stored with alpha
+	}
+	strips = append(strips,
+		strip{"lossless WebP", FormatWebP, webpHeader("lossless", w, 1), nrgba},
+		strip{"lossy WebP with transparency", FormatWebP, webpHeader("alpha", w, 1), nrgba})
+
+	for _, s := range strips {
+		rows := pngEncoderRows(s.format, s.data, w)
+		want := rows + processingSlack
+		out := bytes.NewBuffer(make([]byte, 0, 4<<20))
+		held := leastPeak(t, s.name, want, func() error {
+			out.Reset()
+			return storedPNG.Encode(out, s.pic)
+		})
+		t.Logf("%s: encoding held %.1f MiB of %.1f", s.name, float64(held)/(1<<20), float64(want)/(1<<20))
+		if held > want {
+			t.Errorf("%s: encoding a %dx1 strip held %d bytes live, over pngEncoderRows and processingSlack, %d", s.name, w, held, want)
+		}
+		// The palette here has two colours, which are written at a bit a
+		// pixel, so its rows are within the slack; every other kind's are not.
+		if _, paletted := s.pic.(*image.Paletted); !paletted && held <= processingSlack {
+			t.Errorf("%s: encoding a %dx1 strip held %d bytes live, within processingSlack: the strip is too narrow to show the rows", s.name, w, held)
+		}
+	}
+}
+
+// image/png's encoder allocates its six rows before it writes the first, so
+// they are charged as part of what the encoder's phase allocates as it begins,
+// on top of the most the phase before it held (completedPhases, peakOf): for a
+// PNG turned by its orientation, both pictures, the decoded one and its turned
+// copy, which a collection that began as orient finished keeps live until it
+// ends. A strip of 8-bit RGBA turned around (o3), four rows of a million
+// pixels, is decoded and turned here as sanitizePNG does it, and encoded the
+// same way while the decoded picture is held as such a collection holds it.
+// What it holds is measured against the phases up to the encoder's, without
+// the thumbnail's: the scaler's scratch for a strip this long is larger than
+// all of them and comes on top of them, so the cost of the whole would hide
+// the rows charged late. The decoder's rows are let go before the turn, as
+// they are not here what is in question. Charged only in the rest of the
+// phase, on top of the turned picture alone, the rows leave the bound
+// megabytes under what the strip holds, which is checked as well, so the
+// strip is one that shows them.
+func TestPNGEncoderRowsAreChargedAsItBegins(t *testing.T) {
+	const w, h = 1 << 20, 4
+	data := withPNGChunks(rawPNG(t, w, h, 6, 8, false, false), pngChunk("eXIf", orientationTIFF(binary.BigEndian, 3)))
+	in, err := inspect(data)
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("DecodeConfig: %v", err)
+	}
+	phases := completedPhases(in.format, data, cfg, in.frames)
+	encoding := phases[:len(phases)-1] // without the thumbnail scaler's
+	want := peakOf(encoding...) + processingSlack
+	late := slices.Clone(encoding)
+	late[len(late)-1].first -= pngEncoderRows(in.format, data, w)
+	charged := peakOf(late...) + processingSlack
+
+	held := leastPeak(t, "turned strip", want, func() error {
+		src, err := png.Decode(bytes.NewReader(data))
+		if err != nil {
+			return err
+		}
+		reduceHiddenColour(src)
+		runtime.GC() // lets the decoder's rows go
+		pic := orient(src, pngOrientation(data))
+		buf := newStoredBuffer(context.Background(), len(data), in.limit)
+		_, err = buf.encoded(FormatPNG, storedPNG.Encode(buf, pic))
+		runtime.KeepAlive(src) // as a collection that began as orient finished would
+		return err
+	})
+	mib := func(n int64) float64 { return float64(n) / (1 << 20) }
+	t.Logf("turned strip: encoding held %.1f MiB of %.1f, %.1f with the rows charged late", mib(held), mib(want), mib(charged))
+	if held > want {
+		t.Errorf("a %dx%d strip turned around held %d bytes live while it was encoded, over the estimate up to its encoding, %d", w, h, held, want)
+	}
+	if held <= charged {
+		t.Errorf("a %dx%d strip turned around held %d bytes live while it was encoded, within %d, the estimate with the encoder's rows charged after it begins: the strip does not show them", w, h, held, charged)
+	}
+}
+
+// blankPNG is a w×h PNG of the given colour type and bit depth, Adam7
+// interlaced or not, whose every row is filtered with None and every sample is
+// zero: a strip as wide as Inspect admits, from a file of kilobytes.
+func blankPNG(t *testing.T, w, h int, colour, depth byte, interlaced bool) []byte {
+	t.Helper()
+	bits := int64(map[byte]int{0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[colour]) * int64(depth)
+	passes := adam7[:]
+	if !interlaced {
+		passes = []struct{ x0, y0, dx, dy int64 }{{0, 0, 1, 1}}
+	}
+	zero := make([]byte, 1+(bits*int64(w)+7)/8)
+	var idat bytes.Buffer
+	zw, _ := zlib.NewWriterLevel(&idat, zlib.BestSpeed)
+	for _, p := range passes {
+		pw := (int64(w) - p.x0 + p.dx - 1) / p.dx
+		if pw <= 0 {
+			continue
+		}
+		for y := p.y0; y < int64(h); y += p.dy {
+			if _, err := zw.Write(zero[:1+(bits*pw+7)/8]); err != nil {
+				t.Fatalf("compress: %v", err)
+			}
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("compress: %v", err)
+	}
+	out := append(pngHeader(w, h, colour, depth, interlaced), pngChunk("IDAT", idat.Bytes())...)
+	return append(out, pngChunk("IEND", nil)...)
+}
+
+// image/png reads a PNG that is not interlaced through two rows of it, the row
+// and the one before it, and an interlaced one through two rows of each of
+// Adam7's seven passes, which it allocates anew for every pass, each as wide as
+// its pass: five and a half rows of the picture's width in a picture five rows
+// tall or more, four in one of two rows (pngPassRows). In a strip as wide as
+// Inspect admits they come to tens of megabytes, all of which a collection that
+// runs through the decode keeps, though each pass lets its own go as it ends,
+// so they are charged to the decode. The measures of what is held at the
+// collector's usual pace (TestProcessingCostCoversWhatIsHeld) see only the rows
+// of the pass being read, so they would not show the rest left out; what the
+// decode allocates, which is the same on every run, is held to what its phase
+// is charged instead, with no more beyond it than the decoder's own tables and
+// the allocator's rounding, which processingSlack covers. Each strip is about
+// the widest Inspect admits at its height, of the kind whose rows are widest
+// for their pixels, 16-bit RGBA, and of 8-bit grey, an eighth as wide. Each
+// interlaced one of two rows or more allocates more than processingSlack over
+// what one pair of rows of its width would charge: that is checked too, so the
+// strips are ones that show the passes' rows.
+func TestPNGDecoderRowsAreCharged(t *testing.T) {
+	// The decoder's own tables, and the allocator's rounding of each of
+	// its rows and pictures up to whole pages.
+	const unitemised = 512 << 10
+	for _, k := range []struct {
+		name          string
+		colour, depth byte
+		interlaced    bool
+		h             int
+	}{
+		{"interlaced 16-bit RGBA", 6, 16, true, 1},
+		{"interlaced 16-bit RGBA", 6, 16, true, 2},
+		{"interlaced 16-bit RGBA", 6, 16, true, 5},
+		{"interlaced 16-bit RGBA", 6, 16, true, 8},
+		{"interlaced 16-bit RGBA", 6, 16, true, 16},
+		{"interlaced 8-bit grey", 0, 8, true, 8},
+		{"16-bit RGBA", 6, 16, false, 8},
+	} {
+		// The widest strip of this height whose header Inspect admits,
+		// less a hundredth for the IDAT the file adds to the upload.
+		admitted := func(w int) bool {
+			head := pngHeader(w, k.h, k.colour, k.depth, k.interlaced)
+			return processingCost(FormatPNG, head, image.Config{Width: w, Height: k.h}, gifFrames{}) <= processingBudget
+		}
+		lo, hi := 1, MaxPixels/k.h
+		for lo < hi {
+			if mid := (lo + hi + 1) / 2; admitted(mid) {
+				lo = mid
+			} else {
+				hi = mid - 1
+			}
+		}
+		w := lo * 99 / 100
+		name := fmt.Sprintf("%s %dx%d", k.name, w, k.h)
+		data := blankPNG(t, w, k.h, k.colour, k.depth, k.interlaced)
+		in, err := inspect(data)
+		if err != nil {
+			t.Fatalf("%s: inspect = %v, want it admitted", name, err)
+		}
+		cfg := image.Config{Width: w, Height: k.h}
+		charged := decodingPhases(in.format, data, cfg, in.frames)[0].alloc
+
+		runtime.GC()
+		before := heapAllocs()
+		if _, err := png.Decode(bytes.NewReader(data)); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		allocated := heapAllocs() - before
+		mib := func(n int64) float64 { return float64(n) / (1 << 20) }
+		t.Logf("%-34s decoding allocated %6.2f MiB, charged %6.2f", name, mib(allocated), mib(charged))
+		if allocated > charged+unitemised {
+			t.Errorf("%s: decoding allocated %d bytes, %d over the %d its decode phase is charged", name, allocated, allocated-charged, charged)
+		}
+		if k.interlaced && k.h >= 2 {
+			pictures := 2 * pngBytesPerPixel(data) * int64(w) * int64(k.h)
+			if onePair := pictures + 2*pngRowBytes(data, int64(w)); allocated <= onePair+processingSlack {
+				t.Errorf("%s: decoding allocated %d bytes, within processingSlack of the %d one pair of rows charges: the strip does not show the passes' rows", name, allocated, onePair)
+			}
 		}
 	}
 }
@@ -595,7 +1159,7 @@ func pngHeader(w, h int, colour, depth byte, interlaced bool) []byte {
 // headerUpload is a header from jpegHeader, pngHeader or webpHeader turned
 // by EXIF orientation o (none for 1) and made up to an upload of size bytes,
 // which is what the stored file's limit, and so the cost, grows with. Nothing
-// past the header is read before decoding.
+// it is made up with is a picture's data.
 func headerUpload(head []byte, o uint16, size int) []byte {
 	png := head[0] == 0x89
 	switch {
@@ -615,27 +1179,94 @@ func headerUpload(head []byte, o uint16, size int) []byte {
 		out = append(out, pngChunk("zzzz", make([]byte, max(size-len(out)-24, 0)))...)
 		return append(out, pngChunk("IDAT", nil)...)
 	}
-	if head[0] == 0xFF { // the start of a scan, where image/jpeg stops reading a header
+	if head[0] == 0xFF {
+		// Comments make a JPEG up to size, then the start of a scan, where
+		// image/jpeg stops reading a header.
+		out = append(out, jpegComments(size-len(out)-4)...)
 		out = append(out, 0xFF, 0xDA, 0x00, 0x02)
 	}
 	return append(out, make([]byte, max(size-len(out), 0))...)
 }
 
-// webpHeader is a VP8X WebP of the given size with a stub bitstream: lossy,
-// lossy with an alpha plane (uncompressed, or VP8L-compressed with "calpha"),
-// or lossless.
+// jpegComments is n bytes of JPEG comment segments, or none for an n under
+// the four bytes of the shortest. The walks that read a JPEG to its end
+// (readJPEGFrame, jpegScanBlockVisits) step over a comment whole, so a file
+// made up to a size with them is read at the cost of its header and a hop a
+// comment, which is what lets TestEncodingsAreJudgedAtEveryShape judge
+// millions of shapes of an 8 MiB upload.
+func jpegComments(n int) []byte {
+	var out []byte
+	for pad := n; pad >= 4; {
+		// Each comment is 0xFFFE and a length counting itself, at most
+		// 0xFFFF, and leaves either nothing or room for another.
+		k := min(pad, 2+0xFFFF)
+		if rest := pad - k; rest > 0 && rest < 4 {
+			k -= 4 - rest
+		}
+		out = append(out, jpegSegment(0xFE, make([]byte, k-4))...)
+		pad -= k
+	}
+	return out
+}
+
+// gifHeaderUpload is a GIF of the given number of frames, each as wide as
+// its w×h canvas and frameH tall, made up to an upload of about size bytes
+// with a comment. The frames are drawn from a two-colour global table, or,
+// with many, each from a table of its own of 256 greys, more than 255
+// colours (gifFrames.many). Each frame's pixel data is one sub-block of
+// nonsense: Inspect's walk reads where the frames are and how large, and
+// their tables, never their pixels.
+func gifHeaderUpload(w, h, frameH, frames, size int, many bool) []byte {
+	b := []byte("GIF89a")
+	b = binary.LittleEndian.AppendUint16(b, uint16(w))
+	b = binary.LittleEndian.AppendUint16(b, uint16(h))
+	if many {
+		b = append(b, 0, 0, 0)
+	} else {
+		b = append(b, 0x80, 0, 0, 0, 0, 0, 255, 255, 255) // a two-colour global table
+	}
+	for i := 0; i < frames; i++ {
+		b = append(b, 0x21, 0xF9, 4, 0, 10, 0, 0, 0) // a graphic control extension
+		b = append(b, 0x2C, 0, 0, 0, 0)
+		b = binary.LittleEndian.AppendUint16(b, uint16(w))
+		b = binary.LittleEndian.AppendUint16(b, uint16(frameH))
+		if many {
+			b = append(b, 0x87) // a table of its own of 256 entries
+			for e := 0; e < 256; e++ {
+				b = append(b, byte(e), byte(e), byte(e))
+			}
+			b = append(b, 8, 1, 0x44, 0)
+			continue
+		}
+		b = append(b, 0, 2, 1, 0x44, 0)
+	}
+	if pad := size - len(b) - 4; pad > 0 {
+		b = append(b, 0x21, 0xFE) // a comment, in sub-blocks of up to 255 bytes
+		for ; pad > 1; pad -= 256 {
+			k := min(255, pad-1)
+			b = append(b, byte(k))
+			b = append(b, make([]byte, k)...)
+		}
+		b = append(b, 0)
+	}
+	return append(b, 0x3B)
+}
+
+// webpHeader is a VP8X WebP of the given size with a stub bitstream of that
+// size (vp8Stub, vp8lStub): lossy, lossy with an alpha plane (uncompressed,
+// or VP8L-compressed with "calpha"), or lossless.
 func webpHeader(kind string, w, h int) []byte {
 	switch kind {
 	case "lossy":
-		return webpFile(vp8xChunk(0, w, h), riffChunk{id: "VP8 ", payload: make([]byte, 10)})
+		return webpFile(vp8xChunk(0, w, h), riffChunk{id: "VP8 ", payload: vp8Stub(w, h, 10)})
 	case "alpha":
 		return webpFile(vp8xChunk(vp8xFlagAlpha, w, h), riffChunk{id: "ALPH", payload: make([]byte, 10)},
-			riffChunk{id: "VP8 ", payload: make([]byte, 10)})
+			riffChunk{id: "VP8 ", payload: vp8Stub(w, h, 10)})
 	case "calpha": // an alpha plane compressed with VP8L (method 1 in the low bits)
 		return webpFile(vp8xChunk(vp8xFlagAlpha, w, h), riffChunk{id: "ALPH", payload: []byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
-			riffChunk{id: "VP8 ", payload: make([]byte, 10)})
+			riffChunk{id: "VP8 ", payload: vp8Stub(w, h, 10)})
 	}
-	return webpFile(vp8xChunk(0, w, h), riffChunk{id: "VP8L", payload: make([]byte, 10)})
+	return webpFile(vp8xChunk(0, w, h), riffChunk{id: "VP8L", payload: vp8lStub(w, h, 10)})
 }
 
 // headJPEG, headRGBJPEG, headPNG, headPNGWithTRNS and headWebP make the
@@ -678,8 +1309,8 @@ func headWebP(kind string) func(w, h int) []byte {
 // the default 8 MiB limit, whose stored file may be the largest; a square is
 // not the dearest shape of every kind, and TestEncodingsAreJudgedAtEveryShape
 // takes all the others. What is refused is refused at its cheapest: a wide
-// picture from a small upload. At a quarter of the size, everything is
-// accepted as a square.
+// picture from a small upload, as wide as its format allows (largestSide). At
+// a quarter of the size, everything is accepted as a square.
 func TestCostlyEncodingsAreRefusedFromTheirHeader(t *testing.T) {
 	type kind struct {
 		name string
@@ -758,7 +1389,11 @@ func TestCostlyEncodingsAreRefusedFromTheirHeader(t *testing.T) {
 		check(k, side, side, large, nil)
 	}
 	for _, k := range refused {
-		check(k, 4*side, side/4, small, ErrImageTooLarge)
+		w := 4 * side
+		if f, _ := DetectFormat(k.head(1, 1)); w > largestSide(f) {
+			w = largestSide(f) // a lossy WebP's bitstream stops at 16,383
+		}
+		check(k, w, MaxPixels/w, small, ErrImageTooCostly)
 		check(k, side/2, side/2, large, nil)
 	}
 	// The "either" kinds: a 16-bit colour PNG that is neither interlaced nor
@@ -772,8 +1407,54 @@ func TestCostlyEncodingsAreRefusedFromTheirHeader(t *testing.T) {
 		{"16-bit RGBA PNG", headPNG(6, 16, false), 1},
 		{"16-bit grey+tRNS PNG", headPNGWithTRNS(0, 16, false), 1},
 	} {
-		check(k, side, side, large, ErrImageTooLarge)
+		check(k, side, side, large, ErrImageTooCostly)
 		check(k, 4*side, side/4, small, nil)
+	}
+	// A GIF is either by the pixels its frames come to and the upload's size,
+	// at any shape: it is played on four bytes for every pixel of its canvas
+	// (gifPlayScratch) while all its frames are held, into a stored file that
+	// can come to four times the upload. Frames of two canvases are stored
+	// from a large upload, of three from one of up to about 6.9 MiB, and of
+	// four, the most there can be (maxGIFFramePixels), from one of up to
+	// about 3.9 MiB. An animation whose tables give more than 255 colours is
+	// played on eight, for the frames it may put back: at this size only one
+	// whose frames come to less than two thirds of a canvas, half of one
+	// from an upload of up to about 2.4 MiB; from a large upload, two whole
+	// frames up to about 17 megapixels and four up to about 15. One frame of
+	// many colours is a still, which puts nothing back, and is charged as
+	// any other. At a quarter of the size, the most there can be is stored
+	// from a large upload, of many colours or few.
+	for _, c := range []struct {
+		w, h, frameH, frames, size int
+		many                       bool
+		want                       error
+	}{
+		{side, side, side, 2, large, false, nil},
+		{side, side, side, 3, 66 << 20 / 10, false, nil},
+		{side, side, side, 3, 72 << 20 / 10, false, ErrImageTooCostly},
+		{side, side, side, 4, 36 << 20 / 10, false, nil},
+		{side, side, side, 4, 42 << 20 / 10, false, ErrImageTooCostly},
+		{4 * side, side / 4, side / 4, 2, large, false, nil},
+		{4 * side, side / 4, side / 4, 3, 66 << 20 / 10, false, nil},
+		{4 * side, side / 4, side / 4, 3, 72 << 20 / 10, false, ErrImageTooCostly},
+		{4 * side, side / 4, side / 4, 4, 36 << 20 / 10, false, nil},
+		{4 * side, side / 4, side / 4, 4, 42 << 20 / 10, false, ErrImageTooCostly},
+		{side / 2, side / 2, side / 2, 16, large, false, nil},
+		{side, side, side, 1, large, true, nil},
+		{side, side, side / 3, 2, small, true, nil},
+		{side, side, side * 7 / 20, 2, small, true, ErrImageTooCostly},
+		{side, side, side / 4, 2, 22 << 20 / 10, true, nil},
+		{side, side, side / 4, 2, 26 << 20 / 10, true, ErrImageTooCostly},
+		{4100, 4100, 4100, 2, large, true, nil},
+		{4250, 4250, 4250, 2, large, true, ErrImageTooCostly},
+		{3800, 3800, 3800, 4, large, true, nil},
+		{3900, 3900, 3900, 4, large, true, ErrImageTooCostly},
+		{side / 2, side / 2, side / 2, 16, large, true, nil},
+	} {
+		data := gifHeaderUpload(c.w, c.h, c.frameH, c.frames, c.size, c.many)
+		if _, err := Inspect(data); !errors.Is(err, c.want) {
+			t.Errorf("Inspect(GIF of %d %dx%d frames on %dx%d, many colours %v, %d KiB) = %v, want %v", c.frames, c.w, c.frameH, c.w, c.h, c.many, len(data)>>10, err, c.want)
+		}
 	}
 	// One pixel more than the cap is refused whatever it is.
 	check(kind{"baseline 4:2:0 JPEG", headJPEG(0xC0, 0x22, 0x11, 0x11), 1}, side+1, side, small, ErrImageTooLarge)
@@ -791,7 +1472,7 @@ func TestCostlyEncodingsAreRefusedFromTheirHeader(t *testing.T) {
 			want    error
 		}{
 			{small, small, nil},
-			{1 << 20, 1 << 20, ErrImageTooLarge},
+			{1 << 20, 1 << 20, ErrImageTooCostly},
 			{small, large, nil},
 		} {
 			data := webpOfBitstream(k, 256, 256, c.n, c.size)
@@ -866,7 +1547,7 @@ func FuzzInspect(f *testing.F) {
 
 		in, err := inspect(data)
 		if err != nil {
-			if !errors.Is(err, ErrUnsupportedFormat) && !errors.Is(err, ErrCorruptImage) && !errors.Is(err, ErrImageTooLarge) {
+			if !errors.Is(err, ErrUnsupportedFormat) && !errors.Is(err, ErrCorruptImage) && !errors.Is(err, ErrImageTooLarge) && !errors.Is(err, ErrImageTooCostly) {
 				t.Fatalf("Inspect refused with %v", err)
 			}
 			return
@@ -972,7 +1653,7 @@ func jpegFrameAt(data []byte) int {
 // about 750,000 pixels in colour or 1.3 to 1.5 million otherwise; everything
 // else in the accepted list at every shape. At a quarter of the size, every
 // kind is accepted at every shape up to a thousand to one, and a PNG of any
-// size is refused once its longer side passes about 4 million.
+// size is refused once its longer side passes 2.2 to 3.7 million.
 //
 // That is millions of shapes, so this reads the estimate Inspect compares
 // with the budget (processingCost), with a JPEG's frame header rewritten in
@@ -1041,9 +1722,12 @@ func TestEncodingsAreJudgedAtEveryShape(t *testing.T) {
 	judge := func(data []byte, k shapeClaim, o uint16, area int64, ratio float64) []string {
 		// data is the upload, of the default 8 MiB. Its header is the
 		// file's, ending in its last chunk or the start of its scan, and
-		// the rest is nothing, as headerUpload makes it, but for a PNG's
-		// filler chunk: what the estimate reads of a file is its header and
-		// its length.
+		// the rest is nothing a picture is made of: zeros to 4 KiB and
+		// comments after them (jpegComments), as headerUpload makes it up
+		// with comments and zeros, but for a PNG's filler chunk. What the
+		// estimate reads of a file is its header and its length, and of a
+		// JPEG the application segments after its scans as well, of which
+		// comments are none.
 		head := headerUpload(k.head(1000, 1000), o, 0)
 		if len(head) > 4<<10 {
 			return []string{"a header over 4 KiB"}
@@ -1136,7 +1820,7 @@ func TestEncodingsAreJudgedAtEveryShape(t *testing.T) {
 					wrong = append(wrong, fmt.Sprintf("%dx%d estimated at %d as a file of its own, %d in the scan", p.X, p.Y, c, cost))
 				}
 				_, err := Inspect(file)
-				if refused := cost > processingBudget; refused != errors.Is(err, ErrImageTooLarge) || !refused && err != nil {
+				if refused := cost > processingBudget; refused != errors.Is(err, ErrImageTooCostly) || !refused && err != nil {
 					wrong = append(wrong, fmt.Sprintf("Inspect(%dx%d) = %v where the estimate is %d", p.X, p.Y, err, cost))
 				}
 			}
@@ -1168,6 +1852,7 @@ func TestEncodingsAreJudgedAtEveryShape(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			data := make([]byte, upload)
+			copy(data[4<<10:], jpegComments(upload-4<<10))
 			for j := range work {
 				size := "full size"
 				if j.ratio > 0 {
@@ -1186,22 +1871,31 @@ func TestEncodingsAreJudgedAtEveryShape(t *testing.T) {
 	wg.Wait()
 
 	// However narrow a PNG is, it is refused once its longer side passes
-	// about 4 million pixels: every kind at every orientation, from an
-	// upload of a kilobyte, as a row and as a column.
+	// 2.2 to 3.7 million pixels, by its kind and which way it lies: every
+	// kind at every orientation, from an upload of a kilobyte, as a row and
+	// as a column, is accepted at 2.1 million and refused at 3.7 million.
+	// The thumbnail's scaler sets the limit for a column, and for a row the
+	// scaler and image/png's rows of the picture together (pngRowBytes,
+	// pngEncoderRows), which is why a row of more bytes a pixel stops sooner.
 	for _, k := range quarter {
 		if k.format != png {
 			continue
 		}
 		for _, o := range k.turns {
-			for _, size := range []image.Point{{4_100_000, 1}, {1, 4_100_000}} {
-				if _, err := Inspect(headerUpload(k.head(size.X, size.Y), o, 1<<10)); !errors.Is(err, ErrImageTooLarge) {
+			for _, size := range []image.Point{{2_100_000, 1}, {1, 2_100_000}} {
+				if _, err := Inspect(headerUpload(k.head(size.X, size.Y), o, 1<<10)); err != nil {
+					t.Errorf("Inspect(%s, o%d, %dx%d, 1 KiB) = %v, want it accepted", k.name, o, size.X, size.Y, err)
+				}
+			}
+			for _, size := range []image.Point{{3_700_000, 1}, {1, 3_700_000}} {
+				if _, err := Inspect(headerUpload(k.head(size.X, size.Y), o, 1<<10)); !errors.Is(err, ErrImageTooCostly) {
 					t.Errorf("Inspect(%s, o%d, %dx%d, 1 KiB) = %v, want it refused", k.name, o, size.X, size.Y, err)
 				}
 			}
 		}
 	}
-	if _, err := Inspect(headerUpload(headPNG(3, 8, false)(4_000_000, 1), 1, 1<<10)); err != nil {
-		t.Errorf("Inspect(palette PNG, 4000000x1, 1 KiB) = %v, want it accepted: the limit is about 4 million", err)
+	if _, err := Inspect(headerUpload(headPNG(3, 8, false)(3_600_000, 1), 1, 1<<10)); err != nil {
+		t.Errorf("Inspect(palette PNG, 3600000x1, 1 KiB) = %v, want it accepted: the limit is about 3.7 million", err)
 	}
 }
 
@@ -1244,7 +1938,7 @@ func TestStoredFileCannotOutgrowItsUpload(t *testing.T) {
 		t.Errorf("%d bytes of the budget still held after the refusal", n)
 	}
 
-	b := newStoredBuffer(1, 10_000)
+	b := newStoredBuffer(context.Background(), 1, 10_000)
 	for i := 0; i < 9; i++ {
 		if _, err := b.Write(make([]byte, 1000)); err != nil {
 			t.Fatalf("write %d: %v", i, err)
@@ -1419,5 +2113,363 @@ func TestPeakOfCountsTheEarlierPhaseAsTheNextBegins(t *testing.T) {
 	grow := phase{first: 1, alloc: 20, after: 20}
 	if got := peakOf(decode, grow); got != 22 {
 		t.Errorf("peakOf = %d, want 22: the 2 kept and all 20 grown on top", got)
+	}
+}
+
+// scanBombBits accumulates entropy-coded bits for a progressive JPEG, stuffing
+// 0xFF with a following 0x00 as the format requires.
+type scanBombBits struct {
+	out  []byte
+	acc  uint32
+	nacc uint
+}
+
+func (b *scanBombBits) put(v uint32, n uint) {
+	for i := int(n) - 1; i >= 0; i-- {
+		b.acc = b.acc<<1 | (v>>uint(i))&1
+		b.nacc++
+		if b.nacc == 8 {
+			c := byte(b.acc)
+			b.out = append(b.out, c)
+			if c == 0xFF {
+				b.out = append(b.out, 0)
+			}
+			b.acc, b.nacc = 0, 0
+		}
+	}
+}
+
+func (b *scanBombBits) flush() []byte {
+	for b.nacc != 0 {
+		b.put(1, 1)
+	}
+	return b.out
+}
+
+// scanBombJPEG builds a w×h greyscale progressive JPEG with one DC scan and
+// acScans AC scans (Ss=1..63) that each code every block as one long EOB run,
+// so the picture is flat grey and every scan is a few dozen bytes yet makes
+// image/jpeg revisit all the picture's blocks. It is how a progressive file
+// hides unbounded decoding work behind a small upload — the memory it holds is
+// a single grey progressive picture's whatever the scan count — which
+// maxJPEGScanRevisits bounds.
+func scanBombJPEG(w, h, acScans int) []byte {
+	return progressiveScanBomb(w, h, acScans, 0x00)
+}
+
+// refinementScanBombJPEG is scanBombJPEG with AC refinement scans (Ah=1,
+// Al=0), each of which image/jpeg walks every coefficient of every block for
+// even inside the EOB run (refineNonZeroes).
+func refinementScanBombJPEG(w, h, acScans int) []byte {
+	return progressiveScanBomb(w, h, acScans, 0x10)
+}
+
+// progressiveScanBomb builds scanBombJPEG's file with ahal as each AC scan's
+// successive-approximation byte.
+func progressiveScanBomb(w, h, acScans int, ahal byte) []byte {
+	seg := func(b []byte, marker byte, body []byte) []byte {
+		b = append(b, 0xFF, marker)
+		b = binary.BigEndian.AppendUint16(b, uint16(len(body)+2))
+		return append(b, body...)
+	}
+	b := []byte{0xFF, 0xD8}
+	dqt := []byte{0}
+	for i := 0; i < 64; i++ {
+		dqt = append(dqt, 1)
+	}
+	b = seg(b, 0xDB, dqt)
+	sof := []byte{8}
+	sof = binary.BigEndian.AppendUint16(sof, uint16(h))
+	sof = binary.BigEndian.AppendUint16(sof, uint16(w))
+	sof = append(sof, 1, 1, 0x11, 0) // one component, 1×1 sampling
+	b = seg(b, 0xC2, sof)
+	counts := make([]byte, 16)
+	counts[0] = 1
+	b = seg(b, 0xC4, append(append([]byte{0x00}, counts...), 0x00)) // DC: '0' → category 0
+	b = seg(b, 0xC4, append(append([]byte{0x10}, counts...), 0xE0)) // AC: '0' → EOB run r=14
+	blocks := ((w + 7) / 8) * ((h + 7) / 8)
+	b = seg(b, 0xDA, []byte{1, 1, 0x00, 0, 0, 0}) // DC scan, Ss=Se=0
+	var dc scanBombBits
+	for i := 0; i < blocks; i++ {
+		dc.put(0, 1)
+	}
+	b = append(b, dc.flush()...)
+	var ac scanBombBits
+	for left := blocks; left > 0; {
+		run := min(left, 32767)
+		if left-run > 0 && left-run < 16384 {
+			run = left - 16384
+		}
+		ac.put(0, 1)
+		ac.put(uint32(run-16384), 14)
+		left -= run
+	}
+	acData := ac.flush()
+	for s := 0; s < acScans; s++ {
+		b = seg(b, 0xDA, []byte{1, 1, 0x00, 1, 63, ahal}) // AC scan, Ss=1 Se=63
+		b = append(b, acData...)
+	}
+	return append(b, 0xFF, 0xD9)
+}
+
+// baselineScanBombJPEG builds a w×h greyscale baseline JPEG of scans scans,
+// each coding every block as a zero DC difference and an immediate end of
+// block, two bits a block: a flat grey picture that image/jpeg decodes whole
+// once per scan, dequantising, inverse-transforming and writing out every
+// block each time (reconstructBlock).
+func baselineScanBombJPEG(w, h, scans int) []byte {
+	seg := func(b []byte, marker byte, body []byte) []byte {
+		b = append(b, 0xFF, marker)
+		b = binary.BigEndian.AppendUint16(b, uint16(len(body)+2))
+		return append(b, body...)
+	}
+	b := []byte{0xFF, 0xD8}
+	dqt := []byte{0}
+	for i := 0; i < 64; i++ {
+		dqt = append(dqt, 1)
+	}
+	b = seg(b, 0xDB, dqt)
+	sof := []byte{8}
+	sof = binary.BigEndian.AppendUint16(sof, uint16(h))
+	sof = binary.BigEndian.AppendUint16(sof, uint16(w))
+	sof = append(sof, 1, 1, 0x11, 0) // one component, 1×1 sampling
+	b = seg(b, 0xC0, sof)
+	counts := make([]byte, 16)
+	counts[0] = 1
+	b = seg(b, 0xC4, append(append([]byte{0x00}, counts...), 0x00)) // DC: '0' → category 0
+	b = seg(b, 0xC4, append(append([]byte{0x10}, counts...), 0x00)) // AC: '0' → end of block
+	var bits scanBombBits
+	for i := 0; i < 2*((w+7)/8)*((h+7)/8); i++ {
+		bits.put(0, 1)
+	}
+	data := bits.flush()
+	for s := 0; s < scans; s++ {
+		b = seg(b, 0xDA, []byte{1, 1, 0x00, 0, 63, 0})
+		b = append(b, data...)
+	}
+	return append(b, 0xFF, 0xD9)
+}
+
+// A progressive JPEG can repeat a short, cheap scan so that image/jpeg
+// revisits every block of the picture thousands of times — decoding work the
+// pixel cap and the memory estimate do not see, since the file is small and
+// holds no more than one progressive picture. jpegScanBlockVisits counts that
+// work from the header, and Inspect refuses a file past maxJPEGScanRevisits
+// passes over its blocks as too costly to process, before any cooldown, while
+// the progressive files encoders actually write (a handful of passes) are
+// admitted.
+func TestJPEGScanBombIsRefusedFromHeader(t *testing.T) {
+	// The fixtures, encoders' own output, baseline and progressive, are well
+	// under the cap and admitted.
+	for _, name := range []string{"cost-prog420.jpg", "cost-prog444.jpg", "cost-progcmyk.jpg", "cost-proggray.jpg",
+		"cost-411.jpg", "cost-cmyk.jpg", "cost-rgb.jpg", "photo-q30.jpg"} {
+		data := readTestdata(t, name)
+		f, framed := readJPEGFrame(data)
+		if !framed {
+			t.Fatalf("%s: readJPEGFrame did not read a frame", name)
+		}
+		if visits := jpegScanBlockVisits(data, f); visits > maxJPEGScanRevisits*f.blocks {
+			t.Errorf("%s: %d scan visits over the cap of %d×%d blocks", name, visits, maxJPEGScanRevisits, f.blocks)
+		}
+		if _, err := Inspect(data); err != nil {
+			t.Errorf("Inspect(%s) = %v, want it admitted", name, err)
+		}
+	}
+
+	// A grey progressive file: each AC scan and the DC scan visit every block
+	// once (one component), so acScans AC scans plus the DC scan come to
+	// (acScans+1) passes. The cap admits exactly maxJPEGScanRevisits passes.
+	const w, h = 1000, 1000
+	blocks := int64(((w + 7) / 8) * ((h + 7) / 8))
+	atCap := scanBombJPEG(w, h, maxJPEGScanRevisits-1) // (maxJPEGScanRevisits-1)+1 passes
+	if _, err := Inspect(atCap); err != nil {
+		t.Errorf("Inspect(%d passes) = %v, want admitted at the cap", maxJPEGScanRevisits, err)
+	}
+	overCap := scanBombJPEG(w, h, maxJPEGScanRevisits) // one pass over the cap
+	if _, err := Inspect(overCap); !errors.Is(err, ErrImageTooCostly) {
+		t.Errorf("Inspect(%d passes) = %v, want ErrImageTooCostly", maxJPEGScanRevisits+1, err)
+	}
+	// The walk's count is exactly the passes, and nothing smaller admits the
+	// over-cap file by miscounting.
+	f, _ := readJPEGFrame(overCap)
+	if got, want := jpegScanBlockVisits(overCap, f), int64(maxJPEGScanRevisits+1)*blocks; got != want {
+		t.Errorf("jpegScanBlockVisits = %d, want %d", got, want)
+	}
+}
+
+// image/jpeg does more on some block visits than on others: a baseline scan
+// dequantises, inverse-transforms and writes out every block it visits, about
+// six times the work of a progressive first pass, and an AC refinement scan
+// walks every coefficient of its band in every block, even inside an EOB
+// run, about twice it. jpegScanBlockVisits weighs each scan by that work, so
+// neither kind buys more decoding under the cap than first passes do: a grey
+// file of repeated baseline scans is admitted up to 10 of them (60 passes'
+// work) and refused at 11 (66), and one of refinement scans after its DC scan
+// up to 31 (63) and refused at 32 (65). Counted as plain visits, both were
+// admitted up to 64 scans — a 25-megapixel 4:2:2 picture's 64 baseline scans
+// decoded for about 14 s of CPU, and its refinement scans for about 5.5 s,
+// where 64 first passes take about 3 to 4. Every file here decodes whole in
+// image/jpeg, so the count is of work it really does.
+func TestJPEGScanCountWeighsEachScanByItsWork(t *testing.T) {
+	const w, h = 1000, 1000
+	blocks := int64(((w + 7) / 8) * ((h + 7) / 8))
+	for _, c := range []struct {
+		name string
+		make func(scans int) []byte
+		// fixed and perScan are the file's passes of work: its DC scan,
+		// and each of the scans it repeats.
+		fixed, perScan int64
+		admitted       int
+	}{
+		{"baseline", func(n int) []byte { return baselineScanBombJPEG(w, h, n) },
+			0, jpegBaselineVisitWork, 10},
+		{"refinement", func(n int) []byte { return refinementScanBombJPEG(w, h, n) },
+			1, jpegRefineVisitWork, 31},
+	} {
+		for _, n := range []int{c.admitted, c.admitted + 1} {
+			data := c.make(n)
+			if _, err := jpeg.Decode(bytes.NewReader(data)); err != nil {
+				t.Fatalf("%s, %d scans: image/jpeg does not decode it: %v", c.name, n, err)
+			}
+			f, framed := readJPEGFrame(data)
+			if !framed {
+				t.Fatalf("%s, %d scans: readJPEGFrame did not read a frame", c.name, n)
+			}
+			if got, want := jpegScanBlockVisits(data, f), (c.fixed+c.perScan*int64(n))*blocks; got != want {
+				t.Errorf("%s, %d scans: jpegScanBlockVisits = %d, want %d", c.name, n, got, want)
+			}
+			_, err := Inspect(data)
+			switch {
+			case n == c.admitted && err != nil:
+				t.Errorf("Inspect(%s, %d scans) = %v, want it admitted", c.name, n, err)
+			case n > c.admitted && !errors.Is(err, ErrImageTooCostly):
+				t.Errorf("Inspect(%s, %d scans) = %v, want ErrImageTooCostly", c.name, n, err)
+			}
+		}
+	}
+}
+
+// image/jpeg reads past extraneous bytes between a JPEG's segments, as libjpeg
+// does — anything before an 0xFF, an 0xFF00 pair, fill bytes, a restart marker
+// where no scan expects one — and decodes every scan after them. The walks
+// that count the scans read past them the same way (jpegNextSegment), so no
+// such byte hides a scan from the cap: the over-cap file with them before its
+// frame header, before its Huffman tables, before its first scan or before
+// every scan is decoded whole by image/jpeg and still refused from its header,
+// with the same count as the plain file. (Straight after the start of the
+// image they would not get that far: Inspect takes a file for a JPEG only when
+// an 0xFF follows it.) One zero byte before the first scan once let the walk
+// stop there, count nothing, and admit a file that then decoded for the whole
+// of its deadline.
+func TestJPEGScanCountReadsPastExtraneousBytes(t *testing.T) {
+	const w, h = 1000, 1000
+	plain := scanBombJPEG(w, h, maxJPEGScanRevisits)
+	f, _ := readJPEGFrame(plain)
+	want := jpegScanBlockVisits(plain, f)
+	if want <= maxJPEGScanRevisits*f.blocks {
+		t.Fatalf("the plain file makes %d visits, within the cap of %d: the test would prove nothing", want, maxJPEGScanRevisits*f.blocks)
+	}
+	// starts are where segments with marker begin in the plain file. None
+	// of its bytes but markers is 0xFF: the tables are ones, the sizes are
+	// under 0xFF00 and the scans' data is single EOB runs.
+	starts := func(marker byte) []int {
+		var at []int
+		for i := 0; i+1 < len(plain); i++ {
+			if plain[i] == 0xFF && plain[i+1] == marker {
+				at = append(at, i)
+			}
+		}
+		if len(at) == 0 {
+			t.Fatalf("no 0xFF%02X in the plain file", marker)
+		}
+		return at
+	}
+	scans := starts(0xDA)
+	places := []struct {
+		name string
+		at   []int
+	}{
+		{"before the frame header", starts(0xC2)},
+		{"before the Huffman tables", starts(0xC4)[:1]},
+		{"before the first scan", scans[:1]},
+		{"before every scan", scans},
+	}
+	junks := map[string][]byte{
+		"a zero byte":              {0x00},
+		"three bytes":              {0x12, 0x34, 0x56},
+		"a stuffed 0xFF00":         {0xFF, 0x00},
+		"a restart marker":         {0xFF, 0xD3},
+		"bytes, 0xFF00 and a 0x7F": {0x00, 0xFF, 0x00, 0x7F},
+	}
+	for _, place := range places {
+		for jname, junk := range junks {
+			name := jname + " " + place.name
+			var data []byte
+			last := 0
+			for _, at := range place.at {
+				data = append(append(data, plain[last:at]...), junk...)
+				last = at
+			}
+			data = append(data, plain[last:]...)
+			// The decoder reads through to the end of the image, every scan
+			// on the way: it returns a picture only once it reaches 0xFFD9,
+			// which comes after the last of them.
+			if _, err := jpeg.Decode(bytes.NewReader(data)); err != nil {
+				t.Fatalf("%s: image/jpeg refuses the file (%v): the bytes are not ones it reads past", name, err)
+			}
+			g, framed := readJPEGFrame(data)
+			if !framed || g.blocks != f.blocks {
+				t.Errorf("%s: readJPEGFrame = %d blocks, framed %v; want the plain file's %d", name, g.blocks, framed, f.blocks)
+			}
+			if got := jpegScanBlockVisits(data, g); got != want {
+				t.Errorf("%s: jpegScanBlockVisits = %d, want the plain file's %d", name, got, want)
+			}
+			if _, err := Inspect(data); !errors.Is(err, ErrImageTooCostly) {
+				t.Errorf("%s: Inspect = %v, want ErrImageTooCostly", name, err)
+			}
+		}
+	}
+}
+
+// Whether a three-component JPEG is read as RGB, and so converted to a
+// picture of four bytes a pixel, is decided the way image/jpeg decides it:
+// from its APP0 and Adobe APP14 segments wherever they come before the end
+// of the image, after the scans too, the last of each kind counting, and an
+// APP0 of five bytes or more that is not JFIF clearing what a JFIF one said.
+// Each file here is decoded and the picture it decodes to is the answer.
+func TestJPEGColourModelIsReadAsTheDecoderReadsIt(t *testing.T) {
+	plain := encodeJPEGImage(t, quadrants(16, 16))
+	app0 := func(body string) []byte { return jpegSegment(0xE0, []byte(body)) }
+	notJFIF := app0("AVI1\x00\x00\x00\x00")
+	cases := []struct {
+		name string
+		data []byte
+	}{
+		{"no segments", plain},
+		{"Adobe RGB", withSegments(plain, adobeSegment(0))},
+		{"Adobe YCbCr", withSegments(plain, adobeSegment(1))},
+		{"Adobe RGB after the scans", beforeEOI(plain, adobeSegment(0))},
+		{"Adobe RGB, then YCbCr after the scans", beforeEOI(withSegments(plain, adobeSegment(0)), adobeSegment(1))},
+		{"Adobe YCbCr, then RGB after the scans", beforeEOI(withSegments(plain, adobeSegment(1)), adobeSegment(0))},
+		{"JFIF and Adobe RGB", withSegments(plain, jfifSegment(), adobeSegment(0))},
+		{"JFIF, another APP0 and Adobe RGB", withSegments(plain, jfifSegment(), notJFIF, adobeSegment(0))},
+		{"JFIF, a short APP0 and Adobe RGB", withSegments(plain, jfifSegment(), app0("AV"), adobeSegment(0))},
+		{"another APP0 and Adobe RGB, JFIF after the scans", beforeEOI(withSegments(plain, notJFIF, adobeSegment(0)), jfifSegment())},
+		{"JFIF and Adobe RGB, another APP0 after the scans", beforeEOI(withSegments(plain, jfifSegment(), adobeSegment(0)), notJFIF)},
+		{"Adobe RGB past the end of the image", append(append([]byte(nil), plain...), adobeSegment(0)...)},
+	}
+	for _, c := range cases {
+		pic, err := jpeg.Decode(bytes.NewReader(c.data))
+		if err != nil {
+			t.Fatalf("%s: image/jpeg refuses the file: %v", c.name, err)
+		}
+		_, decodedRGB := pic.(*image.RGBA)
+		f, framed := readJPEGFrame(c.data)
+		if !framed || f.comps != 3 {
+			t.Fatalf("%s: readJPEGFrame = %d components, framed %v", c.name, f.comps, framed)
+		}
+		if f.rgb() != decodedRGB {
+			t.Errorf("%s: read as RGB %v, but image/jpeg decodes it to %T", c.name, f.rgb(), pic)
+		}
 	}
 }

@@ -16,7 +16,8 @@ accounts, bans, and reports are not.
   `golang.org/x/image` (WebP decoding and thumbnail scaling).
 - `cmd/server` — entrypoint (config, logger, graceful shutdown), plus the one-shot
   `-sweep` mode that deletes archived threads past their board's archive period (one
-  with a held reply leaves public view instead, until the reply is decided) and exits.
+  with a held reply leaves public view instead, until the reply is decided), rewrites
+  and vacuums the verification tables, and exits.
 - `internal/app`
   - `app.go` — wiring and routes; `config.go` — environment configuration.
   - `handlers.go` — HTTP handlers, validation, JSON responses.
@@ -46,15 +47,18 @@ accounts, bans, and reports are not.
     third-party browser builds under `web/lib/` (highlight.js, KaTeX).
 - `internal/media` — image validation and thumbnailing (`image.go`), metadata stripping
   (`sanitize.go`, with the EXIF orientation readers and the lossless turns in `orient.go`,
-  the WebP RIFF rewrite in `webp.go`, and the application of a PNG's gamma in `gamma.go`),
-  the header-based cost estimate (`cost.go`) and the two memory budgets it is held to
-  (`budget.go`), and the blob-storage interface with its two implementations: the local
-  filesystem (`local.go`) and Google Cloud Storage (`gcs.go`), selected by
-  `EDUCHAN_MEDIA_BACKEND`. `conformance_test.go` is one suite run against both.
-  `internal/media/mediatest` starts an in-process Cloud Storage emulator and is imported
-  only by tests. `internal/media/jpegenc` is Go's own JPEG encoder, copied with its
-  licence and changed to keep a picture's chroma subsampling (its package comment lists
-  every change).
+  the WebP RIFF rewrite in `webp.go`, the application of a PNG's gamma in `gamma.go`, the
+  GIF player that writes a stored GIF from the pictures it shows in `gifplay.go`, and the
+  chroma upsampling, as browsers' decoders do it, of a lossy WebP stored with its alpha
+  and of a JPEG turned to 4:4:4 in `upsample.go`), the header-based cost estimate
+  (`cost.go`) and the two memory budgets it is held to (`budget.go`), `Save`, which stores
+  both renditions, and `Remove` (`save.go`), and the blob-storage interface (`store.go`)
+  with its two implementations: the local filesystem (`local.go`) and Google Cloud Storage
+  (`gcs.go`), selected by `EDUCHAN_MEDIA_BACKEND`. `conformance_test.go` is one suite run
+  against both. `internal/media/mediatest` starts an in-process Cloud Storage emulator and
+  is imported only by tests. `internal/media/jpegenc` is Go's own JPEG encoder, copied
+  with its licence and changed to keep a picture's chroma subsampling (its package comment
+  lists every change).
 - `internal/mailer` — the `Sender` interface verification codes go out through, with a
   development implementation that prints them to stdout.
 - `Dockerfile`, `cloudbuild.yaml`, `.gcloudignore`, `deploy/` — the container image, the
@@ -380,16 +384,20 @@ needs a browser check before the test changes.
   summary line is redrawn from `state.thread`. `imageLimitReason` and `badgesHTML` treat
   `image_limit` 0 as a board whose replies never carry images, not a full thread. A
   network failure (`err.unreachable`, set by `api()`) gets its own wording, never the
-  browser's "Failed to fetch". A `429` is worded for what was refused: `/verify` passes
-  `errorMessage` `{ action: "code" }`, so a code request is told to wait and request a
-  code again, never to post again. A `503` with `retry_after` is a post the server was too
-  busy to take, worded as that and not as flood control; the form keeps the post, image
-  included, and nothing was charged for it. A not-found page names and links a board only
-  when it is in `state.boards`: the slug comes from the address, and echoing any slug
-  would let a crafted link write the page's copy. A history change that keeps the rendered
-  path (a same-thread quote link) only calls `focusHash()`, so revealed spoilers stay
-  revealed. A disabled file input is left out of `FormData`, and `submit` posts as JSON
-  when it is.
+  browser's "Failed to fetch". So does an answer to a post that is not the post it made
+  (`isCreatedPost`, `err.unconfirmed`): it is checked before the form is reset, so an
+  empty `200` never clears a draft (`TestThePostFormIsClearedOnlyForAPostMade`). A held
+  post's `202` is a post made, though it has no number until it is approved: taken for
+  an unconfirmed one, it kept the draft for the poster to send again. A `429`
+  is worded for what was refused: `/verify` passes `errorMessage` `{ action: "code" }`, so
+  a code request is told to wait and request a code again, never to post again. A `503`
+  with `retry_after` is a post the server was too busy to take, worded as that and not as
+  flood control; the form keeps the post, image included, and nothing was charged for it.
+  A not-found page names and links a board only when it is in `state.boards`: the slug
+  comes from the address, and echoing any slug would let a crafted link write the page's
+  copy. A history change that keeps the rendered path (a same-thread quote link) only
+  calls `focusHash()`, so revealed spoilers stay revealed. A disabled file input is left
+  out of `FormData`, and `submit` posts as JSON when it is.
 - **A server that takes no images.** `loadSite` reads `GET /api/site`
   (`{"uploads","max_upload_bytes"}`) into `state.site`. With `uploads` false, `formHTML`
   draws no image field at all — no picker, no drop hint, no Spoiler image box — a file
@@ -409,7 +417,8 @@ needs a browser check before the test changes.
 - A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
   half-written post — the attached file included, via `DataTransfer` — across it. New
   fields need adding there too. The spoiler box lives in the file preview and is
-  restored only alongside the file it was ticked for.
+  restored only alongside the file it was ticked for, and the badge box only for the
+  badge it was ticked for.
 - **The content rules' answers** (see Content rules and held posts below) are shown in
   the form, never as a page change. The draft stays put for a block and for support; a
   held post empties the form as a published one does. They go in the form's own notice
@@ -502,7 +511,20 @@ needs a browser check before the test changes.
   is attached to exactly one request in the whole application: the badged post, in
   `submit`. `readBadge()` decodes its claims locally to decide what to show — the
   signature is the server's to check, and it re-derives the label from its own record on
-  every badged post, so a forged local claim buys a 403 and nothing else.
+  every badged post, so a forged local claim buys a 403 and nothing else. A posting
+  form's badge box sits in a slot that names the badge it offers (`data-badge-option`,
+  a number `badgeNumber` gives each credential the page reads, never the credential
+  itself), and a post goes out only under the badge its box named. The badge can change
+  under a form: Verify pressed for another address, and the reader gone on to a board
+  before the answer. That answer redraws the box of any form on screen for the new
+  badge, unticked, and says so if it had been ticked (`offerHeldBadge`); before it, a box
+  ticked for one institution sent the other's credential
+  (`TestPostingFormSendsOnlyTheBadgeItNames`). A post refused because the badge it
+  carried expired or was revoked forgets that credential only while it is still the one
+  stored. One stored since — that answer, or a badge issued in another tab, which is
+  what revoked it — is offered in its place, and the form's notice says so, as it says
+  every refusal of a post (`badgeReplacedMessage`): forgetting whatever was stored
+  deleted a badge the server cannot hand out again.
 - The poster key lives in `localStorage` under `educhan:poster-key`: 16 random bytes as
   22 characters of unpadded base64url, made by `posterKey()` on the first post rather
   than the first visit. `submit` sends it in `X-Educhan-Poster-Key` on thread-create and
@@ -523,6 +545,178 @@ needs a browser check before the test changes.
   the credential, the poster key and the remembered name, and leaves the age answer. It
   is what the FAQ's shared-computer advice points to: the key left behind would give the
   next person at the computer the same IDs in the same threads.
+- The Verify page's steps (`verifyViewHTML`, `verifyStep`): the code step comes first and
+  is decided on `verifyStep.step` alone, so a pending code's box shows whether or not a
+  badge is held, since a badge is replaced only once the new one is confirmed
+  (`TestVerifyCodeBoxShowsWhileACodeIsPending`). A refusal after which the server holds
+  nothing pending (`NO_CODE_PENDING`, `CODE_EXPIRED`, `CODE_GUESSES_SPENT`: its own words,
+  held to them by `TestClientKnowsWhenNoCodeIsPending`) goes back to the address step,
+  which says why at the top of its form (`verifyStep.ended`, `CODE_ENDED_NOTES`) and
+  brings that into view, since on a phone the notice is a screen above it; a wrong code
+  keeps the box. An expired code reaches a browser as `NO_CODE_PENDING`, not
+  `CODE_EXPIRED`: the pending cookie lasts exactly as long as the code, so the browser
+  has dropped it by then, and that note leads with expiry
+  (`TestAnExpiredCodeIsSaidToHaveExpired`). The server answers the wrong code that spends
+  the last attempt with `CODE_GUESSES_SPENT`, so the box a wrong code leaves up takes the
+  right code until it expires. Every other refusal — a wrong code, the 18+ box unticked,
+  an address the allowlist does not know, a cooldown, no answer — leaves the step as it
+  is and is said in its form, under the fields and above the buttons
+  (`VERIFY_REFUSED_HTML`, `refuseVerification`), which puts the reader back in the field
+  it is about, a wrong code selected. A refusal is kept with its step for the rest of the
+  visit (`verifyRefusal`, put away by `render()` and by sending again), so the step drawn
+  again says it: one that came in while `render()` was still asking before it drew the
+  step had no form to be said in, and was lost. The step drawn again starts with its
+  fields empty, since nothing typed is kept with it, so it says the refusal without "What
+  you wrote is still in the box", which only the form that sent the request, still holding
+  what was typed, says (`sayVerifyRefusal`'s `sentIt`, the refusal's `redrawn`,
+  `TestVerifyStepDrawnAgainIsNotToldWhatWasTypedIsThere`): said there, a request with no
+  answer told the reader their address or code was in the empty field the focus was put
+  in. Forget this browser's confirmation is said under its button
+  (`confirmBrowserForgotten`). `submitVerification` says its refusals in the form, never
+  in the notice (`TestVerifyRefusalsAreSaidInTheForm`, which follows its calls down). Two
+  calls on an issued badge can raise one: `storeCredential`'s, when the browser will not
+  store it, and `offerHeldBadge`'s, on a page with a posting form whose ticked badge box
+  it unticked. An answer belongs to the step it was sent from:
+  `submitVerification` notes `verifyStep` before it sends (`sentFrom`) and drops an
+  answer, storing, setting and drawing nothing, once the page has moved to another step.
+  Forget this browser is the button that can do that while a request is out, and it has to
+  win over a badge on its way, which would otherwise be stored after the browser was
+  forgotten; the form's own other buttons wait on the answer. They wait in the step drawn
+  again for a reader who leaves the page and comes back before the answer, too: the wait
+  is kept in `verifyBusy`, not only on the buttons of the form that sent the request, and
+  `verifyViewHTML` draws that step waiting, so nothing can give up a step whose badge the
+  server is issuing (for the same address, retiring the one held here) or send a second
+  code while the page goes on to show the first one's box. No second request goes out
+  from a step whose first is out, and one from another step waits until
+  `submitVerification` is done with the one before it (`verifyRequest`), then goes only
+  if the page is still on its step: a dropped answer's pending-code cookie still lands,
+  and the browser keeps whichever lands last, so a code box drawn after Forget this
+  browser once refused its own right code while the server checked it against the
+  address asked for before. That wait ends: each Verify request — the address, the code,
+  and the `GET /api/verify` that `renderVerify` asks before an issued badge is drawn —
+  goes with `verifyDeadline()`'s signal and is given up once `VERIFY_TIMEOUT_MS` has
+  passed, which `api()` turns into the unreachable refusal. Send code and Verify say it
+  on their own step and drop it on any other. The GET only asks whether verification is
+  on, and `loadVerification` takes nothing from a request that got no answer, given up,
+  unreachable or refused: what the server said last stands, so a badge just issued is
+  drawn, focused and offered on posting forms all the same. Taken as "off", the GET
+  given up after a Verify drew "not configured" in the badge's place and took the badge
+  off every posting form, and the footer's Verify link away, for the rest of the visit.
+  Only an answer says verification is off (`answered`); until there is one, the page
+  says it couldn't reach educhan rather than that the server is not configured for it.
+  The deadline is longer than `ReadHeaderTimeout` and `WriteTimeout` together (constants
+  in `internal/app/app.go` that `cmd/server` gives its `http.Server`), so nothing given
+  up was still to be answered; the test reads both and checks the server uses them, so a
+  change to them changes it too. The signal reaches `fetch` only through `api()`'s
+  spread of the caller's options, so `api()` is held line for line up to its fetch:
+  built field by field, it dropped the signal with every other check passing.
+  Without the deadline, one request whose answer never came, over a connection gone
+  silent, held every later one, the step Forget this browser drew included, at Sending…
+  until a reload. Telling answers apart by step needs every change of step to assign a
+  new object: nothing edits one in place, and the places that make one are a list the
+  test holds (`TestVerifyAnswersBelongToTheStepTheyWereSentFrom`). An answer that
+  arrives after the reader has left the page (`onVerifyPage`) only sets `verifyStep`:
+  nothing is drawn over the page they went to, and coming back shows the step it left
+  (`TestVerifyAnswersDrawOnlyOnTheVerifyPage`). `renderVerify` is how
+  `render()` draws the page for a reader arriving at it, and how an issued badge is drawn,
+  each after one more request; when the page has been drawn in place for another step
+  meanwhile, it leaves that drawing alone only while it is still on the page. Every step
+  is drawn through `drawVerifyStep`, which notes the step and the drawing, and
+  `verifyStepOnScreen` asks whether that drawing is still there. Skipping regardless, a
+  code box drawn while `render()` was still asking was drawn over by the loading skeleton
+  or by the page just left, its answer landing late, and nothing drew it again;
+  redrawing regardless, the badge's late redraw wiped Forget this browser's
+  confirmation. The skeleton stands in only for the view it dims (`beginLoading`), and
+  the page is titled either way (`TestVerifyStepIsDrawnForAReaderArriving`). What runs
+  once each answer is in is held statement for statement, and so are `onVerifyPage`,
+  `verifyViewHTML` up to its code step, and `loadVerification`, the one place that sets
+  whether verification is on and whether the server has said
+  (`TestVerifyCodeBoxShowsWhileACodeIsPending`,
+  `TestVerifyAnswersDrawOnlyOnTheVerifyPage`, `TestVerifyRefusalsAreSaidInTheForm`): a
+  gate on a held badge in any of them, or in `renderVerify`, hides a pending code's box
+  with every other check passing. So does one in what runs on the box once it is drawn:
+  `drawVerifyStep`, `showVerifyField`, `sayVerifyRefusal`, what `renderVerify`'s callers
+  run on what it drew (`focusHash` in `render()`, `showHeldBadge` after Verify,
+  `confirmBrowserForgotten` after Forget this browser), what `renderVerify` and the
+  requests it waits on run once their answers are in, since an answer can draw the box
+  while it is still asking (the rest of `api()`, `loadVerification`'s `readBadge`, and
+  `announce`), and every top-level function those call, however far down
+  (`revealClearOfHeader`, `refuseVerification` and the helpers the code step's template
+  interpolates). The test finds that set by following the calls rather than from a
+  list, and holds each function in it whole, so a function new to the path fails it
+  until it is held too: holding the answer alone left `showVerifyField` and
+  `revealClearOfHeader` checked for a few words, and a gate in either took the code form
+  out of the page. Following calls down does not reach what runs once each call that
+  drew the box returns, so that is held line for line too, up to where the browser
+  takes over: the page's submit listener to the end of its Verify branch (the one
+  listener a Verify form's submit reaches), the forget buttons' callbacks, and
+  `render()` from its `finally` on, which leaves the Verify page with `focusHash` alone
+  run on it, not the posts and drafts every other page gets; `beginLoading`, whose
+  `finish` that `finally` calls, and `navigate`, which waits on `render()`, are held
+  whole, and every other call of either is a statement nothing waits on. A gate in the
+  submit listener after `submitVerification`, in what `render()` ran once it had drawn
+  the page for a badge holder coming back to it, or in `announce`, took the box away
+  with every function check passing. What runs on the box with no call from any of
+  that is not followed: the page's listeners (a click into the code box runs the click
+  listener and `isInternalLink`, a scroll runs `hideQuotePreview`, and keys, changes,
+  pointers, hovers and drags have theirs), its timers, and the answers to requests sent
+  from other pages. Down their calls lie `render()` and every page, more than a test can
+  hold whole, and a gate on a held badge in `hideQuotePreview` or `isInternalLink` took
+  the box away with every check passing. So what can tell whether a badge is held — the
+  verification state or a badge, read as a property (`state.verification`, a `.badge`
+  off anything), destructured or bound under its own name (`{ verification: { badge } }
+  = state`), or named in a string; `loadVerification`, which returns the state,
+  `readBadge`, `storedCredential`, `localStorage` and the credential's key; and the
+  markup only a held badge draws (Keep my badge, `#verify-badge`, a posting form's badge
+  box and its number) — is named only in the places
+  `TestOnlyKnownPlacesTellWhetherABadgeIsHeld` lists, top-level block by block. It counts
+  names in the code alone, not in the copy every page shows (`jsCodeText`), so a gate on
+  a held badge that names any of them fails it wherever it is put, a listener included;
+  counting property reads alone, it let a destructured read in `hideQuotePreview` take
+  the box away. A name made at run time — `state[k]` for a computed `k`, or the page's
+  text read back for its wording — is past what counting names can see, and is for
+  review to catch. `replacing` puts the badge panel away for
+  "Verify another address", and both steps then offer "Keep my badge" back to it
+  (`TestReplacingABadgeCanGoBackToIt`). Keep my badge reads the badge again before it
+  draws, so one that ran out, or was forgotten in another tab, while the page was on
+  another step does not come back as if live: the address step is drawn instead, saying
+  why at its top, shown and focused in the panel's place (`showHeldBadge`). Why a badge
+  went (`badgeLost`, `badgeLostHTML`) is said at the top of the code step as well as the
+  address step, and put away by `drawVerifyStep`, so it is said once whichever way the
+  step is drawn; put away by `renderVerify` alone, an expiry noticed on the code step
+  went unsaid (`TestAGoneBadgeIsSaidToHaveGone`). Forgetting the badge or the browser
+  starts over at the address step; Forget this credential says so at the top of it
+  (`CREDENTIAL_FORGOTTEN`) and focuses that, since the redraw took the focused button
+  (`TestForgettingTheCredentialSaysSo`). A reload drops a pending code too, since nothing
+  about it is stored: the page shows the badge held here, or the address step when there
+  is none.
+  Whatever a step draws in place of another, or says, is brought into view clear of the
+  sticky header (`revealClearOfHeader`, which measures it) and focused without scrolling
+  (`showVerifyField`, `showHeldBadge`): `focus()` and `scrollIntoView()` take an element
+  under the header for one in view, and on a phone, where the header wraps to three rows,
+  a badge holder who had scrolled down got the address field, the code box and then the
+  new badge all drawn under it (`TestVerifyStepsAreShownClearOfTheHeader`). Being drawn
+  in place, a step takes the button just pressed from under the reader and can put
+  another where it was, so the page's own buttons — Keep my badge, Use a different
+  address, Verify another address and both Forget buttons (`VERIFY_MOVES`), each of
+  which moves the page or forgets — let a press go for `VERIFY_SETTLE_MS` after a step
+  is drawn: `drawVerifyStep` notes when, and `pressedTooSoon` decides by when the reader
+  pressed, for the click and for its mousedown, so the focus stays where the step put
+  it. Before, the second tap of a double tap on Use a different address pressed Keep my
+  badge, drawn in its place on a phone, and a double click on Verify another address
+  pressed Forget this browser, which the shorter address step brought up into its place
+  on a wide screen, and took the badge, the post key and the name. The 18+ attestation,
+  the one box the page draws, lets a press go the same way (`VERIFY_ATTESTATION`, its
+  label, which holds the box): it is ticked by the reader alone, and a double click on
+  Use a different address ticked it on a wide screen, where the address step brought
+  clear of the header moved its label under the pointer. A refusal said in a step's
+  form moves the step too, though nothing is drawn — its sentence opens above the
+  buttons, and the form is brought clear of the header, which scrolls the page — so
+  `refuseVerification` starts the wait again. On a phone, the second tap of a double
+  tap on Verify, a wrong code refused, pressed Keep my badge, scrolled up into Verify's
+  place, and the code box went with the code still pending; on Send code with the box
+  unticked, it ticked the box, scrolled down into the button's place, under the refusal
+  saying why (`TestVerifyButtonsLetGoAPressAimedAtTheStepBefore`).
 
 ### Child safety
 
@@ -1016,28 +1210,58 @@ posting form (see **The content rules' answers** under Front end conventions).
   than by the filename or the client-supplied content type. `media.Inspect` checks the
   format and the header's dimensions without decoding (and for a GIF the frames' total
   area and count, `gifFramePixels`, a walk over the block structure), and estimates the
-  memory processing it will take (**Memory** below); `Process` runs it first,
-  so the early refusal in `parseSubmission` and the full one in `media.Save` cannot
-  disagree about a file's header. The GIF walk reads every block exactly as `image/gif`
-  does — a graphic control extension is a fixed 6 bytes and a plain-text one a fixed 13
-  before its sub-blocks, whatever their size bytes say, and an application one starts
-  with its own length byte — because a walk that read one extension differently from
-  the decoder lost its place there and counted none of the frames after it, which the
-  decoder went on to decode. It refuses (`ErrCorruptImage`) a file it cannot follow to
-  the trailer or to the end of a whole block. Two kinds of file browsers play and
-  `image/gif` refuses are read as browsers read them, and `sanitizeGIF` has the decoder
-  read them so too (`gifReader`): one that ends after its last block without the
-  trailer, which gets one, and one with a frame after the first reaching past the
-  canvas, for which the decoder is told the screen takes in every frame, and which
-  `clipGIF` then cuts to the canvas, a frame wholly off it becoming one transparent
-  pixel left in place for its delay (`TestGIFIsStoredAsBrowsersShowIt`). A first frame
-  past the canvas is refused: Chromium widens the canvas, Firefox moves the frame to
-  the corner. `TestGIFFramePixelsReadsWhatTheDecoderReads` and `FuzzGIFFramePixels`
-  hold the walk to the decoder: whatever `gif.DecodeAll` decodes from what `gifReader`
-  makes of a file, the walk must have read exactly its frames, their area, the largest
-  of them (charged again for an interlaced frame's reordering, as the canvas was) and,
-  short of an ANIMEXTS1.0 extension, its loop count; and whatever it decodes of a file
-  the walk refused is a disagreement. Change the two together.
+  memory processing it will take (**Memory** below); `Process` runs it first, so the early
+  refusal in `parseSubmission` and the full one in `media.Save` cannot disagree about a
+  file's header. The GIF walk reads every block exactly as `image/gif` does — a graphic
+  control extension is a fixed 6 bytes and a plain-text one a fixed 13 before its
+  sub-blocks, whatever their size bytes say, and an application one starts with its own
+  length byte — because a walk that read one extension differently from the decoder lost
+  its place there and counted none of the frames after it, which the decoder went on to
+  decode. It refuses (`ErrCorruptImage`) a file it cannot follow to the trailer or to the
+  end of a whole block, and one with an extension Chromium ends somewhere else
+  (`gifFrames.apart`): a plain-text one whose block size byte is not 12, which Chromium
+  reads as a sub-block's length; an application one whose block size byte is 0, which
+  Chromium ends at once; and a NETSCAPE2.0 or ANIMEXTS1.0 one whose first sub-block is the
+  terminator, which Chromium takes for the loop sub-block before reading on. Past any of
+  them Chromium meets a byte that starts no block and shows only the frames before it,
+  while `image/gif` decodes the rest, which would be stored and shown
+  (`TestGIFExtensionsChromiumEndsElsewhereAreRefused`). Two kinds of file browsers play
+  and `image/gif` refuses are read as browsers read them, and `sanitizeGIF` has the
+  decoder read them so too (`gifReader`): one that ends after its last block without the
+  trailer, which gets one, and one with a frame after the first reaching past the canvas,
+  for which the decoder is told the screen takes in every frame, and of which `playGIF`
+  plays only the part on the canvas. A frame wholly off it draws nothing, so what shows
+  for its delay is what the frame before it left once disposed of: after a kept frame
+  (disposal 0 or 1), that frame's picture, into whose delay it folds, as any frame that
+  changes nothing does; after one restored to the background (2), the canvas with that
+  frame's area cleared; and after one restored to the previous picture (3), the canvas as
+  it was before that frame (`TestGIFIsStoredAsBrowsersShowIt`). A first frame past the
+  canvas is refused: Chromium widens the canvas, Firefox moves the frame to the corner.
+  `TestGIFFramePixelsReadsWhatTheDecoderReads` and `FuzzGIFFramePixels` hold the walk to
+  the decoder: whatever `gif.DecodeAll` decodes from what `gifReader` makes of a file, the
+  walk must have read exactly its frames, their area, the largest of them (charged again
+  for an interlaced frame's reordering, as the canvas was) and, short of an ANIMEXTS1.0
+  extension, its loop count; and whatever it decodes of a file the walk refused is a
+  disagreement, but for a file refused at an extension Chromium ends elsewhere. Change the
+  two together. Where the decoder reads a frame's fields otherwise than Chromium, the
+  frames are played from the walk's record of each (`gifFrameHead`, from `walkGIF`, its
+  colours through `gifFrameHead.keys`) and take only their pixels from the decoder: a
+  frame with no graphic control extension has disposal 0, where `image/gif` carries over
+  the last one's; its transparent index is the last extension's alone, where `image/gif`
+  keeps one an earlier extension before the same frame named; and an index past the end of
+  its colour table is opaque black but for the transparent one, where `image/gif` makes
+  all of them up to a transparent index past the table transparent. Two more kinds of file
+  browsers play and `image/gif` refuses are refused by the decoder, in `Process` and so
+  after flood control (`image could not be decoded`): one with a frame whose pixels index
+  past their table, but for indices up to a transparent index that is itself past it,
+  which `image/gif` takes, where Chromium shows those pixels black; and one with more data
+  after a frame's LZW end code than `image/gif` takes, which is the rest of the sub-block
+  the code ends in and, when the code ends a sub-block, one more sub-block of one byte
+  (golang.org/issue/16146), where Chromium shows the frame and reads on from its
+  terminator (`TestGIFsImageGIFRefusesAreRefusedOnceDecoded`, which also has what
+  `image/gif` takes stored as the file without it). `TestGIFIsReadAsChromiumReadsIt`
+  holds files to the pictures Chromium was seen to show of them, and `chromiumReads` in
+  the tests is that reading.
 - **What is stored is never the upload.** `media.Process` rewrites every image without its
   metadata before `Save` hands it to a backend, so both backends store the same file
   (`internal/media/sanitize.go`). Files stored before this release are the exception: they
@@ -1065,20 +1289,123 @@ posting form (see **The content rules' answers** under Front end conventions).
   are what `image/png` decodes them to, so 1-, 2- and 4-bit grey comes back at 8 bits and
   a colour key (tRNS on grey or truecolour) as colour with an alpha channel, or with none
   when no pixel has the key's colour (`TestPNGIsStoredInTheFormItDecodesTo`). `orient`
-  keeps every pixel exactly, in a picture of the kind it was given: YCbCr in its planes
-  where the chroma samples line up with the turned picture, and otherwise at 4:4:4 a pixel
-  at a time, because turning a plane whose last sample covers fewer pixels shifts every
-  colour along that side. `turnedSubsampling` is the rule: 4:4:4 when the turn reverses a
-  side that is not a whole number of chroma samples long — the width (reversed at
-  orientations 2, 3, 7 and 8) when it is odd at 4:2:2 or 4:2:0 or not a multiple of four
-  at 4:1:1 or 4:1:0, the height (reversed at 3, 4, 6 and 7) when it is odd at 4:4:0, 4:2:0
-  or 4:1:0 — and when 4:1:1 or 4:1:0 turns on its side (5 to 8), which no ratio in the
-  image package can hold (`TestOrientKeepsEverySubsamplingExact`,
-  `TestOrientKeepsEveryPixelKindExact`). GIF goes through `gif.DecodeAll` and `EncodeAll`,
-  which keep frames, positions, delays and disposal and drop comments and every
-  application extension. The loop count is written back as NETSCAPE2.0, from whichever
-  loop extension came last, NETSCAPE2.0 or ANIMEXTS1.0, as browsers read them; `image/gif`
-  reads only the first, so `gifFramePixels` reads both
+  turns a picture into one of the kind it was given, every pixel exactly: YCbCr in its
+  planes where the chroma samples line up with the turned picture, and otherwise at 4:4:4
+  a pixel at a time, because turning a plane whose last sample covers fewer pixels shifts
+  every colour along that side. At 4:4:4 a pixel keeps its luma exactly but takes its
+  chroma as libjpeg-turbo, and so Chromium, widens it for display (`jpegChromaRow`): at
+  4:2:0, 4:2:2 and 4:4:0 a blend of the samples nearest it rather than the sample it lies
+  in, which at a colour edge can be a hundred levels off what the poster saw; at 4:1:1 and
+  4:1:0, or where a halved width is two chroma samples across or fewer, the sample it lies
+  in, as libjpeg-turbo shows it. `turnedSubsampling` is the rule: 4:4:4 when the turn
+  reverses a side that is not a whole number of chroma samples long — the width (reversed
+  at orientations 2, 3, 7 and 8) when it is odd at 4:2:2 or 4:2:0 or not a multiple of
+  four at 4:1:1 or 4:1:0, the height (reversed at 3, 4, 6 and 7) when it is odd at 4:4:0,
+  4:2:0 or 4:1:0 — and when 4:1:1 or 4:1:0 turns on its side (5 to 8), which no ratio in
+  the image package can hold (`TestOrientTurnsEverySubsamplingAsShown`,
+  `TestOrientKeepsEveryPixelKindExact`). GIF is decoded by `gif.DecodeAll`, which reads
+  past comments and every application extension, and written by `playGIF` (`gifplay.go`)
+  from what it shows rather than from its frames: the run of pictures Chromium composites,
+  equal neighbours merged, each with the time it shows (`shownDelay`: 0 and 1 show as 10),
+  and the loop count. How frames make those pictures is bits nobody sees — fifteen
+  one-pixel transparent frames after a picture spelled sixty bytes in their positions,
+  delays and disposals; frames redrawing a picture after a clear or a put-back spelled a
+  message in their delays; pixels a frame repainted in the colour under them, rather than
+  left transparent, carried a 32 KiB file in a 512×512 GIF; a disposal the next frame
+  painted over, and the split of a picture's time between its frames, carried more — so
+  the stored file is written by one rule from the pictures, and two GIFs Chromium shows
+  alike are stored as the same bytes. Each picture is one frame, drawing exactly the
+  pixels that differ from what the frame before it left and transparent elsewhere, cut to
+  the rectangle around those pixels and the ones the next picture has transparent where
+  this one does not; it is cleared after its time when there are such pixels, since only a
+  clear makes a pixel transparent again, and left in place otherwise, the last always in
+  place — but for a GIF of a table a frame (below). Time past 65,535 hundredths goes into
+  one-pixel frames that draw nothing after it (the last of them cleared, of the picture's
+  rectangle, when the picture is), or for a frame put back into copies of it, each put
+  back, none given a delay of 1. A GIF played once gets delay 0 on its last picture, and a
+  GIF of one picture is a still: one frame, no delay, disposal or loop count, and a
+  control extension only for transparent pixels. The header has background and aspect 0.
+  Colours: when the pictures show 255 or fewer, one global table, transparent black at 0
+  and then the colours in order of their values, with 0 the transparent index of every
+  frame of an animation; otherwise each frame has a table of the colours it draws, in
+  order, after a transparent 0 when a pixel of its rectangle is not drawn (`ownTable`). A
+  frame of 256 colours has no room for that entry, so it writes each pixel it does not
+  draw in the colour already showing there, which has to be one of its 256. A frame left
+  in place or cleared can leave the next one more than that to draw (the colours it
+  covered, back again, and the next picture's own: ImageMagick's `-layers OptimizeFrame`
+  made one that left 304), so `choose` takes, for each frame, the first of three ways
+  after which it and the next frame can be written: left in place (if the next picture
+  needs nothing cleared), cleared with the rectangle widened as above, and put back to
+  what was there before it was drawn, which the player keeps for that (`saved`) and which
+  has to be transparent wherever the next picture is. Every choice is a function of the
+  pictures and the choices before it, so "shown alike, stored alike" still holds, and
+  every GIF stored before frames could be put back that `Inspect` still admits, and whose
+  stored frames are each at least `gifRowPixels` wide, is stored as the same bytes, the
+  way it took then being still the first that does. Two later charges each refuse some
+  GIFs stored before: an animation whose tables give more than 255 colours is now charged
+  for `saved` from its header (`gifFrames.many`, `gifPlayScratch`), so one on a large
+  canvas from a large upload may be refused that was stored before (the README's bands);
+  and a stored frame or a rectangle `choose` looks at is now charged by its rows
+  (`gifCharge`, below), so a GIF whose stored frames are tall and narrower than
+  `gifRowPixels` may be refused that was stored before (24 one-pixel frames put back at
+  the two ends of a 1×65,535 canvas, 969 B, were stored before the row charge and are
+  refused now). Where no way will do, the GIF is refused (`ErrImageTooCostly`), as is one
+  whose stored frames, with what `choose` looked at for ways it did not take (`tried`, so
+  that looking is bounded as writing is), are charged more than `maxGIFFramePixels`
+  (`TestGIFOfManyColoursHasATableAFrame`, `TestGIFOfManyColoursPutsAFrameBack`,
+  `TestGIFWaysNotTakenAreCharged`; after flood control,
+  `TestImagesRefusedByTheirHeaderStartNoCooldown`). A frame, a stored frame and a
+  rectangle looked at are each charged their pixels with every row counted as at least
+  `gifRowPixels` (64; `gifCharge`), by the walk, by `frame` and by `tried` alike, because
+  each row costs setting up whatever its width: charged by its pixels alone, a GIF of
+  1,525 frames a pixel wide and 65,535 tall took 21 seconds of CPU to play
+  (`TestGIFFrameRowsAreChargedAsAtLeastGIFRowPixels`,
+  `TestGIFStoredFramesAreChargedByTheirRows`, `TestGIFWaysNotTakenAreChargedByTheirRows`).
+  Both refusals are known only by playing the GIF: `Inspect` reads the header, where
+  `gifFramePixels` holds the declared frames to `maxGIFFramePixels`, but the put-back,
+  restore-chain and widened-clear work shows only as the frames are played, so a GIF the
+  header admits can still be refused here (put back on a 2000² canvas, `Inspect` admits 49
+  frames where the player takes 14; a 1000² restore chain, from an upload over the 8 MiB
+  default, 199 where the player takes 34), after it has been decoded and its first picture
+  thumbnailed, and after flood control, so the cooldown is charged and nothing is written
+  (`Save` stores only after `processHeld` succeeds, so `discardUpload` has nothing to
+  remove). The work is already spent, so the cap is held where it is found, not moved
+  earlier. The choice is greedy, one frame at a time, so some GIFs a file could store one
+  frame to a picture are refused: frames put back two in a row, the second to the picture
+  before the first, after the stored file left the first in place; or a clear whose
+  widened rectangle takes in too many colours. Only frames that clear or put back what
+  earlier ones drew can bring that about, since a frame alone draws from one table: none
+  of 126 GIFs made with ffmpeg, ImageMagick and Pillow is refused, nor any of the 1,500
+  many-coloured GIFs of the Chromium comparison; 1 of 5,000 random GIFs of up to 256
+  colours a frame and every disposal method is, and 75 of 2,000 random animations of
+  sprites put back, cleared or left over a background of 256 colours (`randomSpritesGIF`).
+  The player keeps what the frames before the one being played left (`under`) as a
+  four-byte colour key a pixel, with two bit sets over the canvas, and for an animation
+  whose tables give more than 255 colours (`gifFrames.many`, read by the walk) four bytes
+  a pixel more for `saved` (`gifPlayScratch`, charged in `completedCost`,
+  `TestGIFPlayScratchCoversThePlayer`); it lets each decoded frame go once it has played
+  it, and keeps the walk's head of each until then (`gifFramePlay`). The thumbnail is of
+  the first picture, made before playing (`firstGIFPicture`). `TestGIFIsStoredAsItPlays`
+  holds 2000 random GIFs to `browserPlay` (`gifplay_test.go`), a model of Chromium's
+  compositing written apart from `playGIF`, and to storing the same bytes when processed
+  again; `TestGIFsShownAlikeAreStoredAlike` rewrites 1,100 random GIFs, 300 of them
+  animations of sprites over many colours (`randomSpritesGIF`), at least 50 of which are
+  stored with frames put back, six times each, in thirteen ways that change nothing
+  Chromium shows (`gifRewrites`, each checked against the model first) and requires every
+  form stored as the original's bytes; `hidden_test.go` pins the channels found, each as
+  uploads differing only in that channel, stored as the same bytes
+  (`TestGIFFramesOfOnePictureCarryNothing`, `TestGIFPixelsThatChangeNothingCarryNothing`,
+  `TestGIFDisposalPaintedOverCarriesNothing`,
+  `TestGIFTimeSplitBetweenFramesCarriesNothing`);
+  `TestGIFFramesThatDrawNothingCarryNothing` (`gifplay_test.go`) checks that frames which
+  draw nothing are not stored. The model and the forms were compared with Chromium
+  (through WebCodecs' `ImageDecoder`, which `<img>` shares its GIF decoder with) over some
+  9,000 GIFs, and again, once frames could be put back, over 8,550 stored ones (the 126
+  made with real tools, the 1,500 of many colours, 4,999 random ones and 1,925 animations
+  of sprites), every one showing alike; change the player and the model only together, and
+  only after checking Chromium again. The loop count is written back as NETSCAPE2.0, from
+  whichever loop extension came last, NETSCAPE2.0 or ANIMEXTS1.0, as browsers read them;
+  `image/gif` reads only the first, so `gifFramePixels` reads both
   (`TestGIFLoopCountIsReadFromEitherLoopExtension`). WebP cannot be encoded in Go, so a
   WebP upload is stored as another format (`sanitizeWebP`): a JPEG at `storedJPEGQuality`
   when it is lossy and opaque, from its own 4:2:0 planes taken to full range where they
@@ -1086,13 +1413,16 @@ posting form (see **The content rules' answers** under Front end conventions).
   quality is no guide: a WebP's quality setting is not a JPEG's, and the lower it was the
   larger the JPEG, measured on photos up to 1.4 times the WebP from quality 90, two to
   three times from 75 and up to eight and a half from 5), otherwise a PNG (lossless pixels
-  exactly, or a lossy picture's alpha), and `Processed.Format`, the stored path's
+  exactly, or a lossy picture with its alpha, its half-resolution chroma widened as
+  libwebp, and so Chromium, widens it: `webpChromaRow`,
+  `TestLossyWebPIsUpsampledAsLibwebpDoes`), and `Processed.Format`, the stored path's
   extension, the content type, the attachment's `name` and the thumbnail's format all
   follow the stored format, not the upload's. Before decoding, `stripWebP` (`webp.go`)
   rewrites the RIFF so the decoder sees only the picture: it keeps VP8X (flags masked to
   alpha and animation, reserved bits cleared, and a still picture's alpha flag set exactly
-  when an ALPH is kept, because x/image refuses the mismatches libwebp ignores, a lossless
-  picture with transparency and metadata under the flag among them:
+  when an ALPH is kept, because x/image refuses the mismatches Chromium ignores, a
+  lossless picture with transparency and metadata under the flag among them; an ALPH
+  without the flag, which Chromium does not show, is dropped:
   `TestWebPAlphaFlagFollowsTheChunks`), ALPH, VP8, VP8L, ANIM and ANMF (each frame cut to
   its picture), drops EXIF, XMP, ICCP and every unknown chunk, recomputes the RIFF size,
   drops bytes past the RIFF's end, and refuses a file whose canvas and bitstream sizes
@@ -1101,15 +1431,37 @@ posting form (see **The content rules' answers** under Front end conventions).
   stripping (`TestFilesHiddenInsideWebPChunksAreNotStored`,
   `TestUploadedWebPIsServedAsAFileMadeFromItsPixels`). Do not go back to storing the
   stripped WebP to save the re-encode. An animated WebP is still refused as
-  `ErrCorruptImage`, as before stripping: x/image cannot decode one. A WebP stored before
-  this change stays a `.webp` and is served as `image/webp` (`ContentTypeForExt`).
-  `Processed.Data` is the stored file, `Width`/`Height` are the upright picture's, the
-  thumbnail is made from the upright pixels, and `StoredImage.Checksum` and `Size` are of
-  the stored bytes — the plan's `blocked_media` check on the re-encoded output (2.2)
-  depends on that. Tests build their fixtures in code (`fixtures_test.go`) and check every
-  needle is in the upload before checking it is gone from what is stored:
-  `TestJPEGIsStoredWithoutMetadata`, `TestEveryOrientationIsApplied`,
-  `TestPNGOrientationIsApplied`, `TestPNGIsStoredWithoutAncillaryChunks`,
+  `ErrCorruptImage`, as before stripping, since x/image cannot decode one, and now from
+  its header: `Inspect` refuses one whose VP8X has the animation flag or, after a VP8X,
+  has a frame (ANMF) among its chunks (`webpAnimated`), before any cooldown, whatever its
+  size and however much of it arrived — a file cut short is walked as far as it goes; it
+  used to pass `Inspect` when short and fail after flood control, and when long be charged
+  as one lossless bitstream of its whole length and refused as too large
+  (`TestAnimatedWebPIsRefusedFromItsHeader`). A simple-format file is a still to
+  `stripWebP` and to browsers whatever follows its picture, so a frame there does not
+  count (`TestWebPStillWithAFrameAfterItsPictureIsStoredAsAStill`). `Inspect` also reads
+  every other WebP's chunks as `stripWebP` does, without writing the file (`webpKept`),
+  and refuses whatever `stripWebP` would refuse once processed: a RIFF that runs past the
+  end of the file or a chunk that does, no bitstream, and in a simple-format file an ALPH
+  before its bitstream, or in an extended one a bitstream that does not match the canvas,
+  a second bitstream, an ALPH after its bitstream, beside a lossless one or after another
+  ALPH, a second VP8X or an ANIM. Before that `Inspect`'s own checks caught only the RIFF
+  of these, leaving the rest to x/image's `DecodeConfig`, which reads no further than a
+  VP8X or, in a file without one, the bitstream, so in an extended file any of the rest, a
+  chunk that runs past the end wherever it lies among them, passed `Inspect` and was
+  refused after flood control, and so was a chunk after the picture that runs past the end
+  in a simple-format file (`TestMalformedWebPIsRefused`, whose cases `Inspect` must
+  refuse, and `FuzzStripWebP`, which holds `Inspect` to admitting no WebP that `stripWebP`
+  refuses). Test fixtures that stand in for a picture never decoded still need a bitstream
+  header of the canvas's size (`vp8Stub`, `vp8lStub`). A WebP stored before this change
+  stays a `.webp` and is served as `image/webp` (`ContentTypeForExt`). `Processed.Data` is
+  the stored file, `Width`/`Height` are the upright picture's, the thumbnail is made from
+  the upright pixels, and `StoredImage.Checksum` and `Size` are of the stored bytes — the
+  plan's `blocked_media` check on the re-encoded output (2.2) depends on that. Tests build
+  their fixtures in code (`fixtures_test.go`) and check every needle is in the upload
+  before checking it is gone from what is stored: `TestJPEGIsStoredWithoutMetadata`,
+  `TestEveryOrientationIsApplied`, `TestPNGOrientationIsApplied`,
+  `TestPNGIsStoredWithoutAncillaryChunks`,
   `TestGIFKeepsItsAnimationAndDropsItsExtensions`, `TestWebPIsStrippedChunkByChunk`,
   `TestWebPIsStoredAsPNGOrJPEG`, the conformance suite's "save stores no metadata", and
   `TestUploadedPhotoKeepsNoMetadataOnEveryBackend` end to end over both backends. Every
@@ -1127,164 +1479,272 @@ posting form (see **The content rules' answers** under Front end conventions).
   precision its alpha can show — `reduce8`/`unpremul8` and `unpremul16`, a
   premultiply/unpremultiply round trip, zero under alpha 0 — across `NRGBA` and
   `NRGBA64` (and `lossyWebPToNRGBA` does the same per pixel for a lossy WebP with
-  alpha), and `cleanPaletted` (PNG) and `cleanGIF` rebuild a palette through a
-  `colourFolder`: one entry per distinct colour its pixels show, in first-use order, a
-  single transparent entry, every pixel remapped to it. `cleanGIF` folds the frames that
-  copied the global table together into one union table so they keep sharing it (and
-  falls back to a table per frame if their colours overflow 256 or none copies the
-  global table); a crafted overflow in a lone picture never happens, so `cleanPaletted`
-  ignores it. What is left is the picture, kept exactly, and that is the whole guarantee:
-  it is not that nothing unseen survives. A fully opaque pixel keeps its exact value,
-  including the low byte of a 16-bit channel (`TestPNGKeepsSixteenBitPixels`), so low-bit
-  steganography in a visible picture survives by design; removing it would change the
-  picture. The one exception is a PNG's gamma, applied so that the picture shows as it
-  did (below). `hidden_test.go` holds each path —
+  alpha), and `cleanPaletted` rebuilds a PNG's palette through a `colourFolder`: one entry
+  per distinct colour its pixels show, in first-use order, a single transparent entry,
+  every pixel remapped to it. It folds the palette indices in the order the pixels first
+  use them (`firstUses`, `foldPaletted`), which is the same table as folding pixel by
+  pixel at a map lookup a palette entry rather than a pixel; a lone picture never
+  overflows, so `cleanPaletted` ignores it. A GIF's tables are written from the colours
+  its pictures show (above), never taken from the upload, and so is whether its frames
+  share one, which shows nothing either (`TestGIFColourTablesKeepOnlyWhatIsShown`,
+  `TestGIFFieldsBrowsersDoNotShowAreWrittenTheSame`). What is left is the picture, kept
+  exactly, and that is the whole guarantee: it is not that nothing unseen survives. A
+  fully opaque pixel keeps its exact value, including the low byte of a 16-bit channel
+  (`TestPNGKeepsSixteenBitPixels`), so low-bit steganography in a visible picture survives
+  by design; removing it would change the picture. The one exception is a PNG's gamma,
+  applied so that the picture shows as it did (below). `hidden_test.go` holds each path —
   `TestPartlyTransparentColourIsReducedToItsAlpha` the alpha-precision cut and
   `TestFlatPaletteCannotHideAFileInItsPixels` the index channel of a flat palette — with
   the needles checked present in the upload first.
 - Besides the decoders, educhan reads structures an uploader controls in a few places of
   its own: the EXIF reader, the JPEG segment walks (`jpegOrientation`, and `readJPEGFrame`
   with its frame header and quantisation tables), the PNG chunk walks, the GIF block walk,
-  the WebP RIFF rewrite, and the cost model's walk over a WebP's chunks (`webpPicture`).
-  Each reads in place and bounds-checks every offset and length before use. None collects
-  what it walks into a list: the WebP rewrite reads its chunks one at a time
-  (`nextChunk`/`walkChunks`) and keeps only the ones that make the picture, so a file of a
-  million empty chunks costs it the picture it keeps and a short id string per chunk as it
-  goes, not a struct for each chunk in the file (`manyChunkWebP`,
-  `TestWebPChunkWalkDoesNotHoldAStructPerChunk`); the rewritten file is the only sizable
-  thing any of them allocates. Each gives a safe answer for what it cannot read —
-  orientation 1, the dearest cost, `storedJPEGQuality` — except the GIF walk and the RIFF
-  rewrite, which refuse the file. The EXIF reader follows no offset but IFD0's (no IFD
-  chain, so no loop). Whether the file is an image is the decoder's call alone
-  (`TestHostileEXIF`, `FuzzJPEGOrientation`, `FuzzPNGOrientation`, `FuzzJPEGQuality`,
-  `FuzzGIFFramePixels`; `FuzzInspect` runs every walk `Inspect` makes over files of every
-  format, and checks that what it admits is estimated at no less than a byte a pixel and
-  no more than the budget; `FuzzStripWebP` runs the RIFF rewrite over lossless and lossy
-  WebPs and checks it is idempotent). No EXIF library is needed and none should be added.
-- **No filename is kept.** A camera's or a phone's filename can name a date and a
-  person, so `parseSubmission` reads only the file's bytes, and an attachment's name
-  is `attachmentName(stored path)`: `image` plus the stored format's extension
-  (`image.jpg`), whatever the client sent, and so whatever extension it claimed. It is
-  stored in `attachments.original_name`, a column that kept its name;
-  `0008_attachment_names.sql` rewrote the rows from before the same way, from
-  `original_path`, and has to stay in step with `attachmentName`
-  (`TestUploadedFilenameIsNotKept`, `TestAttachmentNamesAreRewritten`). The client
-  shows it as the caption under the thumbnail.
-- Dropping the ICC profile (and a PNG's `iCCP` and `cHRM`) is deliberate: most photos
-  are sRGB, which is what a browser assumes untagged, and look the same; a wide-gamut
-  one (Display P3, Adobe RGB) shifts slightly. A profile can name a device or an editor,
-  and converting to sRGB properly needs a colour engine Go does not have. A PNG's `gAMA`
-  is the exception, because dropping it shifts far more than slightly (a picture tagged
-  1.0, linear light, showed its mid-grey of 128 at about 188) and applying it needs only
-  a curve. `pngGamma` (`gamma.go`) reads it as Chromium does — the first `gAMA` before
-  the first `IDAT`, and none beside an `sRGB` or `iCCP` chunk, at 0, or within 5% of
-  1/2.2 — and `applyPNGGamma` converts the colour samples, never alpha, to the sRGB
-  values that show the same light, at the picture's own depth, before
-  `reduceHiddenColour`. `TestPNGGammaIsShownAsBrowsersShowIt` holds a stored grey ramp
-  to within a level of what Chromium 141 drew for each tag, and has a case for each of
-  those rules; `TestPNGGammaConvertsColourOnly` covers every picture type `image/png`
-  decodes to. A change there needs the same browser comparison.
+  the WebP RIFF rewrite, `Inspect`'s animation check (`webpAnimated`), and the cost
+  model's walk over a WebP's chunks (`webpPicture`). Each reads in place and bounds-checks
+  every offset and length before use. None collects what it walks into a list: the WebP
+  rewrite reads its chunks one at a time (`nextChunk`/`walkChunks`) and keeps only the
+  ones that make the picture, so a file of a million empty chunks costs it the picture it
+  keeps and a short id string per chunk as it goes, not a struct for each chunk in the
+  file (`manyChunkWebP`, `TestWebPChunkWalkDoesNotHoldAStructPerChunk`); the rewritten
+  file is the only sizable thing any of them allocates. Each gives a safe answer for what
+  it cannot read — orientation 1, the dearest cost, `storedJPEGQuality`, not animated
+  (which leaves the file to the RIFF rewrite) — except the GIF walk and the RIFF rewrite,
+  which refuse the file. The EXIF reader follows no offset but IFD0's and, from IFD0
+  alone, its Exif sub-IFDs', which are where Chromium reads the orientation from, and it
+  reads the entries as Chromium does (`TestOrientationIsReadAsChromiumReadsIt`), from the
+  first Exif segment or eXIf chunk with any EXIF in it, broken or not
+  (`TestEmptyEXIFBlocksArePassedOver`); no IFD chain is walked, so there is no loop.
+  Chromium follows every Exif sub-IFD entry in IFD0, though, and 65535 of them naming IFD0
+  is 4.3 billion entries to read, so the reader stops after `maxEXIFEntries` in all, every
+  entry of IFD0 and of one sub-IFD (`TestEXIFReadIsBounded`). Whether the file is an image
+  is the decoder's call alone (`TestHostileEXIF`, `FuzzJPEGOrientation`,
+  `FuzzPNGOrientation`, `FuzzJPEGQuality`, `FuzzGIFFramePixels`; `FuzzInspect` runs every
+  walk `Inspect` makes over files of every format, and checks that what it admits is
+  estimated at no less than a byte a pixel and no more than the budget; `FuzzStripWebP`
+  runs the RIFF rewrite over lossless and lossy WebPs and checks it is idempotent). No
+  EXIF library is needed and none should be added.
+- **No filename is kept.** A camera's or a phone's filename can name a date and a person,
+  so `parseSubmission` reads only the file's bytes, and an attachment's name is
+  `attachmentName(stored path)`: `image` plus the stored format's extension (`image.jpg`),
+  whatever the client sent, and so whatever extension it claimed. It is stored in
+  `attachments.original_name`, a column that kept its name; `0008_attachment_names.sql`
+  rewrote the rows from before the same way, from `original_path`, and `renameAttachments`
+  repeats it on every start for any row an older release still serving during a rollout
+  wrote since; both have to stay in step with `attachmentName`
+  (`TestUploadedFilenameIsNotKept`, `TestAttachmentNamesAreRewritten`,
+  `TestAttachmentNamesStoredSinceTheMigrationAreRenamedOnStart`). The client shows it as
+  the caption under the thumbnail.
+- Dropping the ICC profile (and a PNG's `iCCP` and `cHRM`) is deliberate: most photos are
+  sRGB, which is what a browser assumes untagged, and look the same; a wide-gamut one
+  (Display P3, Adobe RGB) shifts slightly. A profile can name a device or an editor, and
+  converting to sRGB properly needs a colour engine Go does not have. A PNG's `gAMA` is
+  the exception, because dropping it shifts far more than slightly (a picture tagged 1.0,
+  linear light, showed its mid-grey of 128 at about 188) and applying it needs only a
+  curve. `pngGamma` (`gamma.go`) reads it as Chromium does: the first `gAMA` before the
+  first `IDAT`, and none at 0, within 5% of 1/2.2, or beside an `sRGB` chunk whose
+  rendering intent is 0 to 3 or the first `iCCP` chunk that is not empty holding a profile
+  Chromium uses, one that inflates whole, checksum and all, with no preset dictionary, to
+  no more than 64 MiB and that skcms, Chromium's colour engine, would take
+  (`pngProfileUsable`, which reads it as `skcms_Parse` does short of its lookup tables).
+  Chromium's own cut is lower, by more than the compressed chunk: its decoder takes the
+  profile from a 64 MiB budget its own buffers share, which left about 480 KiB less for a
+  291 KB chunk and 7 to 8 MiB less for a 6.5 MB upload of random bytes, so a profile
+  within that of 64 MiB is taken as used here, where Chromium applies the `gAMA` or does
+  not show the picture (`maxICCProfile`). An `sRGB` or `iCCP` chunk Chromium cannot read
+  takes nothing's place there, and the `gAMA` beside it is applied; a `cICP` chunk, which
+  Chromium reads before them all, is not read here. `applyPNGGamma` converts the colour
+  samples, never alpha, to the sRGB values that show the same light, at the picture's own
+  depth, before `reduceHiddenColour`. `TestPNGGammaIsShownAsBrowsersShowIt` holds a stored
+  grey ramp to within a level of what Chromium 141 drew for each tag, and has a case for
+  each of those rules, for a profile broken in each way `iccProfileUsable` refuses one
+  (the one whose tag table runs past it is refused by its tags' bounds as well, so
+  `TestICCTagTableMustFitTheProfile` has one only the table's length refuses), and for the
+  sound grey, RGB and `cicp`-tagged profiles those differ from; none has a lookup table
+  (`A2B0` or `A2B1`), which stands in here for the curves and colourants without being
+  read. `TestPNGGammaConvertsColourOnly` covers every picture type `image/png` decodes to.
+  A change there needs the same browser comparison.
 - **Memory.** `MaxPixels` is 25 megapixels, so that the 24-megapixel photos phones and
   cameras save are taken whole (an iPhone's are 5712×4284, 24.5 million pixels;
-  `TestTwentyFourMegapixelPhotosAreAccepted`), and a GIF's frames together may not pass
-  `maxGIFFramePixels` (four times that), but neither is the memory bound: what an upload
-  holds while it is processed depends on how it is encoded as much as on its size.
-  `Inspect` estimates it from the header (`processingCost`, `cost.go`): the decoder's
-  buffers (a progressive JPEG keeps 256 bytes of coefficients for every 8×8 block until
-  its last scan; CMYK and RGB JPEGs decode to 4 bytes a pixel, and a 16-bit PNG to 8, or
-  to 2 when it is grey with no transparency, as `pngBytesPerPixel` reads its header;
+  `TestTwentyFourMegapixelPhotosAreAccepted`), and a GIF's frames together may not be
+  charged more than `maxGIFFramePixels` (four times that, each row counted as at least 64
+  pixels), but neither is the memory bound: what an upload holds while it is processed
+  depends on how it is encoded as much as on its size. `Inspect` estimates it from the
+  header (`processingCost`, `cost.go`): the decoder's buffers (a progressive JPEG keeps
+  256 bytes of coefficients for every 8×8 block until its last scan; CMYK and RGB JPEGs
+  decode to 4 bytes a pixel, and which are RGB is read as `image/jpeg` reads it, from the
+  APP0 and Adobe segments of the whole file, after its scans too (`readJPEGFrame`,
+  `TestJPEGColourModelIsReadAsTheDecoderReadsIt`); a 16-bit PNG to 8, or to 2 when it is
+  grey with no transparency, as `pngBytesPerPixel` reads its header, and every PNG through
+  two rows of the file beside its picture (`pngRowBytes`), or an interlaced one through
+  two rows of each of its seven passes, which come to five and a half rows of its width
+  (`pngPassRows`, `TestPNGDecoderRowsAreCharged`), tens of megabytes in a strip;
   `image/gif` keeps `gifFrameOverhead` for every frame besides its pixels, so a GIF of
-  thousands of empty frames is not free), the copy `orient` makes, the encoder's output
-  buffer (`storedBuffer`, which refuses to grow past `storedLimit` with
+  thousands of empty frames is not free, and `playGIF` four bytes and two bits a pixel of
+  the canvas, and four bytes more for an animation whose tables give more than 255
+  colours, `gifPlayScratch`, and `gifFramePlay` a frame), the copy `orient` makes, the
+  encoder's output buffer (`storedBuffer`, which refuses to grow past `storedLimit` with
   `ErrStoredTooLarge`: four times the upload plus half a byte a pixel, so a file Go's
   encoders cannot compress the way it came is refused rather than stored many times
   larger; a lossy WebP with transparency, stored as a PNG and so meant to grow, is held to
   `pngLimit` of its size instead, which the header gives, so its cost refuses it up front
-  rather than after decoding), and the thumbnail scaler's scratch (`thumbScratch`, for the
-  picture as it is stored, turned upright by `storedOnItsSide`): its buffer, as wide as
-  the thumbnail and as tall as the picture, and its tables of weights, 64 bytes for every
-  pixel of the two sides, which are most of it for a long strip — a PNG a pixel wide and
-  25 million long would have taken 1.6 GB of them before they were charged.
-  `TestThumbScratchCoversTheScaler` measures both, and the turned PNG strip in
-  `costFixtures` the whole. `peakOf` takes them phase by phase and counts each phase's
-  first allocation on top of the previous phase's peak, because a collection that began
-  before the boundary still holds that phase's scratch. An estimate over
-  `processingBudget` (256 MiB) is refused from the header as `ErrImageTooLarge`, before
-  any cooldown. Which kinds that refuses at 25 megapixels is listed in the README, and two
-  tests hold the lists to the model. `TestCostlyEncodingsAreRefusedFromTheirHeader` takes
-  each accepted kind as a square from an 8 MiB upload, each refused kind at its cheapest
-  (a wide picture from a small upload), and every kind at a quarter of the size. A square
-  is not the dearest shape, though: a JPEG's sides are rounded up to whole blocks, a turn
-  that cannot keep the subsampling copies at 4:4:4, and the thumbnail's weights grow with
-  the longer side, so `TestEncodingsAreJudgedAtEveryShape` takes every shape of the full
-  size each format allows (`eachShape`: for every shorter side, the four longest sides
-  that fit, both ways round), at every orientation, and holds each kind to the shape the
-  README gives for it. It reads `processingCost` with the frame header rewritten in place
-  rather than calling `Inspect` millions of times, and checks `Inspect` agrees at the
-  shapes that decide. A change to `cost.go` that moves a kind, or the shape a kind is
-  refused at, changes the README's lists in the same commit. `Save` then holds its
-  estimate of the budget from the start of decoding until both renditions are stored,
-  because until then it holds what it made (`acquireProcessing`, a first-come-first-served
-  weighted semaphore in `budget.go`, so a large upload is not starved by small ones;
-  `TestSaveHoldsItsShareUntilItIsStored`), and `processHeld` gives that share back by a
-  deferred call until it hands it over, because the server recovers from a panic in a
-  decoder or an encoder and goes on with whatever the panic left held
-  (`TestAPanicWhileProcessingGivesItsShareBack`). Nothing it writes is copied again on the
-  way out: `GCSStore.Put` sets the writer's `ChunkSize` to 0, because the library's
-  default is a 16 MiB buffer for every object, kept only for retries a write without
-  preconditions never makes (`TestGCSPutAllocatesNoBufferOfItsOwn`). The uploads' own
-  bytes have a budget of their own, `media.UploadBudget` (64 MiB), which `parseSubmission`
-  takes from (`media.ReserveUpload`) before it reads a multipart body, as much as the
-  request's `Content-Length` or the most the body may be, and which the handler gives back
-  when the post is answered (`submission.release`). For that to be what the body costs,
-  `readMultipart` reads the body itself rather than through `ParseMultipartForm`, which
-  keeps a file over its memory limit in a temporary file (memory again on Cloud Run) and
-  then hands it over to be copied: the image is read once into a buffer the size of what
-  is left of the body (`TestAnUploadIsReadOnce`). Its text fields may come to
-  `maxRequestBytes` between them, as a JSON post may, the first value of each name is the
-  one read, and parts past `maxFormParts` refuse the form
-  (`TestMultipartPostsAreReadAsTheFormSendsThem`). Between them the two budgets hold 320
-  MiB at most, whatever `containerConcurrency` lets in; beside them the content filter
-  keeps about 65 MiB of planned searches, and the rest of the process is about 40 MiB.
-  Eighty 8 MiB uploads sent at once to a server with `GOMEMLIMIT=400MiB` and one core
-  peaked at 416–424 MiB resident, whether they came while the filter was being planned or
-  after it (three runs each; 330 MiB before the filter, 786 MiB before the upload
-  budget), and at about 470–540 MiB with no limit (469–540 MiB over two separate
-  measurements on a shared machine of four vCPUs), so a 512 MiB instance needs that limit,
-  which this code does not set. The limit is passed rather than kept, since what the
-  budgets and the filter hold is live. **Every wait is bounded, and a slow
-  client is told apart from a busy server.** A post waits for room in the upload budget
-  under `reserveContext` (`postDeadline`, 25 s, from when its handler starts); a wait that
-  does not get room gives up `processingAllowance` (15 s: the slowest admitted upload
-  measured, a GIF of four 25-megapixel frames, took about six seconds on one core, so it
-  leaves margin) before that deadline, with `media.ErrBusy`, and room that is there is
-  taken however near the deadline. Its body then has `uploadReadTimeout` (30 s) to arrive,
-  counted from when the wait ends, so time spent waiting for room is not taken out of the
-  body's: a read deadline set on the connection through an `http.ResponseController` once
-  `ReserveUpload` has returned, whatever it returned (the logging middleware's
-  `statusRecorder` carries an `Unwrap` so the controller reaches the connection
-  underneath); a body slower than that is the client's doing, answered `408`
-  (`upload too slow`, `isReadTimeout`), not the `503` a server with no room gives, and a
-  body that waited for room is not answered `408` for the server's load. Once the body is
-  read, the image has a fresh `postDeadline` (25 s, `processContext`) to be processed and
-  both renditions stored — measured from after the body, not from the start of the
-  handler, so a slow body no longer spends the time the image has and is no longer
-  mistaken for a busy server (`TestSlowUploadBodyIsNotMistakenForABusyServer`);
-  `processContext` also resets the response's write deadline to cover that processing and
-  the answer, the body read having possibly used more than one `WriteTimeout` (30 s,
-  `app.WriteTimeout`, which `cmd/server` uses) from the end of the headers. `Save` writes
-  nothing once that processing deadline has passed, on either backend (`LocalStore.Put`
-  honours an ended context as Cloud Storage does, pinned in `testStoreContract`), and
-  removes a written original on a context that has not ended (`context.WithoutCancel`).
-  The database commit runs on the request's own context, never a deadline: a deadline
-  passing mid-commit could otherwise leave a post made and its image removed. A budget
-  wait or a processing deadline that runs out is `tooBusy`, sent to `answerBusy`: `503`
-  with a `Retry-After` of `busyRetryAfter` (10 s) and `retry_after`, logged by the request
-  log as a warning, not an error; the body of a post turned away for a full budget before
-  it was read is still read to its end and dropped, so the browser gets the answer rather
-  than a connection closed under its upload. Before the bound, a queued upload was stored
-  and its post made after its answer could no longer be sent, and the poster, told the
-  network had failed, posted it twice (`TestBusyServerTurnsAnUploadAwayBeforeKeepingIt`,
+  rather than after decoding), the six rows of the stored picture `image/png`'s encoder
+  writes a PNG through (`pngEncoderRows`, all made before the first row is written, so
+  counted in what the encoder allocates as it begins: on top of both pictures of a turned
+  PNG, `TestPNGEncoderRowsAreChargedAsItBegins`), and the thumbnail scaler's scratch
+  (`thumbScratch`, for the picture as it is stored, turned upright by `storedOnItsSide`):
+  its buffer, as wide as the thumbnail and as tall as the picture, and its tables of
+  weights, 64 bytes for every pixel of the two sides, which are most of it for a long
+  strip — a PNG a pixel wide and 25 million long would have taken 1.6 GB of them before
+  they were charged. `TestThumbScratchCoversTheScaler` measures both, and the turned PNG
+  strip in `costFixtures` the whole. `peakOf` takes them phase by phase and counts each
+  phase's first allocation on top of the previous phase's peak, because a collection that
+  began before the boundary still holds that phase's scratch. An estimate over
+  `processingBudget` (256 MiB) is refused from the header as `ErrImageTooCostly` (`image
+  too large to process`), before any cooldown, and so is a GIF whose frames' charge passes
+  `maxGIFFramePixels`; `ErrImageTooLarge` (`image resolution is too large`) is kept for a
+  picture of more than `MaxPixels`, the one refusal that is about the resolution, so the
+  answer says which (`TestImagesRefusedByTheirHeaderStartNoCooldown`). Which kinds that
+  refuses at 25 megapixels is listed in the README, and two tests hold the lists to the
+  model. `TestCostlyEncodingsAreRefusedFromTheirHeader` takes each accepted kind as a
+  square from an 8 MiB upload, each refused kind at its cheapest (a wide picture from a
+  small upload), and every kind at a quarter of the size. A square is not the dearest
+  shape, though: a JPEG's sides are rounded up to whole blocks, a turn that cannot keep
+  the subsampling copies at 4:4:4, and the thumbnail's weights grow with the longer side,
+  so `TestEncodingsAreJudgedAtEveryShape` takes every shape of the full size each format
+  allows (`eachShape`: for every shorter side, the four longest sides that fit, both ways
+  round), at every orientation, and holds each kind to the shape the README gives for it.
+  It reads `processingCost` with the frame header rewritten in place rather than calling
+  `Inspect` millions of times, and checks `Inspect` agrees at the shapes that decide. A
+  change to `cost.go` that moves a kind, or the shape a kind is refused at, changes the
+  README's lists in the same commit. The same model caps the upload size limit: an upload
+  is charged eight bytes for every byte of it whatever its picture (its stored file may
+  come to four times its size, and the encoder's buffer holds two of those as it grows),
+  so `media.MaxUploadBytes` (31 MiB), derived from `processingBudget` and `storedLimit`'s
+  terms in `cost.go`, is the largest size in whole MiB at which the cheapest file of each
+  format is admitted. `maxUploadLimit` (`config.go`) is that, and the server refuses to
+  start with a larger `EDUCHAN_MAX_UPLOAD_BYTES`; `TestLargestAttachmentLimitIsReachable`
+  posts the cheapest file of each format at that size and holds one a MiB larger to a
+  refusal. A change to the budget or to `storedLimit` moves it, and the README's figure
+  with it. `Save` then holds its estimate of the budget from the start of decoding until
+  both renditions are stored, because until then it holds what it made
+  (`acquireProcessing`, a first-come-first-served weighted semaphore in `budget.go`, so a
+  large upload is not starved by small ones; `TestSaveHoldsItsShareUntilItIsStored`), and
+  `processHeld` gives that share back by a deferred call until it hands it over, because
+  the server recovers from a panic in a decoder or an encoder and goes on with whatever
+  the panic left held (`TestAPanicWhileProcessingGivesItsShareBack`). Nothing it writes is
+  copied again on the way out: `GCSStore.Put` sets the writer's `ChunkSize` to 0, because
+  the library's default is a 16 MiB buffer for every object, kept only for retries a write
+  without preconditions never makes (`TestGCSPutAllocatesNoBufferOfItsOwn`). The uploads'
+  own bytes have a budget of their own, `media.UploadBudget` (64 MiB), which
+  `parseSubmission` takes from (`media.ReserveUpload`) before it reads a multipart body,
+  as much as the request's `Content-Length` says, up to the most a body may be, and which
+  the handler gives back when the post is answered (`submission.release`). For that to be
+  what the body costs, `readMultipart` reads the body itself rather than through
+  `ParseMultipartForm`, which keeps a file over its memory limit in a temporary file
+  (memory again on Cloud Run) and then hands it over to be copied: the image is read once
+  into a buffer the size of what is left of the body (`TestAnUploadIsReadOnce`). Its text
+  fields may come to `maxRequestBytes` between them, as a JSON post may, the first value
+  of each name is the one read, and parts past `maxFormParts` refuse the form
+  (`TestMultipartPostsAreReadAsTheFormSendsThem`). A body holds its room in the upload
+  budget from before it is read, and a post whose body never arrives never reaches flood
+  control, so before the share one client's eight connections declaring 8 MiB bodies and
+  sending nothing held the whole budget for the read timeout, turned every other image
+  post away `503`, and were charged nothing. Now `reserveUpload` takes from the client's
+  share first (`clientUploadShare`, half the budget and room for the largest body
+  `maxUploadLimit` allows, which `TestConfigFromEnvRejectsInvalidValues` holds; counted in
+  `uploadShares` per `clientIP`, but per /64 for an IPv6 address (`shareKey`), since its
+  host can usually take any address in its /64 and counted per address the share would
+  bound nothing, while flood control stays per address, its cooldowns being a wait a whole
+  network would feel), and a post past it is read to its end unkept and answered `429`
+  (`errUploadShare`, `busyRetryAfter` to wait, nothing charged) without waiting, or `408`
+  if its body falls behind on the way (`turnAway`); and `pacedBody` holds the body to an
+  even pace through its read window, moving the read deadline before every read to
+  `uploadPaceGrace` (5 s) past when what has arrived would have at the pace that brings it
+  all in by the window's end, so a body that sends nothing or a trickle is answered `408`
+  and gives its room back after the grace, not at the window's end
+  (`TestIdleUploadsCannotHoldTheUploadBudget`). A body without a `Content-Length`
+  (chunked) would have to reserve the most a body may be, and could then be held only to
+  the pace of that, which cut a small one sent slowly off, or to none, which let seven
+  trickles from three addresses hold the whole budget for the window; so, with uploads on,
+  such a post is answered `411` on its headers (`refuseUnsized`), before anything is
+  reserved for it or read of it, charged nothing, its connection closed
+  (`TestPostsWithoutALengthAreRefused`), and every body that holds room is held to its own
+  pace. Browsers send a `Content-Length` with every form. Between them the two budgets
+  hold 320 MiB at most, whatever `containerConcurrency` lets in; beside them the
+  content filter keeps about 65 MiB of planned searches, and the rest of the process is
+  about 40 MiB. Eighty 8 MiB uploads sent at once to a server with `GOMEMLIMIT=400MiB`
+  and one core peaked at 416–424 MiB resident, whether they came while the filter
+  was being planned or after it (three runs each; 330 MiB before the filter, 786 MiB
+  before the upload budget), and at about 470–540 MiB with no limit (469–540 MiB
+  over two separate measurements on a shared machine of four vCPUs), so a 512 MiB
+  instance needs that limit, which this code does not set. The limit is passed rather
+  than kept, since what the budgets and the filter hold is live. **Every wait is
+  bounded, and a slow client is told apart from a busy server.** A post waits for room in
+  the upload budget under `reserveContext` (`postDeadline`, 25 s, from when its handler
+  starts); a wait that does not get room gives up `processingAllowance` (15 s, which
+  leaves margin: no upload `Inspect` admits is processed for long, because the slowest
+  kinds are bounded from the header and a PNG is written at deflate's fastest level
+  (`storedPNG`, `TestStoredPNGsAreDeflatedAtBestSpeed`; at the default level what its rows
+  held decided how long deflate searched them, and crafted rows took a 16-bit picture of
+  1.4 MB about 17 s; the price is size, the 16-bit synthetic pictures tried stored up to
+  14 times larger, so a PNG the default level stored near `storedLimit` can now be refused
+  `ErrStoredTooLarge`) — a 25-megapixel 16-bit PNG takes 4 to 5 s of CPU on one core, an
+  8-bit transparent one 2 to 3, the slowest GIF about 4 (25 frames of a 2000×2000 canvas
+  each with a table of its own and a pixel to clear), a lossless WebP of 25 megapixels,
+  which a crafted file of a few dozen bytes can be, 4 to 6.5, a lossy WebP with
+  transparency at the most pixels the memory estimate admits (19 megapixels square, 21 in
+  a strip) 4.5 to 9.5 by what its alpha holds, which with the CMYK JPEG below makes it the
+  slowest kind (it was measured in runs in which that JPEG took 8.5 to 10 s, see
+  `processingAllowance`), and a JPEG is held to `maxJPEGScanRevisits` passes' work over
+  its blocks (`jpegScanBlockVisits`, which weighs a baseline scan's visit at six
+  first-pass visits and an AC refinement scan's at two, for what the decoder does on
+  each), so the worst admitted one, a 25-megapixel baseline file of four full-resolution
+  components, is about 5 to 6 s to decode and 5.5 to 7.5 s to process, and a progressive
+  one, which the memory estimate holds to fewer blocks, about 3 to 4 s to decode, rather
+  than the thousands of seconds a repeated cheap scan would take) before that deadline,
+  with `media.ErrBusy`, and room that is there is taken however near the deadline. Its
+  body then has `uploadReadTimeout` (30 s) to arrive, counted from when the wait ends, so
+  time spent waiting for room is not taken out of the body's: a read deadline set on the
+  connection through an `http.ResponseController` once `ReserveUpload` has returned,
+  whatever it returned (the logging middleware's `statusRecorder` carries an `Unwrap` so
+  the controller reaches the connection underneath); a body slower than that is the
+  client's doing, answered `408` (`upload too slow`, `isReadTimeout`), as is one that
+  falls behind its pace (`pacedBody`), not the `503` a server with no room gives, and a
+  body that waited for room is not answered `408` for the server's load. A turned-away
+  post's body is read past at the same pace, and `turnAway` answers it from how that read
+  ended, never from the request's context, which net/http cancels for a read deadline as
+  for a client gone: mapped through `fail`, a busy refusal whose body fell behind answered
+  nothing, which net/http sent as an empty `200` that the web client took for a post made
+  (`TestATurnedAwayBodyIsAnsweredWhateverItsPace`). Once the body is read, the image has a
+  fresh `postDeadline` (25 s, `processContext`) to be processed and both renditions stored
+  — measured from after the body, not from the start of the handler, so a slow body no
+  longer spends the time the image has and is no longer mistaken for a busy server
+  (`TestSlowUploadBodyIsNotMistakenForABusyServer`); `processContext` also resets the
+  response's write deadline to cover that processing and the answer, the body read having
+  possibly used more than one `WriteTimeout` (30 s, `app.WriteTimeout`, which `cmd/server`
+  uses) from the end of the headers. `Save` writes nothing once that processing deadline
+  has passed, on either backend (`LocalStore.Put` honours an ended context as Cloud
+  Storage does, pinned in `testStoreContract`), and removes a written original on a
+  context that has not ended (`context.WithoutCancel`). Decoding, re-encoding and playing
+  a GIF each watch that context as they run — a reader that fails once it is done, a check
+  straight after each decode, a stored-buffer write that refuses once it is done (and
+  `jpegenc`, refused, stops at the end of the row of units it is coding), a check before
+  each GIF frame, and one before the thumbnail — so a cancelled or timed-out upload stops
+  partway rather than running to the end. A decode that has already read its whole input
+  is the exception: image/jpeg reads a small progressive file whole, and x/image a lossy
+  WebP's partitions, before their costly work, which then runs to its end — a few seconds
+  of CPU at most within the caps, holding its share of the budget until then — and nothing
+  more is done after it. `cancel_test.go` pins each check on its own by ending the context
+  the moment that check asks (`askedContext`), so none of it rests on timing. The database
+  commit runs on the request's own context, never a deadline: a deadline passing
+  mid-commit could otherwise leave a post made and its image removed. A budget wait or a
+  processing deadline that runs out is `tooBusy`, sent to `answerBusy`: `503` with a
+  `Retry-After` of `busyRetryAfter` (10 s) and `retry_after`, logged by the request log as
+  a warning, not an error; the body of a post turned away for a full budget before it was
+  read is still read to its end and dropped, so the browser gets the answer rather than a
+  connection closed under its upload. Before the bound, a queued upload was stored and its
+  post made after its answer could no longer be sent, and the poster, told the network had
+  failed, posted it twice (`TestBusyServerTurnsAnUploadAwayBeforeKeepingIt`,
   `TestPostPastItsDeadlineIsNotMadeAndNotCharged`,
   `TestWaitingForRoomEndsInTimeForTheWork`). A cancelled wait reaches the handler as
   `context.Canceled`, which `fail` answers like any request whose client left.
@@ -1306,34 +1766,34 @@ posting form (see **The content rules' answers** under Front end conventions).
   every test still passes. So they guard against a term left out, not against every
   under-estimate, as the comment at the top of `cost.go` says, and a new term needs a
   fixture where it is megabytes over the slack, as the comment on `costFixtures` sets out.
-  They are the package's slowest tests, over two minutes under `-race`. A change to a
-  decode path, to `orient`, to the stored buffer or to the thumbnail changes `cost.go` in
-  the same commit. A CMYK JPEG is turned into RGBA where it lies (`rgbaOfCMYK`), not into
-  a second picture. Tests narrow the budget with `narrowBudget`. x/image's VP8L decoder
-  allocates its Huffman groups — a 167.5 MiB backing array at most (one `hGroup` per
-  meta-image index, `vp8lGroupBacking`), plus a node slice per tree — from counts deep
-  inside the compressed bitstream that no header or resolution shows, and it makes every
-  group the meta-image names before it reads any of their trees. A bitstream of a few
-  dozen bytes that names group 65535 and ends makes it set aside all 167.5 MiB and then
-  fail, so `processingCost` is the more of two estimates: decoding run to its end
-  (`completedCost`), and that stop (`vp8lStopCost`: the whole backing, the nodes of the
-  bytes read, the stripped copy, and the predictor, cross-colour and meta-images decoded
-  before the groups and held beside them, up to 12 bytes for every 4×4 tile of the
-  picture; `TestVP8LGroupsNamedButNeverGivenAreCharged` measures it lossless and as a
-  compressed alpha plane, small and at megapixels). Every lossless WebP, and every lossy
-  one whose alpha plane is compressed, is charged at least 171.5 MiB however small it is,
-  so two are never processed at once. A bitstream the decoder reads to its end has given
-  five trees for every group it named, so there the bound is the size of the bitstream it
-  reads — a lossless picture's VP8L chunk, or a VP8L-compressed ALPH chunk with the 5-byte
-  header the decoder puts in front of it, each read through a reader that ends with the
-  chunk (`webpPicture`) — and `vp8lMemory` charges that backing (capped by the bitstream
-  size) plus a per-byte bound on the node slices (`vp8lNodesPerByte`, with margin over the
-  worst encoding) on those bytes, not on the rest of the file. A crafted file at each
-  extreme measures inside it: 160 KiB of one-symbol groups that holds about 170 MiB, and
-  215 KiB of full trees that holds about 43 MiB
+  `TestProcessingCostCoversWhatIsHeld` is the package's slowest test, about five minutes
+  under `-race`. A change to a decode path, to `orient`, to the stored buffer or to the
+  thumbnail changes `cost.go` in the same commit. A CMYK JPEG is turned into RGBA where it
+  lies (`rgbaOfCMYK`), not into a second picture. Tests narrow the budget with
+  `narrowBudget`. x/image's VP8L decoder allocates its Huffman groups — a 167.5 MiB
+  backing array at most (one `hGroup` per meta-image index, `vp8lGroupBacking`), plus a
+  node slice per tree — from counts deep inside the compressed bitstream that no header or
+  resolution shows, and it makes every group the meta-image names before it reads any of
+  their trees. A bitstream of a few dozen bytes that names group 65535 and ends makes it
+  set aside all 167.5 MiB and then fail, so `processingCost` is the more of two estimates:
+  decoding run to its end (`completedCost`), and that stop (`vp8lStopCost`: the whole
+  backing, the nodes of the bytes read, the stripped copy, and the predictor, cross-colour
+  and meta-images decoded before the groups and held beside them, up to 12 bytes for every
+  4×4 tile of the picture; `TestVP8LGroupsNamedButNeverGivenAreCharged` measures it
+  lossless and as a compressed alpha plane, small and at megapixels). Every lossless WebP,
+  and every lossy one whose alpha plane is compressed, is charged at least 171.5 MiB
+  however small it is, so two are never processed at once. A bitstream the decoder reads
+  to its end has given five trees for every group it named, so there the bound is the size
+  of the bitstream it reads — a lossless picture's VP8L chunk, or a VP8L-compressed ALPH
+  chunk with the 5-byte header the decoder puts in front of it, each read through a reader
+  that ends with the chunk (`webpPicture`) — and `vp8lMemory` charges that backing (capped
+  by the bitstream size) plus a per-byte bound on the node slices (`vp8lNodesPerByte`,
+  with margin over the worst encoding) on those bytes, not on the rest of the file. A
+  crafted file at each extreme measures inside it: 160 KiB of one-symbol groups that holds
+  about 170 MiB, and 215 KiB of full trees that holds about 43 MiB
   (`TestVP8LHuffmanMemoryIsHeldWithinTheEstimate`). A bitstream over 224 KiB is refused
-  from its header as `ErrImageTooLarge`, before any cooldown, and less in a larger
-  picture, about 205 KiB at a megapixel and 130 KiB at nine
+  from its header as `ErrImageTooCostly`, before any cooldown, and less in a larger
+  picture, about 203 KiB at a megapixel and 128 KiB at nine
   (`TestVP8LHuffmanMemoryIsCharged` pins the line the README gives). So the 320 MiB bound
   above holds for these files too; the cost of that bound is that large lossless WebPs,
   and WebPs whose compressed transparency alone is that large, are refused — not an
@@ -1396,7 +1856,10 @@ posting form (see **The content rules' answers** under Front end conventions).
 - Thumbnails are capped at 250px on the longest side, preserve aspect ratio, and are never
   upscaled. A stored JPEG (a JPEG upload, or a lossy opaque WebP) gets a JPEG
   thumbnail; a stored PNG or GIF gets a PNG one so transparency survives. They are made
-  from the rewritten, upright picture; a GIF's is its first frame placed on the canvas.
+  from the rewritten, upright picture; a GIF's is the first picture it shows, its first
+  frame drawn on a transparent canvas and scaled whole (`firstGIFPicture`), made before
+  the frames are played, so it never depends on how the stored frames are cut
+  (`TestGIFThumbnailIsTheFirstPictureAtTheSizeOfItsCanvas`).
 - `internal/media.Store` is the only route to blob storage, and `newMediaStore` in
   `app.go` is the only place one is constructed. Both backends are held to
   `testStoreContract` in `conformance_test.go`, and `internal/app/media_backend_test.go`
@@ -1420,17 +1883,19 @@ posting form (see **The content rules' answers** under Front end conventions).
 
 - Migrations live in `internal/app/migrations/` and are applied on startup inside a
   Postgres advisory lock, recorded in `schema_migrations`. Add a new numbered file rather
-  than editing an applied one; `0001_init.sql` is deliberately written with
-  `IF NOT EXISTS` so it is a no-op on databases created before migrations existed.
-  There are no down migrations, so a rollback runs old code on a newer schema: `migrate`
-  logs an error naming the versions it does not know, and `App.schemaAhead` makes the
-  sweeper refuse to run. A rollback across `0005` is unsafe whatever the code says —
-  phase-0 code shows archived threads as live and its prune deletes them, leaving
-  their files behind (`deploy/README.md`). So is a rollback across `0009`: older code
-  does not know `held_at`, so it shows held posts and held threads publicly. Under the same lock, after the migrations,
-  `renameReservedBoards` moves any board whose slug has since been reserved to
-  `<slug>-board` (`TestBoardsUnderNewlyReservedSlugsAreRenamed`), so reserving a new
-  word needs no migration of its own.
+  than editing an applied one; `0001_init.sql` is deliberately written with `IF NOT
+  EXISTS` so it is a no-op on databases created before migrations existed. There are no
+  down migrations, so a rollback runs old code on a newer schema: `migrate` logs an error
+  naming the versions it does not know, and `App.schemaAhead` makes the sweeper refuse to
+  run. A rollback across `0005` is unsafe whatever the code says — phase-0 code shows
+  archived threads as live and its prune deletes them, leaving their files behind
+  (`deploy/README.md`). So is a rollback across `0009`: older code does not know
+  `held_at`, so it shows held posts and held threads publicly. Under the same lock, after
+  the migrations, `renameReservedBoards` moves any board whose slug has since been
+  reserved to `<slug>-board` (`TestBoardsUnderNewlyReservedSlugsAreRenamed`), so reserving
+  a new word needs no migration of its own, and `renameAttachments` repeats `0008`'s
+  rename, so a filename an older release stored during a rollout is gone at the next
+  start.
   A new column on `posts` also means adding it to `TestPostsTableColumnsArePinned`
   (`verify_api_test.go`) in the same change: everything on that table is stored about
   every poster, so each column is there because somebody decided it should be.
@@ -1465,13 +1930,29 @@ posting form (see **The content rules' answers** under Front end conventions).
   why the sweep checks with `Get` before `Delete` rather than going through
   `removeBlobs`, whose `Delete` treats a missing key as done, as a moderator's
   deletion should. A cancelled sweep stops between files, never between a file and
-  its key. It logs one record of counts and nothing that names a board or thread,
-  failures included, and the error it returns has the key taken out
-  (`TestSweepLogsOnlyCounts`); it returns an error — a non-zero exit — on a database
-  failure, a file it could not remove or did not find, or a database a newer release
-  migrated (`TestSchemaFromANewerReleaseStopsTheSweeper`). It builds its App with `New`
-  like the server, and runs without the salt, the moderation key and the verification
-  secret on purpose, so `New` warns about none of them: those warnings are
+  its key. Last — after the media pass, whatever it found, but not after a database
+  error or a cancellation — it calls `RewriteCredentials` (see **Verified Anonymity**
+  below). It logs one record of counts and nothing that names a board or thread or
+  says anything of a credential, failures included, and the error it returns has the
+  key taken out (`TestSweepLogsOnlyCounts`). `credentials_rewritten` is the number of
+  rows the rewrite copied: on a night its transaction commits, every row in the
+  credentials table, expired ones no confirmation has pruned yet included, even if
+  a later step then fails; on a night it does not — the sweep stopped before it, or
+  the rewrite failed, as when its lock times out — 0, whatever the table holds
+  (`TestSweepFailsWhenTheVerificationTablesAreHeld`). Night after night it is a
+  history of the table's size, which the database does not keep, but for that: a 0
+  on a night that exits non-zero can be a rewrite that did not run, and the error
+  says which step failed. Nothing finer belongs beside it. It returns an error —
+  a non-zero exit — on a database failure, a file it could not remove or did not
+  find, a rewrite or vacuum of the verification tables that did not finish, a
+  vacuum of `pg_statistic` that did not finish (which a role that owns the tables
+  but not the database gets every night), or a database a newer release migrated
+  (`TestSchemaFromANewerReleaseStopsTheSweeper`). When more than one of those fails,
+  the error carries each, so that a failing vacuum of `pg_statistic` does not hide
+  files missing from the media store (`TestSweepErrorNamesEveryStepThatFailed`).
+  It builds its App with `New` like the server, and runs without the salt, the
+  moderation key and the verification secret on purpose, so `New` warns about none
+  of them: those warnings are
   `WarnServingSettings`, which only `serve` in `cmd/server` calls
   (`TestSweepModeLogsNoServerWarnings`, `TestServingWarningsAreTheServersAlone`). A new
   warning about a server-only setting goes there, not in `New`. `SweepArchived` skips an
@@ -1550,46 +2031,55 @@ posting form (see **The content rules' answers** under Front end conventions).
   poster key, the body, a badge the poster cannot have, uploads switched off, a file its
   header shows to be unusable (`media.Inspect` in `parseSubmission`: not an accepted
   format, more than `media.MaxPixels`, a GIF whose frames come to too many pixels or whose
-  blocks do not reach the end, or one whose processing would hold more than the whole
-  budget — which turns on how it is encoded, not its size alone), and a reply the thread
-  would refuse (`ReplyRefusal`). Decoding the pixels is not up front, because it is the
-  cost the upload cooldown limits, so an image that fails to decode, or whose re-encoded
-  file would pass `storedLimit` (`ErrStoredTooLarge`), is refused by `storeUpload` after
-  `allow`, its cooldown kept (`TestImagesRefusedByTheirHeaderStartNoCooldown` pins both
-  sides, `ErrStoredTooLarge` among them). The exception is a post the server turns away as
-  busy after `allow` (`tooBusy`: no room to process its image in time, or its deadline
-  passing before the image is stored): `allow` hands back the refund `chargeAll` makes,
-  which takes back the cooldowns that post started and leaves alone any that another post
-  has started since (`TestChargeAllRefundsWhatItStarted`). A post turned away for want of
-  room to read it is turned away before `allow`, so it has nothing to refund. A post the
-  content rules refuse starts no cooldown and is counted by `refusalBudget` instead, and a
-  post a cooldown would refuse is answered by `notCoolingDown` (the same check, recording
-  nothing) before the rules read it (see **API contract** under Content rules).
-  State is per process and in memory — a shared backend means replacing
-  `cooldownLimiter` and `refusalBudget`, which nothing else depends on.
-  The keys carry client addresses, so the limiters are also a privacy surface: `New`
-  builds a `cooldownSweep` over all four limiters and the refusal budget (anything
-  `expiring`) and starts its timer, which drops every expired entry each
-  `cooldownSweepInterval` (one minute), and `Close` stops it.
-  **While the process has CPU, an address is held in memory no longer than the
-  longest cooldown that applies to it plus one minute**, counted from its last action
-  that started one (for the refusal budget, from the first refusal of its minute),
-  busy server or quiet. A host that gives CPU only during requests,
-  which is Cloud Run's default (request-based billing), holds the timer back on an
-  idle instance, so `beforeEachRequest` (in `Routes`) runs an overdue sweep before a
-  request is handled; until a request arrives or the instance stops, an idle instance
-  still holds what it last saw, and on Cloud Run the one-minute bound needs CPU always
-  allocated (`--no-cpu-throttling`). The README's Flood control section states the
-  bound with that condition, and anything the client says about addresses rests on
-  it, which is why the FAQ promises no time limit. A longer interval, a new limiter
-  left out of the sweep, a limiter keyed on something that outlives its cooldown, or
-  the request-path sweep dropped from `Routes` breaks it
+  blocks do not reach the end, an animated WebP or one whose chunks do not make one
+  picture (one cut short among them), or one whose processing would hold more than the
+  whole budget — which turns on how it is encoded, not its size alone), and a reply the
+  thread would refuse (`ReplyRefusal`). Decoding the pixels is not up front, because it is
+  the cost the upload cooldown limits, so an image that fails to decode, whose re-encoded
+  file would pass `storedLimit` (`ErrStoredTooLarge`), or, for a GIF, that cannot be
+  stored one frame to a picture (`ErrImageTooCostly` from `playGIF`), is refused by
+  `storeUpload` after `allow`, its cooldown kept
+  (`TestImagesRefusedByTheirHeaderStartNoCooldown` pins both sides, `ErrStoredTooLarge`
+  among them). The exception is a post the server turns away as busy after `allow`
+  (`tooBusy`: no room to process its image in time, or its deadline passing before the
+  image is stored): `allow` hands back the refund `chargeAll` makes, which takes back the
+  cooldowns that post started and leaves alone any that another post has started since
+  (`TestChargeAllRefundsWhatItStarted`). A post turned away for want of room to read it is
+  turned away before `allow`, so it has nothing to refund. A post the content rules refuse
+  starts no cooldown and is counted by `refusalBudget` instead, and a post a cooldown
+  would refuse is answered by `notCoolingDown` (the same check, recording nothing) before
+  the rules read it (see **API contract** under Content rules). State is per process and
+  in memory — a shared backend means replacing `cooldownLimiter` and `refusalBudget`,
+  which nothing else depends on. The keys carry client addresses, so the limiters are also
+  a privacy surface: `New` builds a `cooldownSweep` over all four limiters and the refusal
+  budget (anything `expiring`) and starts its timer, which drops every expired entry each
+  `cooldownSweepInterval` (one minute), and `Close` stops it. **While the process has CPU,
+  an address is held in memory no longer than the longest cooldown that applies to it plus
+  one minute**, counted from its last action that started one (for the refusal budget,
+  from the first refusal of its minute), busy server or quiet. A host that gives CPU only
+  during requests, which is Cloud Run's default (request-based billing), holds the timer
+  back on an idle instance, so `beforeEachRequest` (in `Routes`) runs an overdue sweep
+  before a request is handled; until a request arrives or the instance stops, an idle
+  instance still holds what it last saw, and on Cloud Run the one-minute bound needs CPU
+  always allocated (`--no-cpu-throttling`). The README's Flood control section states the
+  bound with that condition, and anything the client says about addresses rests on it,
+  which is why the FAQ promises no time limit. A longer interval, a new limiter left out
+  of the sweep, a limiter keyed on something that outlives its cooldown, or the
+  request-path sweep dropped from `Routes` breaks it
   (`TestSweepExpiredKeepsOnlyLiveCooldowns`, `TestSweepCooldownsRunsUntilStopped`,
   `TestCooldownSweepRunsBeforeARequestOnceItIsOverdue`, and
   `TestFloodControlForgetsAddressesOnAQuietServer` and
-  `TestFloodControlForgetsAddressesBeforeTheNextRequest`, which shorten the period
-  through `Config.cooldownSweepEvery`). The record-time sweep past
-  `cooldownSweepThreshold` only bounds a burst between two ticks.
+  `TestFloodControlForgetsAddressesBeforeTheNextRequest`, which shorten the period through
+  `Config.cooldownSweepEvery`). The record-time sweep past `cooldownSweepThreshold` only
+  bounds a burst between two ticks. The upload shares (`uploadShares`) are keyed on client
+  addresses too, by `shareKey` (the address, or an IPv6 address's /64), and need no sweep:
+  a client's entry is taken by `reserveUpload` once a multipart post's headers have
+  arrived, given back by `submission.release` when the post is answered, and deleted once
+  it holds nothing (`TestUploadSharesForgetAClientOnceItHoldsNothing`), so it is held for
+  about a minute at most, the wait for room, `uploadReadTimeout` and `processContext`
+  together, besides the time the database takes to store the post. The README's Flood
+  control section says so; a share kept past its post, or keyed on anything that outlives
+  it, would hold an address beyond that.
 - `EDUCHAN_TRUST_PROXY` is a hop count, not a boolean (`true` still means 1). `clientIP`
   in `middleware.go` reads the Nth `X-Forwarded-For` entry **from the right**, because each
   proxy appends and everything to the left is client-supplied; a chain shorter than the
@@ -1646,13 +2136,264 @@ posting form (see **The content rules' answers** under Front end conventions).
   breaks the promise rather than just the code: the address is never written anywhere
   (only `HMAC(EDUCHAN_VERIFY_SECRET, normalised address)` is, as a uniqueness key); the
   credential carries only a label, an expiry, and a random id; and nothing links a
-  credential to a post. Practical consequences when editing `verify.go`, `store.go`, or
-  `0004_verification.sql`:
+  credential to a post. Practical consequences when editing `verify.go`, `store.go`,
+  `0004_verification.sql`, `0015_verification_statistics.sql`, or
+  `0016_vacuum_probe.sql`:
   - Never add a column to `verification_pending` or `verification_credentials` that could
     be joined to a post, and never add `created_at` or a "last used" — an issuance or use
     timestamp correlates with the posts around it. `CredentialLabel` is a read and has to
-    stay one. Credential expiry is stored rounded up to a UTC day boundary for the same
-    reason; `TestVerificationTablesCannotBeJoinedToPosts` pins both tables' exact columns.
+    stay one. Credential expiry is stored counted from the end of the day the
+    credential was issued in, not from the moment, for the same reason;
+    `TestVerificationTablesCannotBeJoinedToPosts` pins both tables' exact columns. That
+    day runs from 05:00 to 05:00 UTC (`credentialDayEnd`), ending after the nightly
+    sweep and its retry rather than at midnight, because the sweep's transaction id
+    splits the day it runs in: with a midnight day, it and the expiry dated every
+    credential issued between midnight and the sweep to those three hours.
+    `TestCredentialDaysEndAfterTheSweep` reads the schedule and the Job's retries and
+    timeout from `deploy/README.md` and `deploy/first-deploy.sh`, and wants the day to
+    end half an hour or more after the latest the sweep and its retry can run, and two
+    hours at most after the scheduled time: a sweep scheduled at 03:00 UTC or later
+    whose retry cannot run past 04:30 (03:00 to 04:00, with one retry of a
+    fifteen-minute task). So a change to the schedule, the retries or the timeout that
+    leaves that window means moving `credentialDayStart` with it, not only a move past
+    05:00: a sweep at 04:40 has its retry running until 05:10, across the day's end,
+    and the day of one at 02:30 ends two and a half hours after it. Moving where the day
+    ends is itself a leak, once: the credentials issued between the last old boundary
+    and the deploy share an expiry with no other credential, and so do those issued
+    between the deploy and the first new boundary, which dates each set to those hours
+    for as long as it is kept (the README's "What that protects, exactly" says this of
+    every move, the one from midnight to 05:00 among them). So a new
+    `credentialDayStart` goes out soon after the later of the old start and the new,
+    once the log shows nobody has verified since the old start, which leaves the first
+    set empty, while a later deploy shortens the second; a start moved earlier can
+    instead go out at any time between the new start and the old one, quiet or not, once
+    that night's sweep on the old schedule, and its retry if it fails, has finished, and
+    with the new revision serving all traffic before the old start, since each set then
+    spans at least a day less the move. Changing `EDUCHAN_VERIFY_CREDENTIAL_TTL` is the
+    same leak on the day it is deployed: the stored expiry is `credentialDayEnd(issued)`
+    plus the lifetime, so that day's credentials before the deploy get one expiry and
+    those after it another, which the sweep's one id does not merge, and each set is
+    dated to its side of the deploy until another day's credentials share its expiry:
+    for a lifetime cut by whole days, those issued that many days earlier (the later
+    set, at once) or later (the earlier set); for one lengthened, or changed by part of
+    a day, never. The README says to deploy such a change soon after 05:00 UTC, before
+    anyone has verified that day.
+  - **PostgreSQL dates rows the schema does not, so the sweeper rewrites the
+    credentials every night.** Every row carries `xmin`, the id of the transaction that
+    wrote it, and posts carry `created_at`, so a credential's `xmin` among the posts'
+    dates its issuance to the minutes between two of them; freezing keeps `xmin`, and
+    `ctid` follows issuance order. `RewriteCredentials` (`store.go`), the sweep's last
+    step, works on a connection of its own, with `lock_timeout` at five seconds,
+    `client_min_messages` at `warning` (so that neither `DATABASE_URL` nor a role's or
+    the database's default can hide the `55P03` below), a handler that collects
+    notices, and pgx's `CancelRequestContextWatcherHandler`. A cancelled sweep
+    (SIGTERM, Ctrl-C) must have asked PostgreSQL to stop the statement in flight by
+    the time it returns and the process exits: PostgreSQL does not notice a closed
+    socket until the statement ends, so a `VACUUM FULL` nobody cancelled runs on,
+    holding its table, and commits. Two things see to it, and either alone does
+    while PostgreSQL answers promptly. The handler sends the cancel request at once
+    and has the statement wait up to `cancelGrace` (three seconds) for PostgreSQL's
+    answer, so the statement has stopped, with PostgreSQL's `57014`, before the
+    rewrite returns. pgx's default, the fallback when no answer comes in time, gives
+    up on the socket and sends the cancel request from a goroutine, and
+    `closeSweepConnection` waits up to `cancelGrace` for that goroutine
+    (`sweepConnection`). `TestCancelledSweepStopsItsStatementOnTheServer` fails only
+    without both, and its check that the error is PostgreSQL's fails without the
+    handler; `TestCancelledSweepWaitsForPgxsOwnCancelRequest`, where the handler's
+    cancel request never arrives, fails without the wait.
+    First it deletes the codes that expired unconfirmed, which a request prunes too, but
+    nothing says when one will come: an abandoned code's row keeps the time it was asked
+    for, to the microsecond, under the address's email hash, which for an address that
+    already holds a credential (a second browser's request, say) is the credential's,
+    and says it was issued before then (`TestSweepDeletesCodesThatExpiredUnconfirmed`).
+    The delete must come no later than the rewrite, since the vacuum below is checked
+    against the rewrite's transaction id, which says nothing of rows a later transaction
+    deleted; no test holds that order. And it is a statement of its own, before the
+    rewrite's transaction rather than in it: a confirmation locks its code's pending row
+    before it writes to the credentials table, so a delete waiting for that row while
+    holding the table would deadlock with it
+    (`TestSweepDeletesExpiredCodesWithoutHoldingTheCredentialsTable`). A code still in
+    flight stays, and still confirms. Then it locks
+    `verification_credentials` `IN EXCLUSIVE MODE` in a read-committed transaction
+    (`CredentialLabel` reads on; everything else on the table waits, and holds the
+    lock up: writers and row lockers, `VACUUM`, `ANALYZE`, index builds, schema
+    changes, another sweep), deletes every row and inserts the returned copy back
+    `ORDER BY random()` in one statement, and notes the transaction's id.
+    `lock_timeout` bounds the wait, not the hold: confirmations queue for the
+    rewrite's statement too, which grows with the table (about three seconds for
+    220,000 credentials on a development machine). `restampScans` then reads each
+    verification table whole and through each of its indexes, which it finds in the
+    catalog, so every last-scan time `pg_stat_user_tables` and `pg_stat_user_indexes`
+    show for them is the sweep's rather than the last confirmation's; and it reads them
+    again after the vacuum, once `statsHandOver` (65 seconds) has passed since the
+    rewrite committed, a wait that a cancel ends at once
+    (`TestCancelledSweepStopsWaitingForTheStatistics`). A connection hands its counts
+    to the statistics when one of its transactions ends, at most once a second, within
+    ten seconds once it sits idle, and up to a minute later if it finds an entry
+    locked, with the end of its latest transaction by then, or the moment of the
+    hand-over, as their time. So the counts of a confirmation just after another
+    request on the same server connection could reach the statistics after the first
+    read, with the time of the next request that connection served, and date the last
+    issuance before the sweep to within ten seconds
+    (`TestSweepLeavesNoScanTimeFromBeforeIt`, which fails without the second read: it
+    holds the server's next request on a lock until the statistics have the first
+    read, since a connection hands nothing over while a statement of its runs, and
+    fails if the confirmation's counts were in by then; it sweeps from an `App` of its
+    own, as the Job does, and waits the 65 seconds out). The app package's harness sets
+    the wait to zero for every other test there; `cmd/server`'s `-sweep` tests build
+    their `App` with `New`, as the Job does, and wait the full 65 seconds per sweep,
+    three sweeps in all. Then `VACUUM (FULL, SKIP_LOCKED, SKIP_DATABASE_STATS)` on each table,
+    outside the transaction, writes both tables to new files without the dead versions
+    — or the deleted pending rows, with their email hash and an expiry to the
+    microsecond — and drops the old files, which are not wiped (the README's
+    "Transaction ids, and the nightly rewrite" ends on what that leaves).
+    `SKIP_LOCKED` passes over a table another session holds, with a
+    `55P03` warning, rather than queueing every badged post behind the vacuum's wait
+    (`TestBadgedPostsDoNotQueueBehindTheSweepsVacuum` watches `pg_locks` for that wait,
+    which at `vacuumLockTimeout` a try is too short to time). It covers only the table
+    it names: once `VACUUM FULL` has the table it waits, holding the table, for what
+    else it needs — before the copy, its TOAST table's lock, which a `VACUUM` of the
+    TOAST table by name holds; after copying the whole table, its row in `pg_class`,
+    which an open `GRANT` or `REVOKE` on the table has updated, and each index's lock,
+    which an open `COMMENT ON INDEX` holds. (Autovacuum takes `pg_statistic`'s TOAST
+    table on its own, below, but not these: a TOAST table takes its table's
+    `autovacuum_enabled = false`, so autovacuum comes to them only near transaction id
+    wraparound, which the nightly `VACUUM FULL` keeps from coming due.) A run that
+    waited after the copy would hold every request on the table up for the whole copy
+    and then give the table up, and do the same on every try. So `vacuumFull` looks
+    first (`vacuumWaitsQuery`: `pg_locks` on the TOAST table and the indexes, and the
+    lock an open transaction holds on its own id, the `xmax` of a `pg_class` row it
+    updated) for a session holding any of these that does not hold the table itself,
+    which `SKIP_LOCKED` passes over anyway, and while it finds one runs nothing and
+    tries again later (`TestSweepRunsNoVacuumWhileItWouldWait` counts the runs in
+    `pg_stat_progress_cluster`, on a table big enough to take a while to copy). What
+    the look cannot see coming, a `GRANT` begun during a run, `lock_timeout` bounds:
+    `vacuumVerificationTables` first sets it to `vacuumLockTimeout` (100 ms), and a run
+    that times out, with `55P03` as an error, has given the table up and is tried
+    again like a skipped one, by which time the look sees the holder
+    (`TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`: one run, then none until
+    the `GRANT` ends; a test's role cannot hold a TOAST table, so no test holds one).
+    A `GRANT` that commits while the run waits for it, as an autocommit one does within
+    milliseconds, ends the run sooner, with `XX000` and "tuple concurrently updated"
+    (it cannot update the row the `GRANT` changed), and `vacuumFull` counts that as
+    given up too, by code and message, since every internal error shares the code
+    (`TestVacuumTriesAgainWhenTheGrantItWaitsForCommits`); any other error fails the
+    sweep at once.
+    That bound covers the whole statement, and a `VACUUM` ends, after its run has
+    committed, by updating the database's row in `pg_database`, which waits for any
+    transaction that has updated that row (an `ALTER DATABASE`, a `GRANT` on the
+    database) and holds no table; timed out there, a run that had done its job looked
+    given up, and the sweep ran it again or failed. So the runs leave that step out
+    (`SKIP_DATABASE_STATS`; autovacuum takes it on its own), and `vacuumFull` counts a
+    run that times out as given up only while the table is still in its old file
+    (`TestVacuumDoesNotWaitForTheDatabasesRow`, which counts its sweep's runs on
+    `pg_statistic` as the sweep saw them, through `Store.vacuumed`: every schema in the
+    database shares the catalog, and another process's sweep moves its file too, as
+    `cmd/server`'s tests, run alongside, do). None of these does anything about the
+    run: once `VACUUM FULL` has a table and its locks it holds it against reads as well
+    as writes until it has written it out (between about half a second and two and a
+    half seconds at 220,000 credentials on development machines), every badged post and
+    confirmation waits for it, and three waiting on one instance hold its whole pool. So
+    each table is taken once a night, and never for a run that cannot do its job, unless
+    a session begins to hold what the run needs during it, which costs that one run.
+    `VACUUM FULL` keeps any deleted row an older snapshot could
+    read: any statement or transaction in the database that began before the rewrite
+    committed and is still running, the server's own requests included, or a
+    transaction anywhere on the instance that had written something by then. So before
+    each attempt the sweep runs `VACUUM FULL` on `vacuum_probe` (`0016`), an empty table
+    nothing else touches, which computes the same cutoff in milliseconds and holds up
+    nobody, and takes the verification tables only once the probe's `relfrozenxid` is
+    newer than the rewrite's transaction id, which `VACUUM FULL` makes true exactly
+    when it drops those rows. It checks each verification table's `relfrozenxid` the
+    same way afterwards, and otherwise probes again, backing off, for up to
+    `vacuumPatience` (a minute) before failing
+    (`TestBadgedPostsDoNotQueueBehindVacuumsAnOlderSnapshotWouldSpoil` counts the runs).
+    It also skips, with a different warning, a table its role owns neither itself nor
+    through owning the database: an unchanged `pg_relation_filenode` with no `55P03`
+    fails the sweep at once, and the sweeper connects as the role that ran the
+    migrations, which owns `vacuum_probe` too. Owning the tables is not enough for
+    `pg_statistic`, below, so that role must also own the database or be a member of
+    the owner's role that inherits its privileges.
+    `0015` sets `STATISTICS 0` on every column of both tables, which keeps `ANALYZE`
+    from copying email hashes beside their expiries into `pg_statistic`, deletes what
+    it had copied, and turns autovacuum off on both, since the times it last ran follow
+    the writes; the nightly `VACUUM FULL` is their vacuum. Deleting the samples takes
+    them out of `pg_stats` only: their old versions stay in `pg_statistic`'s file and
+    its TOAST table's (the email hashes' histogram is stored out of line), and in every
+    backup of those files, until the catalog is written out anew, and no query can see
+    whether they are there. So the sweep runs the same `VACUUM` on
+    `pg_catalog.pg_statistic` every night, with the same `relfrozenxid` check against
+    the rewrite, which is later than `0015`, in the same passes as the verification
+    tables: after them in each, but not waiting for them, so a table left for the next
+    pass does not hold the catalog back, nor the catalog a table
+    (`TestSweepFailsWhenTheVerificationTablesAreHeld`). It takes milliseconds, but while
+    it runs a query whose plan needs statistics its connection has not cached waits, on
+    any table, which is why it too skips a held catalog (a session reading `pg_stats`
+    holds it), and why the look before each run matters most there: `0015` left
+    autovacuum on for the catalog, TOAST table included, so the sweep leaves the
+    catalog alone while autovacuum holds its TOAST table. Only a
+    superuser or a role with the privileges of the database's owner — the owner, or a
+    member of its role that inherits them, which `pg_has_role(datdba, 'USAGE')` says —
+    may vacuum that catalog; a role that owns every table but not the database may
+    not, nor a member granted `WITH INHERIT FALSE`, and anyone else gets it skipped
+    with a warning, which fails the sweep with its own message, naming that query,
+    every night (`TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile`). The README's
+    archive sweeper section tells the operator, and its step 5 says how to check the
+    role, on Cloud SQL too, where this has not been tried.
+    `TestVerificationTablesKeepNoStatistics` checks that the sweep moves the catalog and
+    its TOAST table to new files with a cutoff past `0015`; no test can read an old
+    version without a superuser's `pageinspect`, which is how the leak was found. A
+    new write path into the credentials table re-dates the rows it writes until the
+    next sweep, so treat one like a new column, and a new column on either table gets
+    `SET STATISTICS 0` in its migration. The README's "Transaction ids, and the
+    nightly rewrite" says exactly what this protects — the verification tables of the
+    live database after the 03:17 UTC sweep, where nothing dates a credential more
+    closely than the day its expiry gives but the sweep's own id, which says of one of
+    the day the sweep ran in that it came in the 22 hours of that day before the sweep —
+    and what it does not, a sweep run after 05:00 UTC among it, which splits the day it
+    runs in until the next sweep. Above all, the posts: every code request that reaches
+    the database, and every attempt at a code in flight, is a write, takes the next
+    transaction id, and so leaves a gap in the posts' `xmin` between the two posts
+    written around it, which one plain query on `posts` finds, in the live database and
+    every backup, for as long as those posts exist. That places each issuance between
+    two posts whatever the sweep does; the rewrite takes away only the credential row's
+    own issuance id (`TestIssuanceLeavesGapsAmongThePostsTransactionIDs` pins this as a
+    known limit, and only verification tables on a PostgreSQL instance of their own
+    would close it). Nor does it cover a credential issued since the last sweep, a code
+    in flight as the sweep ran (its row keeps the time it was asked for, and once a
+    confirmation, or the delete of the expired code, removes the row, its dead version
+    keeps that time in the table's file until the next sweep's `VACUUM FULL`; its email
+    hash joins its address's credential if there is one; and the hour was chosen for the
+    backup window, not for quiet — 03:17 UTC is morning to afternoon across South and
+    East Asia and Australia — so expect one on any weekday), backups (taken from 05:00
+    UTC, up to 09:00, seven kept), a night the sweep failed, autovacuum times recorded
+    before `0015`, or the write-ahead log the server keeps for crash recovery, which
+    dates a credential until PostgreSQL deletes or reuses the newest segment holding its
+    row. With full-page writes on, the log since the checkpoint before the sweep holds
+    every credentials page as it stood before the rewrite, issuance ids and all — the
+    sweep's own delete logs the image of each page no change since that checkpoint
+    already had — so that segment is the sweep's or close to it, not the issuance's.
+    Point-in-time recovery stays off and `track_commit_timestamp` stays off
+    (`deploy/README.md` section 2.2); changing either means changing that README section
+    in the same commit.
+    `TestSweepTakesIssuanceTimeOutOfCredentials`,
+    `TestSweepDeletesCodesThatExpiredUnconfirmed`,
+    `TestSweepDeletesExpiredCodesWithoutHoldingTheCredentialsTable`,
+    `TestSweepStoresCredentialsOutOfIssuanceOrder`,
+    `TestCredentialConfirmedAsTheRewriteStartsIsRewrittenOnce`,
+    `TestCredentialConfirmedDuringTheRewriteIsKeptOnce`,
+    `TestSweepFailsWhenTheVerificationTablesAreHeld`,
+    `TestSweepFailsWhileAnOlderTransactionCanReadTheOldRows`,
+    `TestSweepWaitsForAnOlderTransactionToEnd`,
+    `TestSweepFailsWhenVacuumLeavesATableInItsFile`,
+    `TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile`,
+    `TestBadgedPostsDoNotQueueBehindTheSweepsVacuum`,
+    `TestSweepHearsVacuumsWarningsWhateverTheConnectionAsksFor`,
+    `TestSweepRunsNoVacuumWhileItWouldWait`,
+    `TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`,
+    `TestVacuumDoesNotWaitForTheDatabasesRow`,
+    `TestSweepLeavesNoScanTimeFromBeforeIt` and
+    `TestVerificationTablesKeepNoStatistics` hold it.
   - **The credential is a header, not a cookie, and this is load-bearing.** It is
     returned by `/api/verify/confirm`, kept by the client in `localStorage`, and sent
     in `X-Educhan-Credential` only on posts that ticked the badge box. A cookie would be
@@ -1687,8 +2428,9 @@ posting form (see **The content rules' answers** under Front end conventions).
     `mailer.Dev` sender prints one to stdout, which is why it is a development tool only.
     The credential is not logged either: it is shown once, in one response body. The
     issuance line (`verification issued`) is bare: no label, no institution, nothing
-    from the record. The row dates an issuance to the day; a label stamped to the
-    second would date it exactly whenever it was its institution's only one that day.
+    from the record. Once the nightly sweep has rewritten it, the row dates an
+    issuance to the day; a label stamped to the second would date it exactly whenever
+    it was its institution's only one that day.
     A badged post soon after an issuance still names the institution, so the request
     log's time for `/api/verify/confirm` can tie that post to its record on such a day;
     the README says so, and how long that log is kept is what limits it.
@@ -1756,8 +2498,9 @@ posting form (see **The content rules' answers** under Front end conventions).
   `internal/app/migrate_test.go`, `internal/app/markup_api_test.go`,
   `internal/app/logging_test.go`, `internal/app/media_backend_test.go`,
   `internal/app/busy_test.go`, `internal/app/filter_api_test.go`, and
-  `TestClientKnowsTheServersImageRefusals` and
-  `TestClientReadsTheContentRulesAnswersTheServerGives` in
+  `TestClientKnowsTheServersImageRefusals`,
+  `TestClientReadsTheContentRulesAnswersTheServerGives`,
+  `TestClientKnowsWhenNoCodeIsPending` and `TestAnExpiredCodeIsSaidToHaveExpired` in
   `internal/app/web_invariants_test.go`) run the whole app against an isolated schema in
   `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so they are safe to run against
   the development database. `testServer` builds its `Config` directly, which leaves every

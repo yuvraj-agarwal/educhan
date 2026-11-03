@@ -47,8 +47,17 @@ switched off for the whole server unless `EDUCHAN_VERIFY_SECRET` is set.
        ▼
   [Verified: IIT Bombay]
 
-  All the database ever holds: HMAC(secret, address), the label, and an
-  expiry rounded up to the day — in a table with no path to any post.
+  The credentials table holds HMAC(secret, address), the SHA-256 of the
+  credential's random id, the label, and an expiry counted from the end of
+  the day it was issued (a day that ends at 05:00 UTC, after the nightly
+  sweep), and has no path to any post. A code's own row holds the same HMAC and an
+  expiry to the microsecond, the time it was asked for plus its lifetime,
+  and stays in the table's file until the first nightly sweep after the
+  code is confirmed or expires. PostgreSQL's transaction ids date the
+  issuance more closely: the credential row's own until the nightly sweep
+  rewrites it, and the gaps the request and the confirmation leave among
+  the posts' for as long as those posts exist (see "Transaction ids, and
+  the nightly rewrite").
 ```
 
 1. Submit an institutional address on `/verify`, ticking the box that confirms
@@ -178,18 +187,44 @@ can and cannot work out.
 
 - That an address at some institution is verified, as
   `HMAC(EDUCHAN_VERIFY_SECRET, normalised address)` and a badge label.
-- When a credential was issued: in the database, only to the *day*, because the
-  stored expiry is rounded up to a UTC day boundary and nothing else in the
-  verification tables is timestamped; in the application's log, for as long as
-  it is kept, to the second, because the request line for
-  `POST /api/verify/confirm` and a bare `verification issued` line each carry a
-  time. Neither line says which institution or address the credential was for
+- When a credential was issued: to the interval between two posts, for as long
+  as those posts exist, whatever the nightly sweep does. The verification tables
+  themselves, once the sweep has run, say only the *day*: the stored expiry is
+  counted from the end of the day the credential was issued in, a day that
+  runs from 05:00 UTC to 05:00 UTC, so that it ends after the nightly sweep;
+  the sweep deletes the codes that expired unconfirmed, whose expiries are the
+  only other times in the tables; PostgreSQL keeps no sample of their values;
+  and the sweep rewrites the credentials so that the transaction id PostgreSQL
+  keeps on every row is the sweep's rather than the issuance's, which says of
+  a credential of the day it ran in only that it came before the sweep. A code
+  still in flight as the sweep ran, a sweep run after 05:00 UTC, and the day of
+  a deploy that changes how expiries are counted (the first move from midnight
+  to 05:00, a new `credentialDayStart` or a new `EDUCHAN_VERIFY_CREDENTIAL_TTL`)
+  are the exceptions, which [Transaction ids, and the nightly
+  rewrite](#transaction-ids-and-the-nightly-rewrite) spells out. But requesting
+  a code and confirming one are writes, and each takes a transaction id from the
+  counter posts take theirs from. Posts keep theirs beside their `created_at`,
+  and nothing rewrites them, so the ids a request and a confirmation took stay
+  missing from the posts' sequence, between the two posts written around each.
+  One plain query on `posts`, which needs no superuser and no secret, finds
+  those gaps, in the live database and in every backup
+  (`TestIssuanceLeavesGapsAmongThePostsTransactionIDs`). Before the sweep, and
+  in a backup, the credential's own transaction id places the issuance the same
+  way, and the write-ahead log the server keeps for crash recovery dates it
+  exactly until PostgreSQL deletes or reuses the last log segment holding its
+  row, which can be the one the sweep's own rewrite wrote to; [Transaction ids,
+  and the nightly rewrite](#transaction-ids-and-the-nightly-rewrite) says
+  exactly when. In the application's log, for as long as it is kept, to the
+  second, because the request line for `POST /api/verify/confirm` and a bare
+  `verification issued` line each carry a time. Neither the gaps nor those lines
+  say which institution or address the credential was for
   (`TestIssuanceIsLoggedWithoutTheInstitution`), but a badged post made soon
   after an issuance does name the institution, and its time is kept to the
   second too. So an issuance followed by a badged post ties that post to its
-  stored record on any day its institution issued only one credential, however
-  many other institutions issued that day. How long the request log is kept is
-  what limits this.
+  stored record — the one row with that label and that expiry day — on any day
+  its institution issued only one credential, however many other institutions
+  issued that day. The posts' gaps keep that possible for as long as the posts
+  are kept; the request log adds the second for as long as it is kept.
 - Which posts carry which badge, because a badge is displayed on the post.
 - Which badged posts in one thread came from the same credential, because they
   share a poster ID there, as any poster's posts in a thread do. In different
@@ -214,10 +249,16 @@ can and cannot work out.
   as text and hold no reference to the record it came from.
 - Link a post to a verification record by timing, beyond the issuance times
   above. Verification tables carry no `created_at`, and using a credential
-  updates nothing, so there is no "last used" to line up against a post. The
-  log's issuance times name no institution, but a badged post soon after one
-  does, and that ties the post to a single record on a day its institution
-  issued only one credential.
+  updates nothing, so there is no "last used" to line up against a post; the
+  transaction id on a rewritten credential row dates the sweep that rewrote it,
+  not the issuance, and says of the issuance only that it came before the
+  sweep: of a credential issued on an earlier day, nothing its expiry does
+  not, and of one issued on the day the sweep ran in, which ends after it, that
+  it came in the 22 hours of that day before the sweep. But the issuance times
+  above are enough on some days:
+  neither the gaps among the posts' transaction ids nor the log's lines name an
+  institution, but a badged post soon after an issuance does, and that ties the
+  post to a single record on a day its institution issued only one credential.
 - Group a poster's requests by their badge. The credential is sent only on the
   posts that carry one, so an operator watching the request layer sees it on
   exactly the posts that already display it, and on nothing else.
@@ -237,6 +278,371 @@ can and cannot work out.
 
 Rotating `EDUCHAN_VERIFY_SECRET` invalidates every credential and orphans every
 uniqueness key, so everyone re-verifies and their old rows match nothing.
+
+### Transaction ids, and the nightly rewrite
+
+PostgreSQL keeps something on every row besides its columns: `xmin`, the id of
+the transaction that wrote it. Transaction ids are handed out in the order
+transactions first write, and posts are written by transactions too, with their
+times on the page, so a credential row's `xmin` falls between two posts' and
+dates its issuance to the minutes between them — what leaving `created_at` out
+of the table was for — and, with its label, points at the first badged posts
+after it. Freezing a row does not clear its `xmin`. The order rows sit in the
+table's file, which is the order a dump lists them in, is the order they were
+written. And a row that is deleted or replaced stays in the table's file, `xmin`
+and all, until `VACUUM FULL` writes the table out anew: a plain vacuum, which
+is what autovacuum runs, marks the space free for reuse but does not erase
+what was in it. That covers every pending row a confirmation deleted, with its
+email hash and an expiry to the microsecond, and every credential a second
+verification replaced.
+
+The same ids date a verification from the posts' side, and that no rewrite of
+the verification tables can undo. A code request and a confirmation are writes,
+so each takes the next id, and the posts written either side keep theirs: the
+ids the verification used are missing from the posts' sequence for as long as
+those posts exist. What the sweep below takes away is the credential row's own
+id, the direct link from a row to a time; what the posts' gaps still say is the
+second point under "What that protects, exactly".
+
+PostgreSQL keeps statistics about each table too, and two kinds would say more
+than the rows. `ANALYZE`, which autovacuum runs by itself after enough writes,
+copies a sample of each column into `pg_statistic`, where `pg_stats` shows it:
+for the pending table, the email hashes of codes in flight beside their
+expiries, kept after the rows are gone. And the statistics views keep the time
+of the last scan of each table and index, and of autovacuum's last run on each
+table, which follow the requests that read and wrote it.
+
+So migration `0015` stops PostgreSQL sampling either table, deletes the samples
+it already had from `pg_statistic`, and turns autovacuum off on both
+(`TestVerificationTablesKeepNoStatistics`). Deleting the samples takes them out
+of `pg_stats`, not out of the catalog's files: like any deleted row, they stay
+in `pg_statistic`'s file, and the bigger ones — the email hashes' histogram —
+in its TOAST table's, where a superuser or root on the machine can read them,
+and in every backup that copies those files, until the catalog is written out
+anew. On a database that ran `0015` before any `ANALYZE` of the tables, as a new
+one does, there is nothing to find; on one upgraded across `0015` with
+verification in use, step 5 below is what removes them. And the archive sweeper
+ends every run on the verification tables (`RewriteCredentials` in `store.go`):
+
+1. It deletes the codes that expired unconfirmed. A request for a code deletes
+   them too, but nothing says when one will come, and until one does an
+   abandoned code's row keeps the time it was asked for, to the microsecond (its
+   expiry less the code's lifetime), under the address's email hash. When the
+   address already holds a credential — a second browser asking for a code it
+   never confirms, say — that is the credential's email hash too, and the row
+   says the credential was issued before then, on the day its expiry gives,
+   which points at the confirmations just before then among the gaps in the
+   posts' transaction ids (below). The vacuum in step 4 then takes the rows out
+   of the table's file as well (`TestSweepDeletesCodesThatExpiredUnconfirmed`),
+   which it can be relied on to do only for rows deleted no later than the
+   rewrite, since that is what its check is measured against; no test holds
+   that order. The delete runs before the rewrite, in a transaction of its own:
+   a confirmation locks its code's row before it writes to the credentials
+   table, and a delete in the rewrite's transaction, which holds that table,
+   would wait for such a row while the confirmation waited for it, until
+   PostgreSQL failed one of them
+   (`TestSweepDeletesExpiredCodesWithoutHoldingTheCredentialsTable`).
+2. In one transaction, holding a lock that makes writers wait and lets readers
+   through, it deletes every credential row and inserts the copy back in random
+   order. Every row then carries the sweep's transaction id, and where a row
+   sits says nothing about when it was issued. The id says of a credential only
+   that it was issued before the sweep: nothing its expiry does not for one
+   issued on an earlier day, and for one of the day the sweep runs in, which
+   ends at 05:00 UTC, that it came in the 22 hours of that day before the sweep
+   ("What that protects, exactly", below). Badged posts read the table
+   throughout. A confirmation that already has the table is waited for and
+   rewritten with the rest; one that arrives during the rewrite waits for it
+   and is then written as usual — once either way
+   (`TestCredentialConfirmedAsTheRewriteStartsIsRewrittenOnce`,
+   `TestCredentialConfirmedDuringTheRewriteIsKeptOnce`).
+3. It reads each table once whole and once through each of its indexes, so
+   that every last-scan time the statistics show for them is the sweep's; and
+   again at the end (step 6), for the times they had yet to be given.
+4. Then `VACUUM FULL` writes `verification_credentials` and
+   `verification_pending` to new files without their dead rows, and drops the
+   old files; with autovacuum off, it is the vacuum both tables get. It does not
+   wait for a table another session holds, so requests do not queue behind a
+   vacuum waiting to start: it passes over the table and tries again later
+   (`TestBadgedPostsDoNotQueueBehindTheSweepsVacuum`). Once it has a table it
+   can still have to wait for something else another session holds, with
+   requests queued behind it: before it copies the table, the lock on the
+   table's TOAST table, which a `VACUUM` of that TOAST table holds; after it
+   has copied the whole table, the table's row in `pg_class`, which an open
+   `GRANT` or `REVOKE` on the table has updated, and the lock on each index,
+   which an open `COMMENT ON INDEX` holds. A run that waited after the copy
+   would hold requests up for the whole copy and then give the table up, and
+   do the same on every try. So before each run the sweep looks in `pg_locks`
+   for another session holding any of these, and while one does it leaves the
+   table alone and tries again later
+   (`TestSweepRunsNoVacuumWhileItWouldWait`). One that begins during a run,
+   after the look, the run waits for a tenth of a second at most and then gives
+   the table up, having held requests up for as much of the copy as it had
+   done. A `GRANT` that commits within that tenth of a second, as one run
+   without `BEGIN` does, ends the run as it commits, with PostgreSQL's "tuple
+   concurrently updated", and that run has given the table up the same way.
+   Either way the next try's look sees the holder, or that it has ended
+   (`TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`,
+   `TestVacuumTriesAgainWhenTheGrantItWaitsForCommits`). A `VACUUM` also
+   ends, once its run has committed, by updating the database's row in
+   `pg_database`, which holds no table but waits for any transaction that has
+   changed that row — an `ALTER DATABASE`, or a `GRANT` on the database — and
+   that wait, cut short, would make a run that had done its job look given up.
+   The sweep's runs leave that step out, as autovacuum takes it on its own, and
+   a run that is cut short after it has written its table out counts as the run
+   it was (`TestVacuumDoesNotWaitForTheDatabasesRow`). But a run that has
+   its locks holds the table against every read and write until it has written
+   the table out, so badged posts and confirmations wait for the whole run —
+   between about half a second and two and a half seconds for 220,000
+   credentials, measured on development machines — each holding one of its
+   server instance's few database connections, and once they hold them all
+   (three by default) every request on that instance waits too. And it copies,
+   rather than drops, any old row a
+   snapshot from before the rewrite could still read: any statement or
+   transaction in the database that started before the rewrite committed and is
+   still running — the server's own requests included — or any transaction
+   anywhere on the instance that had written something by then. A run then would
+   hold the site up and leave the old rows in the new file. So before each
+   attempt the sweep runs `VACUUM FULL` on `vacuum_probe`, an empty table of its
+   own (migration `0016`), which works out the same cutoff in milliseconds and
+   holds up nobody, and it takes the verification tables only once the probe's
+   `relfrozenxid` is newer than the rewrite — once the older transactions have
+   ended. With the look above, that makes one run on each table a night, and
+   one more for each holder that begins during a run
+   (`TestSweepWaitsForAnOlderTransactionToEnd`,
+   `TestBadgedPostsDoNotQueueBehindVacuumsAnOlderSnapshotWouldSpoil`). It checks
+   each table's new file the same way afterwards, and tries again if it still
+   holds those rows.
+5. `VACUUM FULL` writes `pg_statistic` out anew as well, under the same checks,
+   so that the samples `0015` deleted leave its files too. It does so in the
+   same passes as the verification tables, after them in each but not waiting
+   for them: a table left for the next pass does not hold the catalog back, nor
+   the catalog a table. No query can see an old row version, so the sweep
+   cannot tell whether a database still holds them, and it does this every
+   night. The catalog is small and a run is short — about six milliseconds on
+   a new database, on a development machine — but
+   while it runs any request whose query needs statistics its connection has
+   not cached waits, on any table, so this run too passes over the catalog while
+   another session holds it — one reading `pg_stats`, say — and tries again
+   (`TestSweepFailsWhenTheVerificationTablesAreHeld`). Autovacuum is still on
+   for the catalog and vacuums its TOAST table on its own; while it does, the
+   look before each run leaves the catalog alone and the sweep tries again, and
+   if it takes that table after the look, the run waits for it a tenth of a
+   second at most, those requests waiting with it, and then gives the catalog
+   up and tries again too. Only a
+   superuser or a role with the privileges of the database's owner may vacuum
+   the catalog: the owner, or a member of the owner's role that inherits its
+   privileges. Owning the tables is not enough, and nor is a membership that
+   does not inherit, such as one granted `WITH INHERIT FALSE`; a sweeper whose
+   role may not fails (`TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile`).
+   On Cloud SQL, where no role is a superuser, that means the role that owns the
+   database, or an inheriting member of it; `SELECT pg_has_role(datdba, 'USAGE')
+   FROM pg_database WHERE datname = current_database()`, run as the sweeper's
+   role, says whether it has that, and this has not been tried there yet.
+6. Last, once a minute and five seconds have passed since the rewrite
+   committed, it reads both tables again as in step 3. A connection does not
+   give the statistics its counts as it scans: it hands them over when one of
+   its transactions ends, but no more than once a second, and if it then sits
+   idle, within ten seconds; one that finds the statistics' entry for a table
+   locked keeps that table's counts for up to a minute. The time it gives them
+   is the end of its latest transaction by then, or the moment it hands them
+   over. So the counts of a confirmation that comes on the heels of another
+   request on the same server connection can reach the statistics after
+   step 3, with the time of the next request that connection served, or of
+   the hand-over, up to ten seconds after the confirmation committed (a minute
+   under contention); and the statistics keep the later of two times. Those
+   are the indexes a confirmation reads, and that time would date the last
+   issuance before the sweep to within ten seconds
+   (`TestSweepLeavesNoScanTimeFromBeforeIt`, which sweeps from an `App` of its
+   own, as the Job does). So every sweep takes a minute or more.
+
+The sweep keeps at the vacuum for up to a minute. A session that holds a table,
+something its vacuum would wait for, or an old snapshot for longer than that —
+an export, a `psql` left in a transaction — fails the sweep, which exits non-zero
+(`TestSweepFailsWhileAnOlderTransactionCanReadTheOldRows`,
+`TestSweepFailsWhenTheVerificationTablesAreHeld`). It does not report success
+with the old rows still in the tables' files, or the old samples in
+`pg_statistic`'s.
+
+`TestSweepTakesIssuanceTimeOutOfCredentials` issues credentials between posts
+and checks that afterwards they all carry one transaction id, that none lies
+between two posts written before the sweep, and that both tables are in new
+files; `TestSweepStoresCredentialsOutOfIssuanceOrder` checks the stored order.
+Those are the credential rows' own ids;
+`TestIssuanceLeavesGapsAmongThePostsTransactionIDs` checks that the gaps among
+the posts' are still there after the sweep.
+
+What that protects, exactly:
+
+- **The verification tables of the live database, after the nightly sweep at
+  03:17 UTC.** Nothing in either table dates a credential more closely than the
+  day its expiry gives, a day that runs from 05:00 UTC to 05:00 UTC: no live
+  row and no row version in either table's file, no sample in `pg_statistic` or
+  in its files, and no last-scan time says more — but for the sweep's own
+  transaction id on a credential of the day the sweep ran in, a code still in
+  flight as the sweep ran, and a credential issued since the sweep (the last
+  two below). The sweep's id, which every credential issued before it carries,
+  says nothing the expiry does not of one of an earlier day, but of one of the
+  day the sweep ran in it says that it was issued in the 22 hours of that day
+  before the sweep, not just in that day; one issued between the sweep and 05:00
+  carries its own id instead, which dates it anyway (below). That is why the
+  day ends at 05:00, after the sweep and the time its one retry may take, and
+  not at midnight: with the sweep in the morning of a day that began at
+  midnight, the sweep's id and the expiry together dated every credential
+  issued between midnight and the sweep to those three hours, morning to
+  afternoon across South and East Asia and Australia, until the next night's
+  sweep (`TestCredentialDaysEndAfterTheSweep` reads the schedule and the retry
+  from the deploy guide and `first-deploy.sh`). A sweep whose last rewrite comes
+  after 05:00, whether it was started by hand after 05:00, as the deploy guide
+  offers, or not long before, splits the day that rewrite falls in: until the
+  next night's sweep, and in the backups taken meanwhile, its id dates the
+  credentials issued between 05:00 and that rewrite to those hours. So, as the
+  deploy guide's section 2.9 has it, start it by hand only after that night's
+  scheduled run has finished and no later than 04:00 UTC, so that it and its one
+  retry, up to 15 minutes each, are done by 04:30, half an hour before 05:00,
+  the margin `TestCredentialDaysEndAfterTheSweep` asks of the schedule; or else
+  when nobody has verified since the last 05:00 UTC and nobody will until it,
+  and its retry if it fails, has finished, so that no credential is issued
+  between 05:00 and its last rewrite, whichever side of 05:00 that rewrite falls
+  on. And once, on the day a server first counts expiries this way, the deploy
+  splits the days around it. Credentials issued that day before the deploy keep
+  an expiry rounded up to midnight, and those issued after it until the next
+  05:00 UTC an expiry counted from that 05:00, the first of the new kind;
+  neither set shares its expiry with any credential outside it, so the first are
+  dated to the hours between midnight and the deploy, and the second to the
+  hours between the deploy and that 05:00, for as long as they are kept. A sweep
+  that runs while either set is being issued splits it as it does any day's:
+  until the next sweep, its id dates those of the set issued before it to the
+  hours between the start of the set and the sweep. Changing
+  `EDUCHAN_VERIFY_CREDENTIAL_TTL` splits the day it is deployed in the same way.
+  Credentials issued that day before the deploy keep the old lifetime, counted
+  from the day's end, and those issued after it get the new one, so each set has
+  an expiry of its own, which the sweep's one id does not merge: the first are
+  dated to the hours between 05:00 UTC and the deploy, and the second to the
+  hours between the deploy and the next 05:00, until another day's credentials
+  share their expiry. Cut by a whole number of days, the second set shares its
+  expiry from the start with the credentials issued that many days earlier, if
+  there were any, and the first set shares its with those issued that many days
+  later, once there are any; lengthened, or changed by part of a day, neither
+  set ever does, for as long as it is kept. Cloud Run's revision history records
+  when the deploy was. So change it when nobody has verified since 05:00 UTC
+  that day: soon after 05:00, once the `verification issued` lines in the
+  server's log show none since then. Moving `credentialDayStart` in
+  `internal/app/verify.go` likewise splits the day it is deployed in: the
+  credentials issued from the last old start to the deploy, and those issued
+  from the deploy until the next new start, each get an expiry no other
+  credential shares, and so are dated to those hours for as long as they are
+  kept. So deploy it soon after the later of the old start and the new, once the
+  `verification issued` lines show that nobody has verified since the old start,
+  which leaves the first set empty; a later deploy dates the second to the fewer
+  hours left before the next new start. For either change, a credential issued
+  on the old revision while the new one rolls out still gets the old expiry, and
+  is dated with the first set, to the time between the day's start and the end
+  of the rollout. A start moved earlier can instead go out at any time between
+  that day's new start and its old one, whether or not anyone has verified, once
+  that night's sweep on the old schedule, and its retry if it fails, has
+  finished, and with the deploy over, the new revision serving all traffic,
+  before the old start: the credentials issued between the old start the day
+  before and the deploy are then dated to those hours, and those issued after it
+  to the hours until the new start the next day, each at least a day less the
+  move (23 hours, for a move of an hour). Were that sweep to rewrite after the
+  deploy, it would date the credentials issued between the two to those minutes,
+  and an old revision still serving after the old start gives those it issues
+  then an expiry of their own. Times autovacuum recorded before migration `0015`
+  stay in the statistics views until the statistics are reset, which takes a
+  superuser. That is the tables, not the database: see the next point.
+- **Not the posts' own transaction ids**, which no sweep touches. Every code
+  request that reaches the database, and every attempt at a code in flight, is a
+  write and takes the next id, so each leaves a gap in the posts' `xmin` between
+  the two posts written around it. A plain query on `posts`, which the
+  application's own role can run, finds those gaps in the live database and in
+  every backup, for as long as those posts exist, and places each issuance
+  between two posts as closely as its credential's own `xmin` did before the
+  rewrite (`TestIssuanceLeavesGapsAmongThePostsTransactionIDs`). With the label
+  of the first badged post after it and the expiry day, that still points at
+  the credential's row on a day its institution issued only one credential; on
+  a day with a single issuance, the expiry day alone does. Other writes leave
+  gaps too — a moderator's, a refused reply's, the sweep's, autovacuum's on
+  other tables, another database's on the same instance — so a gap alone proves
+  nothing; but a request's gap, a confirmation's within the code's lifetime
+  (fifteen minutes by default), then a badged post, is the shape of an
+  issuance, and on a quiet instance the gaps are exact. What the rewrite takes
+  away is the direct link from a credential row to a time, not the time.
+  Transaction ids belong to the whole PostgreSQL instance, so only verification
+  tables on an instance of their own would close this.
+- **A credential issued since the last sweep** carries its own transaction id
+  and can be placed between two timed posts until the next sweep rewrites it.
+  Until then, too, the pending row its confirmation deleted can still be in the
+  table's file, where anyone who can read the file would find the time its code
+  was requested, and the last-scan times can date the latest confirmation.
+- **A code in flight as the sweep ran**, which the sweep cannot delete without
+  making it fail. Its row keeps the time it was asked for, to the microsecond,
+  and the id of the transaction that last wrote it (the request, or a wrong
+  guess at the code). Confirming the code deletes the row, and once the code has
+  expired the next request or the next sweep does; but a deleted row stays in
+  the table's file, with both, until a sweep's `VACUUM FULL` writes the table
+  out anew. So the row stays in the file, time and all, until the first sweep
+  after the code is confirmed or expires — the next night's — and in a backup
+  taken before then, that morning's included, for as long as the backup is kept.
+  If its address already holds a credential, as when a second browser asks for a
+  code, the row's email hash joins it to that credential, which it says was
+  issued before then; if it is confirmed, a backup that holds it dates the
+  credential it becomes to within the code's lifetime. The sweep runs at 03:17
+  UTC to finish before the backup window opens, not because few codes are asked
+  for then: it is morning to afternoon across South and East Asia and Australia,
+  so expect a code in flight on any weekday. No sweep can rule one out.
+- **Backups** hold rows as they stood when they were taken. The instance keeps a
+  daily backup, the last seven — about a week — each started in a window that
+  opens at 05:00 UTC ([deploy guide](deploy/README.md) section 2.2). A
+  credential issued between the sweep and the backup, which can start as late as
+  09:00 UTC, is in that backup as it was before the next sweep — with its own
+  transaction id, and its deleted pending row perhaps still in the file — for
+  as long as the backup is kept. So is every credential on a night the sweep
+  failed. A backup that copies the instance's files, taken before the first
+  sweep after the upgrade to `0015` wrote `pg_statistic` out (step 5), holds the
+  samples `ANALYZE` took before `0015` — email hashes beside expiries to the
+  microsecond — in that catalog or its files. Every backup holds the posts, and
+  with them the gaps above, whatever the sweep did; and one that copies the
+  write-ahead log with the instance's files can hold that night's sweep's own
+  copies of the credential rows as they were before it (next point), which date
+  every credential issued since the night before.
+- **The write-ahead log the server keeps for its own crash recovery.** Every
+  write reaches it first: each issuance's insert into `verification_credentials`,
+  with the row in it, and the commit record of its transaction, with the time
+  to the microsecond. Later writes copy rows into it again. With full-page
+  writes on, as PostgreSQL has them by default, the first change to a page after
+  each checkpoint logs an image of the whole page as it stood, and the sweep's
+  own delete changes every page of the credentials table. So the log written
+  since the last checkpoint before the sweep holds a copy of every credential
+  row as it was before the rewrite — in the sweep's own records, or in an
+  earlier change's since that checkpoint — each with its own transaction id,
+  which the posts' times date again: every credential issued since the previous
+  sweep, and on the first sweep that rewrites the table, every credential in
+  it. A segment of the log stays until later checkpoints let PostgreSQL delete
+  it or reuse it for new log — within hours on a busy instance, days on a quiet
+  one — so the log dates a credential until the newest segment holding its row
+  goes, which is the sweep's or close to it, not the segment its issuance was
+  written to. Until then a superuser (with `pg_walinspect`) or root on the
+  machine (with `pg_waldump`) can read it, sweep or no sweep. A backup that
+  copies the instance's files copies the log with them.
+- **Point-in-time recovery is off.** Turning it on would archive a week of
+  that log, and with it the commit time of every transaction, which dates every
+  write exactly; rewriting rows does nothing to a log of how they were written,
+  and the rewrite itself logs the rows it replaced.
+- **`track_commit_timestamp` must stay off**, as the deploy guide's section 2.2
+  says. With it on, PostgreSQL records when each transaction committed, and a
+  row's `xmin` gives the time it was written to well under a second; so does
+  each committed id missing from the posts' sequence, which turns a gap above
+  from the minutes between two posts into the moment of the write. Once the
+  sweep has rewritten a credential, the setting adds nothing to what its row
+  says, since the commit time of the sweep's id is only the time the sweep ran.
+  Until then, in a backup taken before the sweep, and for each gap, keeping the
+  setting off is what keeps the date to the minutes between two posts rather
+  than the moment of the write.
+
+Nothing more than that. In particular, the files `VACUUM FULL` drops and the
+log segments PostgreSQL deletes or reuses go the ordinary way, not wiped: what
+the disk under them still holds until it is written over is outside all of
+this.
 
 ### Domain allowlist
 
@@ -616,20 +1022,28 @@ empty file part a browser sends for an untouched input, posts as usual.
 server that would refuse what it sends.
 
 - **Formats**: JPEG, PNG, WebP, and GIF, identified by magic bytes rather than by filename
-  or the content type the client claims. Anything else, an image whose header claims
-  more than 25 megapixels (room for the 24-megapixel photos phones and cameras save, an
-  iPhone's 5712×4284 included), a GIF whose frames add up to more than four times that,
-  whose blocks cannot be read through to its end, or whose first frame reaches past its
-  canvas (browsers disagree on how to show that one), or an image that would take more
-  memory to process than the server sets aside for all of them at once, is refused with
-  `400` before anything is decoded and before flood control. A GIF that ends after its
-  last frame without the closing byte, or whose later frames reach past its canvas, is
-  stored as browsers show it: whole, and with each frame cut to the part on the canvas.
-  The memory depends on the encoding as well as the size, and on the shape: a longer,
-  thinner picture costs more for its pixels, because a JPEG's sides are rounded up to
-  whole blocks and making the thumbnail takes 64 bytes and more for every pixel of the
-  longer side. At the full 25 megapixels, from an upload of up to the default 8 MiB, at
-  any shape the format allows:
+  or the content type the client claims. Anything else (`unsupported image format: use
+  JPEG, PNG, WebP, or GIF`), an image whose header claims more than 25 megapixels (room
+  for the 24-megapixel photos phones and cameras save, an iPhone's 5712×4284 included;
+  `image resolution is too large`), a GIF whose frames add up to more than four times that
+  (a frame narrower than 64 pixels counting as 64 wide), or an image that would take more
+  memory to process than the server sets aside for all of them at once (`image too large
+  to process`), and a GIF whose blocks cannot be read through to its end or whose first
+  frame reaches past its canvas (browsers disagree on how to show that one), an animated
+  WebP, or a WebP whose chunks do not make one picture of the size its header gives — cut
+  short, its RIFF running past the end of the file, its picture a different size from its
+  canvas, or with no picture or two (`image could not be decoded`) — is refused with `400`
+  before anything is decoded and before flood control. A GIF that ends after its last
+  frame without the closing byte, or whose later frames reach past its canvas, is stored
+  as browsers show it: whole, and with each frame cut to the part on the canvas. Two
+  kinds of GIF that browsers show are refused only once they are decoded, and so after
+  flood control (`image could not be decoded`), because Go's decoder refuses them: one
+  whose pixels index past their colour table, and one with more data after a frame's end
+  code than Go's decoder takes (*GIF*, below). The memory depends on the encoding as well
+  as the size, and on the shape: a longer, thinner picture costs more for its pixels,
+  because a JPEG's sides are rounded up to whole blocks and making the thumbnail takes 64
+  bytes and more for every pixel of the longer side. At the full 25 megapixels, from an
+  upload of up to the default 8 MiB, at any shape the format allows:
   - *accepted*: every baseline JPEG, in colour at any chroma subsampling or in grey,
     whether or not it has to be turned upright, and progressive ones whose colour is at
     a quarter resolution or less (4:2:0, 4:1:1, 4:1:0) or grey, but for a 4:2:0 or
@@ -646,25 +1060,51 @@ server that would refuse what it sends.
     progressive 4:2:2 and 4:4:0 JPEGs, and interlaced 8-bit colour PNGs, that have to be
     turned; 16-bit colour PNGs that are interlaced or have to be turned; and lossy WebPs
     with transparency, which are stored as PNGs (below) and so take four bytes a pixel.
-  - *either*, by the picture's shape: a progressive 4:2:0 or 4:1:1 JPEG that a turn
-    stores at 4:4:4, accepted at every shape up to about 8:1 at 4:2:0 and about 2:1 at
-    4:1:1 and refused at some shapes past that; progressive 4:2:2 and 4:4:0 JPEGs that
-    need no turning, accepted up to about 60:1; and, by its shape and the upload's size,
-    a 16-bit colour PNG that is neither interlaced nor turned.
+  - *either*, by the picture's shape: a progressive 4:2:0 or 4:1:1 JPEG that a turn stores
+    at 4:4:4, accepted at every shape up to about 8:1 at 4:2:0 and about 2:1 at 4:1:1 and
+    refused at some shapes past that; progressive 4:2:2 and 4:4:0 JPEGs that need no
+    turning, accepted up to about 60:1; by its shape and the upload's size, a 16-bit
+    colour PNG that is neither interlaced nor turned; and, by the upload's size, a GIF,
+    which is played on four bytes a pixel of its canvas while all its frames are held: at
+    any shape, one whose frames come to two canvases or less is accepted, three from an
+    upload of up to about 6.9 MiB, and four, the most a GIF's frames can come to, up to
+    about 3.9 MiB. An animation whose colour tables give more than 255 colours between
+    them is played on eight bytes a pixel, for the frames it may put back (see the GIF
+    bullet below): at this size it is accepted only when its frames come to about two
+    thirds of a canvas or less, half of one from an upload of up to about 2.4 MiB, and
+    none from an upload over about 3.9 MiB; from an upload of 8 MiB, two whole frames are
+    accepted up to about 17 megapixels and four up to about 15.
+
+  A JPEG is refused from its header as too costly to process, whatever its shape admits
+  above, when its scans would ask the decoder for more than a few dozen passes' work over
+  the picture's blocks. What encoders write comes to a handful — a baseline file's one
+  scan counts as six, for the work the decoder does on each block of it, and the
+  progressive files encoders write six to eight — but a crafted file can repeat a scan of
+  a few dozen bytes thousands of times, holding no more memory than one picture, so caught
+  by neither the pixel cap nor the memory estimate, to decode for far longer than its size
+  or resolution suggests; the cap holds the worst admitted file, a 25-megapixel baseline
+  one with four components at full resolution (an Adobe CMYK file), to about 5 to 6 s of
+  CPU to decode and 5.5 to 7.5 s to process, and a progressive one, which the memory
+  estimate holds to fewer blocks, to about 3 to 4 s to decode.
 
   At a quarter of the size, every kind is accepted at any shape up to a thousand to one,
-  and a PNG of any size is refused once its longer side passes about 4 million pixels,
-  however narrow it is. A GIF of many thousands of frames is refused however small they
-  are. An animated WebP passes those checks and is refused with `400` (`image could not
-  be decoded`) once it is processed, after flood control: nothing in Go can decode one
-  to thumbnail it, so the animation flag in its header turns it away as the file is
-  rewritten, before any of it is decoded. An image whose rewritten file would come to
-  more than four times the upload plus half a byte a pixel is refused after flood
-  control too, once it is encoded (`image would be too large once re-encoded for
-  storage`), which only a file made to compress in a way Go's encoders cannot follow
-  reaches. A lossy WebP with transparency is held instead to what a PNG of its size can
-  come to, because stored losslessly it is meant to be many times the size it came in
-  at; it is refused from its header when that is too large to process.
+  and a PNG of any size is refused once its longer side passes 2.2 to 3.7 million pixels,
+  by its kind and which way it lies, however narrow it is. A GIF of many thousands of
+  frames is refused however small they are. An animated WebP is refused whatever its size
+  and however much of it arrived, because nothing in Go can decode one to thumbnail it:
+  the animation flag in its header, or a frame among the chunks of an extended file, is
+  enough to turn it away; a frame after the picture of a simple-format file is not an
+  animation, since browsers show the picture alone, and it is stored as a still. An image
+  whose rewritten file would come to more than four times the upload plus half a byte a
+  pixel is refused with `400` after flood control, once it is encoded (`image would be too
+  large once re-encoded for storage`), which a file made to compress in a way Go's
+  encoders cannot follow reaches, as can a PNG that another encoder compressed far smaller
+  than the fastest level it is stored at (see the PNG bullet below), and so, once it is
+  played, is a GIF that cannot be stored one frame to a picture (`image too large to
+  process`; see the GIF bullet below). A lossy WebP with transparency is held instead to
+  what a PNG of its size can come to, because stored losslessly it is meant to be many
+  times the size it came in at; it is refused from its header when that is too large to
+  process.
 
   A lossless WebP, and a lossy one's transparency when it is compressed (as libwebp
   compresses it by default), are the one case refused by the *size* of what is
@@ -673,7 +1113,7 @@ server that would refuse what it sends.
   of 160 KiB can make it hold about 170 MiB as it decodes, and a larger one more. There
   is no way to tell a benign file from a crafted one without decoding it, so a lossless
   WebP whose picture data comes to more than 224 KiB is refused from its header — less
-  for a larger picture, about 205 KiB at a megapixel and 130 KiB at nine, and a little
+  for a larger picture, about 203 KiB at a megapixel and 128 KiB at nine, and a little
   less in a larger upload — and so is a lossy WebP whose compressed transparency alone
   comes to that much. A small lossless picture (an icon or a sticker) is still stored,
   and so is an ordinary cut-out, whose transparency is a few hundred bytes to a few
@@ -689,56 +1129,129 @@ server that would refuse what it sends.
   its GPS position, camera and timestamps, XMP, IPTC captions, comments, and colour
   profiles. Both storage backends get the same rewritten file. Files stored before this
   are the exception (below).
-  - *JPEG* is decoded, turned upright by its EXIF orientation, and re-encoded, so a
-    phone photo stored on its side is upright everywhere, thumbnail included, and its
-    reported width and height are the upright ones. It keeps its chroma subsampling, so
-    colour saved at full resolution (4:4:4, as editors save screenshots and diagrams at
-    high quality) stays sharp. The exception is a picture whose sampling grid a turn
-    cannot line up, which is stored at finer 4:4:4 instead, a larger file with its
-    colour kept rather than lost: one that the turn mirrors along a side that is not a
-    whole number of colour samples long (an odd width at 4:2:2 or 4:2:0, an odd height
-    at 4:4:0, 4:2:0 or 4:1:0, or a width that is not a multiple of four at 4:1:1 or
-    4:1:0), and a 4:1:1 or 4:1:0 picture turned on its side. Which sides a turn reverses
-    depends on the turn, so an odd-sided picture can keep its subsampling through one
-    turn and not through another. It is re-encoded at the lowest quality that compresses
-    no detail more coarsely than the upload did, and at 90 at most: a photo saved at
-    quality 30 by most software is stored at 30, at about the size it came in at and
-    looking as it did, and one saved at 95 is stored at 90, a little smaller. A file
-    whose encoder fitted its Huffman tables to the picture or saved it progressive, as
-    the "optimise" and "progressive" options of an editor do, comes out larger, because
-    Go writes the standard Huffman tables in a single scan: a little larger for a
-    high-quality save (around a tenth at quality 90), but as much as twice the size for
-    a heavily compressed one, where those fixed tables outweigh the picture's own coded
-    data.
+  - *JPEG* is decoded, turned upright by its EXIF orientation, and re-encoded, so a phone
+    photo stored on its side is upright everywhere, thumbnail included, and its reported
+    width and height are the upright ones. It keeps its chroma subsampling, so colour
+    saved at full resolution (4:4:4, as editors save screenshots and diagrams at high
+    quality) stays sharp. The exception is a picture whose sampling grid a turn cannot
+    line up, which is stored at finer 4:4:4 instead, a larger file with its colour kept
+    rather than lost: one that the turn mirrors along a side that is not a whole number of
+    colour samples long (an odd width at 4:2:2 or 4:2:0, an odd height at 4:4:0, 4:2:0 or
+    4:1:0, or a width that is not a multiple of four at 4:1:1 or 4:1:0), and a 4:1:1 or
+    4:1:0 picture turned on its side. Which sides a turn reverses depends on the turn, so
+    an odd-sided picture can keep its subsampling through one turn and not through
+    another. When it does not, its colour is widened to full resolution as browsers widen
+    it to show it, so that its colour edges are stored as the poster saw them: each pixel
+    a blend of the samples nearest it at 4:2:0, 4:2:2 and 4:4:0, and the sample it lies in
+    at 4:1:1 and 4:1:0, or where the colour of a halved width is two samples across or
+    fewer, as libjpeg-turbo shows it. It is re-encoded at the lowest quality that
+    compresses no detail more coarsely than the upload did, and at 90 at most: a photo
+    saved at quality 30 by most software is stored at 30, at about the size it came in at
+    and looking as it did, and one saved at 95 is stored at 90, a little smaller. A file
+    whose encoder fitted its Huffman tables to the picture or saved it progressive, as the
+    "optimise" and "progressive" options of an editor do, comes out larger, because Go
+    writes the standard Huffman tables in a single scan: a little larger for a
+    high-quality save (around a tenth at quality 90), but as much as twice the size for a
+    heavily compressed one, where those fixed tables outweigh its own coded data.
   - *PNG* is decoded, turned upright by an EXIF orientation in its `eXIf` chunk (which
-    browsers apply too), and re-encoded, keeping none of its ancillary chunks. A gamma
-    it is tagged with in a `gAMA` chunk, which browsers apply as well, is applied to its
+    browsers apply too), and re-encoded, keeping none of its ancillary chunks. A gamma it
+    is tagged with in a `gAMA` chunk, which browsers apply as well, is applied to its
     colours first, so that it shows as it did (see below). Every opaque pixel otherwise
     keeps the value it decodes to, and a transparent or partly transparent one only as
     much colour as it shows (see the bullet on hidden channels below), though not always
-    in the form it came in: 1-, 2- and 4-bit grey is stored at 8 bits, grey or colour
-    with a transparent colour key is stored as colour with an alpha channel (or with
-    none, if no pixel has the key's colour), and a palette keeps only the colours its
-    pixels use, written at as few bits a pixel (1, 2, 4 or 8) as that many colours need.
-    16-bit pictures stay 16-bit. An animated PNG keeps its still image.
-  - *GIF* is re-encoded frame by frame, keeping every frame, delay, disposal and the loop
-    count (from either of the two extensions browsers read it from), and dropping
-    comments and application data such as XMP. Its colour tables keep only the colours
-    its frames show.
+    in the form it came in: 1-, 2- and 4-bit grey is stored at 8 bits, grey or colour with
+    a transparent colour key is stored as colour with an alpha channel (or with none, if
+    no pixel has the key's colour), and a palette keeps only the colours its pixels use,
+    written at as few bits a pixel (1, 2, 4 or 8) as that many colours need. 16-bit
+    pictures stay 16-bit. An animated PNG keeps its still image. It is written at
+    deflate's fastest level, as every stored PNG is, so that how long writing it takes
+    depends on the picture's size rather than on what its pixels are: at the default
+    level, rows crafted to make deflate search took a 16-bit picture of 25 megapixels,
+    from an upload of 1.4 MB, about 17 seconds of CPU. Stored PNGs are larger for it:
+    about a tenth for most of the photos and screenshots tried, and more for the smooth
+    16-bit synthetic pictures tried, which the default level packs tightly: up to 1.3
+    times for flat colour or a gradient along one axis, and up to 14 times for a gradient
+    across both axes, by its slope and the picture's size (at 25 megapixels up to about 7
+    times, for one rising twice as fast across as down). So a picture that the default
+    level stored close to its limit (four times the upload plus half a byte a pixel, see
+    above) can come out past it, and is then refused as too large once re-encoded where an
+    earlier release stored it, as a 16-bit gradient of 25 megapixels in a 1.7 MB file was.
+  - *GIF* is stored as what it shows, not as the frames it came in: the pictures a browser
+    shows one after another, each for as long as it shows, and the loop count (from either
+    of the two extensions browsers read it from), and nothing else. It is read as Chromium
+    reads it where Go's decoder reads it otherwise: a frame with no graphic control
+    extension is left in place, a frame's transparent colour is the one the last extension
+    before it names, and an index past the end of a frame's colour table shows opaque
+    black, but for the transparent one. Two kinds of GIF that browsers show are refused as
+    Go's decoder refuses them, once they are decoded and so after flood control (`image
+    could not be decoded`): one whose pixels index past their table, but for indices up to
+    a transparent index that is itself past it, which Go's decoder takes; and one with more
+    data after a frame's end code than Go's decoder takes, which is the rest of the
+    sub-block the code ends in and, when the code ends a sub-block, one more sub-block of a
+    single byte, where browsers show the frame and read on. A GIF with an extension the two
+    end in different places is refused from its header (a plain-text one whose block size
+    is not 12, an application one of no bytes, or a loop extension with nothing in it),
+    because past it Chromium shows no more frames and Go's decoder reads on. How the
+    frames make those pictures shows nothing, so it could carry anything: frames that draw
+    nothing, or draw the same picture again after clearing it, could spell a message in
+    their positions, delays and disposal methods, and the pixels a frame repaints in the
+    colour already under them, rather than leaving them transparent, could hold a file of
+    tens of kilobytes. So the stored file is written from the pictures by one rule, and
+    two GIFs that show the same pictures for the same times, played as many times over,
+    are stored as the same bytes. Each picture is one frame, which draws exactly the
+    pixels that differ from what the frame before it left, cut to the rectangle around
+    them and around any the next picture has transparent where this one does not; it is
+    cleared once its time is over when there are such pixels, and left in place otherwise.
+    A delay is written as browsers show it — 0 and 1 show for a tenth of a second and are
+    written as 10 — and time past the 655 seconds one delay can say is held by frames
+    after it that draw nothing. The last picture of a GIF that plays once is given no
+    delay, because it stays on screen, and a GIF of one picture is stored as a still, with
+    no loop count. The colours are the ones the pictures show, in order of their values:
+    one global table when there are 255 or fewer, and otherwise a table for each frame of
+    the colours it draws. A frame that draws 256 has no room for a transparent entry, so
+    the pixels it leaves as they were are written in the colour they already show. With a
+    table a frame, a frame left in place or cleared can leave the next one more colours to
+    draw than its table holds — the ones it covered, back again, and the next picture's
+    own — so there a frame is left in place, or else cleared, only where both can still be
+    written, and is otherwise put back, which leaves what was there before it was drawn,
+    as ImageMagick's frame optimisation does (a frame put back is not cut to take in
+    pixels to clear, and is drawn again, rather than followed by frames that draw nothing,
+    for time past one delay). A GIF where none of the three will do cannot be stored one
+    frame to a picture and is refused (`image too large to process`): for instance one
+    whose frames are put back two in a row, the second to the picture from before the
+    first, which the stored file, having left the first in place, cannot go back to. Only
+    frames that clear or put back what earlier ones drew can bring that about, since a
+    frame on its own draws from one table. None of 126 GIFs made with ffmpeg, ImageMagick
+    and Pillow is refused, nor any of 1,500 of many colours made to test it; of 5,000
+    random GIFs of up to 256 colours a frame and every disposal method, one is, and of
+    2,000 random animations of sprites of up to 256 colours each put back, cleared or left
+    over a background of 256, 75 are. A GIF whose stored frames would add up to more
+    pixels than four 25-megapixel canvases (a frame narrower than 64 pixels counting as 64
+    wide) is refused too, which takes frames that jump across the canvas from one picture
+    to the next; with a table a frame, a rectangle looked at for a way of disposing of a
+    frame that is not taken counts as a frame, so that the work of looking is bounded as
+    the work of writing is. Neither refusal can be read from the header, only found by
+    playing the GIF, so a file the header check admits is turned away only after it has
+    been decoded and its thumbnail made, and after flood control. It costs the post its
+    cooldown, and nothing is stored: the renditions are written only once processing has
+    succeeded. Comments and application data such as XMP are dropped, and the background
+    colour, which browsers never draw, is written as the first entry.
   - *WebP* cannot be encoded in Go, so it is stored as another format made from its
     pixels: a lossy, opaque WebP as a JPEG at quality 90 that keeps the WebP's own
     half-resolution (4:2:0) colour, and any other (lossless, or with transparency) as a
-    PNG, which keeps a lossless picture exactly. A WebP's quality setting does not mean
-    what a JPEG's does, so there is no lower quality to match, and the JPEG is larger
-    the lower the quality the WebP was saved at: measured on photos, up to 1.4 times the
-    WebP's size from quality 90, two to three times from 75, three and a half to five
-    and a half from 25, and up to eight and a half from 5. A lossy WebP's colours come
-    back from the decoder in a narrower range than they were saved in, so they are
-    expanded again before storing, or black would be kept as dark grey and white as
-    light grey. Its `name`, URL and content type are the stored format's (`image.jpg`,
-    `image.png`). Keeping the WebP with only its metadata chunks removed would not be
-    enough: a decoder ignores anything after the picture inside the chunks that hold it,
-    so a second file could ride through unseen. WebPs stored before this stay WebPs.
+    PNG, which keeps a lossless picture exactly and widens a lossy one's half-resolution
+    colour to every pixel as browsers do to show it. A WebP's quality setting does not
+    mean what a JPEG's does, so there is no lower quality to match, and the JPEG is
+    larger the lower the quality the WebP was saved at: measured on photos, up to 1.4
+    times the WebP's size from quality 90, two to three times from 75, three and a half
+    to five and a half from 25, and up to eight and a half from 5. A lossy WebP's
+    colours come back from the decoder in a narrower range than they were saved in, so
+    they are expanded again before storing, or black would be kept as dark grey and
+    white as light grey. Its `name`, URL and content type are the stored format's
+    (`image.jpg`, `image.png`). Keeping the WebP with only its metadata chunks removed
+    would not be enough: a decoder ignores anything after the picture inside the chunks
+    that hold it, so a second file could ride through unseen. WebPs stored before this
+    stay WebPs.
   - Besides metadata, a picture can carry a whole second file in channels it never
     shows, and those are dropped too. A fully transparent pixel is stored with no
     colour, because an editor that erases part of a picture by clearing its alpha often
@@ -755,20 +1268,29 @@ server that would refuse what it sends.
     (but for a PNG's gamma, applied as above, which changes the values so that the
     picture shows as it did). So data hidden in the low bits of a visible picture, as
     classic steganography does, survives — the aim is to strip the metadata and the
-    channels that do not show, not to alter the picture a reader sees.
+    channels that do not show, not to alter the picture a reader sees. Nothing of how a
+    GIF's pictures were made of frames is kept (above), so none of that can carry
+    anything; what a GIF keeps is what it shows: its pictures, how long each shows, and
+    how many times they play.
 
   Dropping the ICC profile means a wide-gamut photo (Display P3, Adobe RGB) can look
-  slightly duller than it did; most photos are sRGB and look the same. A profile can
-  name the device or the editor that made it, and converting colours properly needs a
-  colour engine Go does not have. A PNG's `iCCP` profile and `cHRM` primaries are
-  dropped the same way. Its `gAMA` chunk is not, because dropping it shifts far more
-  than slightly: a picture tagged with the linear gamma of 1.0, as renderers write,
-  would show its mid-grey at 128 where it showed at about 188. So its colours are
-  converted to the sRGB values that show the same light, as Chromium converts them —
-  unless an `sRGB` or `iCCP` chunk takes its place, as it does in a browser, or the
-  gamma is within 5% of the usual 1/2.2, which browsers leave alone. The checksum
-  recorded for an attachment is of the stored file, so it does not depend on the
-  metadata an upload arrived with, beyond an orientation that turns the picture.
+  slightly duller than it did; most photos are sRGB and look the same. A profile can name
+  the device or the editor that made it, and converting colours properly needs a colour
+  engine Go does not have. A PNG's `iCCP` profile and `cHRM` primaries are dropped the
+  same way. Its `gAMA` chunk is not, because dropping it shifts far more than slightly: a
+  picture tagged with the linear gamma of 1.0, as renderers write, would show its mid-grey
+  at 128 where it showed at about 188. So its colours are converted to the sRGB values
+  that show the same light, as Chromium converts them — unless an `sRGB` chunk or an
+  `iCCP` profile takes its place, as it does in a browser (one the browser cannot read
+  takes nothing's place, and the gamma is applied there and here; the browser also passes
+  over a profile too large for the memory it sets aside, while one that inflates to no
+  more than 64 MiB is taken as read here, with no gamma applied, so the two disagree over
+  a profile that inflates to within about the upload's own size of 64 MiB, a band of tens
+  of MiB for an upload near the 31 MiB limit: see `maxICCProfile` in
+  `internal/media/gamma.go`), or the gamma is within 5% of the usual 1/2.2, which browsers
+  leave alone. The checksum recorded for an attachment is of the stored file, so it does
+  not depend on the metadata an upload arrived with, beyond an orientation that turns the
+  picture.
 - **Files stored before this** keep their metadata: a server that took uploads before
   it rewrote them kept them as they came, and nothing rewrites them now, so they are
   served that way until their posts are deleted. The deployment in `deploy/` has kept
@@ -789,32 +1311,52 @@ server that would refuse what it sends.
   while a release rolls out stores uploads as they came after that moment, so on a
   rolling deploy move the cutoff to when the last of them stopped.
 - **No filename is kept**: a camera's or a phone's filename can name a date and a person
-  (`IMG_20261013_Priya.jpg`), so every attachment's `name` is `image` and the extension
-  of the format it was stored in (`image.jpg`, `image.png`, …), whatever the file was
-  called. Migration `0008` renamed the attachments stored before this the same way.
+  (`IMG_20261013_Priya.jpg`), so every attachment's `name` is `image` and the extension of
+  the format it was stored in (`image.jpg`, `image.png`, …), whatever the file was called.
+  Migration `0008` renamed the attachments stored before this the same way, and every
+  start of the server renames any that an older instance, still serving while a release
+  rolls out, has stored since under the poster's filename; so on a rolling deploy those
+  keep it, and show it, until the first start after the last older instance has stopped.
 - **Memory**: how much memory an image takes to decode and re-encode depends on how it is
-  encoded as well as on its size, so each upload's share is estimated from its header.
-  The uploads being processed at once share a fixed budget (256 MiB per process), each
-  holding its share until its files are stored; one whose estimate alone is over it is
-  refused (see **Formats**), and the rest wait for room in the order they arrived. The
-  uploads' own bytes have a budget of their own (64 MiB), taken before a request body is
-  read, so how many requests an instance is let take at once does not decide how many
-  images it holds. Between them that is 320 MiB at most, beside the content rules
-  prepared at start (about 65 MiB): eighty 8 MiB uploads sent at once to a server run
-  with `GOMEMLIMIT=400MiB` and one core peaked at 416–424 MiB resident, whether they came
-  while the rules were being prepared or after, so an instance of 512 MiB has room with
-  that limit set; without it the same burst reached anywhere from about 470 to 540 MiB
+  encoded as well as on its size, so each upload's share is estimated from its header. The
+  uploads being processed at once share a fixed budget (256 MiB per process), each holding
+  its share until its files are stored; one whose estimate alone is over it is refused
+  (see **Formats**), and the rest wait for room in the order they arrived. The uploads'
+  own bytes have a budget of their own (64 MiB), taken before a request body is read, so
+  how many requests an instance is let take at once does not decide how many images it
+  holds. Between them that is 320 MiB at most, beside the content rules prepared at start
+  (about 65 MiB): eighty 8 MiB uploads sent at once to a server run with
+  `GOMEMLIMIT=400MiB` and one core peaked at 416–424 MiB resident, whether they came while
+  the rules were being prepared or after, so an instance of 512 MiB has room with that
+  limit set; without it the same burst reached anywhere from about 470 to 540 MiB
   (469–540 MiB over the runs of two separate measurements, on a shared machine of four
-  vCPUs), which is no room at all.
-  A post waits for room in either budget for about ten seconds at most. Once there is
-  room to read it, its body has 30 seconds to arrive, and once it has arrived its image
-  has 25 seconds to be processed and stored. A post that cannot be taken in time — no
-  room within the wait, or its image not stored within those 25 seconds — answers `503`
-  (see [Flood control](#flood-control)) with nothing stored, rather than being made after
-  its answer could no longer be sent. A body that takes longer than its 30 seconds is the
-  connection's doing, not the server's, and answers `408` with
-  `{"error":"upload too slow"}`, with nothing stored and no cooldown started; the time a
-  post spent waiting for room is not counted against its body.
+  vCPUs), which is no room at all. The posts of one client hold at most half the upload
+  budget at once, so a client cannot take all of it with a few connections that declare
+  large bodies and send nothing; its next image post past that answers `429`, with a
+  `Retry-After` of 10 seconds and no cooldown started. A client here is one address, as
+  flood control counts them, except that the addresses of one IPv6 /64 network count as
+  one client, since a host can usually take any address in its /64: the people on one such
+  network share that half, as those behind one IPv4 address do, while flood control still
+  counts each of their addresses apart. A post waits for room in either budget for about
+  ten seconds at most. Once there is room to read it, its body has 30 seconds to arrive,
+  at an even pace with 5 seconds to spare — a body that falls further behind the pace that
+  would bring it all in by then, sending nothing or a trickle, is cut off then and its
+  room given back — and once it has arrived its image has 25 seconds to be processed and
+  stored. A post that cannot be taken in time — no room within the wait, or its image not
+  stored within those 25 seconds — answers `503` (see [Flood control](#flood-control))
+  with nothing stored, rather than being made after its answer could no longer be sent. A
+  body that takes longer than its 30 seconds, or falls behind its pace, is the
+  connection's doing, not the server's, and answers `408` with `{"error":"upload too
+  slow"}`, with nothing stored and no cooldown started; the time a post spent waiting for
+  room is not counted against its body. A post turned away, busy or over its client's
+  share, still has its body read, unkept and at the same pace, so that the answer reaches
+  the poster rather than a connection closed under the upload; if the body falls behind on
+  the way, the answer is `408` too, rather than `503` or `429`. A form has to say how long
+  its body is, as browsers' forms do: one sent without a `Content-Length` (chunked), whose
+  length the server would learn only at its end, answers `411` at once, before any room is
+  taken for it or any of it read, with nothing stored and no cooldown started: the room it
+  took would have to be the most a body may be, and a few such bodies trickling a few
+  bytes a second could hold the whole budget for their 30 seconds.
 - **Spoilers**: a `spoiler` field (`1`, `true`, or `on` in a form; a boolean in JSON) marks
   the image to be covered until it is clicked. The attachment comes back with
   `"spoiler": true`; the thumbnail is made exactly as for any other image, because covering
@@ -823,12 +1365,20 @@ server that would refuse what it sends.
   (150 by default), the opening post included. Past it a reply with an image answers
   `403` with `{"error":"image limit reached"}`; text replies carry on. Thread views report
   `images` and `at_image_limit` so a client can hide the picker before anyone tries.
-- **Size limit**: 8 MiB by default (`EDUCHAN_MAX_UPLOAD_BYTES`), and 63 MiB at most.
+- **Size limit**: 8 MiB by default (`EDUCHAN_MAX_UPLOAD_BYTES`), and 31 MiB at most. What
+  an upload is estimated to hold while it is processed grows by eight bytes for every
+  byte of it, whatever its picture, because its stored file may come to four times its
+  size and the encoder's buffer holds two of those as it grows. A file of one pixel fits
+  the processing budget (see **Memory**) at up to about 31.5 MiB, so a larger limit would
+  let in only files that are then refused as too large to process, whatever picture they
+  hold; the limit stops at the whole MiB below, and the server refuses to start with
+  more. How large a given picture's file can be within the limit depends on its pixels
+  and how it is encoded (see **Formats**).
 - **Thumbnails**: generated at upload time, 250px on the longest side, aspect ratio
   preserved and never upscaled. A thumbnail follows the stored format, not the uploaded
   one: an image stored as a JPEG (a JPEG upload, or a lossy, opaque WebP) has a JPEG
   thumbnail, and one stored as a PNG or a GIF (any other WebP included) has a PNG
-  thumbnail, so its transparency survives.
+  thumbnail, so its transparency survives. A GIF's is of the first picture it shows.
 - **Storage**: originals and thumbnails are keyed
   `originals/{board}/{YYYY}/{MM}/{random}.{ext}` and `thumbs/{board}/{YYYY}/{MM}/…`, under a
   generated random filename. Two backends implement that key layout — the local filesystem
@@ -867,7 +1417,7 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Content rules | Posts with contact details or ID numbers are sent back with what to take out; possible threats, self-harm encouragement and grooming cues are held for a moderator; crisis language is answered once with a support message. Keyword patterns, with the gaps that implies |
 | Moderation | Sticky, lock, and delete a post or a whole thread, approve held posts, plus creating and reconfiguring boards, behind a shared moderation key |
 | Archive | Threads pushed past a board's thread limit are archived rather than deleted: they leave the index and the catalog, refuse replies, and still load by number |
-| Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed — except one with a held reply, which leaves public view then and is deleted by a later sweep once the reply is decided; per-client cooldowns limit new threads, replies, and uploads, and forget each address within a minute of its cooldown ending while the process has CPU between requests (see Flood control for an idle Cloud Run instance) |
+| Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed — except one with a held reply, which leaves public view then and is deleted by a later sweep once the reply is decided — then rewrites the verification credentials so that every credential issued before the sweep carries the sweep's transaction id rather than its own ([Transaction ids, and the nightly rewrite](#transaction-ids-and-the-nightly-rewrite)); per-client cooldowns limit new threads, replies, and uploads, and forget each address within a minute of its cooldown ending while the process has CPU between requests (see Flood control for an idle Cloud Run instance) |
 
 ## Front end
 
@@ -1084,12 +1634,12 @@ the build needs, and the rest of the walkthrough.
 | `EDUCHAN_UPLOAD_DIR` | `./data/uploads` | Root the `local` backend writes originals and thumbnails to; ignored by `gcs` |
 | `EDUCHAN_GCS_BUCKET` | empty | Cloud Storage bucket the `gcs` backend uses. **Required** when the backend is `gcs`, ignored otherwise |
 | `EDUCHAN_GCS_PREFIX` | empty | Optional key prefix inside that bucket, so it can be shared with other content |
-| `EDUCHAN_MAX_UPLOAD_BYTES` | `8388608` (8 MiB) | Largest accepted attachment; at most `66060288` (63 MiB), so the request carrying one fits the 64 MiB the server sets aside for upload bodies, and a larger value stops the server starting |
+| `EDUCHAN_MAX_UPLOAD_BYTES` | `8388608` (8 MiB) | Largest accepted attachment; at most `32505856` (31 MiB), the largest size in whole MiB at which a file of one pixel can still be processed (see **Size limit** under [Image attachments](#image-attachments)), and a larger value stops the server starting |
 | `EDUCHAN_UPLOADS_ENABLED` | off | Accept image attachments. Off refuses any post carrying an image with `403`, reading no more of it than a text post may be, and `GET /api/site` reports which |
 | `EDUCHAN_MOD_KEY` | empty | Shared secret for the moderation and board management endpoints; unset means they refuse every request |
 | `EDUCHAN_VERIFY_SECRET` | empty | Keys institutional verification: the address hash, the pending code hash, and the credential signature. **Unset switches the whole feature off**; rotating it revokes every credential |
 | `EDUCHAN_VERIFY_CODE_TTL` | `15m` | How long an emailed code stays usable |
-| `EDUCHAN_VERIFY_CREDENTIAL_TTL` | `4320h` (180 days) | How long a badge lasts before the holder verifies again |
+| `EDUCHAN_VERIFY_CREDENTIAL_TTL` | `4320h` (180 days) | How long a badge lasts before the holder verifies again. Changing it splits the credential day it is deployed in, dating the credentials issued that day before and after the deploy apart ("What that protects, exactly"): deploy a change soon after 05:00 UTC, before anyone has verified that day |
 | `EDUCHAN_VERIFY_COOLDOWN` | `60` (seconds) | Minimum interval between code requests, per client and per address |
 | `EDUCHAN_VERIFY_DOMAINS` | embedded list | Path to an allowlist file replacing the built-in one |
 | `EDUCHAN_MAIL_DEV` | off | Allow the development mail sender, which prints codes and addresses to stdout. Without it the server refuses to start with verification on and no real sender |
@@ -1165,23 +1715,30 @@ limits never compound.
 A refused request answers `429` with a `Retry-After` header in seconds and a
 `retry_after` field in the body. Set a cooldown to `0` to switch it off.
 
-A post with an image the server is too busy to take in time — no room to read or
-process it within about ten seconds, or its image not stored within 25 seconds of
-its body arriving (see **Memory** under [Image attachments](#image-attachments)) —
-answers `503` the same way, with a `Retry-After` and `retry_after` of 10 seconds.
-Nothing is stored for it, and a cooldown it started is given back, so it can be sent
-again as soon as the wait is over. A post whose body takes longer than 30 seconds to
-arrive, counted from when there was room to read it, answers `408` with
+A post with an image the server is too busy to take in time — no room to read or process
+it within about ten seconds, or its image not stored within 25 seconds of its body
+arriving (see **Memory** under [Image attachments](#image-attachments)) — answers `503`
+the same way, with a `Retry-After` and `retry_after` of 10 seconds. Nothing is stored for
+it, and a cooldown it started is given back, so it can be sent again as soon as the wait
+is over. A post with an image from a client whose other image posts already hold half the
+room for upload bodies answers `429` the same way, at once, with a `Retry-After` and
+`retry_after` of 10 seconds and no cooldown started. A post whose body takes longer than
+30 seconds to arrive, counted from when there was room to read it, or falls more than 5
+seconds behind the even pace that would bring it in by then, answers `408` with
 `{"error":"upload too slow"}` and no `Retry-After`, since waiting does not make a
-connection faster; it is refused before flood control, so it starts no cooldown. A
-request rejected for any other reason — an empty body, an oversized image, a file
-that is not an accepted image or whose header shows it too large to process, a reply
-to a missing, locked or archived thread or an image past a thread's cap — does not
-start a cooldown, so a typo never costs a wait. Two refusals come only after the
-cooldowns have started: an image whose header reads but whose pixels do not decode,
-or whose rewritten file would be too large to store, which only decoding and
-encoding it can find, and those are the cost the upload cooldown is there for; and
-the loser of two replies racing for a thread's last image slot (see the HTTP API).
+connection faster — one turned away as busy or over its share included, whose body is
+still read past at that pace — and, with uploads on, a form sent without a
+`Content-Length` answers `411` at once (see **Memory**); both are refused before flood
+control, so they start no cooldown. A request rejected for any other reason — an empty
+body, an oversized image, a file that is not an accepted image or whose header shows it
+unusable (see **Formats**), a reply to a missing, locked or archived thread or an image
+past a thread's cap — does not start a cooldown, so a typo never costs a wait. Three
+refusals come only after the cooldowns have started: an image whose header reads but whose
+pixels do not decode, or whose rewritten file would be too large to store, which only
+decoding and encoding it can find; a GIF refused while it is played (`image too large to
+process`, see **Formats** under [Image attachments](#image-attachments)), which only
+playing it can find, and those two are the cost the upload cooldown is there for; and the
+loser of two replies racing for a thread's last image slot (see the HTTP API).
 
 A post the [content rules](#content-rules) send back, with a block or the
 support screen, starts no cooldown either, so a poster told to take a phone
@@ -1194,21 +1751,26 @@ until that minute is up. A person correcting a post is sent back once or twice;
 the limit is there because reading a post is the expensive part of refusing
 it. `0` switches it off.
 
-The cooldowns and the refusal budget are keyed on client addresses, and they
-are the only places the server holds one. A sweep runs once a minute and drops every entry whose
-cooldown has run out, so **an address is held in memory no longer than the
-longest cooldown that applies to it plus one minute**, counted from its last
-post (or code request, for verification's cooldown; or, for the refusal
-budget, from the first refusal of its minute, so two minutes), whether or not anyone
-else posts in the meantime, **as long as the process has CPU between
-requests**. A host that gives it CPU only while it answers a request, which is
-Cloud Run's default (request-based billing), holds the sweep's timer back while
-an instance is idle. The first request to arrive after a sweep fell due runs
-it before it is handled, but until one arrives, or the instance is shut down,
-an idle instance's memory still holds the addresses it last saw. On Cloud Run
-the one-minute bound needs CPU allocated for the instance's whole life, which
-is also how it is then billed: `run.googleapis.com/cpu-throttling: "false"` on
-the revision, or `--no-cpu-throttling` on `gcloud run deploy`.
+The cooldowns and the refusal budget are keyed on client addresses, and so are the upload
+shares (see **Memory** under [Image attachments](#image-attachments)), by the address or,
+for IPv6, by its /64 network; those are the only places the server holds one. A client's
+share is held only while its image posts hold room for their bodies, from when their
+headers arrive until they are answered, and it is dropped as soon as the last of them is,
+with no sweep to wait for: the post's deadlines bound that to about a minute (some ten
+seconds' wait for room, 30 seconds for the body and 25 for the image) besides the time the
+database takes to store the post. A sweep runs once a minute and drops every cooldown and
+refusal count that has run out, so **an address is held in memory no longer than the
+longest cooldown that applies to it plus one minute**, counted from its last post (or code
+request, for verification's cooldown; or, for the refusal budget, from the first refusal
+of its minute, so two minutes), whether or not anyone else posts in the meantime, **as
+long as the process has CPU between requests**. A host that gives it CPU only while it
+answers a request, which is Cloud Run's default (request-based billing), holds the sweep's
+timer back while an instance is idle. The first request to arrive after a sweep fell due
+runs it before it is handled, but until one arrives, or the instance is shut down, an idle
+instance's memory still holds the addresses it last saw. On Cloud Run the one-minute bound
+needs CPU allocated for the instance's whole life, which is also how it is then billed:
+`run.googleapis.com/cpu-throttling: "false"` on the revision, or `--no-cpu-throttling` on
+`gcloud run deploy`.
 
 The address itself is never written to the database or the logs. A post from a
 client that sends no poster key does store a poster ID derived from it (see
@@ -1331,16 +1893,17 @@ one the rules send back starts no cooldown and leaves no file. They apply to bad
   `"thread_no"` for a reply. It says nothing of why, and gives no post number.
   A held post takes the posting cooldown like any other.
 
-JSON request bodies must be `application/json`; unknown fields are rejected. The
-two posting endpoints also accept `multipart/form-data` with the same fields
-plus an `image` file; the flags (`sage`, `badge`, `spoiler`, `support_seen`)
-accept `1`, `true`, `on` or `yes`. Errors are `{"error": "..."}`. A request
-refused by flood control or the refusal budget (`429`) and a post turned away
-because the server is too busy (`503`) add `retry_after` plus a `Retry-After`
-header; the other `429` and `503`, too many wrong verification codes and
-`/healthz` with the database down, carry neither. An image post whose body does
-not arrive within 30 seconds of there being room to read it answers `408`
-(`upload too slow`).
+JSON request bodies must be `application/json`; unknown fields are rejected. The two
+posting endpoints also accept `multipart/form-data` with the same fields plus an `image`
+file; the flags (`sage`, `badge`, `spoiler`, `support_seen`) accept `1`, `true`, `on` or
+`yes`. Errors are `{"error": "..."}`. A request refused by flood control or the refusal
+budget (`429`) and a post turned away because the server is too busy (`503`) add
+`retry_after` plus a `Retry-After` header; the other `429` and `503`, too many wrong
+verification codes and `/healthz` with the database down, carry neither. An image post
+whose body does not arrive within 30 seconds of there being room to read it answers `408`
+(`upload too slow`). With uploads on, a `multipart/form-data` post has to send a
+`Content-Length`, as browsers do: one sent without (chunked) answers `411` (`a post with a
+file needs a Content-Length`) before any of its body is read.
 
 ```bash
 curl -s localhost:8080/api/boards
@@ -1508,14 +2071,15 @@ gcloud run deploy educhan --image "$IMAGE" --region "$REGION"
 
 The first deploy is longer, because it is what establishes the configuration that
 later deploys inherit — the runtime service account, the Cloud SQL instance, and
-the secrets:
+the secrets. `bash deploy/first-deploy.sh PROJECT_ID`, run in Cloud Shell, does
+all of it, the archive sweeper Job included; by hand it is:
 
 ```bash
 gcloud run deploy educhan --image "$IMAGE" --region "$REGION" \
   --service-account "$RUN_SA" \
   --add-cloudsql-instances "$CLOUDSQL_INSTANCE" \
   --set-secrets "DATABASE_URL=educhan-database-url:latest,EDUCHAN_POSTER_ID_SALT=educhan-poster-id-salt:latest,EDUCHAN_MOD_KEY=educhan-mod-key:latest" \
-  --set-env-vars "EDUCHAN_TRUST_PROXY=1,EDUCHAN_MEDIA_BACKEND=gcs,EDUCHAN_GCS_BUCKET=$MEDIA_BUCKET,EDUCHAN_LOG_FORMAT=json" \
+  --set-env-vars "EDUCHAN_TRUST_PROXY=1,EDUCHAN_MEDIA_BACKEND=gcs,EDUCHAN_GCS_BUCKET=$MEDIA_BUCKET,EDUCHAN_GCS_PREFIX=media,EDUCHAN_LOG_FORMAT=json,EDUCHAN_UPLOADS_ENABLED=false" \
   --allow-unauthenticated
 ```
 
@@ -1536,12 +2100,15 @@ Anywhere without that mount — a VM, a laptop — the [Cloud SQL Auth
 Proxy](https://cloud.google.com/sql/docs/postgres/sql-proxy) opens a local port
 and `DATABASE_URL` becomes an ordinary TCP connection string.
 
-Three things need setting for a real deployment, and the deploy guide covers
+Four things need setting for a real deployment, and the deploy guide covers
 each: `EDUCHAN_POSTER_ID_SALT` has to be a stable secret or poster IDs differ
-between instances, `EDUCHAN_TRUST_PROXY` is `1` behind Cloud Run's front end, and
+between instances; `EDUCHAN_TRUST_PROXY` is `1` behind Cloud Run's front end;
 media belongs in Cloud Storage — `EDUCHAN_MEDIA_BACKEND=gcs` with an
-`EDUCHAN_GCS_BUCKET`, because the container filesystem does not outlive the
-container.
+`EDUCHAN_GCS_BUCKET` and `EDUCHAN_GCS_PREFIX`, which the sweeper Job must match
+exactly, because the container filesystem does not outlive the container; and
+Cloud Run's request logs, which carry every visitor's IP, must be excluded from
+Cloud Logging before the service takes traffic (deploy guide section 2.8), or
+the promise that IPs are not logged does not hold.
 
 ### The archive sweeper
 
@@ -1576,14 +2143,98 @@ fixed, the next sweep removes them. A file that really is gone for good (lost
 with a container's disk, or removed by hand) fails every sweep until its row is
 deleted from `media_deletions` by hand.
 
-It logs one line of counts (threads, posts, attachments, and files removed,
-failed, and missing) and nothing about which boards or threads went, and exits
-non-zero if the database fails or any file could not be removed or was missing;
-the error it exits with says why without naming the file. It also refuses to
-run on a database a newer release has migrated (see below). It needs none of
-the web server's secrets — the poster-ID salt, the moderation key, the
-verification secret — and, run without them, it does not warn about them:
-those warnings come from the server alone.
+Last, whatever became of the files, it deletes the verification codes that
+expired unconfirmed, rewrites the verification credentials, and runs
+`VACUUM FULL` on both verification tables and, in the same passes, on the
+`pg_statistic` catalog, so that every credential issued before the sweep
+carries the sweep's transaction id rather than its own, no abandoned code keeps
+the time it was asked for, and no sample `ANALYZE` took of the tables before
+migration `0015` stays in the catalog's files ([Transaction ids, and the nightly
+rewrite](#transaction-ids-and-the-nightly-rewrite) says why, and exactly what
+that protects). It needs no verification secret for that, but its database role
+needs two things. It must own the verification tables and `vacuum_probe`, or the
+database, which the role that ran the migrations does. And it must own the
+database, be a member of the owner's role that inherits its privileges, or be a
+superuser, because only those may vacuum `pg_statistic`: owning every table is
+not enough, and nor is a membership that does not inherit. `VACUUM FULL` skips
+a table or catalog its role may not vacuum with only a warning, so the sweep
+checks that each one moved to a new file and fails at once if not, with an error
+that says which (`TestSweepFailsWhenVacuumLeavesATableInItsFile`,
+`TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile`) — so a role that has the
+first and not the second fails every sweep. Run it as the server's role, which
+ran the migrations, and before scheduling it check that role with the
+`pg_has_role(datdba, 'USAGE')` query at the end of step 5 above; on a database a
+superuser created, `ALTER DATABASE … OWNER TO` the role gives it what it lacks.
+The Job in the [deploy guide](deploy/README.md)'s section 2.9 connects with the
+service's `DATABASE_URL`, so it runs as the service's role.
+
+The rewrite waits at most five seconds for its lock. That lock lets plain reads
+through and waits for everything else on the credentials table: a transaction
+that has written to it or locked rows in it, a `VACUUM`, `ANALYZE` or index
+build on it, a change to its schema, or another sweep's rewrite or vacuum. While
+it waits, confirmations queue behind it, each holding one of its server
+instance's few database connections, and once they hold them all every request
+on that instance waits too. Five seconds bounds the wait, not the queue: once
+the lock is granted, confirmations wait out the rewrite as well, which grows
+with the table — about three seconds for 220,000 credentials, measured on a
+development machine — so a confirmation can wait five seconds plus the rewrite.
+The vacuum does not wait for a table another session holds. It passes over the
+table, which VACUUM reports only as a warning; the sweep's connection asks for
+warnings itself, so a `client_min_messages` in `DATABASE_URL` or a role's
+default cannot make a moment's reader look like a role that may not vacuum the
+table (`TestSweepHearsVacuumsWarningsWhateverTheConnectionAsksFor`). Once it has
+a table it can still wait for something else, holding the table while the
+requests that need it wait behind it: its TOAST table, which a `VACUUM` of that
+TOAST table by name holds, as autovacuum does `pg_statistic`'s (the
+verification tables' TOAST tables take their tables' `autovacuum_enabled =
+false`, so autovacuum comes to them only near transaction id wraparound, which
+the nightly `VACUUM FULL` keeps away); its row in `pg_class`, which an open
+`GRANT` or `REVOKE` on the table has updated; or one of its indexes, which an
+open `COMMENT ON INDEX` holds. It would wait for the last two only after
+copying the whole table, so a run then would hold those requests up for the
+whole copy and then give the table up, try after try. So before each run the
+sweep looks in `pg_locks` for another session holding any of these, and while
+one does it leaves the table alone and tries again later
+(`TestSweepRunsNoVacuumWhileItWouldWait`). One that begins during a run, after
+the look, the run waits for a tenth of a second at most before it gives the
+table up, or less, when a `GRANT` it waits for commits meanwhile, which ends
+the run with PostgreSQL's "tuple concurrently updated" error; either way the
+next try's look sees the holder, or that it has ended
+(`TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`,
+`TestVacuumTriesAgainWhenTheGrantItWaitsForCommits`). A transaction left
+open on the database's own row — an `ALTER DATABASE`, or a `GRANT` on the
+database — does not hold it up: the step at the end of a `VACUUM` that waits
+for one comes after the table is written out, and the sweep's runs leave it to
+autovacuum (`TestVacuumDoesNotWaitForTheDatabasesRow`). And a run that
+has its locks holds the table against reads as well as writes until it has
+written the table out, so badged posts and confirmations wait for the whole run:
+between about half a second and two and a half seconds for 220,000 credentials,
+measured on development machines, and once they hold all of a server instance's
+database connections (three by default) every request on that instance waits
+too. So the sweep takes a table only when the run can leave none of the old rows
+in its new file, which is not until the oldest transaction that began before the
+rewrite has ended; until then it waits, trying the cutoff on an empty table of
+its own (`vacuum_probe`) that holds nobody up. It keeps at that for a minute and
+then fails, so a session holding a table, something a run would wait for, or an
+old snapshot for longer — an export, a `GRANT` left open, say — costs a failed
+run, which the Job's retry or the next night's run repeats, but no run of
+`VACUUM FULL` on the table it holds up (for an old snapshot, on either
+verification table), rather than a site stalled again and again or a run that
+reports success with the old rows still in the tables' files. The run that
+succeeds still holds badged posts up for as long as it takes, once a night, and
+each holder that begins during a run costs a run more.
+
+It logs one line of counts (threads, posts, attachments, files removed, failed,
+and missing, and credentials rewritten) and nothing about which boards or
+threads went or what any credential says, and exits non-zero if the database
+fails, any file could not be removed or was missing, or the rewrite or a vacuum
+— of either verification table or of `pg_statistic` — did not finish; the error
+it exits with says why, giving every reason when more than one step failed, and
+names no file (`TestSweepErrorNamesEveryStepThatFailed`).
+It also refuses to run on a database a newer release has migrated (see below).
+It needs none of the web server's secrets — the poster-ID salt, the moderation
+key, the verification secret — and, run without them, it does not warn about
+them: those warnings come from the server alone.
 
 On Google Cloud it is meant to run as a Cloud Run Job from the service's image,
 started by Cloud Scheduler: Cloud Run gives a service CPU only while it answers
@@ -1613,7 +2264,9 @@ One kind of state remains per instance:
 ```bash
 make db-up   # local PostgreSQL for development and the integration tests
 make run     # go run ./cmd/server
-make sweep   # go run ./cmd/server -sweep: delete archived threads past their archive period once
+make sweep   # go run ./cmd/server -sweep, once: delete archived threads past their
+             # archive period, and rewrite and vacuum the verification tables, which
+             # takes the database owner's privileges ("The archive sweeper" says more)
 make build   # go build ./...
 make test    # go test ./... (integration tests need PostgreSQL; they skip without it)
 make check   # gofmt check, go vet, go test
