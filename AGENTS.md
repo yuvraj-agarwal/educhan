@@ -1243,7 +1243,13 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   what the decoder does on each), so the worst admitted one, a 25-megapixel baseline file
   of four full-resolution components, is about 5 to 6 s to decode and 5.5 to 7.5 s to
   process, and a progressive one, which the memory estimate holds to fewer blocks, about 3
-  to 4 s to decode, rather than the thousands of seconds a repeated cheap scan would take)
+  to 4 s to decode, rather than the thousands of seconds a repeated cheap scan would take;
+  what follows an upload's size instead is inflating a PNG's image data, which `image/png`
+  does whatever it holds: empty deflate blocks with codes `compress/flate` builds tables
+  for afresh cost about three quarters of a second of CPU a MiB, 6 to 7 s for a picture of
+  one pixel at the default 8 MiB limit and 20 to 24 s at the largest, 31 MiB, which its
+  deadline may cut short, and an `iCCP` profile is inflated no further than the first 256
+  KiB of its stream (`iccStreamRead`, `TestALongProfileStreamCostsNoMoreThanItsStart`))
   before that deadline, with `media.ErrBusy`, and room that is there is taken however near
   the deadline. Its body has `uploadReadTimeout` (30 s) to arrive, counted from its first
   bytes and moved on by each wait for room, so time spent waiting for room is not taken

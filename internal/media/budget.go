@@ -38,7 +38,8 @@ const UploadBudget int64 = 64 << 20
 // (maxJPEGScanRevisits); and a PNG is written at deflate's fastest level
 // (storedPNG), whose work follows the length of the rows rather than what they
 // hold. So no admitted upload is processed for more than about ten seconds of
-// CPU on one core. The slowest kinds measured, each on one core:
+// CPU on one core, but one whose image data is made slow to inflate (below).
+// The slowest kinds measured, each on one core:
 //   - a 16-bit PNG at the most pixels the memory estimate admits of one (~23
 //     megapixels as a square of ~4800-4850, the full 25 as a strip of
 //     2500×10000): ~4-5 s opaque, and ~6.5-7.5 s with a partial alpha in every
@@ -97,6 +98,17 @@ const UploadBudget int64 = 64 << 20
 //     over colours the hash spread out, which took ~3.5-4.5 s. Four 5000×5000
 //     frames of one table take ~3-3.5 s, and frames a pixel wide, whose rows
 //     the cap counts as 64 pixels each (gifRowPixels), a few tenths.
+//
+// Inflating a PNG's image data follows its size, not its shape: image/png
+// inflates the whole stream, and empty deflate blocks, each with codes that
+// compress/flate builds tables for afresh, inflate to nothing at about three
+// quarters of a second of CPU on one core for every MiB. A picture of one
+// pixel padded with them took ~6-7 s at the default size limit (8 MiB) and
+// ~20-24 s at MaxUploadBytes (31 MiB), more than processingAllowance, so its
+// deadline may come first; the decode reads through a ctxReader, and stopped
+// within a few milliseconds of its context ending. An ICC profile's stream is
+// inflated no further than iccStreamRead, a fifth of a second of such blocks
+// (pngProfileUsable).
 //
 // A slower core, or other uploads beside it, makes that longer (with the
 // host's other cores busy, the CMYK JPEG's decode took about 1.4 times the
