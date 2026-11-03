@@ -13309,6 +13309,16 @@ func quoteSpeaker(text string, open, end int) speaker {
 		if who := labelSpeaker(after[:k], true); who != noSpeaker && !passive {
 			return who
 		}
+		// The poster as the subject, its verb run on: "'…' i've been
+		// texting him this all week", like "'…' I said"; in a passive, the
+		// words were said to the poster: "'…' i've been told this every
+		// day".
+		if k > 0 && posterSubjects[bare(after[0])] {
+			if passive {
+				return otherSpeaks
+			}
+			return posterSpeaks
+		}
 		if who := labelSpeaker(after[k+1:min(len(after), k+3)], false); who != noSpeaker {
 			return who
 		}
@@ -13631,9 +13641,10 @@ var (
 	// "lemme text her".
 	posterLeads = canonSetOf(`imma ima i'ma lemme`)
 	// otherSpeakers are someone other than the poster: people, by pronoun,
-	// role or relation.
+	// with its verb run on or not ("they've been texting me"), role or
+	// relation.
 	otherSpeakers = canonSetOf(`he she they he's she's they're hes shes theyre he'd she'd they'd he'll she'll
-		they'll him her them you u ya y'all yall someone somebody anyone anybody everyone everybody nobody noone
+		they'll they've theyve him her them you u ya y'all yall someone somebody anyone anybody everyone everybody nobody noone
 		whoever people ppl person guy guys girl girls boy boys kid kids man men woman women dude dudes lad lads
 		child children teen teens friend friends mate mates bestie classmate classmates teacher teachers sir maam
 		ma'am miss mr mrs ms principal headteacher prof professor lecturer tutor coach mum mom mummy mother dad
@@ -13675,7 +13686,7 @@ var (
 	// are").
 	notSources    = canonSetOf(`you u ya y'all yall nobody noone everyone everybody anyone anybody`)
 	otherPronouns = canonSetOf(`he she they him her them hes shes theyre he's she's they're he'd she'd they'd
-		he'll she'll they'll`)
+		he'll she'll they'll they've theyve`)
 	pronounVerbs = canonSetOf(`is are was were will has have had can could should would must might may know knows
 		knew think thinks did does do don't dont doesn't doesnt didn't didnt can't cant won't wont deserve
 		deserves better never always gonna`)

@@ -849,9 +849,11 @@ stranger's), an attribution after a dash that names a person (`attributionSpeake
 asking, sending or coming across within four words before it or six after it, whose
 subject `speakerOf` reads back to (`otherSpeakers`, `messageNouns`, any word not in
 `subjectSkips`), or that was said to the poster ("told me '…'", "was told",
-`passiveLeads` + `participles`, so "'…' he's been texting me" is his; `heardVerbs`,
-`receivedVerbs`); a quotation named as a kind of post (`namedAsAKind`: "the 'add me on
-snap' guys"); and the same report
+`passiveLeads` + `participles`, so "'…' he's been texting me" and "'…' they've been
+texting me" are theirs, and "'…' i've been told this" was said to the poster, while
+"'…' i've been texting him this" is the poster's own; `heardVerbs`, `receivedVerbs`); a
+quotation named as a kind of post (`namedAsAKind`: "the 'add me on snap' guys");
+and the same report
 without quotation marks (`reportedClause`: a verb of saying before the words, in their
 sentence and before any comma, with only `reportedLinks` between: "my bf told me to go
 kill myself", "he said he'll shoot up the school"). A verb that doubles as a noun is the
