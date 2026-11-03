@@ -7771,13 +7771,44 @@ func labTrapped(rest []string) bool {
 }
 
 // labReaction reports, in the clause after people joined to a lab blown up,
-// their answer to the poster's mishap: the poster as its object ("will kill
-// me", "will make us redo it", "will be so done with me") or a reaction
-// (labReactions: "will laugh", "will be furious", "will lose it", "knows
-// it", "will see how bad i am", "will hear about it").
+// their answer to the poster's mishap: the poster as its object or owner
+// ("will kill me", "will make us redo it", "will write a complaint to my
+// parents"), a reaction (labReactions: "will laugh", "will be furious",
+// "will lose it", "knows it", "will have a heart attack"), a school's
+// penalty (labPenalties: "will get detention", "will fail", "will cut our
+// marks"), a chore they "have to" do (labChores: "will have to redo it",
+// "will have to stay back"), staying back ("will make everyone stay back")
+// or a new lab ("will need a new lab"). What menaces them is none of these,
+// wherever it comes (labMenace, "too late", "what hit", or "pay" with
+// nothing paid for but what they did): "won't know what hit her", "will
+// regret failing me", "will run but it'll be too late", "will pay for
+// failing me", "will be sorry".
 func labReaction(rest []string) bool {
 	for i, w := range rest {
-		if labReactions[w] || (is(w, "me") || is(w, "us")) && i > 0 {
+		var prev, next string
+		if i > 0 {
+			prev = rest[i-1]
+		}
+		if i+1 < len(rest) {
+			next = rest[i+1]
+		}
+		switch {
+		case labMenace[w], is(w, "late") && is(prev, "too"), is(w, "hit") && is(prev, "what"),
+			labPays[w] && (next == "" || is(next, "for") && (i+2 >= len(rest) ||
+				strings.HasSuffix(rest[i+2], "ing") || labDeeds[rest[i+2]])):
+			return false
+		}
+	}
+	for i, w := range rest {
+		var next string
+		if i+1 < len(rest) {
+			next = rest[i+1]
+		}
+		switch {
+		case labReactions[w], labPenalties[w] && !is(next, "to"),
+			(is(w, "me") || is(w, "us") || is(w, "my") || is(w, "our")) && i > 0,
+			is(w, "have") && is(next, "to") && i+2 < len(rest) && labChores[rest[i+2]],
+			is(w, "stay") && (is(next, "back") || is(next, "behind")), is(w, "new") && labHeads[next]:
 			return true
 		}
 	}
@@ -7804,7 +7835,9 @@ var (
 	// labGoes, or one of them and labUps, before "with" and one of labWiths
 	// take people along with the lab ("will go with it", "goes up with it",
 	// "are coming with me"); labReactions are people's answers to the
-	// poster's mishap.
+	// poster's mishap, labPenalties a school's, and labChores what people
+	// "have to" do after it; labMenace, and labPays before "for" and
+	// labDeeds or a verb, menace them instead.
 	labStuck     = canonSetOf(`inside stuck trapped locked buried gone next pieces`)
 	labNegations = canonSetOf(`won't wont never can't cant not`)
 	labGoes      = canonSetOf(`go goes going went gone come comes coming came`)
@@ -7813,7 +7846,13 @@ var (
 	labReactions = canonSetOf(`laugh laughs laughing laughed cry cries crying mad furious angry upset annoyed
 		disappointed shocked pissed embarrassed lose loses know knows knew see sees hear hears faint scream screams
 		screaming yell yells sigh sighs panic freak priceless ground grounds disown disowns call calls report
-		complain evacuate run`)
+		complain evacuate run heart`)
+	labPenalties = canonSetOf(`detention detentions fail fails suspend suspends suspended suspension expel expelled
+		complaint complaints zero zeros mark marks punish punishes punished punishment scold scolds scolded`)
+	labChores = canonSetOf(`redo do clean repeat stay write rebuild fix explain pay`)
+	labMenace = canonSetOf(`regret regrets regretted sorry deserve deserves deserved capable`)
+	labPays   = canonSetOf(`pay pays`)
+	labDeeds  = canonSetOf(`what this that everything it`)
 )
 
 // shootingRange reports a range for shooting in ws: "the shooting range".
