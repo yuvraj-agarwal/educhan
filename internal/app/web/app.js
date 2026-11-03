@@ -2843,7 +2843,9 @@ const FAQ_SECTIONS = [
           sent back to you. It only appears if they approve it. Words you say someone else
           said or sent you, like a threat you were sent or being told to hurt yourself, aren't
           read as yours when you say where they came from (who sent them, where you saw them,
-          or that you keep getting them), so you can ask for advice about them.</li>
+          or that you keep getting them), so you can ask for advice about them. They are
+          read as yours if you also say they're yours, or that you'll bring, use or carry
+          out what they say.</li>
         <li><strong>If you're having a hard time.</strong> If your post talks about wanting to
           hurt yourself or to die, you'll see <a href="#faq-help">where to get help</a> before
           it goes up. You can still post it.</li>

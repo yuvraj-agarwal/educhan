@@ -862,11 +862,14 @@ out ("got this again", `elidedReceipts`), a clause with the words as its subject
 (`quoteReceived`: "this was written on my desk", "this keeps happening", not "this is in
 my locker"), or someone else leaving them (`leftByOthers`: "someone left this in my
 locker"), unless the place is the reader's ("this was left on your desk",
-`readerOwners`) or the rest of the sentence owns them (`posterOwns`: "for you", a
-weapon, "and i'm bringing it", "and i'll do it", "it was me", "by me", "this time it's
-real", "and i agree"; `posterCarries`: the poster, or no one named, carrying, using or
+`readerOwners`) or a sentence after them that starts within `threatWindow` owns them,
+each read whole (`ownedAfter`; `posterOwns`: "for you", not "here for you", a weapon,
+"and i'm bringing it", "and i'll do it", "it was me", "by me", "this time it's real" or
+"for real", not with the poster's fear or a call for help after it, "it's happening",
+"and i agree"; `posterCarries`: the poster, or no one named, carrying, using, taking or
 making real what came, "bringing it tomorrow", "and i'm going to use it", "i'll make it
-real", `ownedDoing`; not "bringing it to my teacher" or "using it as evidence"). For
+real", "make it a reality", `ownedDoing`; not "bringing it to my teacher", "bringing it
+to sir", "taking it to the staffroom" or "using it as evidence", `handedOver`). For
 crisis language a clause gives the words away only when it names who sent them or a
 message (`sentByOthers`), so "'i want to die' this keeps happening" stays the poster's;
 a quotation named as a kind of post (`namedAsAKind`: "the 'add me on snap' guys"); and
@@ -893,7 +896,9 @@ backtracks, runs each branch from those places alone, putting no thread where no
 can take the next character (`viability`, worked out per instruction when the branch is
 planned; the machine finds the same matches with fewer steps). The number scanner and
 the view builders are single passes, the checks read at most a clause or a sentence each
-side of a match, cut to 64 bytes (`clauseAfter`, `sentenceAround`), or `readReach` words
+side of a match, cut to 64 bytes (`clauseAfter`, `sentenceAround`), or a window of a
+fixed width (`checkWork` lists them: `ownedAfter`, for one, reads each sentence that
+starts within `threatWindow` bytes after a quotation, to its end), or `readReach` words
 for a hint of a threat told by implication or a goad (whose nudges and finishers are
 read once for the post), and the threat pairing finds the places and times first and
 looks each intent up among them by binary search (`nearSpans`, `anyNear`), so an intent

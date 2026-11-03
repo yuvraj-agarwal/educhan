@@ -10340,18 +10340,19 @@ type matchCheck func(v *view, m []int) bool
 // checkWork is what a check is counted as costing besides the match itself:
 // what most checks read round a match, a clause or a sentence each side, cut
 // to 64 bytes (clauseAfter, sentenceAround). The searches a check runs over
-// those count their own work. Some checks read further, in windows of a
-// fixed width that this does not count: quotationAround 240 back on its line,
-// to count the straight quotes before a mark; leavingTheBoard 200 bytes each
+// those count their own work. Some checks read further, in windows of a fixed
+// width that this does not count: quotationAround 240 back on its line, to
+// count the straight quotes before a mark; leavingTheBoard 200 bytes each
 // side; deathAround, quotationAround, closingMark, quotesTheReply and the "end
 // it" readings in selfHarmCheck 120; appFrame's readOn 96; imagineNot and
-// ageRuleAfter 80; reported 64 round a quotation and before the words, as
-// well as quotationAround; menace's hints readReach words each way;
-// gameNamed 64 before the sentence; and privateCue the sentence after a
-// visit as well as the one round it. Each is a constant per check, so the
-// count stays linear in the post, but a counted step stands for more time
-// in a body whose matches take those checks (TestFilterCostIsBounded says
-// how much).
+// ageRuleAfter 80; reported 64 round a quotation and before the words, as well
+// as quotationAround, and each sentence that starts within threatWindow after
+// a quotation it reads as received (ownedAfter); menace's hints readReach
+// words each way; gameNamed 64 before the sentence; and privateCue the
+// sentence after a visit as well as the one round it. Each is a constant per
+// check, so the count stays linear in the post, but a counted step stands for
+// more time in a body whose matches take those checks (TestFilterCostIsBounded
+// says how much).
 const checkWork = 2 * 64
 
 // checked puts match m to check, counting it in the view's work.
@@ -14710,9 +14711,10 @@ func quoteSpeaker(text string, open, end int, ownState bool) speaker {
 			// "what do i do about this"); with the words as its subject
 			// ("this was written on my desk", "this came from an anonymous
 			// account", "this keeps happening"); or someone else leaving them
-			// ("someone left this in my locker"). Unless the rest of the
-			// sentence owns them, past the words read here: "i found this on
-			// my dad's desk and i'm bringing it".
+			// ("someone left this in my locker"). Unless a sentence after
+			// them owns them, read whole past the words read here
+			// (ownedAfter): "i found this on my dad's desk and i'm bringing
+			// it", "got this again. i'll make it real".
 			w := bare(after[0])
 			switch {
 			case posterSubjects[w] && posterDisowns(w, after[1:min(len(after), 9)]),
@@ -14720,8 +14722,7 @@ func quoteSpeaker(text string, open, end int, ownState bool) speaker {
 				is(w, "what") && helpAsked(after[:min(len(after), 8)]),
 				quoteRefs[w] && quoteReceived(after[1:min(len(after), 9)]),
 				leftByOthers(after):
-				if own := wordsIn(sentenceAfter(text, end)); !posterOwns(own) && !posterCarries(own) &&
-					(!ownState || sentByOthers(own)) {
+				if !ownedAfter(text, end) && (!ownState || sentByOthers(wordsIn(sentenceAfter(text, end)))) {
 					return otherSpeaks
 				}
 			}
@@ -14787,16 +14788,15 @@ func quoteSpeaker(text string, open, end int, ownState bool) speaker {
 // "if" or "when" ("i'd report it if someone posted this"); passed on to
 // someone who can help ("i'll show this text to my mum", "i'd tell a
 // teacher", "we've told the mods about people posting this"); or asked for
-// help with ("i don't know what to do about this"). Words the poster owns
-// are never disowned (posterOwns: "for you", "i meant it", "if anyone
-// asks"), and neither is "i'll see it through", "we'll stop at nothing", "i
-// have it written down in my plans", "i've got this in my locker", "i'll
-// have this done again" or "i got this sent to his whole class". "I won't
-// stop saying this" refuses nothing.
+// help with ("i don't know what to do about this"). Whether the poster owns
+// the words is not read here but by quoteSpeaker, over each whole sentence
+// after them (ownedAfter: "for you", "i meant it", "if anyone asks"), so
+// that ws cut short of whom the words are brought to cannot make them the
+// poster's ("i'm bringing it to my mom tonight"). Not disowned: "i'll see it
+// through", "we'll stop at nothing", "i have it written down in my plans",
+// "i've got this in my locker", "i'll have this done again" or "i got this
+// sent to his whole class". "I won't stop saying this" refuses nothing.
 func posterDisowns(subject string, ws []string) bool {
-	if posterOwns(ws) {
-		return false
-	}
 	negated := false
 	modal := strings.HasSuffix(subject, "'d") || strings.HasSuffix(subject, "'ll")
 	for j, w := range ws {
@@ -14948,14 +14948,42 @@ func leftByOthers(ws []string) bool {
 	return false
 }
 
+// ownedAfter reports the words of a quotation that ends at end owned,
+// brought, used or made real by the poster (posterOwns, posterCarries) in
+// any sentence after it that starts within threatWindow bytes, each read
+// whole: "found this in my bag. bringing it tomorrow", "got this again. i'll
+// make it real", "this was left on my desk. it was me".
+func ownedAfter(text string, end int) bool {
+	for i := end; i < len(text) && i < end+threatWindow; {
+		s := text[i:min(len(text), i+threatWindow)]
+		j := strings.IndexAny(s, ".!?\n")
+		if j < 0 {
+			j = len(s)
+		}
+		if ws := wordsIn(s[:j]); posterOwns(ws) || posterCarries(ws) {
+			return true
+		}
+		i += j + 1
+	}
+	return false
+}
+
 // posterOwns reports, in the words after a quotation, the words owned: aimed
-// at someone ("i see this as good advice for you"), meant ("i read this out
-// to him and i meant it"), covered up ("i never said this if anyone asks"),
-// with a weapon the poster has or brings beside them ("i found this knife in
-// my locker", "i found this on my dad's desk and i'm bringing it", but not
-// "i'm bringing this to the principal"), real this time ("this time it's
-// real", not "is this time it's real"), agreed with ("and i agree"), or
-// said to be the poster's ("it was me", "written by me").
+// at someone ("i see this as good advice for you"), meant ("i read this out to
+// him and i meant it"), covered up ("i never said this if anyone asks"), with
+// a weapon the poster has or brings beside them ("i found this knife in my
+// locker", "i found this on my dad's desk and i'm bringing it", but not "i'm
+// bringing this to the principal" or "i'm bringing it to show my mom"), real
+// this time ("this time it's real", "this time it's for real", not "is this
+// time it's real", nor with the poster's fear or a call for help after it:
+// "this time it's real, i'm scared", "this time it's real, what do i do"),
+// coming ("it's happening", "it's happening tomorrow", not "it's happening
+// again"), agreed with ("and i agree", "i agree with it", not "i agree it's
+// scary" or "i agree with her"), or said to be the poster's ("it was me",
+// "written by me", not "it was me who told the teacher"). It is meant only by
+// the poster or by no one named: "i meant it", not "do you think they mean
+// it". Feeling for someone is not aiming the words at them (forFeelings: "i'm
+// here for you", "praying for you", "i feel bad for her").
 func posterOwns(ws []string) bool {
 	for j, w := range ws {
 		w = bare(w)
@@ -14967,15 +14995,18 @@ func posterOwns(ws []string) bool {
 			third = bare(ws[j+2])
 		}
 		switch {
-		case is(w, "for") && ownedFor[next],
-			(is(w, "meant") || is(w, "mean")) && (is(next, "it") || is(next, "every")),
+		case is(w, "for") && ownedFor[next] && !(j > 0 && forFeelings[bare(ws[j-1])]),
+			(is(w, "meant") || is(w, "mean")) && (is(next, "it") || is(next, "every")) && ownedDoing(ws, j),
 			is(w, "if") && (is(next, "anyone") || is(next, "anybody")) && is(third, "asks"),
 			quoteRefs[w] && (weaponHeads[next] || bluntHeads[next] || fuelHeads[next]),
-			quoteRefs[w] && (is(next, "was") || is(next, "is")) && posterLabels[third] && !is(third, "i"),
+			quoteRefs[w] && (is(next, "was") || is(next, "is")) && posterLabels[third] && !is(third, "i") &&
+				!(j+3 < len(ws) && relativeWords[bare(ws[j+3])] && passedOn(ws[j+4:])),
 			is(w, "by") && posterLabels[next] && !is(next, "i"),
-			is(w, "time") && (is(next, "it's") || is(next, "its")) && madeReal[third] &&
-				!anyIn(ws[max(0, j-3):j], realDoubts),
-			(is(w, "agree") || is(w, "agreed")) && j > 0 && posterSubjects[bare(ws[j-1])]:
+			is(w, "time") && (is(next, "it's") || is(next, "its")) && madeTrue(ws[j+2:]) &&
+				!anyIn(ws[max(0, j-3):j], realDoubts) && !posterFears(ws[j+3:]) && !helpAsked(ws),
+			(is(w, "it's") || is(w, "its")) && is(next, "happening") && (third == "" || soonWords[third]),
+			(is(w, "agree") || is(w, "agreed")) && j > 0 && posterSubjects[bare(ws[j-1])] &&
+				(next == "" || agreeTails[next] || is(next, "with") && quoteRefs[third]):
 			return true // "it was me", "by me", "this time it's real", "and i agree"
 		case posterSubjects[w]:
 			// "and i'm bringing it", "so i'm doing it tomorrow", "and i'll do
@@ -14985,7 +15016,8 @@ func posterOwns(ws []string) bool {
 			for k := j + 1; k < len(ws)-1 && k < j+5; k++ {
 				x := bare(ws[k])
 				if k < j+3 && carryWords[x] && quoteRefs[bare(ws[k+1])] {
-					return !anyIn(ws[k+2:min(len(ws), k+5)], helperWords)
+					up := k+2 < len(ws) && (is(bare(ws[k+2]), "up") || is(bare(ws[k+2]), "as"))
+					return !up && !handedOver(ws[k+2:])
 				}
 				if refusalWords[x] {
 					break // "i'm not going to do it"
@@ -15003,10 +15035,12 @@ func posterOwns(ws []string) bool {
 // posterCarries reports, in the words of the sentence after a quotation,
 // the words brought, used or made real by the poster or by no one named:
 // "found this in my bag, bringing it tomorrow", "and i'm going to use it",
-// "i'll make it real", not "he's bringing it", "bringing it up with my
-// parents", "using it as proof" or "using it to report him". It reads to
-// the sentence's end, past the words a reading of the receipt takes, for
-// someone to help or a report: "bringing it to my teacher tomorrow".
+// "i'll make it real", "make it come true", "make it a reality", "taking it
+// to school tomorrow", not "he's bringing it", "bringing it up with my
+// parents", "using it as proof", "using it to report him" or "taking it
+// seriously". It reads to the sentence's end, past the words a reading of
+// the receipt takes, for someone to help or a report: "bringing it to my
+// teacher tomorrow" (handedOver).
 func posterCarries(ws []string) bool {
 	for j, w := range ws {
 		w = bare(w)
@@ -15017,10 +15051,11 @@ func posterCarries(ws []string) bool {
 		if j+2 < len(ws) {
 			third = bare(ws[j+2])
 		}
+		taken := takeWords[w] && (is(third, "with") || soonWords[third] ||
+			is(third, "to") && !(j+3 < len(ws) && is(bare(ws[j+3]), "heart")))
 		switch {
-		case (carryWords[w] || useWords[w]) && !is(third, "as") && !is(third, "up") &&
-			!anyIn(ws[j+2:], helperWords) && !anyIn(ws[j+2:], passOnVerbs),
-			makeWords[w] && madeReal[third]:
+		case (carryWords[w] || useWords[w] || taken) && !is(third, "as") && !is(third, "up") && !handedOver(ws[j+2:]),
+			makeWords[w] && madeTrue(ws[j+2:]):
 			return true
 		}
 	}
@@ -15049,6 +15084,71 @@ func ownedDoing(ws []string, j int) bool {
 		}
 	}
 	return true
+}
+
+// handedOver reports, in the words after what the poster brings or uses,
+// it passed on (passOnVerbs: "to show my mom", "to report him") or brought
+// to one of helperWords ("to my teacher tomorrow", "to the office", "to
+// the vice principal"), not "tomorrow sir", "on my teacher" or "to school,
+// the office won't know".
+func handedOver(ws []string) bool {
+	for i, w := range ws {
+		w = bare(w)
+		if passOnVerbs[w] {
+			return true
+		}
+		if !is(w, "to") {
+			continue
+		}
+		k := i + 1
+		for k < len(ws) && (determiners[bare(ws[k])] || ownerWord(bare(ws[k]))) {
+			k++
+		}
+		if k < len(ws) && helperWords[bare(ws[k])] ||
+			k+1 < len(ws) && helperRanks[bare(ws[k])] && helperWords[bare(ws[k+1])] {
+			return true
+		}
+	}
+	return false
+}
+
+// passedOn reports, at the start of ws, a verb passing the words on, or
+// telling one of helperWords of them: "reported", "showed", "told the
+// teacher", not "told you".
+func passedOn(ws []string) bool {
+	return len(ws) > 0 && (passOnVerbs[bare(ws[0])] || tellWords[bare(ws[0])] && anyIn(ws[1:min(len(ws), 4)], helperWords))
+}
+
+// madeTrue reports, at the start of ws, one of madeReal, after "come", "a"
+// or "for": "real", "come true", "a reality", "for real".
+func madeTrue(ws []string) bool {
+	k := 0
+	if len(ws) > 1 && (is(bare(ws[0]), "come") || is(bare(ws[0]), "a") || is(bare(ws[0]), "for")) {
+		k = 1
+	}
+	return len(ws) > 0 && madeReal[bare(ws[k])]
+}
+
+// posterFears reports, in ws, fear the poster owns to: one of fearWords
+// with the poster as its subject in the three words before it, and no
+// refusal between ("i'm scared", "i am so scared", not "i'm not scared" or
+// "you should be scared").
+func posterFears(ws []string) bool {
+	for i, w := range ws {
+		if !fearWords[bare(w)] {
+			continue
+		}
+		for k := i - 1; k >= 0 && k >= i-3; k-- {
+			x := bare(ws[k])
+			if refusalWords[x] {
+				break
+			}
+			if posterSubjects[x] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // sentByOthers reports, in the words after a quotation, someone else named
@@ -15125,11 +15225,15 @@ var (
 	// sayersAfterIf, after "if" or "when", are someone else saying it.
 	sayersAfterIf = canonSetOf(`someone somebody anyone anybody people they he she ppl`)
 	// passOnVerbs pass the words on to one of helperWords, someone who can
-	// help: "i'll show this text to my mum".
+	// help, or somewhere staff are: "i'll show this text to my mum",
+	// "bringing it to sir", "taking it to the office"; one of helperRanks
+	// may come before them ("the class teacher", "the vice principal").
 	passOnVerbs = canonSetOf(`show showed showing forward forwarded forwarding report reported reporting screenshot
 		screenshotted screenshotting`)
 	helperWords = canonSetOf(`teacher teachers mum mom mummy dad daddy parents parent principal mods mod moderator
-		moderators police counsellor counselor admin admins`)
+		moderators police counsellor counselor admin admins sir maam ma'am mam hod warden coordinator headmaster
+		headmistress office staffroom`)
+	helperRanks = canonSetOf(`class vice head deputy assistant house`)
 	// receiptVerbs, before quoteRefs or a message, say the words came to
 	// the poster ("found this written", "reading this in the comments"),
 	// and so do holdVerbs before a message, or before quoteRefs and a verb
@@ -15157,6 +15261,12 @@ var (
 		account discord server door`)
 	receiptFrequency = canonSetOf(`every again daily constantly nightly weekly`)
 	ownedFor         = canonSetOf(`you u ya him her them yall y'all`)
+	// forFeelings, before "for" and one of ownedFor, feel for someone rather
+	// than aim the words at them: "i'm here for you", "praying for you".
+	// tellWords tell someone of the words: "it was me who told the teacher".
+	forFeelings = canonSetOf(`here there pray praying prayed prayers sorry bad scared worried afraid happy proud
+		rooting hoping`)
+	tellWords = canonSetOf(`tell tells telling told`)
 	// receiptSenders, after "from" or "by", send words as people do;
 	// gotWords are the holdVerbs of getting, which a place can follow ("got
 	// this in my dms"), where "i have this in my notebook" is the poster's.
@@ -15188,13 +15298,17 @@ var (
 	carryWords = canonSetOf(`bring brings bringing brought carry carries carrying`)
 	// useWords before "it" or "this", and makeWords before them and one of
 	// madeReal, have the poster use the words or make them come true: "i'm
-	// going to use it", "i'll make it real". readerOwners own a place as the
+	// going to use it", "i'll make it real"; so do takeWords before them and
+	// somewhere, someone or a time ("taking it to school tomorrow"); and
+	// fearWords after the poster as their subject make "this time it's real"
+	// what the poster fears (posterFears). readerOwners own a place as the
 	// reader's: "on your desk" is where the words were left for the reader.
-	// doerPrepositions before someone make them no subject: "from my
-	// uncle".
+	// doerPrepositions before someone make them no subject: "from my uncle".
 	doerPrepositions = canonSetOf(`from by to with for of at`)
 	useWords         = canonSetOf(`use uses using`)
-	madeReal         = canonSetOf(`real true happen`)
+	takeWords        = canonSetOf(`take takes taking took`)
+	madeReal         = canonSetOf(`real true happen reality`)
+	fearWords        = canonSetOf(`scared afraid worried terrified frightened nervous`)
 	realDoubts       = canonSetOf(`is if whether maybe think thinks scared afraid worried hope`)
 	readerOwners     = canonSetOf(`your ur yours`)
 	stepWords        = canonSetOf(`next first then afterwards`)
