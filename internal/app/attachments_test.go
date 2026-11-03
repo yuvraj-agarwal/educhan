@@ -1,8 +1,13 @@
 package app
 
 import (
+	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/yuvraj-agarwal/educhan/internal/media"
 )
@@ -134,4 +139,94 @@ func TestUploadSharesGiveBackWhatTheWaitingHeld(t *testing.T) {
 	if got := waitHeld(); got != 0 {
 		t.Errorf("the posts waiting hold %d bytes once each has stopped, want 0", got)
 	}
+}
+
+// A post that holds room and waits for more does not always get it: its
+// request ends while it waits (the poster went away), or its deadline is too
+// near to leave time to process the image once read, and it is refused busy
+// without waiting (media.ErrBusy). Either way it stops being one of the posts
+// waiting, and gives back what it held of the waiting room and its share, as
+// one that got its room does (waitForUpload). On a busy server many waits end
+// so: kept, what they held would add up until every post that holds room and
+// finds none free was turned away busy at once, for the life of the process,
+// and a client whose wait was kept could never wait again. Each post here
+// holds the whole waiting room, so the next could not wait at all had one
+// before it kept any.
+func TestUploadWaitsThatGiveUpGiveBackWhatTheyHeld(t *testing.T) {
+	a := &App{cfg: Config{MaxUploadBytes: defaultMaxUploadBytes}}
+	r := httptest.NewRequest(http.MethodPost, "/api/boards/general/threads", nil)
+	r.RemoteAddr = "203.0.113.7:40000"
+	held := a.waitingRoom()
+	const n = 1 << 20
+	state := func() (waitHeld int64, waiting, shares int) {
+		a.uploadShares.mu.Lock()
+		defer a.uploadShares.mu.Unlock()
+		return a.uploadShares.waitHeld, len(a.uploadShares.waiting), len(a.uploadShares.held)
+	}
+
+	awaitBudgetFree(t, media.UploadBudget)
+	full, ok := media.TryReserveUpload(media.UploadBudget)
+	if !ok {
+		t.Fatal("hold the whole of a free upload budget: refused")
+	}
+	var once sync.Once
+	free := func() { once.Do(full) }
+	t.Cleanup(free)
+
+	// With no deadline, the post waits until its request ends, which it does
+	// once the post is seen waiting, holding the whole waiting room.
+	goneAway := func() error {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		done := make(chan error, 1)
+		go func() {
+			_, _, err := a.reserveUpload(ctx, r, held, n, 0)
+			done <- err
+		}()
+		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+			select {
+			case err := <-done:
+				t.Fatalf("the post stopped waiting before its request ended: %v", err)
+			default:
+			}
+			if waitHeld, waiting, _ := state(); waitHeld == held && waiting == 1 {
+				break
+			}
+			if time.Now().After(deadline) {
+				waitHeld, waiting, _ := state()
+				t.Fatalf("%d posts wait holding %d bytes, want 1 holding the waiting room, %d", waiting, waitHeld, held)
+			}
+		}
+		cancel()
+		return <-done
+	}
+	// A deadline 5 s away is nearer than the time an upload stops waiting
+	// before its deadline, to be processed in (media's processingAllowance,
+	// 15 s), so the post is refused busy as it would start to wait.
+	tooLate := func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _, err := a.reserveUpload(ctx, r, held, n, 0)
+		return err
+	}
+
+	for _, wait := range []struct {
+		ended string
+		ask   func() error
+		want  error
+	}{
+		{"its request ended while it waited", goneAway, context.Canceled},
+		{"its deadline was too near to wait", tooLate, media.ErrBusy},
+		{"the next one's request ended while it waited", goneAway, context.Canceled},
+	} {
+		if err := wait.ask(); !errors.Is(err, wait.want) {
+			t.Fatalf("a post holding the waiting room, with the budget full: %v once %s, want %v", err, wait.ended, wait.want)
+		}
+		if waitHeld, waiting, shares := state(); waitHeld != 0 || waiting != 0 || shares != 0 {
+			t.Fatalf("once %s, %d posts wait holding %d bytes, and %d clients hold shares, want none, 0 and none", wait.ended, waiting, waitHeld, shares)
+		}
+	}
+	// Nor is any of the budget held, or anyone left in its queue.
+	free()
+	awaitBudgetFree(t, media.UploadBudget)
 }

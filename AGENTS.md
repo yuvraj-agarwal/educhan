@@ -1214,9 +1214,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   at the default limit), so the first of them gets its room once the posts not waiting
   have given theirs back, and a post that holds room and would wait past that is turned
   away at once as busy, answered `503`
-  (`TestBodiesWaitingForRoomLeaveRoomForTheFirstOfThem`); a wait for a piece is the
-  server's, and moves the body's deadlines on by as long (`pacedBody.pause`); and the
-  grace is the whole 5 s from the first byte (`TestIdleBodiesDoNotHoldUpOtherImagePosts`,
+  (`TestBodiesWaitingForRoomLeaveRoomForTheFirstOfThem`), and a post is no longer counted
+  as waiting however its wait ends, with its room or without it, or what those that gave
+  up held would fill the waiting room for good
+  (`TestUploadWaitsThatGiveUpGiveBackWhatTheyHeld`); a wait for a piece is the server's,
+  and moves the body's deadlines on by as long (`pacedBody.pause`); and the grace is the
+  whole 5 s from the first byte (`TestIdleBodiesDoNotHoldUpOtherImagePosts`,
   `TestABodyOverALongRoundTripIsTaken`). A body without a `Content-Length` (chunked) would
   have to reserve the most a body may be, and could then be held only to the pace of that,
   which cut a small one sent slowly off, or to none, which let seven trickles from three

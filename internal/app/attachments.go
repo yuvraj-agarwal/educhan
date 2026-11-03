@@ -707,14 +707,7 @@ func (a *App) reserveUpload(ctx context.Context, r *http.Request, held, n, extra
 	}
 	reserved, ok := media.TryReserveUploadParts(n, extra)
 	if !ok {
-		waited, err := a.uploadShares.wait(client, held, a.waitingRoom())
-		if err != nil {
-			share()
-			return nil, nil, err
-		}
-		reserved, err = media.ReserveUploadParts(ctx, n, extra)
-		waited()
-		if err != nil {
+		if reserved, err = a.waitForUpload(ctx, client, held, n, extra); err != nil {
 			share()
 			return nil, nil, err
 		}
@@ -723,6 +716,22 @@ func (a *App) reserveUpload(ctx context.Context, r *http.Request, held, n, extra
 		reserved[0]()
 		share()
 	}, reserved[1], nil
+}
+
+// waitForUpload waits under ctx for n bytes of the upload budget and, in the
+// same ask, extra bytes more (media.ReserveUploadParts), for a post of client
+// that holds held bytes of it already, as one of the posts waiting
+// (uploadShares.wait). However the wait ends, with its room or without it, as
+// many do on a busy server, the post is no longer one of them once this
+// returns: one still counted would keep what it held of the waiting room, and
+// keep its client from waiting again, for the life of the process.
+func (a *App) waitForUpload(ctx context.Context, client string, held, n, extra int64) ([]func(), error) {
+	waited, err := a.uploadShares.wait(client, held, a.waitingRoom())
+	if err != nil {
+		return nil, err
+	}
+	defer waited()
+	return media.ReserveUploadParts(ctx, n, extra)
 }
 
 // waitingRoom is the most of the upload budget that the posts waiting for more
