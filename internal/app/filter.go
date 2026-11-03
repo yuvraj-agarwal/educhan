@@ -7579,8 +7579,13 @@ var (
 	// castNames are parts in plays a school puts on, and castRoles parts
 	// that are named by what they are, so an act done to one is a part's:
 	// "I stab Caesar tonight", not "I stab Rahul tonight" (strangerActedOn).
-	// Names that are often people's own, as Ram or Arjun are, are none, and
-	// a part missing from the list is read as a stranger's name.
+	// Names that are often people's own, as Ram or Arjun are, are left out,
+	// but some parts here are people's names as well (Indrajit, Meghnad,
+	// Emilia, Gonzalo, Duncan), and the list accepts that: an act done to
+	// one is a part's only beside a play named and the poster's part or the
+	// stage, and a place off the stage or "for real" still holds it ("I
+	// stab Emilia tonight at her house"). A part missing from the list is
+	// read as a stranger's name.
 	castNames = canonSetOf(`caesar brutus cassius antony casca calpurnia octavius lepidus hamlet laertes polonius
 		claudius ophelia gertrude horatio rosencrantz guildenstern fortinbras osric macbeth duncan banquo macduff
 		fleance hecate othello desdemona iago cassio roderigo emilia brabantio lodovico romeo juliet tybalt
