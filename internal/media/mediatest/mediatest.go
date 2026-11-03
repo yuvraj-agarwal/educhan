@@ -8,7 +8,7 @@ package mediatest
 
 import (
 	"net"
-	"strconv"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/fsouza/fake-gcs-server/fakestorage"
@@ -35,42 +35,42 @@ func StartGCS(t *testing.T) string {
 	t.Helper()
 
 	// PublicHost has to be the address the emulator is actually reached on, and
-	// it is fixed when the server is built — hence choosing the port first. The
+	// it is fixed when the server is built, so the listener comes first. The
 	// client downloads object contents through the XML API, at
 	// {host}/{bucket}/{object}, and the emulator only routes that path when the
 	// request's Host matches its PublicHost. Left at the default, writes
 	// succeed and every read answers "object not found".
-	port := freePort(t)
-	host := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	//
+	// The listener is bound here and handed to the server still open. Choosing
+	// a free port, letting it go and having the emulator bind it again lost the
+	// port, now and then, to another test binary binding port 0 in between,
+	// since go test runs packages side by side: "bind: address already in use".
+	// NoListener stops the emulator binding a socket of its own, and
+	// ExternalURL stands in for the address it would otherwise have read off
+	// that socket, which it writes into a resumable upload's Location.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for the Cloud Storage emulator: %v", err)
+	}
+	host := listener.Addr().String()
 
 	server, err := fakestorage.NewServerWithOptions(fakestorage.Options{
-		Scheme:     "http",
-		Host:       "127.0.0.1",
-		Port:       uint16(port),
-		PublicHost: host,
+		Scheme:      "http",
+		NoListener:  true,
+		PublicHost:  host,
+		ExternalURL: "http://" + host,
 	})
 	if err != nil {
+		listener.Close()
 		t.Fatalf("start the Cloud Storage emulator: %v", err)
 	}
-	t.Cleanup(server.Stop)
+	httpServer := httptest.NewUnstartedServer(server.HTTPHandler())
+	httpServer.Listener.Close()
+	httpServer.Listener = listener
+	httpServer.Start()
+	t.Cleanup(httpServer.Close)
 	server.CreateBucketWithOpts(fakestorage.CreateBucketOpts{Name: Bucket})
 
 	t.Setenv("STORAGE_EMULATOR_HOST", "http://"+host)
 	return Bucket
-}
-
-// freePort reserves a port by binding it and letting go, so the emulator can be
-// told its own address before it starts.
-func freePort(t *testing.T) int {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("reserve a port: %v", err)
-	}
-	defer l.Close()
-	addr, ok := l.Addr().(*net.TCPAddr)
-	if !ok {
-		t.Fatalf("unexpected listener address %v", l.Addr())
-	}
-	return addr.Port
 }
