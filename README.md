@@ -204,10 +204,12 @@ can and cannot work out.
   rewrite](#transaction-ids-and-the-nightly-rewrite) spells out. But requesting
   a code and confirming one are writes, and each takes a transaction id from the
   counter posts take theirs from. Posts keep theirs beside their `created_at`,
-  and nothing rewrites them, so the ids a request and a confirmation took stay
-  missing from the posts' sequence, between the two posts written around each.
-  One plain query on `posts`, which needs no superuser and no secret, finds
-  those gaps, in the live database and in every backup
+  and the one write that rewrites a post's row is a moderator's approval of a
+  held post, which gives that post the approval's id and leaves the one it was
+  written with as one more gap. So the ids a request and a confirmation took
+  stay missing from the posts' sequence, between the two posts written around
+  each. One plain query on `posts`, which needs no superuser and no secret,
+  finds those gaps, in the live database and in every backup
   (`TestIssuanceLeavesGapsAmongThePostsTransactionIDs`). Before the sweep, and
   in a backup, the credential's own transaction id places the issuance the same
   way, and the write-ahead log the server keeps for crash recovery dates it
@@ -298,11 +300,13 @@ verification replaced.
 
 The same ids date a verification from the posts' side, and that no rewrite of
 the verification tables can undo. A code request and a confirmation are writes,
-so each takes the next id, and the posts written either side keep theirs: the
-ids the verification used are missing from the posts' sequence for as long as
-those posts exist. What the sweep below takes away is the credential row's own
-id, the direct link from a row to a time; what the posts' gaps still say is the
-second point under "What that protects, exactly".
+so each takes the next id, and the posts written either side keep theirs, but
+for a held post a moderator approves later: the approval rewrites its row, which
+then carries the approval's id, and the id it was written with becomes one more
+gap. Either way the ids the verification used are missing from the posts'
+sequence for as long as those posts exist. What the sweep below takes away is
+the credential row's own id, the direct link from a row to a time; what the
+posts' gaps still say is the second point under "What that protects, exactly".
 
 PostgreSQL keeps statistics about each table too, and two kinds would say more
 than the rows. `ANALYZE`, which autovacuum runs by itself after enough writes,
@@ -562,11 +566,13 @@ What that protects, exactly:
   the credential's row on a day its institution issued only one credential; on
   a day with a single issuance, the expiry day alone does. Other writes leave
   gaps too — a moderator's, a refused reply's, the sweep's, autovacuum's on
-  other tables, another database's on the same instance — so a gap alone proves
-  nothing; but a request's gap, a confirmation's within the code's lifetime
-  (fifteen minutes by default), then a badged post, is the shape of an
-  issuance, and on a quiet instance the gaps are exact. What the rewrite takes
-  away is the direct link from a credential row to a time, not the time.
+  other tables, another database's on the same instance, and a held post's own
+  once a moderator approves it, since the approval rewrites the post's row
+  under its own id — so a gap alone proves nothing; but a request's gap, a
+  confirmation's within the code's lifetime (fifteen minutes by default), then
+  a badged post, is the shape of an issuance, and on a quiet instance the gaps
+  are exact. What the rewrite takes away is the direct link from a credential
+  row to a time, not the time.
   Transaction ids belong to the whole PostgreSQL instance, so only verification
   tables on an instance of their own would close this.
 - **A credential issued since the last sweep** carries its own transaction id
