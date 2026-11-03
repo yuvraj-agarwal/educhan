@@ -1121,10 +1121,10 @@ server that would refuse what it sends.
   the pace that would bring it all in by then, sending nothing or a trickle, is cut off
   then and its room given back — and once it has arrived its image has 25 seconds to be
   processed and stored. A post that cannot be taken in time — no room within the wait, or
-  its image not stored within those 25 seconds — answers `503` (see
-  [Flood control](#flood-control)) with nothing stored, rather than being made after its
-  answer could no longer be sent. A body that takes longer than its 30 seconds, or falls
-  behind its pace, is the connection's doing, not the server's, and answers `400` with
+  its image not stored within those 25 seconds — answers `503` (see [Flood
+  control](#flood-control)) with nothing stored, rather than being made after its answer
+  could no longer be sent. A body that takes longer than its 30 seconds, or falls behind
+  its pace, is the connection's doing, not the server's, and answers `400` with
   `{"error":"upload too slow"}`, with nothing stored and no cooldown started; the time a
   post spent waiting for room is not counted against its body. It is not
   `408 Request Timeout`, because Chromium takes a `408` that arrives on a reused HTTP/1.1

@@ -1237,21 +1237,20 @@ func TestBodiesUnderWayDoNotWaitOnEachOthersRoom(t *testing.T) {
 }
 
 // A body waits for its next piece of room holding the pieces it has, and for
-// the rest of its room holding its first eighth (admitBody), and the queue
-// for room is in order, so the rest a body asks for at its head holds up the
+// the rest of its room holding its first eighth (admitBody), and the queue for
+// room is in order, so the rest a body asks for at its head holds up the
 // pieces asked for behind it. Fifty-seven 8 MiB bodies sent at once, each of
-// which had sent its eighth, held 57 MiB between them, too little was left
-// for the rest of any, and nothing that would give room back was being read:
-// every one of them waited until it gave up, ten seconds after its handler
-// started, and most were answered 503, where the server before bodies took
-// their room a piece at a time took them all. A post that holds room now
-// waits for more only while the posts waiting hold no more than waitingRoom
-// between them, and is otherwise turned away busy at once, so the first in
-// the queue always has room for its rest once the posts not waiting have
-// been answered. Here the bodies send their eighths and pause, as bodies
-// paced at a MiB a second all do a second in: all but the last two at most
-// wait, the first of them gets its room at once, and once they go on every
-// one of them is taken.
+// which had sent its eighth, held 57 MiB between them, too little was left for
+// the rest of any, and nothing that would give room back was being read: every
+// one of them waited until it gave up, ten seconds after its handler started,
+// and most were answered 503, where the server before bodies took their room a
+// piece at a time took them all. A post that holds room now waits for more
+// only while the posts waiting hold no more than waitingRoom between them, and
+// is otherwise turned away busy at once, so the first in the queue always has
+// room for its rest once the posts not waiting have been answered. Here the
+// bodies send their eighths and pause, as bodies paced at a MiB a second all
+// do a second in: all but the last two at most wait, the first of them gets
+// its room at once, and once they go on every one of them is taken.
 func TestBodiesWaitingForRoomLeaveRoomForTheFirstOfThem(t *testing.T) {
 	h := testServer(t, func(cfg *Config) { cfg.TrustedProxyHops = 1 })
 	h.addBoard("general")
@@ -1262,8 +1261,8 @@ func TestBodiesWaitingForRoomLeaveRoomForTheFirstOfThem(t *testing.T) {
 	h.app.postDeadline = 75 * time.Second // a wait for room gives up after a minute
 	const declared = 8 << 20
 	admit := admitBytes(declared)
-	// One body more than leaves room for the rest of one of them: the
-	// eighths alone leave less than a body free.
+	// One body more than leaves room for the rest of one of them: the eighths
+	// alone leave less than a body free.
 	bodies := int((media.UploadBudget-declared)/admit) + 1
 	room := h.app.waitingRoom()
 	if most := int(room / admit); most+1 >= bodies {
@@ -1317,9 +1316,9 @@ func TestBodiesWaitingForRoomLeaveRoomForTheFirstOfThem(t *testing.T) {
 		}
 		return st, h.app.uploadShares.waitHeld
 	}
-	// A post counts as having its room once it holds all of its share and
-	// does not wait, which it also does for the moment between taking its
-	// share and joining the queue: the state is read until it holds still.
+	// A post counts as having its room once it holds all of its share and does
+	// not wait, which it also does for the moment between taking its share and
+	// joining the queue: the state is read until it holds still.
 	var st, last state
 	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(50 * time.Millisecond) {
 		var held int64

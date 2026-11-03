@@ -728,8 +728,8 @@ func (a *App) reserveUpload(ctx context.Context, r *http.Request, held, n, extra
 // waitingRoom is the most of the upload budget that the posts waiting for more
 // room in it may hold between them (reserveUpload): the budget less the most a
 // body may be, which is the largest ask a post makes, the rest of a body of
-// that size with the second room for its start (bodyRoom.takeRest). That is
-// 55 MiB at the default attachment limit, and 32 MiB at the largest
+// that size with the second room for its start (bodyRoom.takeRest). That comes
+// to 55 MiB at the default attachment limit, and to 32 MiB at the largest
 // (maxUploadLimit).
 func (a *App) waitingRoom() int64 {
 	return media.UploadBudget - (a.cfg.MaxUploadBytes + multipartOverhead)
