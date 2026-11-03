@@ -417,22 +417,22 @@ before the test changes.
   (`withdrawBadgeOption`, for the badge changed in another tab or in this one, and a
   refusal of the badge as expired or revoked; never Forget this browser, which sends
   nothing, nor `/verify` loading over the form; a form off the screen then, while a post
-  link's lookup loads say, is only noted, or the form a redraw draws in its place is),
-  the press that is then refused once to say so, on a form with something written or
-  attached (`submit`), an image picked or dropped on it and attached
-  (`captchaImageAttached`; not one a re-render puts back), a refusal saying it spent the
-  answer while its form is on screen, and a press with no good answer held. Ticking the
-  badge stops it unless a request is waiting for it (`stopCaptcha`, which says whether
-  it stopped one). It runs ALTCHA's vendored worker in up to `CAPTCHA_MAX_WORKERS`
-  copies with interleaved counters (side by side where the browser allows; Chromium runs
-  their Web Crypto on one thread), and only in a secure context (`CAPTCHA_INSECURE`
-  otherwise) with `Worker` and `crypto.subtle` (`CAPTCHA_FAILED` otherwise), failing
-  before any fetch, and only on a response shaped like a challenge
+  link's lookup loads say, starts none, nor does the form a redraw draws in its place,
+  noted or told of the refusal), the press that is then refused once to say so, on a
+  form with something written or attached (`submit`), an image picked or dropped on it
+  and attached (`captchaImageAttached`; not one a re-render puts back), a refusal saying
+  it spent the answer while its form is on screen, and a press with no good answer held.
+  Ticking the badge stops it unless a request is waiting for it (`stopCaptcha`, which
+  says whether it stopped one). It runs ALTCHA's vendored worker in up to
+  `CAPTCHA_MAX_WORKERS` copies with interleaved counters (side by side where the browser
+  allows; Chromium runs their Web Crypto on one thread), and only in a secure context
+  (`CAPTCHA_INSECURE` otherwise) with `Worker` and `crypto.subtle` (`CAPTCHA_FAILED`
+  otherwise), failing before any fetch, and only on a response shaped like a challenge
   (`CAPTCHA_UNAVAILABLE` otherwise); a `429` from `/api/captcha` says too many checks
   were started from the reader's network, with its wait (`captchaBusy`), never a post's
   or a code request's cooldown. Every copy is terminated when the puzzle ends, a throw
-  while starting them included. A copy that times out answers `null`, and the puzzle
-  is said to have taken too long (`CAPTCHA_TOO_SLOW`) only when every copy did, failed
+  while starting them included. A copy that times out answers `null`, and the puzzle is
+  said to have taken too long (`CAPTCHA_TOO_SLOW`) only when every copy did, failed
   (`CAPTCHA_FAILED`) otherwise. The answer is kept in the `captcha` object in memory
   only, never in storage or a draft, and read only by `captchaAnswer`, `takeCaptcha`,
   `keepCaptcha` and `solveCaptcha`. `sendWithCaptcha` sends a post or a code request,
@@ -444,42 +444,50 @@ before the test changes.
   while one is on its way solves a fresh puzzle, and puts it back (`keepCaptcha`: only
   into an empty place, only while good) only when it left it unspent, or may have spent
   it without saying so, as when it brought no response, or the `500` for a spend whose
-  database reply was lost: if spent, the next to send it is refused as used and solves
-  a fresh one. One whose form has left the screen is dropped unsent with its answer put
+  database reply was lost: if spent, the next to send it is refused as used and solves a
+  fresh one. One whose form has left the screen is dropped unsent with its answer put
   back, and, sent or not, is not navigated from and says nothing on the page the reader
-  went to; a post that did go still empties and releases its form, wherever it is. From
-  the press to the answer the form is held (`holdForm`: controls switched off once the
-  form has been read and checked, straight into the `try` whose catch releases them, and
-  switched back on after a refusal, with the focus on the button, without scrolling to
-  it, if the form had it and it is still lost, on the page or nowhere, or after a
-  success once the form is emptied; `app.css` shows the held controls switched off). A
-  redraw of the form's own page while it is held (Update, or another page of the same
-  board's index, which has the same `routeKey`: the view, the board and the thread,
-  never the index page) keeps the page, dimmed, in place of the skeleton (`keepPage` in
-  `render`), with the thread its controls read and the open image left as they are until
-  something is drawn in its place (`leavePage`), as every render leaves them, a post
-  link's lookup included, so a refusal answered while that redraw loads updates the page
-  on screen, and puts the held form itself into the new page in place of the one drawn
-  there, its `<details>` opened (`heldForms`, `captureDraft`, `restoreDraft`); a form
-  answered by then is read for its values like any draft, emptied after a success, and
-  one whose ticked badge the server refused as expired or revoked while it was away is
-  noted (`badgeWithdrawn`), so its next press is refused once. A draft, held or not, is
-  keyed by the page on screen (`drawnFor` in `captureDraft`), never by a render begun
-  since that has not drawn yet, so the second of a double click neither carries the form
-  into the page it goes to nor keeps the page on screen under that page's address. A
-  redraw that fails to load leaves the kept page on screen, held form and all, with the
-  address bar, `renderedPath`, `state.route` and `state.thread` put back as that page
-  was drawn for them (`drawnFor`, noted by the render that drew it, however many redraws
-  of it have failed since) and the error in a notice. The address bar goes back
-  (`history.replaceState`) by replacing the history entry the reader is on when the
-  redraw fails, so after a link, with nothing pressed while the redraw loads, the
-  history holds the kept page twice and the first Back stays on it (`popstate` finds
-  `renderedPath` and only moves to the fragment), and a Back or Forward that will
-  not load leaves the entry it went to holding the kept page. A link pressed while
-  a redraw for another address loads, the same one again or a jump within the page,
-  adds an entry, and that is the one replaced, so the entry for the page that failed
-  is left behind it and Back loads that page again; after Update, whose page is the
-  one kept, the entry a jump within the page leaves behind is the kept page's own,
+  went to; a post that did go still empties and releases its form, wherever it is. A
+  post's form keeps instead what it would have been told on screen (`unsaidNotices`):
+  the refusal, or for a post not sent that nothing was posted and to post again
+  (`errorMessage`), with whether it had the focus at the press. A redraw that carried it
+  held and puts its values back into its own page, after a post link's lookup into its
+  thread say, says that notice and gives the focus as `release` would (`restoreDraft`);
+  a form that does not come back takes it with it. From the press to the answer the form
+  is held (`holdForm`: controls switched off once the form has been read and checked,
+  straight into the `try` whose catch releases them, and switched back on after a
+  refusal, with the focus on the button, without scrolling to it, if the form had it and
+  it is still lost, on the page or nowhere, or after a success once the form is emptied;
+  `app.css` shows the held controls switched off). A redraw of the form's own page while
+  it is held (Update, or another page of the same board's index, which has the same
+  `routeKey`: the view, the board and the thread, never the index page) keeps the page,
+  dimmed, in place of the skeleton (`keepPage` in `render`), with the thread its
+  controls read and the open image left as they are until something is drawn in its
+  place (`leavePage`), as every render leaves them, a post link's lookup included, so a
+  refusal answered while that redraw loads updates the page on screen, and puts the held
+  form itself into the new page in place of the one drawn there, its `<details>` opened
+  (`heldForms`, `captureDraft`, `restoreDraft`); a form answered by then is read for its
+  values like any draft, emptied after a success, and told what it would have been told
+  if it was answered off the screen (above); one whose ticked badge the server refused
+  as expired or revoked while it was away is noted as well (`badgeWithdrawn`), which
+  that notice takes the place of, while a redraw that reads the form only once it is
+  released carries the note into the form it draws, so its next press is refused once. A
+  draft, held or not, is keyed by the page on screen (`drawnFor` in `captureDraft`),
+  never by a render begun since that has not drawn yet, so the second of a double click
+  neither carries the form into the page it goes to nor keeps the page on screen under
+  that page's address. A redraw that fails to load leaves the kept page on screen, held
+  form and all, with the address bar, `renderedPath`, `state.route` and `state.thread`
+  put back as that page was drawn for them (`drawnFor`, noted by the render that drew
+  it, however many redraws of it have failed since) and the error in a notice. The
+  address bar goes back (`history.replaceState`) by replacing the history entry the
+  reader is on when the redraw fails, so after a link, with nothing pressed while the
+  redraw loads, the history holds the kept page twice and the first Back stays on it
+  (`popstate` finds `renderedPath` and only moves to the fragment), and a Back or
+  Forward that will not load leaves the entry it went to holding the kept page. A link
+  pressed while a redraw for another address loads, the same one again or a jump within
+  the page, adds an entry, and that is the one replaced, so the entry for the page that
+  failed is left behind it and Back loads that page again; after Update, whose page is
+  the one kept, the entry a jump within the page leaves behind is the kept page's own,
   and Back stays on it. A render a newer one has overtaken draws nothing, loaded
   or not, and says nothing (`overtaken`, which the board, thread and /verify views
   ask once their request is answered, /verify drawn again after a confirmation
@@ -672,19 +680,21 @@ before the test changes.
   since in this browser stays, and its form, still on screen with something written or
   attached, starts the puzzle the post it goes on to needs. The refusal's notice tells a
   form on screen; one off the screen, while a post link's lookup loads say, is noted,
-  starting nothing, so the form the redraw draws in its place refuses its next press
-  once. When storage holds another badge, verified since in this browser (in another
-  tab, or in this one by a confirmation answered after the reader left /verify), and the
-  browser was not forgotten since the press (a badge stored after a forget is someone
-  else's), the form on screen is told so in the page's own words rather than the
-  server's "verify again" (`badgeReplacedNotice`): its badge was replaced by one
-  verified since in this browser, so nothing was posted, and, unless release left the
-  post with nothing in it (the form is then told only what went and why, and, by
-  `imageTakenOff`, to write something instead), pressing again posts without a badge,
-  and Update, or the board's Index for a new thread, draws the form again offering the
-  new one, unticked. That notice is its one refusal for the badge, so a note left on it
-  while the post was on its way goes, whatever left it: a change of badge in another tab
-  (`followCredentialStorage`), a confirmation answered in this one
+  starting nothing, and keeps that notice: a redraw that carried it held says the notice
+  as it puts the form's values back into its own page, noting nothing on the form it
+  draws, and one that reads the form only once it is released carries the note, so the
+  form it draws refuses its next press once. When storage holds another badge, verified
+  since in this browser (in another tab, or in this one by a confirmation answered after
+  the reader left /verify), and the browser was not forgotten since the press (a badge
+  stored after a forget is someone else's), the form on screen is told so in the page's
+  own words rather than the server's "verify again" (`badgeReplacedNotice`): its badge
+  was replaced by one verified since in this browser, so nothing was posted, and, unless
+  release left the post with nothing in it (the form is then told only what went and
+  why, and, by `imageTakenOff`, to write something instead), pressing again posts
+  without a badge, and Update, or the board's Index for a new thread, draws the form
+  again offering the new one, unticked. That notice is its one refusal for the badge, so
+  a note left on it while the post was on its way goes, whatever left it: a change of
+  badge in another tab (`followCredentialStorage`), a confirmation answered in this one
   (`submitVerification`), another badged post's refusal in this one (`submit`),
   `/verify` loading over the form (`loadVerification`), or a redraw that puts it back
   (`restoreDraft`).

@@ -44,7 +44,7 @@ const vendorDir = "lib/"
 // the new build, then updating its README.md and its lines below.
 var vendoredWebAssets = map[string]string{
 	"lib/altcha/LICENSE":                              "bee1fb9d9c97d42c12c22332c5250f2fb1ef5c2321f6f82beb23e3b77be50a29",
-	"lib/altcha/README.md":                            "b18d9d282026c5b126612572dc5206222371b219ac5882440746cf1bf50ff947",
+	"lib/altcha/README.md":                            "904f43c9e71653827750b018e4f52d92077a0a51497690eed724e3b195c45ef0",
 	"lib/altcha/pbkdf2.js":                            "f2dcf92ba8cd81a7a6170c2c6181248359ddf5a6e35340c7472a313208273336",
 	"lib/highlightjs/LICENSE":                         "6c081431591d9df696c82dc598fe1423765b8a299b200ed00b281afd0f64c490",
 	"lib/highlightjs/README.md":                       "0dbbeb0b8768389763c8aafd06edcf9ae2ee7a972b333258aa0053e4c3a5b2b6",

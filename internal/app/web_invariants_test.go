@@ -127,6 +127,18 @@ const overtakenDrawn = "renderVerify(state.route, overtook).then((drawn) => { if
 const panelRedrawn = `const panel = el.main.querySelector('[data-action="forget-verification"]'); ` +
 	`if (state.route.view === "verify" && ageStatus() === "ok" && panel) { renderVerify(state.route, panel); }`
 
+// awayFromScreen is all the submit handler does for a post answered, or
+// dropped unsent, while its form is off the screen: it keeps with the form
+// what the form would have been told on screen, with whether it had the focus
+// at the press and whether that refuses its badge, the wording of a refusal
+// for a redraw that takes the image off too, and takes the image off after a
+// refusal of the image itself, as on screen, and returns.
+const awayFromScreen = "if (!shown) { const imageRefused = limitReached || uploadsOff; " +
+	`const fileField = form.querySelector("[data-file-field]"); if (imageRefused && fileField) { clearFileField(fileField); } ` +
+	"if (!imageRefused) { refusalNotices.set(form, notice); } unsaidNotices.set(form, { " +
+	"notice: imageRefused ? errorMessage(err, { hasText, imageOff }) : notice(imageOff), focused, " +
+	`badgeRefused: Boolean(held) && (reason === "expired" || reason === "revoked"), }); return; }`
+
 // inOrder fails the test unless every one of steps occurs in src, each after
 // the one before it.
 func inOrder(t *testing.T, what, src string, steps ...string) {
@@ -550,10 +562,11 @@ func TestCaptchaAnswerStaysInMemory(t *testing.T) {
 // form still on screen with something written or attached (its badge changed in
 // another tab or in this one, or refused as expired or revoked, never by Forget
 // this browser, nor as /verify is drawn over the form; a form off the screen
-// then is only noted, or the form a redraw draws in its place is), the press
-// refused once for that, of a form with something written or attached, and a
-// post or code request refused with the header saying the server spent its
-// answer, which the reader, still on its form, is about to send again.
+// then starts none, nor does the form a redraw draws in its place, noted or
+// told of the refusal), the press refused once for that, of a form with
+// something written or attached, and a post or code request refused with the
+// header saying the server spent its answer, which the reader, still on its
+// form, is about to send again.
 func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -964,7 +977,12 @@ func TestCaptchaIsNotWorkedOnForNothing(t *testing.T) {
 // address step while the code went out.
 // Sent or not, a request whose form has left the screen is not navigated from
 // and says nothing on the page the reader went to, while a post that did go
-// still empties and releases its form, wherever it is.
+// still empties and releases its form, wherever it is. A post's form keeps
+// what it would have been told instead, and is told it, with the focus it
+// would have had, if a redraw that carried it held puts its values back into
+// its own page, as after a post link's lookup into its thread: a post not
+// sent, which on screen would have gone, that nothing was posted and to post
+// again, and a refusal as on screen.
 func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 	script := appScript(t)
 	if on := squash(withoutComments(jsFunction(t, script, "formOnScreen"))); !strings.Contains(on,
@@ -1020,13 +1038,20 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 			onScreen,
 			sends,
 			released,
-			"if (!shown) { return; }",
+			"if (!shown) {",
 		)
 		catch := fn[strings.Index(fn, "} catch (err) {"):]
-		before := catch[:max(strings.Index(catch, "if (!shown) { return; }"), 0)]
-		// Before it, a refused badge is taken out of the forms on the page the
-		// reader went to, and /verify there showing its panel is drawn again,
-		// as for any change of the page's badge
+		// What a form off the screen does there and then is to return, a post's
+		// form keeping first what it would have been told (below).
+		away := jsBraced(t, catch, "if (!shown) {")
+		if want := map[string]string{"the submit handler": awayFromScreen, "submitVerification": "if (!shown) { return; }"}[name]; away != want {
+			t.Errorf("%s does something besides return for a form off the screen, or a post's keeping what it would have "+
+				"been told: %s", name, away)
+		}
+		before := catch[:max(strings.Index(catch, "if (!shown) {"), 0)] + away
+		// Before it or in it, a refused badge is taken out of the forms on the
+		// page the reader went to, and /verify there showing its panel is drawn
+		// again, as for any change of the page's badge
 		// (TestAFormSendsOnlyTheBadgeItWasDrawnFor), and a code step left to
 		// another confirmation says why on this form only while it is on
 		// screen (TestForgettingTheBadgeReachesEveryTab).
@@ -1043,6 +1068,50 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 				t.Errorf("%s's refusal uses %s before it knows the form is still on screen", name, banned)
 			}
 		}
+	}
+	// What a post's form off the screen would have been told is said by
+	// restoreDraft, as a redraw that carried the form held puts its values back
+	// into its own page, after a post link's lookup into its thread say: before
+	// it words that notice again for a picker the new page drew switched off,
+	// so that ends as it would have on screen. The focus goes to the new form's
+	// button as release gives it on screen: if the form had it at the press,
+	// noted as holdForm notes it, and it is lost now. A refusal of the badge is
+	// said in place of the note the catch left on the form, which would refuse
+	// the next press for the badge again. A form that does not come back takes
+	// what it was not told with it.
+	inOrder(t, "the submit handler", submit,
+		"const focused = form.contains(document.activeElement); const release = holdForm(form);",
+		"} catch (err) {", `const box = field(form, "body");`, "const said = (off) =>", "const notice = (off) =>", awayFromScreen)
+	restored := squash(withoutComments(jsFunction(t, script, "restoreDraft")))
+	inOrder(t, "restoreDraft", restored,
+		"answered = heldForms.has(held) ? null : held;",
+		"if (!form) { keepUnsentDraft(draft); return; } "+
+			"const unsaid = answered ? unsaidNotices.get(answered) : undefined; if (unsaid) { showNotice(unsaid.notice); }",
+		"const ticked = forgotten || (unsaid && unsaid.badgeRefused) ? null : draft.badge;",
+		`const refusal = answered && draft.file ? pickerRefusal(form) : "";`,
+		"if (details && (draft.open || draft.body || draft.file)) { details.open = true; } "+
+			"if (unsaid && unsaid.focused && (!document.activeElement || document.activeElement === document.body)) { "+
+			`form.querySelector('button[type="submit"]')?.focus({ preventScroll: true }); } }`,
+	)
+	if code := withoutComments(script); !strings.Contains(code, "\nconst unsaidNotices = new WeakMap();\n") ||
+		strings.Count(code, "unsaidNotices") != 3 || strings.Count(restored, "unsaid") != 8 ||
+		strings.Count(code, "focused,") != 1 {
+		t.Error("unsaidNotices is no longer only declared, kept by the submit handler for a form off the screen and read " +
+			"by restoreDraft, or restoreDraft reads it for something besides the notice, the badge and the focus")
+	}
+	// A post not sent because its form had left the screen would have gone on
+	// screen, so it is told that nothing was posted and to post again, worded
+	// for what the form still holds; one the forget stopped is told that.
+	notSent := jsBraced(t, squash(withoutComments(jsFunction(t, script, "errorMessage"))), "if (err.notSent) {")
+	m := regexp.MustCompile(`^if \(err\.notSent\) \{ if \(nothingLeft\) \{ return "([^"]*)"; \} ` +
+		`return hasText \? "([^"]*)" : "([^"]*)"; \}$`).FindStringSubmatch(notSent)
+	if m == nil || !strings.Contains(m[1], "nothing was posted") || strings.Contains(m[1], "again") ||
+		m[2] != m[1]+" Your text is still in the box; post again." || m[3] != m[1]+" Your image is still attached; post again." {
+		t.Errorf("errorMessage no longer tells a post not sent from a form off the screen that nothing was posted and to "+
+			"post again, by what its form holds: %s", notSent)
+	}
+	if !strings.Contains(submit, "const said = (off) => err.notSent && forgotten() ? FORGOTTEN_BEFORE_SENDING : replaced ? ") {
+		t.Error("a post the forget stopped while its form was off the screen is no longer told it was the forget")
 	}
 	// A post that went from a form since gone leaves the page the reader went
 	// to as it is, and a code request does not draw /verify over it.
@@ -1278,8 +1347,10 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 	// before each send, and again when a refusal of the answer calls for the
 	// second), and what it brings back kept only if nothing has moved
 	// browserForgets since the press. A post the forget stopped says so on its
-	// form, and the error sendWithCaptcha throws for it, whose message is for
-	// nobody, never reaches errorMessage.
+	// form, or keeps it for a redraw to say if its form was off the screen, and
+	// the error sendWithCaptcha throws for it, whose message is for nobody,
+	// never reaches errorMessage, which words only one not sent because its form
+	// had left the screen (TestARequestGoesOnlyFromAFormOnScreen).
 	submit := squash(withoutComments(submitHandler(t, script)))
 	inOrder(t, "the submit handler", submit,
 		"const forgets = browserForgets; const forgotten = () => forgets !== browserForgets;",
@@ -1290,10 +1361,13 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 		`if (held && (reason === "expired" || reason === "revoked")) { `+
 			"if (forgets === browserForgets && storedCredential() === held.token) { const pageBadge = state.verification.badge; "+
 			"forgetCredential(); badgeLost =",
-		`if (!shown) { return; } const box = field(form, "body"); const hasText = Boolean(box && box.value.trim()); if (err.notSent) { `+
-			"showNotice(imageTakenOff(FORGOTTEN_BEFORE_SENDING, imageOff, { hasText, isThread })); return; }",
+		`const box = field(form, "body"); const hasText = Boolean(box && box.value.trim());`,
+		"const said = (off) => err.notSent && forgotten() ? FORGOTTEN_BEFORE_SENDING : replaced ? "+
+			"badgeReplacedNotice(form, { hasText, imageOff: off }) : errorMessage(err, { hasText, imageOff: off }); "+
+			"const notice = (off) => imageTakenOff(said(off), off, { hasText, isThread, closed });",
+		"if (!shown) {",
+		"return; } if (err.notSent) { showNotice(imageTakenOff(FORGOTTEN_BEFORE_SENDING, imageOff, { hasText, isThread })); return; }",
 		"showNotice(errorMessage(err, { hasText, imageOff }));",
-		"errorMessage(err, { hasText, imageOff: off }); const notice = (off) => imageTakenOff(said(off), off, { hasText, isThread, closed });",
 	)
 	if strings.Count(submit, "storageSet(") != 1 || strings.Count(submit, "badgeLost") != 1 || strings.Count(submit, "forgetCredential(") != 1 {
 		t.Error("the submit handler keeps something, or drops a badge, without checking it against browserForgets")
@@ -1302,10 +1376,12 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 	refused := submit[max(strings.Index(submit, "} catch (err) {"), 0):]
 	mark := squash(withoutComments(jsFunction(t, script, "notSent")))
 	if mark != `function notSent() { const err = new Error("not sent"); err.notSent = true; return err; }` ||
-		strings.Count(code, "notSent") != 5 || strings.Count(send, "throw notSent();") != 2 || strings.Count(code, "notSent()") != 3 ||
-		strings.Count(refused, "err.notSent") != 1 || strings.Count(send, "new Error(") != 0 || strings.Count(refused, "showNotice(") != 3 {
+		strings.Count(code, "notSent") != 7 || strings.Count(send, "throw notSent();") != 2 || strings.Count(code, "notSent()") != 3 ||
+		strings.Count(refused, "err.notSent") != 2 || strings.Count(send, "new Error(") != 0 || strings.Count(refused, "showNotice(") != 3 ||
+		strings.Count(squash(withoutComments(jsFunction(t, script, "errorMessage"))), "err.notSent") != 1 {
 		t.Error("an error sendWithCaptcha throws for a request it did not send, before a send or in place of the " +
-			"second, is no longer marked, or no longer answered by the submit handler alone and before it words any other error")
+			"second, is no longer marked, or no longer answered by the submit handler, and errorMessage for a form " +
+			"off the screen, before any other error is worded")
 	}
 	// Including the second: a refusal of the answer that finds the browser
 	// forgotten, the forget heard while the first send was on its way, is
@@ -1665,28 +1741,32 @@ func TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress(t *testing.T) {
 			"badgeWithdrawn as ticked for the badge that went, with its key")
 	}
 	restore := squash(withoutComments(jsFunction(t, script, "restoreDraft")))
-	if !strings.Contains(restore, `const badge = field(form, "badge"); const ticked = forgotten ? null : draft.badge; `+
+	if !strings.Contains(restore, `const badge = field(form, "badge"); `+
+		"const ticked = forgotten || (unsaid && unsaid.badgeRefused) ? null : draft.badge; "+
 		"const offered = state.verification.badge; const same = Boolean(ticked && badge && offered && ticked.token === offered.token); "+
 		"if (badge) { badge.checked = same; } if (ticked && !same) { badgeWithdrawn.set(form, "+
 		`{ token: ticked.token, key: ticked.key ?? (storageGet(POSTER_KEY_STORAGE_KEY) || "") }); }`) {
 		t.Error("restoreDraft no longer ticks the badge only when the new form offers the one its draft was ticked for, " +
-			"noting the new form otherwise, unless the draft was read before a forget")
+			"noting the new form otherwise, unless the draft was read before a forget or its notice, said as it goes back, " +
+			"refuses that badge")
 	}
 
 	// A badged post refused as expired or revoked forgets the credential it
 	// sent only while storage holds it. A form on screen is told by the
 	// refusal's notice. One off the screen, which the refusal tells nothing
-	// (TestARequestGoesOnlyFromAFormOnScreen), is noted, starting nothing, so
-	// the form a redraw draws in its place refuses its next press once: without
-	// the note, that press posts the reply without its badge, unsaid, under the
-	// ID the reader's other posts there without one share. A form on screen
-	// whose badge storage has replaced since the press, the browser not
-	// forgotten meanwhile, is told so in place of the server's wording, which
-	// says to verify again, and a note left on it while the post was on its way
-	// goes, whatever left it (a change of badge in another tab, a confirmation
-	// answered in this one, another badged post's refusal in this one, /verify
-	// loading over the form, or a redraw that puts it back), so that notice is
-	// its one refusal for the badge.
+	// then (TestARequestGoesOnlyFromAFormOnScreen), keeps that notice, which a
+	// redraw that carried it held says as it puts its values back into its
+	// page, and is noted, starting nothing, for a redraw that reads it once it
+	// is released, so the form that redraw draws in its place refuses its next
+	// press once: without either, that press posts the reply without its
+	// badge, unsaid, under the ID the reader's other posts there without one
+	// share. A form on screen whose badge storage has replaced since the
+	// press, the browser not forgotten meanwhile, is told so in place of the
+	// server's wording, which says to verify again, and a note left on it while
+	// the post was on its way goes, whatever left it (a change of badge in
+	// another tab, a confirmation answered in this one, another badged post's
+	// refusal in this one, /verify loading over the form, or a redraw that puts
+	// it back), so that notice is its one refusal for the badge.
 	refused := submit[max(strings.Index(submit, "} catch (err) {"), 0):]
 	if !strings.Contains(refused, `if (held && (reason === "expired" || reason === "revoked")) { `+
 		"if (forgets === browserForgets && storedCredential() === held.token) { const pageBadge = state.verification.badge; "+
@@ -1708,8 +1788,9 @@ func TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress(t *testing.T) {
 		"const imageOff = release(shown);",
 		`const reason = err.payload && err.payload.credential; let replaced = false; if (held && (reason === "expired" || reason === "revoked")) {`,
 		`replaced = forgets === browserForgets && kept !== "" && kept !== held.token;`,
-		"if (!shown) { return; }",
-		"const said = (off) => replaced ? badgeReplacedNotice(form, { hasText, imageOff: off }) : errorMessage(err, { hasText, imageOff: off });",
+		"const said = (off) => err.notSent && forgotten() ? FORGOTTEN_BEFORE_SENDING : replaced ? "+
+			"badgeReplacedNotice(form, { hasText, imageOff: off }) : errorMessage(err, { hasText, imageOff: off });",
+		"if (!shown) {",
 	)
 	if strings.Count(submit, "replaced = ") != 2 || strings.Count(code, "badgeReplacedNotice(") != 2 {
 		t.Error("the submit handler decides a badge was replaced somewhere this test does not read, or badgeReplacedNotice is " +
@@ -2299,14 +2380,17 @@ func TestCaptchaRefusalSaysWhatTheFormStillHolds(t *testing.T) {
 	refused := submit[max(strings.Index(submit, "} catch (err) {"), 0):]
 	inOrder(t, "the submit handler", refused,
 		"const imageOff = release(shown);",
-		`const box = field(form, "body"); const hasText = Boolean(box && box.value.trim());`,
-		"showNotice(imageTakenOff(FORGOTTEN_BEFORE_SENDING, imageOff, { hasText, isThread }));",
-		"const limitReached = err.status === 403 && err.message === IMAGE_LIMIT_REACHED; if (limitReached) {",
-		"if (limitReached || uploadsOff) { showNotice(errorMessage(err, { hasText, imageOff })); return; }",
-		`const closed = err.status === 404 || (err.status === 403 && (err.message === "thread is archived" || `+
+		`const box = field(form, "body"); const hasText = Boolean(box && box.value.trim()); `+
+			"const limitReached = err.status === 403 && err.message === IMAGE_LIMIT_REACHED; "+
+			`const closed = err.status === 404 || (err.status === 403 && (err.message === "thread is archived" || `+
 			`err.message === "thread is locked")); `+
-			"const said = (off) => replaced ? badgeReplacedNotice(form, { hasText, imageOff: off }) : errorMessage(err, { hasText, imageOff: off }); "+
-			"const notice = (off) => imageTakenOff(said(off), off, { hasText, isThread, closed }); "+
+			"const said = (off) => err.notSent && forgotten() ? FORGOTTEN_BEFORE_SENDING : replaced ? "+
+			"badgeReplacedNotice(form, { hasText, imageOff: off }) : errorMessage(err, { hasText, imageOff: off }); "+
+			"const notice = (off) => imageTakenOff(said(off), off, { hasText, isThread, closed });",
+		awayFromScreen,
+		"showNotice(imageTakenOff(FORGOTTEN_BEFORE_SENDING, imageOff, { hasText, isThread }));",
+		"if (limitReached) {",
+		"if (limitReached || uploadsOff) { showNotice(errorMessage(err, { hasText, imageOff })); return; } "+
 			"refusalNotices.set(form, notice); showNotice(notice(imageOff)); } });",
 	)
 	code := withoutComments(script)
@@ -2332,8 +2416,8 @@ func TestCaptchaRefusalSaysWhatTheFormStillHolds(t *testing.T) {
 			`showNotice(notice && said === notice("") ? notice(refusal) : said ? imageTakenOff(said, refusal, kept) : refusal); } `+
 			"else if (fileField && draft.file && setFile(fileField, draft.file)) {",
 	)
-	if !strings.Contains(code, "\nconst refusalNotices = new WeakMap();\n") || strings.Count(code, "refusalNotices") != 3 {
-		t.Error("refusalNotices is no longer only declared, kept by the submit handler and read by restoreDraft")
+	if !strings.Contains(code, "\nconst refusalNotices = new WeakMap();\n") || strings.Count(code, "refusalNotices") != 4 {
+		t.Error("refusalNotices is no longer only declared, kept by the submit handler on screen or off it and read by restoreDraft")
 	}
 }
 
