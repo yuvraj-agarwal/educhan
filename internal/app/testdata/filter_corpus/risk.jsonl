@@ -655,3 +655,8 @@
 {"id": "risk-655", "body": "the boys who smashed the projector will pay for it on monday", "subject": "", "name": "", "expect": "publish", "why": "paying for a smashed projector (V4-WILLPAY-LOGISTICS)"}
 {"id": "risk-656", "body": "you will pay tomorrow after school, got it?", "subject": "", "name": "", "expect": "hold", "why": "the question is a tag on the threat, not about paying (V4-WILLPAY-LOGISTICS control)"}
 {"id": "risk-657", "body": "the guys who broke into my locker will pay for it tomorrow", "subject": "", "name": "", "expect": "hold", "why": "breaking in names no thing broken to pay for (V4-WILLPAY-LOGISTICS control)"}
+{"id": "risk-658", "body": "hmu if you want, I'll hit you so hard tomorrow after school you won't walk", "subject": "", "name": "", "expect": "hold", "why": "a hit said to be hard enough to stop the reader walking; \"hmu\" in the sentence does not make it a message (V4-HMU-LETOFF)"}
+{"id": "risk-659", "body": "hmu tmrw, ill hit u so hard after school u wont walk", "subject": "", "name": "", "expect": "hold", "why": "\"so hard\" and \"u wont walk\" make the hit a blow (V4-HMU-LETOFF)"}
+{"id": "risk-660", "body": "hmu if you dare, i'll hit you after school till you bleed", "subject": "", "name": "", "expect": "hold", "why": "a hit till the reader bleeds (V4-HMU-LETOFF)"}
+{"id": "risk-661", "body": "hmu if you want, ill hit you in the face tomorrow after school", "subject": "", "name": "", "expect": "hold", "why": "a hit in the face (V4-HMU-LETOFF)"}
+{"id": "risk-662", "body": "hmu, ill hit you after school, so hard to find time otherwise", "subject": "", "name": "", "expect": "publish", "why": "\"so hard\" is in a clause of its own about finding time (V4-HMU-LETOFF control)"}

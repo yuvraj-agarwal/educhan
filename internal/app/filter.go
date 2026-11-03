@@ -6736,7 +6736,7 @@ func (f *scannedField) threatFrame(v *view, verb, after string, at int) (end int
 					break
 				}
 			}
-			if anyIn(wordsIn(sentenceAround(v.text, at, at+len(after))), hitMeUp) {
+			if anyIn(wordsIn(sentenceAround(v.text, at, at+len(after))), hitMeUp) && !hitHard(after, sp, np.n) {
 				return 0, false, false
 			}
 			return act(np.n)
@@ -7037,8 +7037,43 @@ var (
 )
 
 // hitMeUp, "hit me up" in a sentence with "hit you", makes it a message:
-// "hmu tmrw, ill hit u after school".
+// "hmu tmrw, ill hit u after school", unless the hit is said to be hard or
+// to hurt (hitHard).
 var hitMeUp = canonSetOf(`hmu`)
+
+// hitHard reports force or an injury in the clause of after from its word n
+// (sp are after's words), which makes a hit a blow whatever message is near:
+// "I'll hit you so hard tomorrow after school you won't walk", "hit you till
+// you bleed", "hit you in the face"; not "hit you after school, so hard to
+// find time otherwise".
+func hitHard(after string, sp [][2]int, n int) bool {
+	for k := n; k < len(sp); k++ {
+		if k > 0 && strings.ContainsAny(after[sp[k-1][1]:sp[k][0]], ".!?\n,;:") {
+			return false
+		}
+		w := after[sp[k][0]:sp[k][1]]
+		switch {
+		case hitForce[w]:
+			return true
+		case cantWords[w] && k+1 < len(sp) && hitCant[after[sp[k+1][0]:sp[k+1][1]]]:
+			return true
+		case is(w, "in") && k+2 < len(sp) && (determiners[after[sp[k+1][0]:sp[k+1][1]]] ||
+			ownerWord(after[sp[k+1][0]:sp[k+1][1]])) && bodyHeads[after[sp[k+2][0]:sp[k+2][1]]]:
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	// hitForce are a blow's force or what it does: "so hard", "till you
+	// bleed", "beat senseless".
+	hitForce = canonSetOf(`hard harder hardest senseless unconscious bleed bleeding bloody cry crying scream screaming
+		faint`)
+	// hitCant, after cantWords, are what someone hit will not do again:
+	// "you won't walk".
+	hitCant = canonSetOf(`walk stand breathe see talk remember wake`)
+)
 
 // titledName reports how many words of the start of ws are a person by name
 // and title, a teacher as often: "Mr Sharma", "Dr Rao", "Sharma sir",
