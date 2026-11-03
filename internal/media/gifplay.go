@@ -32,22 +32,27 @@ import (
 //     again for each delay, since only the frame itself can put back what
 //     was under it.
 //   - A frame draws exactly the pixels in which its picture differs from what
-//     the frame before it left, and leaves every other pixel transparent; it
-//     is cut to the smallest rectangle that holds those pixels. It is left
-//     in place once its time is over, unless the next picture has pixels
-//     transparent where this one does not: then it is cleared, its rectangle
-//     taking those pixels in as well, since only clearing makes a pixel
-//     transparent again (but for putting a frame back, below).
+//     the frame before it left, and leaves every other pixel transparent, but
+//     for a frame of 256 colours (below); it is cut to the smallest rectangle
+//     that holds those pixels. It is left in place once its time is over,
+//     unless the next picture has pixels transparent where this one does
+//     not: then it is cleared, its rectangle taking those pixels in as well,
+//     since only clearing makes a pixel transparent again (but for putting a
+//     frame back, below).
 //   - The colours are the ones the pictures show, in order of their values.
 //     Where there are 255 or fewer, they are one global table after a
 //     transparent entry at index 0, which every frame uses. Where there are
 //     more, each frame has a table of its own, of the colours it draws, after
-//     a transparent entry if any pixel of its rectangle needs one. There, a
-//     frame is disposed of in the first of three ways after which it and
-//     the next frame can be written so: left in place, if the next picture
-//     needs nothing cleared; cleared, in the rectangle above; and put back,
-//     which leaves what was there before it was drawn, if that is
-//     transparent wherever the next picture is (choose).
+//     a transparent entry if any pixel of its rectangle needs one. A frame
+//     that draws 256 colours has no room for one: each pixel of its
+//     rectangle it does not draw is written in the colour it already shows,
+//     which the frame draws elsewhere, and a frame for which that cannot be
+//     done is not written so (ownTable). With tables of their own, a frame is
+//     disposed of in the first of three ways after which it and the next
+//     frame can be written so: left in place, if the next picture needs
+//     nothing cleared; cleared, in the rectangle above; and put back, which
+//     leaves what was there before it was drawn, if that is transparent
+//     wherever the next picture is (choose).
 //   - Delays are the times a browser shows (shownDelay), the last picture of
 //     a GIF played once has none, and a GIF of one picture is a still: one
 //     frame, with no delay, no disposal and no loop count.
