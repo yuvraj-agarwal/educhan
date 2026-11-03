@@ -893,34 +893,34 @@ on from each copy, as the page does, a line of "a a a …" before a spelled-out 
 of forty single letters took about 140 ms. `TestFilterCountsCopiesInOnePass` holds the
 pass by what it costs rather than by the steps it reports: no more allocations, and no
 more than eight times the time, for a copy at nearly every character as for a post of
-the same length with none. Measured on one core of a shared four-vCPU Intel Xeon @ 2.80GHz
-(`GOMAXPROCS=1` under `taskset`, no race detector, the slower verdict's best of several
-runs, timed as the process's CPU time, with a subject and a name; the machine's load
-about 4 to 6): ordinary posts are the corpus's published posts run together a blank line
-apart and cut into pieces of 500 characters and of the maximum length, as many as the
-corpus makes (`ordinaryPieces`), and take about 1 ms and about 8–9 ms at the median piece
-(each piece's best of 11: 0.4–2.8 ms, and 6.9–13.9 ms for the long ones). One sentence
-repeated to the maximum length, which `BenchmarkCheckContent/sentence` posts, takes
-about 4.7–5.3 ms, since the same words over and over give the rules less to read than
-varied ones. The figures move together with the machine, so the sentence is their
-yardstick: the ordinary pieces take about a fifth of its time and 1.5 to 1.8 times it,
-and the slowest built bodies 5.5 to 7 times it. On the Intel Xeon @ 2.10GHz the earlier
-figures were taken on the sentence took 2.6–3 ms; runs here at a load of 11 to 30 gave
-the same medians as at 4 to 6. Of 29,397 bodies built to be slow — each rule's openings
-and `TestFilterCostIsBounded`'s units alone, in pairs and stacked; method questions with
-their heads, marks, fillers and runs of spaces varied and their words shuffled; a symbol
-or an emoji beside a letter, a digit or a mark; and runs made to strain the scanners,
-each repeated to the maximum length — each timed at the best of two runs and the
-slowest 120 again at the best of 15, the slowest take about 29–33 ms: a weapon emoji and
-a mark or a letter over and over ("🗡'", "a🪓", "9🔪"; each emoji is a hint of a threat,
-read for the sentence round it and for whose words it is), a weapon named over and over
-beside a day ("gun gun 10k gun gun gun gun sunday "), and method questions stacked
-before an app's tagged name. `TestFilterCostIsBounded`'s 153 bodies take about 0.9 to
-31 ms at the best of 11, the most "stacked method questions" and then Snapchat's ghost
-before a short name, about 25 ms (about 47 ms before `appFrame` kept its words). Before
-the searches were planned the typical post, the repeated sentence and a post of `㏂`,
-which folds to `maxFoldRunes`, took about 4 ms, 36 ms and 400–490 ms on the earlier
-machine.
+the same length with copies only in its last line. Measured on one core of a shared
+four-vCPU Intel Xeon @ 2.80GHz (`GOMAXPROCS=1` under `taskset`, no race detector, the
+slower verdict's best of several runs, timed as the process's CPU time, with a subject
+and a name; the machine's load about 4 to 6): ordinary posts are the corpus's published
+posts run together a blank line apart and cut into pieces of 500 characters and of the
+maximum length, as many as the corpus makes (`ordinaryPieces`), and take about 1 ms and
+about 8–9 ms at the median piece (each piece's best of 11: 0.4–2.8 ms, and 6.9–13.9 ms
+for the long ones). One sentence repeated to the maximum length, which
+`BenchmarkCheckContent/sentence` posts, takes about 4.7–5.3 ms, since the same words
+over and over give the rules less to read than varied ones. The figures move together
+with the machine, so the sentence is their yardstick: the ordinary pieces take about a
+fifth of its time and 1.5 to 1.8 times it, and the slowest built bodies 5.5 to 7 times
+it. On the Intel Xeon @ 2.10GHz the earlier figures were taken on the sentence took
+2.6–3 ms; runs here at a load of 11 to 30 gave the same medians as at 4 to 6. Of 29,397
+bodies built to be slow — each rule's openings and `TestFilterCostIsBounded`'s units
+alone, in pairs and stacked; method questions with their heads, marks, fillers and runs
+of spaces varied and their words shuffled; a symbol or an emoji beside a letter, a digit
+or a mark; and runs made to strain the scanners, each repeated to the maximum length —
+each timed at the best of two runs and the slowest 120 again at the best of 15, the
+slowest take about 29–33 ms: a weapon emoji and a mark or a letter over and over ("🗡'",
+"a🪓", "9🔪"; each emoji is a hint of a threat, read for the sentence round it and for
+whose words it is), a weapon named over and over beside a day ("gun gun 10k gun gun gun
+gun sunday "), and method questions stacked before an app's tagged name.
+`TestFilterCostIsBounded`'s 153 bodies take about 0.9 to 31 ms at the best of 11, the
+most "stacked method questions" and then Snapchat's ghost before a short name, about
+25 ms (about 47 ms before `appFrame` kept its words). Before the searches were planned
+the typical post, the repeated sentence and a post of `㏂`, which folds to
+`maxFoldRunes`, took about 4 ms, 36 ms and 400–490 ms on the earlier machine.
 `go test -run - -bench CheckContent ./internal/app` times both kinds of maximum-length
 post as wall time, GC included. Refusals are budgeted all the same; see the API contract.
 Planning takes about 5–5.5 s of one core, once per process (5.0–5.2 s in six fresh
