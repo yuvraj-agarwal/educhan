@@ -11474,6 +11474,9 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 		return livingCheck(text, m, ws, next)
 	case (hasWord(ws, "cut") || hasWord(ws, "cutting")) && nextIn(0, cutIdioms):
 		return false
+	case (hasWord(ws, "cut") || hasWord(ws, "cutting")) && len(next) > 2 && (is(next[0], "down") ||
+		is(next[0], "back")) && is(next[1], "to") && selfAmount(next[2]):
+		return false // "i cut myself back to 2 hours of gaming"
 	case len(ws) >= 2 && is(ws[0], "i") && simplePast[ws[1]] && hurtByAccident(next):
 		// "I burned myself on the Bunsen burner", "i cut myself shaving".
 		return false
@@ -12479,18 +12482,35 @@ var (
 	// selfDegrees a degree ("hurt myself less"); selfIdiomTimes after
 	// either set it in a time or an activity ("less when i fall", "out
 	// during exams", "off this semester"). selfMarks after them are a
-	// method's: a place on the body, or the harm hidden ("down my arm",
-	// "less visibly", "out of sight", "so no one sees", "without anyone
-	// knowing"). "Up" is no particle: "cut myself up" is a method's own
-	// phrasing.
+	// method's: a place on the body (selfBody), or the harm hidden ("down my
+	// arm", "less visibly", "out of sight", "so no one sees"). "Up" is no
+	// particle: "cut myself up" is a method's own phrasing.
 	selfPhrasal    = canonSetOf(`off out loose short`)
 	selfDegrees    = canonSetOf(`less down back`)
 	selfIdiomTimes = canonSetOf(`when whenever while during this these next every in at on before after for if until
 		till`)
-	selfMarks = canonSetOf(`arm arms wrist wrists thigh thighs leg legs skin stomach belly hip hips ankle ankles chest
-		neck face hand hands finger fingers knee knees shoulder shoulders body visibly visible obviously obvious
-		noticeably unseen secretly quietly secret hidden hide hiding sight see sees seeing notice notices noticing
-		know knows knowing find finds finding without nobody`)
+	selfBody = canonSetOf(`arm arms wrist wrists thigh thighs leg legs skin stomach belly hip hips ankle ankles chest
+		neck face hand hands finger fingers knee knees shoulder shoulders body`)
+	selfMarks = func() map[string]bool {
+		m := canonSetOf(`visibly visible obviously obvious noticeably unseen secretly quietly secret hidden hide
+			hiding sight see sees seeing notice notices noticing know knows knowing find finds finding nobody`)
+		for w := range selfBody {
+			m[w] = true
+		}
+		return m
+	}()
+	// selfClauses start a clause of its own after them, where a place on the
+	// body is where an injury happens ("less when i fall on my knees");
+	// selfHiddenAfter after "without" hide the harm ("without getting
+	// caught"), where another activity does not ("without failing");
+	// selfHarmings are no activity a phrasal verb or a degree is set in
+	// ("less bleeding"); selfAmounts start an amount after "down to" or "back
+	// to".
+	selfClauses     = canonSetOf(`when whenever while if because cause cuz since as until till`)
+	selfHiddenAfter = canonSetOf(`getting being leaving letting anyone anybody anything telling`)
+	selfHarmings    = canonSetOf(`bleeding scarring cutting burning hurting showing`)
+	selfAmounts     = canonSetOf(`one two three four five six seven eight nine ten twelve fifteen twenty thirty half
+		once twice zero`)
 	suicideTopics = canonSetOf(`prevention awareness essay essays rates rate statistics stats hotline helpline helplines squad bombing bomber bombers attack attacks mission missions doors door run runs research project report article documentary`)
 	kmsQuantity   = canonSetOf(`many few some several couple more less fewer extra total thousand thousands hundred hundreds lakh lakhs million millions of the those these in kitne kitna`)
 	kmsAfter      = canonSetOf(`away per from long far ahead left of an a hai`)
@@ -14981,15 +15001,21 @@ func unseenAfter(next []string) bool {
 
 // selfIdiom reports the words after "cut myself", "burn myself" or "hurt
 // myself" (next, ws the match) making a phrasal verb or a degree of it, not
-// a method: a particle before "from" ("cut myself off from social media",
-// "cut myself loose from this group project"), a particle at the end of the
-// clause or before "of" ("burn myself out", "cut myself out of the photo"),
-// or a particle or a degree before a time or an activity ("burn myself out
-// less during exam season", "hurt myself less when i fall"). Anything else
-// after them is a method's, and so is a place on the body or the harm
-// hidden anywhere in the clause, selfMarks: "cut myself down my arm", "burn
-// myself less visibly", "hurt myself out of sight", "cut myself back there
-// so no one sees". "How to cut myself less" still asks about cutting.
+// a method: a particle before "from" or before "of" and something that is no
+// place on the body ("cut myself off from social media", "cut myself out of
+// the family group chat without anyone noticing"), "down to" or "back to" an
+// amount ("cut myself down to one coffee a day"), a particle at the end of
+// the clause ("burn myself out"), a particle before what is given up ("cut
+// myself off social media", "cut myself off caffeine"), before an activity
+// or, for "out", a manner ("burn myself out studying", "burn myself out
+// completely"), a degree before an activity ("hurt myself less playing
+// football"), or either before a time ("burn myself out less during exam
+// season", "hurt myself less when i fall"). Anything else after them is a
+// method's, and so is the harm hidden anywhere in the clause or a place on
+// the body before a clause of its own begins, selfMarks: "cut myself down my
+// arm", "burn myself less visibly", "hurt myself out of sight", "cut myself
+// back there so no one sees", not "hurt myself less when i fall on my
+// knees". "How to cut myself less" still asks about cutting.
 func selfIdiom(ws, next []string) bool {
 	if len(next) == 0 || is(next[0], "less") && hasWord(ws, "cut") {
 		return false
@@ -14999,10 +15025,13 @@ func selfIdiom(ws, next []string) bool {
 		return false
 	}
 	rest := next[1:]
-	if phrasal && len(rest) > 0 && is(rest[0], "from") {
-		return true
-	}
-	if anyIn(rest, selfMarks) {
+	switch {
+	case phrasal && len(rest) > 0 && is(rest[0], "from"),
+		phrasal && len(rest) > 1 && is(rest[0], "of") && selfObject(rest[1:]):
+		return true // "cut myself off from social media", "cut myself out of the photo"
+	case (is(next[0], "down") || is(next[0], "back")) && len(rest) > 1 && is(rest[0], "to") && selfAmount(rest[1]):
+		return true // "cut myself down to one coffee a day", "back to 2 hours"
+	case selfMarked(rest):
 		return false
 	}
 	if phrasal && len(rest) > 0 && (is(rest[0], "less") || is(rest[0], "more")) {
@@ -15011,10 +15040,66 @@ func selfIdiom(ws, next []string) bool {
 	switch {
 	case len(rest) == 0:
 		return phrasal // "burn myself out", not "hurt myself less"
-	case phrasal && is(rest[0], "of"):
-		return true
+	case phrasal && (is(rest[0], "of") || selfObject(rest)):
+		return true // "cut myself off social media"
+	case (phrasal || is(next[0], "less")) && len(rest[0]) > 4 && strings.HasSuffix(rest[0], "ing") &&
+		!selfHarmings[rest[0]]:
+		return true // "burn myself out studying", "hurt myself less playing football"
+	case is(next[0], "out") && len(rest[0]) > 4 && strings.HasSuffix(rest[0], "ly"):
+		return true // "burn myself out completely"
 	}
 	return selfIdiomTimes[rest[0]]
+}
+
+// selfObject reports a noun phrase at the start of ws that a phrasal verb
+// after "myself" takes as what is given up or left ("social media", "the
+// family group chat", "caffeine"): neither a place on the body nor a word of
+// hiding, and not a time, a preposition or a conjunction.
+func selfObject(ws []string) bool {
+	i := 0
+	for i < len(ws) && i < 3 && (determiners[ws[i]] || ownerWord(ws[i])) {
+		i++
+	}
+	if i >= len(ws) || nounEnds[ws[i]] || selfIdiomTimes[ws[i]] || selfDegrees[ws[i]] {
+		return false
+	}
+	if selfMarks[ws[i]] {
+		return false // "out of sight"
+	}
+	for j := i; j < len(ws) && j < i+3 && !nounEnds[ws[j]]; j++ {
+		if selfBody[ws[j]] || bodyHeads[ws[j]] || heightHeads[ws[j]] {
+			return false
+		}
+	}
+	return true
+}
+
+// selfAmount reports a word that starts an amount: a number, in digits or
+// spelled ("2 hours", "one coffee a day", "half").
+func selfAmount(w string) bool {
+	return w != "" && isASCIIDigit(w[0]) || selfAmounts[w]
+}
+
+// selfMarked reports, in the words after a particle or a degree, the harm
+// hidden anywhere ("less visibly", "so no one sees", "without anyone
+// knowing") or a place on the body before a clause of its own begins ("down
+// my arm", "out of sight on my thigh", not "less when i fall on my knees").
+// "Without" hides it unless an activity follows ("without failing").
+func selfMarked(ws []string) bool {
+	body := true
+	for i, w := range ws {
+		switch {
+		case selfClauses[w]:
+			body = false
+		case is(w, "without"):
+			if i+1 >= len(ws) || !strings.HasSuffix(ws[i+1], "ing") || selfHiddenAfter[ws[i+1]] {
+				return true
+			}
+		case selfMarks[w] && (body || !selfBody[w]):
+			return true
+		}
+	}
+	return false
 }
 
 // dieAsked reports the words before "die", nearest first, asking it: "can
