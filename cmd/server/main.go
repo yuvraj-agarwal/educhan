@@ -2,7 +2,10 @@
 // embedded web UI that consumes it, backed by PostgreSQL.
 //
 // With -sweep it serves nothing: it deletes the archived threads whose board's
-// archive_days have run out, with their media, and the spent captcha answers
+// archive_days have run out, with their media, rewrites the verification
+// credentials so that every one issued before the sweep carries the sweep's
+// transaction id rather than its own (the README's "Transaction ids, and the
+// nightly rewrite" says what that leaves), deletes the spent captcha answers
 // past their day, and exits. That is the mode a scheduled Cloud Run Job runs,
 // from the same image.
 package main
@@ -58,7 +61,8 @@ func run(args []string, logs io.Writer) error {
 	flags := flag.NewFlagSet("educhan", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	sweep := flags.Bool("sweep", false,
-		"delete archived threads past their board's archive_days, with their media, and spent captcha answers past their day, then exit")
+		"delete archived threads past their board's archive_days, with their media, "+
+			"rewrite the verification credentials, delete spent captcha answers past their day, then exit")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			flags.SetOutput(logs)
@@ -131,18 +135,30 @@ func fatal(err error) error {
 // runSweep makes one pass over the archive, writes its error, and closes the
 // application. ctx is run's: SIGTERM, which a Cloud Run Job receives when it
 // overruns its task timeout, stops the pass at the next batch or the next
-// file, or in looking up the next file. A batch commits or rolls back whole,
-// and its files' keys are queued in the same transaction, so a file the run
-// did not get to is removed by the next one. A stopped run still deletes the
-// spent captcha answers, giving that five seconds at most, then writes its
-// error and closes, waiting on the close for sweepCloseTimeout at most. So
-// even with the database not answering, a stopped run writes its error and
-// exits within those five seconds and the close's two, inside the ten Cloud
-// Run gives it, as long as no file deletion is in hand when the media store or
-// the database stops answering: the file in hand is finished, and its key
-// forgotten, whatever the stop, and that waits on both. A stop that came while
-// the sweep was still starting up never gets here: it ended New, and run wrote
-// that, with nothing deleted.
+// file, or in looking up the next file, or has PostgreSQL cancel the
+// credential rewrite or the vacuum after it before the sweep goes on
+// (Store.RewriteCredentials), so that neither runs on, holding its table,
+// after the process has exited. A batch commits or rolls back whole, and its
+// files' keys are queued in the same transaction, so a file the run did not
+// get to is removed by the next one; a cancelled rewrite or vacuum rolls back
+// whole too, and the next run does it again. (A vacuum that had finished when
+// the cancel reached it has committed, and that table is done.) The wait of
+// about a minute that follows the vacuum, before the sweep reads the
+// verification tables a last time, ends at once, and the next run reads them
+// again. A stopped run still deletes the spent captcha answers, giving that
+// what is left of five seconds from the stop, then writes its error and
+// closes, waiting on the close for sweepCloseTimeout at most; the close waits
+// for the pool's connections to send their own cancel requests, which a
+// database that answers takes far less than that for. So even with the
+// database not answering, a stopped run writes its error within those five
+// seconds of the stop, or the six a rewrite or vacuum it finds in hand can
+// take to give up (spentPruneTimeout says why), and exits within the close's
+// two after that, inside the ten Cloud Run gives it, as long as no file
+// deletion is in hand when the media store or the database stops answering,
+// since the file in hand is finished, and its key forgotten, whatever the
+// stop, and that waits on both. A stop that came while the sweep was still
+// starting up never gets here: it ended New, and run wrote that, with nothing
+// deleted.
 func runSweep(ctx context.Context, application *app.App) error {
 	_, err := application.Sweep(ctx)
 	// Written before the close, so a process killed while it closes has
@@ -170,6 +186,10 @@ func closeWithin(application *app.App, bound time.Duration) {
 func serve(cfg app.Config, application *app.App, log *slog.Logger) error {
 	// Only a server has a use for these; the sweeper runs without them.
 	application.WarnServingSettings()
+	// ReadHeaderTimeout and WriteTimeout together are the longest a request
+	// waits for its answer. app.js gives a Verify request up only after that
+	// (VERIFY_TIMEOUT_MS), and TestVerifyAnswersBelongToTheStepTheyWereSentFrom
+	// reads both here to hold it to them.
 	srv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           application.Routes(),

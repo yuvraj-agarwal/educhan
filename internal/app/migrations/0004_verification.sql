@@ -12,12 +12,18 @@
 --   * No created_at, and no "last used" of any kind. An issuance timestamp
 --     correlates with the posts made just after it, and a use timestamp
 --     correlates with a specific post, so neither is recorded. expires_at is
---     the one timestamp kept — pruning needs it — and it is rounded up to a UTC
---     day boundary so it dates an issuance only to the day.
+--     the one timestamp kept — pruning needs it — and it is counted from the
+--     end of the credential day the issuance falls in, a day that runs from
+--     05:00 to 05:00 UTC (credentialDayEnd in verify.go), so it dates an
+--     issuance only to that day. The day ends after the nightly sweep, not at
+--     midnight, so that the transaction id the sweep gives every credential
+--     row does not split it; credentialDayEnd says why, and what is left.
 --
 -- The pending table is the exception that proves the rule: a row there does
--- carry a fifteen-minute expiry, and is deleted the moment the code is used or
--- runs out. It never becomes part of the durable record.
+-- carry a fifteen-minute expiry, to the moment. It is deleted when its code is
+-- confirmed, and once it has run out, at the next attempt at that code, the
+-- next code request from anyone, or the nightly sweep, whichever comes first.
+-- It never becomes part of the durable record.
 
 CREATE TABLE IF NOT EXISTS verification_pending (
     -- One address may have one code in flight; a new request replaces it.

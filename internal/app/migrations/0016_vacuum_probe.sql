@@ -1,0 +1,15 @@
+-- An empty table the archive sweeper runs VACUUM FULL on before it runs it on
+-- the verification tables.
+--
+-- VACUUM FULL holds the table it rewrites against every read and write for as
+-- long as it runs, so each run on the credentials table holds up every badged
+-- post. It also copies, rather than drops, the rows the nightly rewrite
+-- deleted while a transaction older than the rewrite is still open, and the
+-- sweeper then has to run it again. A run on this table computes the same
+-- cutoff as one on a verification table and records it in pg_class
+-- (relfrozenxid), and with nothing in the table it takes a few milliseconds
+-- and holds up nobody, so the sweeper runs it until the cutoff has passed the
+-- rewrite and only then takes the verification tables, once each.
+--
+-- It has no columns and never holds a row.
+CREATE TABLE IF NOT EXISTS vacuum_probe ();

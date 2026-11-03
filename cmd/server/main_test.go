@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/url"
 	"os"
@@ -24,6 +25,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/yuvraj-agarwal/educhan/internal/app"
 )
 
 // mainArgsEnv, when set, has this test binary run main with those arguments
@@ -95,6 +98,25 @@ func sweepEnv(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 	return pool
+}
+
+// migrateSchema applies every migration to the schema sweepEnv set up, as the
+// sweeper's startup does, and stops there, for a test that needs the schema
+// before the sweep it is about. A sweep run for that would take a minute and
+// more: every sweep waits a minute and five seconds after its credential
+// rewrite to read the verification tables a last time (statsHandOver in
+// internal/app).
+func migrateSchema(t *testing.T) {
+	t.Helper()
+	cfg, err := app.ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("read the configuration: %v", err)
+	}
+	application, err := app.New(context.Background(), cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("migrate the schema: %v", err)
+	}
+	application.Close()
 }
 
 // -sweep is a whole process run: configuration, connection, migrations, one
@@ -389,9 +411,7 @@ func TestSweepStoppedWhileStartingUpWritesItsError(t *testing.T) {
 		{"reading the domain file", func(t *testing.T, db *pgxpool.Pool, databaseURL string) (string, func() bool) {
 			// Migrated first, with a spent answer two days past its day,
 			// which a sweep that got as far as pruning would delete.
-			if err := run([]string{"-sweep"}, io.Discard); err != nil {
-				t.Fatalf("migrate the schema: %v", err)
-			}
+			migrateSchema(t)
 			if _, err := db.Exec(context.Background(), `INSERT INTO captcha_spent (signature_hash, expires_at)
 				VALUES ('\x01', now() - interval '2 days')`); err != nil {
 				t.Fatalf("spend an answer: %v", err)
@@ -599,9 +619,7 @@ func TestSweepStoppedAsMigrateFinishesEndsThere(t *testing.T) {
 			db := sweepEnv(t)
 			ctx := context.Background()
 			if tc.migrated {
-				if err := run([]string{"-sweep"}, io.Discard); err != nil {
-					t.Fatalf("migrate the schema: %v", err)
-				}
+				migrateSchema(t)
 				// Two days past its day: a sweep that got as far as pruning
 				// would delete it.
 				if _, err := db.Exec(ctx, `INSERT INTO captcha_spent (signature_hash, expires_at)
@@ -682,9 +700,11 @@ func TestASlowCommitIsWaitedOnWithoutAStop(t *testing.T) {
 	var err error
 	select {
 	case err = <-sweep.exited:
-	case <-time.After(60 * time.Second):
+	// A minute and five seconds of that is the sweep's wait after its
+	// credential rewrite (statsHandOver in internal/app).
+	case <-time.After(2 * time.Minute):
 		sweep.kill()
-		t.Fatalf("the sweep had not exited a minute after it started; its log:\n%s", sweep.log(started))
+		t.Fatalf("the sweep had not exited two minutes after it started; its log:\n%s", sweep.log(started))
 	}
 	text := sweep.log(started)
 	select {
@@ -718,15 +738,18 @@ func TestAnUnansweredUnlockIsGivenUpWithoutAStop(t *testing.T) {
 	// The two seconds from the unlock, and some to spare.
 	const quickly = 3 * time.Second
 	// Well inside startup's thirty seconds, which the unlock would wait out
-	// were it bounded only from a stop.
-	const wellInside = 10 * time.Second
+	// were it bounded only from a stop, once the sweep's own wait is added:
+	// every sweep waits a minute and five seconds after its credential
+	// rewrite before it reads the verification tables a last time
+	// (statsHandOver in internal/app), so its exit comes at least that long
+	// after the unlock.
+	const sweepsOwnWait = 65 * time.Second
+	const wellInside = sweepsOwnWait + 10*time.Second
 
 	db := sweepEnv(t)
 	// Migrated here, so the sweep's last statement under the lock is the
 	// unlock.
-	if err := run([]string{"-sweep"}, io.Discard); err != nil {
-		t.Fatalf("migrate the schema: %v", err)
-	}
+	migrateSchema(t)
 	databaseURL := os.Getenv("DATABASE_URL")
 	proxy := startStallingProxy(t, databaseURL)
 	fired := proxy.on("pg_advisory_unlock", 0)
@@ -752,9 +775,9 @@ func TestAnUnansweredUnlockIsGivenUpWithoutAStop(t *testing.T) {
 	var err error
 	select {
 	case err = <-sweep.exited:
-	case <-time.After(60 * time.Second):
+	case <-time.After(sweepsOwnWait + time.Minute):
 		sweep.kill()
-		t.Fatalf("the sweep had not exited a minute after it sent the unlock; its log:\n%s", sweep.log(sent))
+		t.Fatalf("the sweep had not exited %v after it sent the unlock; its log:\n%s", sweepsOwnWait+time.Minute, sweep.log(sent))
 	}
 	took := time.Since(sent)
 	text := sweep.log(sent)
@@ -939,9 +962,7 @@ func TestStoppedSweepExitsWhenTheDatabaseStopsAnswering(t *testing.T) {
 	ctx := context.Background()
 	// Migrated here, so the process below has nothing to change before it
 	// sweeps.
-	if err := run([]string{"-sweep"}, io.Discard); err != nil {
-		t.Fatalf("migrate the schema: %v", err)
-	}
+	migrateSchema(t)
 
 	databaseURL := os.Getenv("DATABASE_URL")
 	proxy := startStallingProxy(t, databaseURL)
@@ -1028,6 +1049,100 @@ func TestStoppedSweepExitsWhenTheDatabaseStopsAnswering(t *testing.T) {
 	}
 	if record != nil && record.at.After(failure.at) {
 		t.Errorf("the stopped sweep wrote its error before its record of counts; its log:\n%s", text)
+	}
+	t.Logf("exited %v after SIGTERM; its log:\n%s", took.Round(10*time.Millisecond), text)
+}
+
+// The same, with the stop finding the credential rewrite's statement in hand,
+// here its lock waiting behind another session's: the statement waits up to
+// cancelGrace for an answer to its cancel request, and the sweep as long again
+// for pgx's own, six seconds with the database not answering. The prune's five
+// seconds are counted from the stop, so it is given none by then, and the
+// process still writes its error and exits before Cloud Run would kill it;
+// counted from the prune's own start, they brought the exit thirteen seconds
+// after SIGTERM.
+func TestStoppedRewriteExitsWhenTheDatabaseStopsAnswering(t *testing.T) {
+	// cancelGrace twice, in internal/app: PostgreSQL's answer to the cancel
+	// request, then pgx's own.
+	const rewriteCancel = 6 * time.Second
+	const cloudRunGrace = 10 * time.Second
+
+	stopWith := stopSignal(t)
+	db := sweepEnv(t)
+	ctx := context.Background()
+	migrateSchema(t)
+
+	databaseURL := os.Getenv("DATABASE_URL")
+	proxy := startStallingProxy(t, databaseURL)
+	appName := fmt.Sprintf("educhan_stalled_rewrite_%d", time.Now().UnixNano())
+	sweepURL := throughProxy(t, databaseURL, proxy, appName)
+	t.Cleanup(func() {
+		if _, err := db.Exec(ctx, `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = $1`, appName); err != nil {
+			t.Errorf("end the stalled sweep's connections: %v", err)
+		}
+	})
+
+	// The rewrite's lock on the credentials table waits on this one, so the
+	// stop finds its statement in hand. The rewrite gives a lock up after five
+	// seconds of waiting (verificationLockTimeout), so the stop comes sooner.
+	lock, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	t.Cleanup(func() { _ = lock.Rollback(context.Background()) })
+	if _, err := lock.Exec(ctx, `LOCK TABLE verification_credentials IN SHARE MODE`); err != nil {
+		t.Fatalf("lock the credentials table: %v", err)
+	}
+	var lockPID int32
+	if err := lock.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&lockPID); err != nil {
+		t.Fatalf("find the lock's backend: %v", err)
+	}
+
+	sweep := startSweep(t, sweepURL, stopWith)
+	waiting := false
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if err := db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+			WHERE application_name = $1 AND $2 = ANY (pg_blocking_pids(pid)))`, appName, lockPID).Scan(&waiting); err != nil {
+			t.Fatalf("look for the rewrite's lock: %v", err)
+		}
+		if waiting {
+			break
+		}
+	}
+	if !waiting {
+		sweep.kill()
+		t.Fatalf("the rewrite never waited on the lock; its log:\n%s", sweep.log(time.Now()))
+	}
+
+	proxy.freeze()
+	stopped := time.Now()
+	waitErr := sweep.stop(t)
+	took := time.Since(stopped)
+
+	var exit *exec.ExitError
+	if !errors.As(waitErr, &exit) || exit.ExitCode() != 1 {
+		t.Errorf("the stopped sweep ended with %v, want exit status 1", waitErr)
+	}
+	if took >= cloudRunGrace {
+		t.Errorf("the stopped sweep exited %v after SIGTERM, after Cloud Run's %v", took, cloudRunGrace)
+	}
+	var failure *logLine
+	failures := 0
+	for i, l := range sweep.logged {
+		if strings.Contains(l.text, "level=ERROR") {
+			failures++
+			failure = &sweep.logged[i]
+		}
+	}
+	text := sweep.log(stopped)
+	if failures != 1 || !strings.Contains(failure.text, "msg=fatal") ||
+		!strings.Contains(failure.text, "sweep verification tables: ") || !strings.Contains(failure.text, "context canceled") {
+		t.Fatalf("the stopped sweep logged %d error lines, want one fatal line with the rewrite stopped; its log:\n%s",
+			failures, text)
+	}
+	if wrote := failure.at.Sub(stopped); wrote >= rewriteCancel+time.Second {
+		t.Errorf("the stopped sweep wrote its error %v after SIGTERM, want it once the rewrite has given up, "+
+			"within %v; its log:\n%s", wrote, rewriteCancel, text)
 	}
 	t.Logf("exited %v after SIGTERM; its log:\n%s", took.Round(10*time.Millisecond), text)
 }

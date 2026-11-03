@@ -15,8 +15,8 @@ accounts, bans, and reports are not.
   `golang.org/x/image` (WebP decoding and thumbnail scaling), `golang.org/x/crypto`
   (PBKDF2, for the captcha).
 - `cmd/server` — entrypoint (config, logger, graceful shutdown), plus the one-shot
-  `-sweep` mode that deletes expired archived threads and spent captcha answers, and
-  exits.
+  `-sweep` mode that deletes expired archived threads, rewrites and vacuums the
+  verification tables, deletes spent captcha answers past their day, and exits.
 - `internal/app`
   - `app.go` — wiring and routes; `config.go` — environment configuration.
   - `handlers.go` — HTTP handlers, validation, JSON responses.
@@ -443,7 +443,7 @@ properties and needs a browser check before the test changes.
   waited for the puzzle and again when a refusal of its answer arrives; one with an
   answer held already, or needing none, goes with the press. A form's page is the one
   noted as it was drawn (`drawnFor.route`, read at the press), by the render that drew
-  it, or by `renderVerify` for a `/verify` drawn again, one Forget this browser draws
+  it, or by `drawVerifyStep` for each step of `/verify`, one Forget this browser draws
   over the error of a `/verify` that would not load say, never a render begun since that
   has not drawn yet: a post's board and thread are where it goes, and it is the page a
   post or a code request is answered on, so one pressed just after a link is answered as
@@ -629,7 +629,8 @@ properties and needs a browser check before the test changes.
 - A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
   half-written post — the attached file included, via `DataTransfer` — across it. New
   fields need adding there too. The spoiler box lives in the file preview and is
-  restored only alongside the file it was ticked for.
+  restored only alongside the file it was ticked for, and the badge box only for the
+  badge it was ticked for.
 - A spoilered attachment (`attachment.spoiler`) renders as a `<button>` tile with the
   caption and thumbnail in a `hidden` wrapper behind it; the server thumbnails it as
   usual, and hiding it is entirely the client's job. Keep the thumbnail inside the
@@ -670,78 +671,80 @@ properties and needs a browser check before the test changes.
   attached to exactly one request in the whole application: the badged post, in
   `submit`. `readBadge()` decodes its claims locally to decide what to show — the
   signature is the server's to check, and it re-derives the label from its own record on
-  every badged post, so a forged local claim buys a 403 and nothing else. No open tab
-  goes on offering a badge storage no longer holds, and the next form a tab draws offers
-  the one it holds: a tab that sees the credential change in another (Forget this
-  credential or Forget this browser pressed there, the badge refused there as expired or
-  revoked, another address verified there) reads it again and, when it is not the badge
-  that tab offered, takes the option out of every posting form on screen
-  (`dropBadgeOption`, which moves focus on the box to the form's button) and draws
-  `/verify` again only if it shows the badge panel, then and once the page has asked the
-  server: a redraw that is not a render passes `renderVerify` what it found on screen
-  that called for it (`over`), or for Forget this credential's own redraw the button
-  pressed, and draws nothing if that has gone meanwhile; only Forget this browser's,
-  pressed here or heard from another tab, passes nothing, and draws whatever `/verify`
-  then shows, an address step being filled in included, so that its notice is said. The
-  address step is left as it is, as is one the reader moves to (Verify another address,
-  Use a different address) while a redraw asks the server, and so is a code step unless
-  the badge read in is one newly verified there: the browser has one verification in
-  progress, held by its cookie, so that badge spent or replaced the code a step asks for
-  when no confirmation of it is on its way, and the step goes, drawn again as the panel
-  with a notice if it is on screen, then and once the page has asked the server
-  (`codeSpentElsewhere`; `CODE_SPENT_ELSEWHERE` says an address was verified in another
-  tab and the code here no longer works, never that the one is why). A confirmation
-  already on its way, counted on the step (`confirming`) from before it is sent until it
-  is answered, whether its form is still on screen or `/verify` has been drawn again
-  over it, may have reached the server first and verified this tab's address, so it is
-  left to its answer, the step only marked (`spentElsewhere`): a success draws the panel
-  for the badge it earned, over its own form or over the code step or panel that
-  `/verify` drawn again meanwhile shows, if that is still on screen once the page has
-  asked the server, and only then takes off any notice about the step it overtook; never
-  over an address step, which may be half filled in, nor over `/verify` a forget drew
-  meanwhile, whose notice stays; and a refusal of any kind puts the step away then, with
-  the notice wherever a code step is on screen, once no other confirmation of it is on
-  its way. While one is, the step stays for that one's answer, and the refused form, on
-  screen, shows the notice. A code request still on its way draws its code step when
-  answered, the cookie its answer sets holding the browser's verification from then on
-  (`followCredentialStorage`, by the `storage` event,
-  `TestForgettingTheBadgeReachesEveryTab`). A form that had the badge ticked, idle or
-  with its badged post on its way (unless the badge is settled first, as when that post
-  goes through, the badge with it), refuses its next press once, saying the badge has
-  gone and that pressing again posts without it, under the same ID as the reader's
-  unbadged posts in a reply's thread while the poster key is the one it had
-  (`withdrawBadgeOption`, `badgeWithdrawn`,
-  `TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress`): said nothing, the post would go
-  out tied to those posts, which the badge's own ID is there to keep apart. With
-  something written or attached, that form also starts the puzzle the post then needs,
-  as the reader's own untick would, so the press after the refused one usually finds it
-  solved; a form noted by a redraw (`restoreDraft`), since drawing a page starts
-  nothing, starts it at the refused press. A redraw's draft carries a ticked badge as
-  the badge it was ticked for, and ticks the new form's box only if the form offers that
-  one: a form offering none, or another verified meanwhile, is noted instead, so no
-  badge goes out that the reader did not tick, and the reader ticking or unticking the
-  box takes the note off. A form's box is drawn for the badge the page holds then
-  (`badgeOffered`, noted by `noteBadgeOffered`), and a press sends the credential only
-  while the page still holds that badge: one that finds another, or none, is a badge
-  taken from under the form, refused once with the note. Wherever the page's badge
-  changes while a posting form may be on screen, the option goes from the forms there as
-  for another tab's change: a confirmation answered after the reader left `/verify`, the
-  feature switched off or the badge run out as `/verify` loads (`loadVerification`,
-  which starts no puzzle, as drawing a page never does), and a badged post refused as
-  expired or revoked, for a form on the page the reader went to meanwhile, and for
-  `/verify` there, drawn again where it shows that badge's panel, as another tab's is,
-  so it says why the badge went (`TestAFormSendsOnlyTheBadgeItWasDrawnFor`). A held form
-  a redraw has taken off the screen, while a post link's lookup draws its skeleton say,
-  misses each of these, so `restoreDraft`, putting it back, takes its option out if the
-  page no longer holds the badge its box was drawn for, noting a ticked box but starting
-  no puzzle (`TestForgettingTheBadgeReachesEveryTab`). Forget this browser takes the
-  option out without a word and drops the note: a word would tell whoever presses next
-  that the browser held a badge, and with the poster key gone the post shares an ID with
-  none made before. A badged post refused as expired or revoked forgets the credential
-  it sent only while storage still holds it, so a badge verified since in this browser
+  every badged post, so a forged local claim buys a 403 and nothing else. A posting
+  form's badge box sits in a slot that names the badge it offers (`data-badge-option`, a
+  number `badgeNumber` gives each credential the page reads, never the credential
+  itself, which `badgeOffered` reads back), and a post goes out only under the badge its
+  box named: before that, a box ticked for one institution sent the other's credential
+  when the badge changed under the form, Verify pressed for another address and the
+  reader gone on to a board before the answer
+  (`TestPostingFormSendsOnlyTheBadgeItNames`). No open tab goes on offering a badge
+  storage no longer holds, and the next form a tab draws offers the one it holds: a tab
+  that sees the credential change in another (Forget this credential or Forget this
+  browser pressed there, the badge refused there as expired or revoked, another address
+  verified there) reads it again and, when it is not the badge that tab offered, draws
+  the option again in every posting form on screen for the badge it holds now, unticked,
+  or none (`drawBadgeOption`, which moves focus on the box to the box drawn in its
+  place, or to the form's button when there is none), and draws `/verify` again only if
+  it shows the badge panel, once the page has asked the server, and not if another step
+  has been drawn there meanwhile (`renderVerify`, which leaves that drawing alone while
+  it is on screen). The address step is left as it is, as is one the reader moves to
+  (Verify another address, Use a different address) while a redraw asks the server, and
+  so is a code step unless the badge read in is one newly verified there: the browser
+  has one verification in progress, held by its cookie, so that badge spent or replaced
+  the code a step asks for when no confirmation of it is on its way, and the step goes,
+  drawn again as the panel with a notice if it is on screen, once the page has asked the
+  server (`codeSpentElsewhere`; `CODE_SPENT_ELSEWHERE` says an address was verified in
+  another tab and the code here no longer works, never that the one is why). A
+  confirmation already on its way (one at most, since Verify requests go one at a time),
+  counted on the step (`confirming`) from before it is sent until it is answered,
+  whether its form is still on screen or `/verify` has been drawn again over it, may
+  have reached the server first and verified this tab's address, so it is left to its
+  answer, the step only marked (`spentElsewhere`): a success draws the panel for the
+  badge it earned, over its own form or over the code step `/verify` drawn again
+  meanwhile shows, once the page has asked the server, unless a forget has drawn
+  `/verify` meanwhile, whose notice stays; and a refusal of any kind puts the step away
+  then, with the notice wherever a code step is on screen. A code request still on its
+  way draws its code step when answered, the cookie its answer sets holding the
+  browser's verification from then on (`followCredentialStorage`, by the `storage`
+  event, `TestForgettingTheBadgeReachesEveryTab`). A form that had the badge ticked,
+  idle or with its badged post on its way (unless the badge is settled first, as when
+  that post goes through, the badge with it), refuses its next press once, saying the
+  badge has gone, that the badge the page holds now, if any, is offered unticked, and
+  that pressing again posts without it, under the same ID as the reader's unbadged posts
+  in a reply's thread while the poster key is the one it had (`withdrawBadgeOption`,
+  `badgeWithdrawn`, `TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress`): said nothing,
+  the post would go out tied to those posts, which the badge's own ID is there to keep
+  apart. With something written or attached, that form also starts the puzzle the post
+  then needs, as the reader's own untick would, so the press after the refused one
+  usually finds it solved; a form noted by a redraw (`restoreDraft`), since drawing a
+  page starts nothing, starts it at the refused press. A redraw's draft carries a ticked
+  badge as the badge it was ticked for, and ticks the new form's box only if the form
+  offers that one: a form offering none, or another verified meanwhile, is noted
+  instead, so no badge goes out that the reader did not tick, and the reader ticking or
+  unticking the box takes the note off. A press with the box ticked that finds the page
+  holding another badge than the one its box was drawn for, or none, is a badge taken
+  from under the form: its box is drawn again and the press refused once with the note.
+  Wherever the page's badge changes while a posting form may be on screen, the option is
+  drawn again in the forms there as for another tab's change: a confirmation answered
+  after the reader left `/verify` (`offerHeldBadge`), the feature switched off or the
+  badge run out as `/verify` loads (`loadVerification`, which starts no puzzle, as
+  drawing a page never does), and a badged post refused as expired or revoked, for a
+  form on the page the reader went to meanwhile, and for `/verify` there, drawn again
+  where it shows that badge's panel, as another tab's is, so it says why the badge went
+  (`TestAFormSendsOnlyTheBadgeItWasDrawnFor`). A held form a redraw has taken off the
+  screen, while a post link's lookup draws its skeleton say, misses each of these, so
+  `restoreDraft`, putting it back, draws its option again if the page no longer holds
+  the badge its box was drawn for, noting a ticked box but starting no puzzle
+  (`TestForgettingTheBadgeReachesEveryTab`). Forget this browser takes the option out
+  without a word and drops the note: a word would tell whoever presses next that the
+  browser held a badge, and with the poster key gone the post shares an ID with none
+  made before. A badged post refused as expired or revoked forgets the credential it
+  sent only while storage still holds it, so a badge verified since in this browser
   stays, and its form, still on screen with something written or attached, starts the
-  puzzle the post it goes on to needs. The refusal's notice tells a form on screen; one
-  off the screen, while a post link's lookup loads say, is noted, starting nothing, and
+  puzzle the post it goes on to needs: forgetting whatever was stored deleted a badge
+  the server cannot hand out again. The refusal's notice tells a form on screen; one off
+  the screen, while a post link's lookup loads say, is noted, starting nothing, and
   keeps that notice: a redraw that carries it held, begun before the answer or after it
   while the notice is still unsaid, says the notice as it puts the form's values back
   into its own page, noting nothing on the form it draws, or keeps that page, form and
@@ -756,9 +759,9 @@ properties and needs a browser check before the test changes.
   verified since in this browser, so nothing was posted, and, unless release left the
   post with nothing in it (the form is then told only what went and why, and, by
   `imageTakenOff`, to write something instead), pressing again posts without a badge,
-  and Update, or the board's Index for a new thread, draws the form again offering the
-  new one, unticked. That notice is its one refusal for the badge, so a note left on it
-  while the post was on its way goes, whatever left it: a change of badge in another tab
+  and ticking the form's box, which now offers the new one, posts with that one. That
+  notice is its one refusal for the badge, so a note left on it while the post was on
+  its way goes, whatever left it: a change of badge in another tab
   (`followCredentialStorage`), a confirmation answered in this one
   (`submitVerification`), another badged post's refusal in this one (`submit`),
   `/verify` loading over the form (`loadVerification`), or a redraw that puts it back
@@ -779,48 +782,242 @@ properties and needs a browser check before the test changes.
   stays cleared across re-renders and after posting (`restoreDraft` restores empty
   values; `submit` sets the field after `form.reset()`).
 - "Forget this browser" on `/verify` (`forgetBrowser`), shown in every state — the
-  code-entry step included (`TestEveryVerifyStateOffersToForgetTheBrowser`) — removes the
-  credential, the poster key and the remembered name, and leaves the age answer. It also
-  cancels what is on its way: a code request or a post still waiting on its puzzle, for
-  its first send or for the second after a refused answer, is not sent, and one whose
-  first send has gone is not sent again when its answer is refused after the forget (a
-  post's form is released with its text and, while on screen, says why:
-  `FORGOTTEN_BEFORE_SENDING`, on the error `notSent` makes, which `sendWithCaptcha`
-  throws in place of the send; `/verify` is drawn again at an empty address step), and a
-  code request, a confirmation or a post answered after it stores nothing, neither a
-  badge nor a name, and leaves no note that a badge was lost (`browserForgets`,
-  `TestForgettingTheBrowserCancelsWhatIsOnItsWay`). That covers what every educhan tab
-  open in the browser has on its way, not only the tab it was pressed in: `forgetBrowser`
-  posts `FORGET_MESSAGE` on `FORGET_CHANNEL`, a `BroadcastChannel`, and every other tab
-  answers with `forgottenElsewhere`, which runs the same `forgetOnThisPage` as the
-  pressing tab (what is on its way, a redraw's draft included, the badge and the poster
-  key the page holds, the code step, the note, and the Name and the badge option of every
-  posting form on screen, whose note on the anti-spam check then says what a form without
-  the option says: `dropBadgeOption`, without a word at its next press, which would say
-  the browser held a badge) and draws `/verify` again if it is showing. A held form a
-  redraw has taken off the screen, while a post link's lookup draws its skeleton say, is
-  out of its reach: its draft carries `browserForgets` as it was (`captureDraft`), and
-  `restoreDraft`, putting it back, forgets it as those on screen are forgotten
-  (`forgetForm`) if a forget it missed has come since, and reads one answered while away
-  as of the newest forget it had, so its Name, the one forgotten, is not restored. A
-  forget that reached it on screen, its page kept while Update loads say, is not done
-  again (`forgottenAt`, which `forgetForm` notes), so a Name typed after it, which a post
-  pressed since may be going out under, is left as it is. The message is one constant
-  that says nothing about anyone. The pressing tab clears storage before it posts
-  the message, emptying the credential before it removes it: a tab that hears storage
-  first, which no browser rules out, takes the badge option out of its forms as for
-  any badge gone but starts no puzzle for them (`followCredentialStorage`), since a
-  forget sends nothing. Because storage is cleared first, another tab can store the
-  credential, the poster key or the name again, for a post or a confirmation it handles
-  before it hears; each tab notes what it stores of those three (`storedHere`), and on
-  hearing removes each only while storage still holds it as that tab stored it: never a
-  badge confirmed or a key made in another tab since, however late it hears (a name is
-  compared by its text, so the same name stored since goes too). In a browser without
-  `BroadcastChannel` a forget covers the tab it was pressed in, and the other tabs drop
-  only the badge, as they do for Forget this credential
-  (`TestForgettingTheBrowserReachesEveryTab`). It is what the FAQ's shared-computer
-  advice points to: the key left behind would give the next person at the computer the
-  same IDs in the same threads.
+  code-entry step included (`TestEveryVerifyStateOffersToForgetTheBrowser`) — removes
+  the credential, the poster key and the remembered name, and leaves the age answer. It
+  also cancels what is on its way: a code request still waiting on its turn or its
+  puzzle, or a post still waiting on its puzzle, for its first send or for the second
+  after a refused answer, is not sent, and one whose first send has gone is not sent
+  again when its answer is refused after the forget (a post's form is released with its
+  text and, while on screen, says why: `FORGOTTEN_BEFORE_SENDING`, on the error
+  `notSent` makes, which `sendWithCaptcha` throws in place of the send; `/verify` is
+  drawn again at an empty address step), and a code request, a confirmation or a post
+  answered after it stores nothing, neither a badge nor a name, and leaves no note that
+  a badge was lost (`browserForgets` for a post, and for a Verify request the new step
+  the forget moves the page to, `TestForgettingTheBrowserCancelsWhatIsOnItsWay`). That
+  covers what every educhan tab open in the browser has on its way, not only the tab it
+  was pressed in: `forgetBrowser` posts `FORGET_MESSAGE` on `FORGET_CHANNEL`, a
+  `BroadcastChannel`, and every other tab answers with `forgottenElsewhere`, which runs
+  the same `forgetOnThisPage` as the pressing tab (what is on its way, a redraw's draft
+  included, the badge and the poster key the page holds, the code step, the note, and
+  the Name and the badge option of every posting form on screen, whose note on the
+  anti-spam check then says what a form without the option says: `drawBadgeOption`,
+  without a word at its next press, which would say the browser held a badge) and draws
+  `/verify` again if it is showing. A held form a redraw has taken off the screen, while
+  a post link's lookup draws its skeleton say, is out of its reach: its draft carries
+  `browserForgets` as it was (`captureDraft`), and `restoreDraft`, putting it back,
+  forgets it as those on screen are forgotten (`forgetForm`) if a forget it missed has
+  come since, and reads one answered while away as of the newest forget it had, so its
+  Name, the one forgotten, is not restored. A forget that reached it on screen, its page
+  kept while Update loads say, is not done again (`forgottenAt`, which `forgetForm`
+  notes), so a Name typed after it, which a post pressed since may be going out under,
+  is left as it is. The message is one constant that says nothing about anyone. The
+  pressing tab clears storage before it posts the message, emptying the credential
+  before it removes it: a tab that hears storage first, which no browser rules out,
+  takes the badge option out of its forms as for any badge gone but starts no puzzle for
+  them (`followCredentialStorage`), since a forget sends nothing. Because storage is
+  cleared first, another tab can store the credential, the poster key or the name again,
+  for a post or a confirmation it handles before it hears; each tab notes what it stores
+  of those three (`storedHere`), and on hearing removes each only while storage still
+  holds it as that tab stored it: never a badge confirmed or a key made in another tab
+  since, however late it hears (a name is compared by its text, so the same name stored
+  since goes too). In a browser without `BroadcastChannel` a forget covers the tab it
+  was pressed in, and the other tabs drop only the badge, as they do for Forget this
+  credential (`TestForgettingTheBrowserReachesEveryTab`). It is what the FAQ's
+  shared-computer advice points to: the key left behind would give the next person at
+  the computer the same IDs in the same threads.
+- The Verify page's steps (`verifyViewHTML`, `verifyStep`): the code step comes first
+  and is decided on `verifyStep.step` alone, so a pending code's box shows whether or
+  not a badge is held, since a badge is replaced only once the new one is confirmed
+  (`TestVerifyCodeBoxShowsWhileACodeIsPending`). A refusal after which the server holds
+  nothing pending (`NO_CODE_PENDING`, `CODE_EXPIRED`, `CODE_GUESSES_SPENT`: its own
+  words, held to them by `TestClientKnowsWhenNoCodeIsPending`) goes back to the address
+  step, which says why at the top of its form (`verifyStep.ended`, `CODE_ENDED_NOTES`)
+  and brings that into view, since on a phone the notice is a screen above it; a wrong
+  code keeps the box. An expired code reaches a browser as `NO_CODE_PENDING`, not
+  `CODE_EXPIRED`: the pending cookie lasts exactly as long as the code, so the browser
+  has dropped it by then, and that note leads with expiry
+  (`TestAnExpiredCodeIsSaidToHaveExpired`). The server answers the wrong code that
+  spends the last attempt with `CODE_GUESSES_SPENT`, so the box a wrong code leaves up
+  takes the right code until it expires. Every other refusal — a wrong code, the 18+ box
+  unticked, an address the allowlist does not know, a cooldown, the anti-spam check, no
+  answer — leaves the step as it is and is said in its form, under the fields and above
+  the buttons (`VERIFY_REFUSED_HTML`, `refuseVerification`), which puts the reader back
+  in the field it is about, a wrong code selected. A refusal is kept with its step for
+  the rest of the visit (`verifyRefusal`, put away by `render()` and by sending again),
+  so the step drawn again says it: one that came in while `render()` was still asking
+  before it drew the step had no form to be said in, and was lost. The step drawn again
+  starts with its fields empty, since nothing typed is kept with it, so it says the
+  refusal without "What you wrote is still in the box", which only the form that sent
+  the request, still holding what was typed, says (`sayVerifyRefusal`'s `sentIt`, the
+  refusal's `redrawn`, `TestVerifyStepDrawnAgainIsNotToldWhatWasTypedIsThere`): said
+  there, a request with no answer told the reader their address or code was in the empty
+  field the focus was put in. Forget this browser's confirmation is said under its
+  button (`confirmBrowserForgotten`). `submitVerification` says its refusals in the
+  form, never in the notice, but for one: a confirmation refused once another tab has
+  verified a badge, whose code step goes and whose `/verify` is drawn again as that
+  badge's panel, with no form to say it in, so the notice says why
+  (`codeSpentElsewhere`). The only other call that can raise one is `storeCredential`'s,
+  when the browser will not store an issued badge (`TestVerifyRefusalsAreSaidInTheForm`,
+  which follows its calls down); `offerHeldBadge`, run on an issued badge for a reader
+  gone on to a page with a posting form, says nothing then, and a form whose ticked box
+  it drew again is told at its next press. An answer belongs to the step it was sent
+  from: `submitVerification` notes `verifyStep` before it sends (`sentFrom`) and drops
+  an answer, storing, setting and drawing nothing, once the page has moved to another
+  step. Forget this browser, pressed here or heard from another tab, is what can do that
+  while a request is out, and it has to win over a badge on its way, which would
+  otherwise be stored after the browser was forgotten; the form's own other buttons wait
+  on the answer, and so do its fields (`holdForm`), so what the form shows meanwhile is
+  what was sent. They wait in the step drawn again for a reader who leaves the page and
+  comes back before the answer, too: the wait is kept in `verifyBusy`, not only on the
+  buttons of the form that sent the request, and `verifyViewHTML` draws that step
+  waiting, so nothing can give up a step whose badge the server is issuing (for the same
+  address, retiring the one held here) or send a second code while the page goes on to
+  show the first one's box. No second request goes out from a step whose first is out,
+  and one from another step waits until `submitVerification` is done with the one before
+  it (`verifyRequest`), then goes only if the page is still on its step: a dropped
+  answer's pending-code cookie still lands, and the browser keeps whichever lands last,
+  so a code box drawn after Forget this browser once refused its own right code while
+  the server checked it against the address asked for before. A code request needs the
+  anti-spam check while it is on, and solves its puzzle in its turn (`sendWithCaptcha`),
+  so one request at a time holds across the puzzle: a second press of Send code
+  meanwhile sends nothing, and a request from another step waits for it. Send code says
+  "Checking…" while the puzzle is solved, in the form and in the step drawn again
+  (`VERIFY_SOLVING`, the step's `solving`), and "Sending…" once the request goes. A code
+  request whose form has left the screen by the time its puzzle is solved, the reader
+  gone to another page or `/verify` drawn again, is not sent (`notSent`), and its answer
+  is kept for the next press; the step drawn again is let go, saying nothing. That wait
+  ends: each Verify request — the address, the code, and the `GET /api/verify` that
+  `renderVerify` asks before an issued badge is drawn — goes with `verifyDeadline()`'s
+  signal and is given up once `VERIFY_TIMEOUT_MS` has passed from when it is sent, which
+  `api()` turns into the unreachable refusal; a code request's puzzle is not counted,
+  since its challenge is asked for within the same time and its workers give up after
+  `CAPTCHA_TIMEOUT_MS`. Send code and Verify say it on their own step and drop it on any
+  other. The GET only asks whether verification is on, and `loadVerification` takes
+  nothing from a request that got no answer, given up, unreachable or refused: what the
+  server said last stands, so a badge just issued is drawn, focused and offered on
+  posting forms all the same. Taken as "off", the GET given up after a Verify drew "not
+  configured" in the badge's place and took the badge off every posting form, and the
+  footer's Verify link away, for the rest of the visit. Only an answer says verification
+  is off (`answered`); until there is one, the page says it couldn't reach educhan
+  rather than that the server is not configured for it. The deadline is longer than
+  `ReadHeaderTimeout` and `WriteTimeout` in `cmd/server/main.go` together, so nothing
+  given up was still to be answered; the test reads both, so a change to them changes it
+  too. The signal reaches `fetch` only through `api()`'s spread of the caller's options,
+  so `api()` is held line for line up to its fetch: built field by field, it dropped the
+  signal with every other check passing. Without the deadline, one request whose answer
+  never came, over a connection gone silent, held every later one, the step Forget this
+  browser drew included, at Sending… until a reload. Telling answers apart by step needs
+  every change of step to assign a new object: nothing edits one in place, and the
+  places that make one are a list the test holds
+  (`TestVerifyAnswersBelongToTheStepTheyWereSentFrom`); the marks that say what is on
+  its way from a step (`solving`, `confirming`, `spentElsewhere`) are not changes of
+  step. An answer that arrives after the reader has left the page (`onVerifyPage`) only
+  sets `verifyStep`: nothing is drawn over the page they went to, and coming back shows
+  the step it left (`TestVerifyAnswersDrawOnlyOnTheVerifyPage`). `renderVerify` is how
+  `render()` draws the page for a reader arriving at it, and how an issued badge, a
+  forget, a badge refused on a post and a change heard from another tab draw it, each
+  after one more request; it draws nothing once a newer render has begun (`overtaken`),
+  and when the page has been drawn in place for another step meanwhile, it leaves that
+  drawing alone only while it is still on the page. Every step is drawn through
+  `drawVerifyStep`, which notes the step and the drawing, and what the page was drawn
+  for (`drawnFor`), so a press of its form is judged on that page; `verifyStepOnScreen`
+  asks whether that drawing is still there. Skipping regardless, a code box drawn while
+  `render()` was still asking was drawn over by the loading skeleton or by the page just
+  left, its answer landing late, and nothing drew it again; redrawing regardless, the
+  badge's late redraw wiped Forget this browser's confirmation. The skeleton stands in
+  only for the view it dims, and only for the latest render (`beginLoading`), and the
+  page is titled either way (`TestVerifyStepIsDrawnForAReaderArriving`). What runs once
+  each answer is in is held statement for statement, and so are `onVerifyPage`,
+  `verifyViewHTML` up to its code step, and `loadVerification`, the one place that sets
+  whether verification is on and whether the server has said
+  (`TestVerifyCodeBoxShowsWhileACodeIsPending`,
+  `TestVerifyAnswersDrawOnlyOnTheVerifyPage`, `TestVerifyRefusalsAreSaidInTheForm`): a
+  gate on a held badge in any of them, or in `renderVerify`, hides a pending code's box
+  with every other check passing. So does one in what runs on the box once it is drawn:
+  `drawVerifyStep`, `showVerifyField`, `sayVerifyRefusal`, what `renderVerify`'s callers
+  run on what it drew (`focusHash` in `render()`, `showHeldBadge` after Verify,
+  `confirmBrowserForgotten` after Forget this browser, `showNotice` after a forget or a
+  verification heard from another tab), what `renderVerify` and the requests it waits on
+  run once their answers are in, since an answer can draw the box while it is still
+  asking (the rest of `api()`, `loadVerification`'s `readBadge` and `offerHeldBadge`,
+  and `announce`), and every top-level function those call, however far down
+  (`revealClearOfHeader`, `refuseVerification` and the helpers the code step's template
+  interpolates). The test finds that set by following the calls rather than from a list,
+  and holds each function in it whole, so a function new to the path fails it until it
+  is held too: holding the answer alone left `showVerifyField` and `revealClearOfHeader`
+  checked for a few words, and a gate in either took the code form out of the page.
+  Following calls down does not reach what runs once each call that drew the box
+  returns, so that is held line for line too, up to where the browser takes over: the
+  page's submit listener to the end of its Verify branch (the one listener a Verify
+  form's submit reaches), the forget buttons' callbacks, and `render()` from its
+  `finally` on, which leaves the Verify page with `focusHash` alone run on it, not the
+  posts and drafts every other page gets; `beginLoading`, whose `finish` that `finally`
+  calls, and `navigate`, which waits on `render()`, are held whole, and every other call
+  of either is a statement nothing waits on. A gate in the submit listener after
+  `submitVerification`, in what `render()` ran once it had drawn the page for a badge
+  holder coming back to it, or in `announce`, took the box away with every function
+  check passing. What runs on the box with no call from any of that is not followed: the
+  page's listeners (a click into the code box runs the click listener and
+  `isInternalLink`, a scroll runs `hideQuotePreview`, and keys, changes, pointers,
+  hovers and drags have theirs), its timers, and the answers to requests sent from other
+  pages. Down their calls lie `render()` and every page, more than a test can hold
+  whole, and a gate on a held badge in `hideQuotePreview` or `isInternalLink` took the
+  box away with every check passing. So what can tell whether a badge is held — the
+  verification state or a badge, read as a property (`state.verification`, a `.badge`
+  off anything), destructured or bound under its own name (`{ verification: { badge } }
+  = state`), or named in a string; `loadVerification`, which returns the state,
+  `readBadge`, `storedCredential`, `localStorage` and the credential's key; and the
+  markup only a held badge draws (Keep my badge, `#verify-badge`, a posting form's badge
+  box and its number) — is named only in the places
+  `TestOnlyKnownPlacesTellWhetherABadgeIsHeld` lists, top-level block by block. It
+  counts names in the code alone, not in the copy every page shows (`jsCodeText`), so a
+  gate on a held badge that names any of them fails it wherever it is put, a listener
+  included; counting property reads alone, it let a destructured read in
+  `hideQuotePreview` take the box away. A name made at run time — `state[k]` for a
+  computed `k`, or the page's text read back for its wording — is past what counting
+  names can see, and is for review to catch. `replacing` puts the badge panel away for
+  "Verify another address", and both steps then offer "Keep my badge" back to it
+  (`TestReplacingABadgeCanGoBackToIt`). Keep my badge reads the badge again before it
+  draws, so one that ran out, or was forgotten in another tab, while the page was on
+  another step does not come back as if live: the address step is drawn instead, saying
+  why at its top, shown and focused in the panel's place (`showHeldBadge`). Why a badge
+  went (`badgeLost`, `badgeLostHTML`) is said at the top of the code step as well as the
+  address step, and put away by `drawVerifyStep`, so it is said once whichever way the
+  step is drawn, and by a forget of the browser, so it never greets the next person; put
+  away by `renderVerify` alone, an expiry noticed on the code step went unsaid
+  (`TestAGoneBadgeIsSaidToHaveGone`). Forgetting the badge or the browser starts over at
+  the address step; Forget this credential says so at the top of it
+  (`CREDENTIAL_FORGOTTEN`) and focuses that, since the redraw took the focused button
+  (`TestForgettingTheCredentialSaysSo`). A reload drops a pending code too, since
+  nothing about it is stored: the page shows the badge held here, or the address step
+  when there is none.
+  Whatever a step draws in place of another, or says, is brought into view clear of the
+  sticky header (`revealClearOfHeader`, which measures it) and focused without scrolling
+  (`showVerifyField`, `showHeldBadge`): `focus()` and `scrollIntoView()` take an element
+  under the header for one in view, and on a phone, where the header wraps to three rows,
+  a badge holder who had scrolled down got the address field, the code box and then the
+  new badge all drawn under it (`TestVerifyStepsAreShownClearOfTheHeader`). Being drawn
+  in place, a step takes the button just pressed from under the reader and can put
+  another where it was, so the page's own buttons — Keep my badge, Use a different
+  address, Verify another address and both Forget buttons (`VERIFY_MOVES`), each of
+  which moves the page or forgets — let a press go for `VERIFY_SETTLE_MS` after a step
+  is drawn: `drawVerifyStep` notes when, and `pressedTooSoon` decides by when the reader
+  pressed, for the click and for its mousedown, so the focus stays where the step put
+  it. Before, the second tap of a double tap on Use a different address pressed Keep my
+  badge, drawn in its place on a phone, and a double click on Verify another address
+  pressed Forget this browser, which the shorter address step brought up into its place
+  on a wide screen, and took the badge, the post key and the name. The 18+ attestation,
+  the one box the page draws, lets a press go the same way (`VERIFY_ATTESTATION`, its
+  label, which holds the box): it is ticked by the reader alone, and a double click on
+  Use a different address ticked it on a wide screen, where the address step brought
+  clear of the header moved its label under the pointer. A refusal said in a step's
+  form moves the step too, though nothing is drawn — its sentence opens above the
+  buttons, and the form is brought clear of the header, which scrolls the page — so
+  `refuseVerification` starts the wait again. On a phone, the second tap of a double
+  tap on Verify, a wrong code refused, pressed Keep my badge, scrolled up into Verify's
+  place, and the code box went with the code still pending; on Send code with the box
+  unticked, it ticked the box, scrolled down into the button's place, under the refusal
+  saying why (`TestVerifyButtonsLetGoAPressAimedAtTheStepBefore`).
 
 ### Child safety
 
@@ -983,68 +1180,100 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   it means.
 - **The sweeper** (`educhan -sweep`, `sweep.go`) deletes archived threads once their
   board's `archive_days` have passed. It is a one-shot mode rather than a timer because
-  Cloud Run only gives a service CPU during requests; in production it is a Cloud Run Job
-  on a Cloud Scheduler trigger, which `deploy/README.md` section 2.9 sets up.
-  `SweepArchived` in `store.go` takes batches of `sweepBatchSize` (100) with
-  `FOR UPDATE SKIP LOCKED` against a cutoff fixed when the sweep starts, so a sweep
-  always terminates. Each batch queues the storage keys of its files in `media_deletions`
-  (`0007`) in the same transaction as it deletes the rows; afterwards `removeQueuedMedia`
-  takes the queue one key per transaction (`NextMediaDeletion`, `SKIP LOCKED`), removes
-  the file and forgets the key. A batch that fails is rolled back, and the sweep removes
-  no files after it: every key queued so far, by the batches before it or by an earlier
-  sweep, waits for the next sweep. A file the store refuses to delete keeps its key and
-  is retried by the next sweep (`TestSweepRetriesFilesItCouldNotRemove`). A file the
-  store does not hold keeps its key too and fails the sweep, because every queued key is
-  a file the server stored: a sweeper whose media settings differ from the server's would
-  otherwise delete nothing and report success (`TestSweepAgainstAnotherMediaStoreFails`).
-  That is why the sweep checks with `Get` before `Delete` rather than going through
-  `removeBlobs`, whose `Delete` treats a missing key as done, as a moderator's deletion
-  should. A cancelled sweep stops between files, never between a file and its key, and a
-  stop while it looks up the next key ends the lookup there, with nothing in hand
-  (`TestSweepStoppedLookingForAFileStopsThere`). Last, whatever happened to the threads
-  and the files, `PruneSpentCaptchas` deletes the spent captcha answers past their day
-  (`captcha_spent`, `0013`), the ones no later spend pruned: after a batch that failed,
-  as a broken queue fails the batch of an image thread that is due
-  (`TestSweepPrunesSpentCaptchasWhenDeletingThreadsFails`), a removal the store refused
-  (`TestSweepRetriesFilesItCouldNotRemove`), a file it did not hold
-  (`TestSweepAgainstAnotherMediaStoreFails`) or a queue it could not read once the
-  threads were done (`TestSweepPrunesSpentCaptchasWhenTheMediaQueueFails`) too, and a
-  failure there never keeps deleted threads' images up
-  (`TestSweepRemovesFilesWhenTheCaptchaCleanupFails`). A stop is no exception: the prune
-  runs on `context.WithoutCancel` within `spentPruneTimeout` (five seconds, inside the
-  ten Cloud Run allows between SIGTERM and SIGKILL: `TestSweepsPruneIsGivenFiveSeconds`,
-  and `TestSweepsPruneGivesUpAtItsBound` through `Config.spentPruneWithin`), as the file
-  in hand does, so a sweep cancelled before its batches (`TestSweepStopsWhenCancelled`)
-  or among its files (`TestSweepStoppedAmongItsFilesStillPrunesSpentCaptchas`)
-  prunes all the same, and its error is the stop, with the prune's own failure beside it
-  if the prune could not finish (its database not answering, say), but no prune failed
-  on the stopped context. It logs one record of counts and nothing that names a board or
-  thread, failures included, and the error it returns has the key taken out
-  (`TestSweepLogsOnlyCounts`); it returns an error — a non-zero exit — on a stop before
-  its files are done, a database failure, a file it could not remove or did not find, or
-  a database a newer release migrated (`TestSchemaFromANewerReleaseStopsTheSweeper`); a
-  stop that comes later, while the spent answers go, finds nothing left to stop and adds
-  no error of its own: the sweep ends as one that was not stopped would, failing only if
-  its pass failed (`TestSweepStoppedWhileItPrunesEndsAsIfNotStopped`). `runSweep` in
-  `cmd/server` writes the sweep's error before it closes the App, and waits on the close
-  for `sweepCloseTimeout` (two seconds) at most, since pgx gives a connection that has
+  Cloud Run only gives a service CPU during requests; in production it is a Cloud Run
+  Job on a Cloud Scheduler trigger, which `deploy/README.md` section 2.9 sets up.
+  `SweepArchived` in `store.go` takes batches of `sweepBatchSize` (100) with `FOR UPDATE
+  SKIP LOCKED` against a cutoff fixed when the sweep starts, so a sweep always
+  terminates. Each batch queues the storage keys of its files in `media_deletions`
+  (`0007`) in the same transaction as it deletes the rows; afterwards
+  `removeQueuedMedia` takes the queue one key per transaction (`NextMediaDeletion`,
+  `SKIP LOCKED`), removes the file and forgets the key. A batch that fails is rolled
+  back, and the sweep removes no files after it: every key queued so far, by the batches
+  before it or by an earlier sweep, waits for the next sweep. A file the store refuses
+  to delete keeps its key and is retried by the next sweep
+  (`TestSweepRetriesFilesItCouldNotRemove`). A file the store does not hold keeps its
+  key too and fails the sweep, because every queued key is a file the server stored: a
+  sweeper whose media settings differ from the server's would otherwise delete nothing
+  and report success (`TestSweepAgainstAnotherMediaStoreFails`). That is why the sweep
+  checks with `Get` before `Delete` rather than going through `removeBlobs`, whose
+  `Delete` treats a missing key as done, as a moderator's deletion should. A cancelled
+  sweep stops between files, never between a file and its key, and a stop while it looks
+  up the next key ends the lookup there, with nothing in hand
+  (`TestSweepStoppedLookingForAFileStopsThere`). Then — after the media pass, whatever
+  it found, but not after a batch that failed or a database error or a cancellation in
+  the media pass (`TestSweepPrunesSpentCaptchasWhenDeletingThreadsFails` and
+  `TestSweepPrunesSpentCaptchasWhenTheMediaQueueFails` check that it is skipped) — it
+  calls `RewriteCredentials` (see **Verified Anonymity** below) on the sweep's own
+  context, so that a stop has PostgreSQL cancel the statement it is in. Last, whatever
+  happened to the threads, the files and the rewrite, `PruneSpentCaptchas` deletes the
+  spent captcha answers past their day (`captcha_spent`, `0013`), the ones no later
+  spend pruned: after a batch that failed, as a broken queue fails the batch of an image
+  thread that is due (`TestSweepPrunesSpentCaptchasWhenDeletingThreadsFails`), a removal
+  the store refused (`TestSweepRetriesFilesItCouldNotRemove`), a file it did not hold
+  (`TestSweepAgainstAnotherMediaStoreFails`), a queue it could not read once the threads
+  were done (`TestSweepPrunesSpentCaptchasWhenTheMediaQueueFails`) or a rewrite or
+  vacuum that failed (`TestSweepErrorNamesEveryStepThatFailed`) too, and a failure there
+  never keeps deleted threads' images up
+  (`TestSweepRemovesFilesWhenTheCaptchaCleanupFails`). `captcha_spent` is neither
+  rewritten nor vacuumed: its rows hold a hash and a UTC calendar day, nothing that
+  points at a request or a credential. A stop is no exception: the prune runs on
+  `context.WithoutCancel`, as the file in hand does, within `spentPruneTimeout` (five
+  seconds, inside the ten Cloud Run allows between SIGTERM and SIGKILL:
+  `TestSweepsPruneIsGivenFiveSeconds`, and `TestSweepsPruneGivesUpAtItsBound` through
+  `Config.spentPruneWithin`), counted from the stop on a sweep stopped before it
+  (`TestStoppedSweepsPruneCountsFromTheStop`), so a sweep cancelled before its batches
+  (`TestSweepStopsWhenCancelled`), among its files
+  (`TestSweepStoppedAmongItsFilesStillPrunesSpentCaptchas`) or during its rewrite
+  (`TestSweepStoppedDuringTheRewriteStillPrunesSpentCaptchas`) prunes all the same, and
+  its error is the stop, with any file it found missing or could not remove before it
+  (`TestSweepStoppedAmongItsFilesStillSaysWhatItCouldNotRemove`), and the prune's own
+  failure if the prune could not finish (its database not answering, say), beside it,
+  but no prune failed on the stopped context. It logs one record of counts and nothing
+  that names a board or thread or says anything of a credential, failures included, and
+  the error it returns has the key taken out (`TestSweepLogsOnlyCounts`).
+  `credentials_rewritten` is the number of rows the rewrite copied: on a night its
+  transaction commits, every row in the credentials table, expired ones no confirmation
+  has pruned yet included, even if a later step then fails; on a night it does not — the
+  sweep stopped before it, or the rewrite failed, as when its lock times out — 0,
+  whatever the table holds (`TestSweepFailsWhenTheVerificationTablesAreHeld`). Night
+  after night it is a history of the table's size, which the database does not keep, but
+  for that: a 0 on a night that exits non-zero can be a rewrite that did not run, and
+  the error says which step failed. Nothing finer belongs beside it. `spent_captchas` is
+  the number of spent answers the prune deleted. It returns an error — a non-zero exit —
+  on a stop before its rewrite is over, a database failure, a file it could not remove
+  or did not find, a rewrite or vacuum of the verification tables that did not finish, a
+  vacuum of `pg_statistic` that did not finish (which a role that owns the tables but
+  not the database gets every night), a prune that did not finish, or a database a newer
+  release migrated (`TestSchemaFromANewerReleaseStopsTheSweeper`). When more than one of
+  those fails, the error carries each, so that a failing vacuum of `pg_statistic` does
+  not hide files missing from the media store
+  (`TestSweepErrorNamesEveryStepThatFailed`). A stop that comes once the rewrite is
+  over, while the spent answers go, finds nothing left to stop and adds no error of its
+  own: the sweep ends as one that was not stopped would, failing only if its pass failed
+  (`TestSweepStoppedWhileItPrunesEndsAsIfNotStopped`). `runSweep` in `cmd/server` writes
+  the sweep's error before it closes the App, and waits on the close for
+  `sweepCloseTimeout` (two seconds) at most, since pgx gives a connection that has
   stopped answering fifteen: so with the database not answering, a sweep stopped once
-  under way writes its error and exits within the prune's five seconds and the close's
-  two, inside Cloud Run's ten, as long as no file deletion is in hand when the media
-  store or the database stops answering, since the file in hand waits on both
+  under way writes its error within the prune's five seconds of the stop
   (`TestStoppedSweepExitsWhenTheDatabaseStopsAnswering`, a whole process behind a proxy
-  that stops forwarding). In sweep mode `run` takes the signal context before `New`, so
-  a stop while the sweep is still starting up ends `New` with the stop as its error,
-  which is written, and the process exits 1 with nothing deleted, the spent answers
-  included: while it connects, waits for or runs migrations, or checks a Cloud Storage
-  bucket, which `NewGCSStore` does on the context it is given while its client is built
-  on one that outlives it (`TestSweepStoppedWhileStartingUpWritesItsError`, connecting
-  to a proxy that answers nothing, waiting on the migrations' lock, and checking a
-  bucket that never answers), and while `migrate` waits for the two answers it waits for
-  whatever the stop, both within `migrateAnswerTimeout` (two seconds) of the stop: a
-  migration's COMMIT once sent, so a stop as it commits leaves the migration applied and
-  recorded and the next not begun, rather than reported as failed, and the migrations'
-  lock given back, which also has two seconds at most from when it is sent
+  that stops forwarding), or the six a rewrite or vacuum it finds in hand can take to
+  give up, which can leave the prune no time (the stop waits `cancelGrace`, three
+  seconds, for PostgreSQL to answer its cancel request and as long again for pgx's own:
+  `TestStoppedRewriteExitsWhenTheDatabaseStopsAnswering`), and exits within the close's
+  two after that, inside Cloud Run's ten, as long as no file deletion is in hand when
+  the media store or the database stops answering, since the file in hand waits on both.
+  In sweep mode `run` takes the signal context before `New`, so a stop while the sweep
+  is still starting up ends `New` with the stop as its error, which is written, and the
+  process exits 1 with nothing deleted, the spent answers included: while it connects,
+  waits for or runs migrations, or checks a Cloud Storage bucket, which `NewGCSStore`
+  does on the context it is given while its client is built on one that outlives it
+  (`TestSweepStoppedWhileStartingUpWritesItsError`, connecting to a proxy that answers
+  nothing, waiting on the migrations' lock, and checking a bucket that never answers),
+  and while `migrate` waits for the two answers it waits for whatever the stop, both
+  within `migrateAnswerTimeout` (two seconds) of the stop: a migration's COMMIT once
+  sent, so a stop as it commits leaves the migration applied and recorded and the next
+  not begun, rather than reported as failed, and the migrations' lock given back, which
+  also has two seconds at most from when it is sent
   (`TestAnUnansweredUnlockIsGivenUpWithoutAStop`: an unlock never answered, with no
   stop, is given up two seconds after it is sent, and the sweep goes on and exits 0). A
   commit no stop has come to is not cut short, its two seconds starting at the stop or
@@ -1247,13 +1476,268 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   breaks the promise rather than just the code: the address is never written anywhere
   (only `HMAC(EDUCHAN_VERIFY_SECRET, normalised address)` is, as a uniqueness key); the
   credential carries only a label, an expiry, and a random id; and nothing links a
-  credential to a post. Practical consequences when editing `verify.go`, `store.go`, or
-  `0004_verification.sql`:
+  credential to a post. Practical consequences when editing `verify.go`, `store.go`,
+  `0004_verification.sql`, `0015_verification_statistics.sql`, or
+  `0016_vacuum_probe.sql`:
   - Never add a column to `verification_pending` or `verification_credentials` that could
     be joined to a post, and never add `created_at` or a "last used" — an issuance or use
     timestamp correlates with the posts around it. `CredentialLabel` is a read and has to
-    stay one. Credential expiry is stored rounded up to a UTC day boundary for the same
-    reason; `TestVerificationTablesCannotBeJoinedToPosts` pins both tables' exact columns.
+    stay one. Credential expiry is stored counted from the end of the day the
+    credential was issued in, not from the moment, for the same reason;
+    `TestVerificationTablesCannotBeJoinedToPosts` pins both tables' exact columns. That
+    day runs from 05:00 to 05:00 UTC (`credentialDayEnd`), ending after the nightly
+    sweep and its retry rather than at midnight, because the sweep's transaction id
+    splits the day it runs in: with a midnight day, it and the expiry dated every
+    credential issued between midnight and the sweep to those three hours.
+    `TestCredentialDaysEndAfterTheSweep` reads the schedule and the Job's retries and
+    timeout from `deploy/README.md` and `deploy/first-deploy.sh`, and wants the day to
+    end half an hour or more after the latest the sweep and its retry can run, and two
+    hours at most after the scheduled time: a sweep scheduled at 03:00 UTC or later
+    whose retry cannot run past 04:30 (03:00 to 04:00, with one retry of a
+    fifteen-minute task). So a change to the schedule, the retries or the timeout that
+    leaves that window means moving `credentialDayStart` with it, not only a move past
+    05:00: a sweep at 04:40 has its retry running until 05:10, across the day's end,
+    and the day of one at 02:30 ends two and a half hours after it. Moving where the day
+    ends is itself a leak, once: the credentials issued between the last old boundary
+    and the deploy share an expiry with no other credential, and so do those issued
+    between the deploy and the first new boundary, which dates each set to those hours
+    for as long as it is kept (the README's "What that protects, exactly" says this of
+    every move, the one from midnight to 05:00 among them). So a new
+    `credentialDayStart` goes out soon after the later of the old start and the new,
+    once the log shows nobody has verified since the old start, which leaves the first
+    set empty, while a later deploy shortens the second; a start moved earlier can
+    instead go out at any time between the new start and the old one, quiet or not, once
+    that night's sweep on the old schedule, and its retry if it fails, has finished, and
+    with the new revision serving all traffic before the old start, since each set then
+    spans at least a day less the move. Changing `EDUCHAN_VERIFY_CREDENTIAL_TTL` is the
+    same leak on the day it is deployed: the stored expiry is `credentialDayEnd(issued)`
+    plus the lifetime, so that day's credentials before the deploy get one expiry and
+    those after it another, which the sweep's one id does not merge, and each set is
+    dated to its side of the deploy until another day's credentials share its expiry:
+    for a lifetime cut by whole days, those issued that many days earlier (the later
+    set, at once) or later (the earlier set); for one lengthened, or changed by part of
+    a day, never. The README says to deploy such a change soon after 05:00 UTC, before
+    anyone has verified that day.
+  - **PostgreSQL dates rows the schema does not, so the sweeper rewrites the
+    credentials every night.** Every row carries `xmin`, the id of the transaction that
+    wrote it, and posts carry `created_at`, so a credential's `xmin` among the posts'
+    dates its issuance to the minutes between two of them; freezing keeps `xmin`, and
+    `ctid` follows issuance order. `RewriteCredentials` (`store.go`), the sweep's step
+    before the spent captcha answers' prune, works on a connection of its own, with
+    `lock_timeout` at five seconds, `client_min_messages` at `warning` (so that neither
+    `DATABASE_URL` nor a role's or the database's default can hide the `55P03` below),
+    a handler that collects notices, and pgx's `CancelRequestContextWatcherHandler`. A
+    cancelled sweep (SIGTERM, Ctrl-C) must have asked PostgreSQL to stop the statement
+    in flight by the time it returns and the process exits: PostgreSQL does not notice
+    a closed socket until the statement ends, so a `VACUUM FULL` nobody cancelled runs
+    on, holding its table, and commits. Two things see to it, and either alone does
+    while PostgreSQL answers promptly. The handler sends the cancel request at once
+    and has the statement wait up to `cancelGrace` (three seconds) for PostgreSQL's
+    answer, so the statement has stopped, with PostgreSQL's `57014`, before the
+    rewrite returns. pgx's default, the fallback when no answer comes in time, gives
+    up on the socket and sends the cancel request from a goroutine, and
+    `closeSweepConnection` waits up to `cancelGrace` for that goroutine
+    (`sweepConnection`). `TestCancelledSweepStopsItsStatementOnTheServer` fails only
+    without both, and its check that the error is PostgreSQL's fails without the
+    handler; `TestCancelledSweepWaitsForPgxsOwnCancelRequest`, where the handler's
+    cancel request never arrives, fails without the wait.
+    First it deletes the codes that expired unconfirmed, which a request prunes too, but
+    nothing says when one will come: an abandoned code's row keeps the time it was asked
+    for, to the microsecond, under the address's email hash, which for an address that
+    already holds a credential (a second browser's request, say) is the credential's,
+    and says it was issued before then (`TestSweepDeletesCodesThatExpiredUnconfirmed`).
+    The delete must come no later than the rewrite, since the vacuum below is checked
+    against the rewrite's transaction id, which says nothing of rows a later transaction
+    deleted; no test holds that order. And it is a statement of its own, before the
+    rewrite's transaction rather than in it: a confirmation locks its code's pending row
+    before it writes to the credentials table, so a delete waiting for that row while
+    holding the table would deadlock with it
+    (`TestSweepDeletesExpiredCodesWithoutHoldingTheCredentialsTable`). A code still in
+    flight stays, and still confirms. Then it locks
+    `verification_credentials` `IN EXCLUSIVE MODE` in a read-committed transaction
+    (`CredentialLabel` reads on; everything else on the table waits, and holds the
+    lock up: writers and row lockers, `VACUUM`, `ANALYZE`, index builds, schema
+    changes, another sweep), deletes every row and inserts the returned copy back
+    `ORDER BY random()` in one statement, and notes the transaction's id.
+    `lock_timeout` bounds the wait, not the hold: confirmations queue for the
+    rewrite's statement too, which grows with the table (about three seconds for
+    220,000 credentials on a development machine). `restampScans` then reads each
+    verification table whole and through each of its indexes, which it finds in the
+    catalog, so every last-scan time `pg_stat_user_tables` and `pg_stat_user_indexes`
+    show for them is the sweep's rather than the last confirmation's; and it reads them
+    again after the vacuum, once `statsHandOver` (65 seconds) has passed since the
+    rewrite committed, a wait that a cancel ends at once
+    (`TestCancelledSweepStopsWaitingForTheStatistics`). A connection hands its counts
+    to the statistics when one of its transactions ends, at most once a second, within
+    ten seconds once it sits idle, and up to a minute later if it finds an entry
+    locked, with the end of its latest transaction by then, or the moment of the
+    hand-over, as their time. So the counts of a confirmation just after another
+    request on the same server connection could reach the statistics after the first
+    read, with the time of the next request that connection served, and date the last
+    issuance before the sweep to within ten seconds
+    (`TestSweepLeavesNoScanTimeFromBeforeIt`, which fails without the second read: it
+    holds the server's next request on a lock until the statistics have the first
+    read, since a connection hands nothing over while a statement of its runs, and
+    fails if the confirmation's counts were in by then; it sweeps from an `App` of its
+    own, as the Job does, and waits the 65 seconds out). The app package's harness sets
+    the wait to zero for every other test there; `cmd/server`'s `-sweep` tests build
+    their `App` with `New`, as the Job does, and wait the full 65 seconds per sweep
+    that gets that far, five sweeps in all (`TestSweepModeSweepsAndExits`' two,
+    `TestSweepModeLogsNoServerWarnings`, `TestASlowCommitIsWaitedOnWithoutAStop` and
+    `TestAnUnansweredUnlockIsGivenUpWithoutAStop`); a test there that needs only the
+    schema migrates it with `migrateSchema`, which stops after `New`, rather than with a
+    sweep. Then `VACUUM (FULL, SKIP_LOCKED, SKIP_DATABASE_STATS)` on each table,
+    outside the transaction, writes both tables to new files without the dead versions
+    — or the deleted pending rows, with their email hash and an expiry to the
+    microsecond — and drops the old files, which are not wiped (the README's
+    "Transaction ids, and the nightly rewrite" ends on what that leaves).
+    `SKIP_LOCKED` passes over a table another session holds, with a
+    `55P03` warning, rather than queueing every badged post behind the vacuum's wait
+    (`TestBadgedPostsDoNotQueueBehindTheSweepsVacuum` watches `pg_locks` for that wait,
+    which at `vacuumLockTimeout` a try is too short to time). It covers only the table
+    it names: once `VACUUM FULL` has the table it waits, holding the table, for what
+    else it needs — before the copy, its TOAST table's lock, which a `VACUUM` of the
+    TOAST table by name holds; after copying the whole table, its row in `pg_class`,
+    which an open `GRANT` or `REVOKE` on the table has updated, and each index's lock,
+    which an open `COMMENT ON INDEX` holds. (Autovacuum takes `pg_statistic`'s TOAST
+    table on its own, below, but not these: a TOAST table takes its table's
+    `autovacuum_enabled = false`, so autovacuum comes to them only near transaction id
+    wraparound, which the nightly `VACUUM FULL` keeps from coming due.) A run that
+    waited after the copy would hold every request on the table up for the whole copy
+    and then give the table up, and do the same on every try. So `vacuumFull` looks
+    first (`vacuumWaitsQuery`: `pg_locks` on the TOAST table and the indexes, and the
+    lock an open transaction holds on its own id, the `xmax` of a `pg_class` row it
+    updated) for a session holding any of these that does not hold the table itself,
+    which `SKIP_LOCKED` passes over anyway, and while it finds one runs nothing and
+    tries again later (`TestSweepRunsNoVacuumWhileItWouldWait` counts the runs in
+    `pg_stat_progress_cluster`, on a table big enough to take a while to copy). What
+    the look cannot see coming, a `GRANT` begun during a run, `lock_timeout` bounds:
+    `vacuumVerificationTables` first sets it to `vacuumLockTimeout` (100 ms), and a run
+    that times out, with `55P03` as an error, has given the table up and is tried
+    again like a skipped one, by which time the look sees the holder
+    (`TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`: one run, then none until
+    the `GRANT` ends; a test's role cannot hold a TOAST table, so no test holds one).
+    A `GRANT` that commits while the run waits for it, as an autocommit one does within
+    milliseconds, ends the run sooner, with `XX000` and "tuple concurrently updated"
+    (it cannot update the row the `GRANT` changed), and `vacuumFull` counts that as
+    given up too, by code and message, since every internal error shares the code
+    (`TestVacuumTriesAgainWhenTheGrantItWaitsForCommits`); any other error fails the
+    sweep at once.
+    That bound covers the whole statement, and a `VACUUM` ends, after its run has
+    committed, by updating the database's row in `pg_database`, which waits for any
+    transaction that has updated that row (an `ALTER DATABASE`, a `GRANT` on the
+    database) and holds no table; timed out there, a run that had done its job looked
+    given up, and the sweep ran it again or failed. So the runs leave that step out
+    (`SKIP_DATABASE_STATS`; autovacuum takes it on its own), and `vacuumFull` counts a
+    run that times out as given up only while the table is still in its old file
+    (`TestVacuumDoesNotWaitForTheDatabasesRow`, which counts its sweep's runs on
+    `pg_statistic` as the sweep saw them, through `Store.vacuumed`: every schema in the
+    database shares the catalog, and another process's sweep moves its file too, as
+    `cmd/server`'s tests, run alongside, do). None of these does anything about the
+    run: once `VACUUM FULL` has a table and its locks it holds it against reads as well
+    as writes until it has written it out (between about half a second and two and a
+    half seconds at 220,000 credentials on development machines), every badged post and
+    confirmation waits for it, and three waiting on one instance hold its whole pool. So
+    each table is taken once a night, and never for a run that cannot do its job, unless
+    a session begins to hold what the run needs during it, which costs that one run.
+    `VACUUM FULL` keeps any deleted row an older snapshot could
+    read: any statement or transaction in the database that began before the rewrite
+    committed and is still running, the server's own requests included, or a
+    transaction anywhere on the instance that had written something by then. So before
+    each attempt the sweep runs `VACUUM FULL` on `vacuum_probe` (`0016`), an empty table
+    nothing else touches, which computes the same cutoff in milliseconds and holds up
+    nobody, and takes the verification tables only once the probe's `relfrozenxid` is
+    newer than the rewrite's transaction id, which `VACUUM FULL` makes true exactly
+    when it drops those rows. It checks each verification table's `relfrozenxid` the
+    same way afterwards, and otherwise probes again, backing off, for up to
+    `vacuumPatience` (a minute) before failing
+    (`TestBadgedPostsDoNotQueueBehindVacuumsAnOlderSnapshotWouldSpoil` counts the runs).
+    It also skips, with a different warning, a table its role owns neither itself nor
+    through owning the database: an unchanged `pg_relation_filenode` with no `55P03`
+    fails the sweep at once, and the sweeper connects as the role that ran the
+    migrations, which owns `vacuum_probe` too. Owning the tables is not enough for
+    `pg_statistic`, below, so that role must also own the database or be a member of
+    the owner's role that inherits its privileges.
+    `0015` sets `STATISTICS 0` on every column of both tables, which keeps `ANALYZE`
+    from copying email hashes beside their expiries into `pg_statistic`, deletes what
+    it had copied, and turns autovacuum off on both, since the times it last ran follow
+    the writes; the nightly `VACUUM FULL` is their vacuum. Deleting the samples takes
+    them out of `pg_stats` only: their old versions stay in `pg_statistic`'s file and
+    its TOAST table's (the email hashes' histogram is stored out of line), and in every
+    backup of those files, until the catalog is written out anew, and no query can see
+    whether they are there. So the sweep runs the same `VACUUM` on
+    `pg_catalog.pg_statistic` every night, with the same `relfrozenxid` check against
+    the rewrite, which is later than `0015`, in the same passes as the verification
+    tables: after them in each, but not waiting for them, so a table left for the next
+    pass does not hold the catalog back, nor the catalog a table
+    (`TestSweepFailsWhenTheVerificationTablesAreHeld`). It takes milliseconds, but while
+    it runs a query whose plan needs statistics its connection has not cached waits, on
+    any table, which is why it too skips a held catalog (a session reading `pg_stats`
+    holds it), and why the look before each run matters most there: `0015` left
+    autovacuum on for the catalog, TOAST table included, so the sweep leaves the
+    catalog alone while autovacuum holds its TOAST table. Only a
+    superuser or a role with the privileges of the database's owner — the owner, or a
+    member of its role that inherits them, which `pg_has_role(datdba, 'USAGE')` says —
+    may vacuum that catalog; a role that owns every table but not the database may
+    not, nor a member granted `WITH INHERIT FALSE`, and anyone else gets it skipped
+    with a warning, which fails the sweep with its own message, naming that query,
+    every night (`TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile`). The README's
+    archive sweeper section tells the operator, and its step 5 says how to check the
+    role, on Cloud SQL too, where this has not been tried.
+    `TestVerificationTablesKeepNoStatistics` checks that the sweep moves the catalog and
+    its TOAST table to new files with a cutoff past `0015`; no test can read an old
+    version without a superuser's `pageinspect`, which is how the leak was found. A
+    new write path into the credentials table re-dates the rows it writes until the
+    next sweep, so treat one like a new column, and a new column on either table gets
+    `SET STATISTICS 0` in its migration. The README's "Transaction ids, and the
+    nightly rewrite" says exactly what this protects — the verification tables of the
+    live database after the 03:17 UTC sweep, where nothing dates a credential more
+    closely than the day its expiry gives but the sweep's own id, which says of one of
+    the day the sweep ran in that it came in the 22 hours of that day before the sweep —
+    and what it does not, a sweep run after 05:00 UTC among it, which splits the day it
+    runs in until the next sweep. Above all, the posts: every code request that reaches
+    the database, and every attempt at a code in flight, is a write, takes the next
+    transaction id, and so leaves a gap in the posts' `xmin` between the two posts
+    written around it, which one plain query on `posts` finds, in the live database and
+    every backup, for as long as those posts exist. That places each issuance between
+    two posts whatever the sweep does; the rewrite takes away only the credential row's
+    own issuance id (`TestIssuanceLeavesGapsAmongThePostsTransactionIDs` pins this as a
+    known limit, and only verification tables on a PostgreSQL instance of their own
+    would close it). Nor does it cover a credential issued since the last sweep, a code
+    in flight as the sweep ran (its row keeps the time it was asked for, and once a
+    confirmation, or the delete of the expired code, removes the row, its dead version
+    keeps that time in the table's file until the next sweep's `VACUUM FULL`; its email
+    hash joins its address's credential if there is one; and the hour was chosen for the
+    backup window, not for quiet — 03:17 UTC is morning to afternoon across South and
+    East Asia and Australia — so expect one on any weekday), backups (taken from 05:00
+    UTC, up to 09:00, seven kept), a night the sweep failed, autovacuum times recorded
+    before `0015`, or the write-ahead log the server keeps for crash recovery, which
+    dates a credential until PostgreSQL deletes or reuses the newest segment holding its
+    row. With full-page writes on, the log since the checkpoint before the sweep holds
+    every credentials page as it stood before the rewrite, issuance ids and all — the
+    sweep's own delete logs the image of each page no change since that checkpoint
+    already had — so that segment is the sweep's or close to it, not the issuance's.
+    Point-in-time recovery stays off and `track_commit_timestamp` stays off
+    (`deploy/README.md` section 2.2); changing either means changing that README section
+    in the same commit.
+    `TestSweepTakesIssuanceTimeOutOfCredentials`,
+    `TestSweepDeletesCodesThatExpiredUnconfirmed`,
+    `TestSweepDeletesExpiredCodesWithoutHoldingTheCredentialsTable`,
+    `TestSweepStoresCredentialsOutOfIssuanceOrder`,
+    `TestCredentialConfirmedAsTheRewriteStartsIsRewrittenOnce`,
+    `TestCredentialConfirmedDuringTheRewriteIsKeptOnce`,
+    `TestSweepFailsWhenTheVerificationTablesAreHeld`,
+    `TestSweepFailsWhileAnOlderTransactionCanReadTheOldRows`,
+    `TestSweepWaitsForAnOlderTransactionToEnd`,
+    `TestSweepFailsWhenVacuumLeavesATableInItsFile`,
+    `TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile`,
+    `TestBadgedPostsDoNotQueueBehindTheSweepsVacuum`,
+    `TestSweepHearsVacuumsWarningsWhateverTheConnectionAsksFor`,
+    `TestSweepRunsNoVacuumWhileItWouldWait`,
+    `TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`,
+    `TestVacuumDoesNotWaitForTheDatabasesRow`,
+    `TestSweepLeavesNoScanTimeFromBeforeIt` and
+    `TestVerificationTablesKeepNoStatistics` hold it.
   - **The credential is a header, not a cookie, and this is load-bearing.** It is
     returned by `/api/verify/confirm`, kept by the client in `localStorage`, and sent in
     `X-Educhan-Credential` only on posts that ticked the badge box. A cookie would be
@@ -1290,8 +1774,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     `mailer.Dev` sender prints one to stdout, which is why it is a development tool only.
     The credential is not logged either: it is shown once, in one response body. The
     issuance line (`verification issued`) is bare: no label, no institution, nothing
-    from the record. The row dates an issuance to the day; a label stamped to the
-    second would date it exactly whenever it was its institution's only one that day.
+    from the record. Once the nightly sweep has rewritten it, the row dates an
+    issuance to the day; a label stamped to the second would date it exactly whenever
+    it was its institution's only one that day.
     A badged post soon after an issuance still names the institution, so the request
     log's time for `/api/verify/confirm` can tie that post to its record on such a day;
     the README says so, and how long that log is kept is what limits it.
@@ -1358,7 +1843,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `internal/app/verify_api_test.go`, `internal/app/verify_transport_test.go`,
   `internal/app/migrate_test.go`, `internal/app/markup_api_test.go`,
   `internal/app/logging_test.go`, `internal/app/media_backend_test.go`,
-  `internal/app/captcha_api_test.go`, and `TestClientKnowsTheServersImageRefusals` in
+  `internal/app/captcha_api_test.go`, and `TestClientKnowsTheServersImageRefusals`,
+  `TestClientKnowsWhenNoCodeIsPending` and `TestAnExpiredCodeIsSaidToHaveExpired` in
   `internal/app/web_invariants_test.go`) run the whole app against an isolated schema in
   `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so they are safe to run against
   the development database. `testServer` builds its `Config` directly, which leaves every
