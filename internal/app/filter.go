@@ -13680,7 +13680,7 @@ var (
 		heating lighting hitting punching banging picking scratching scraping biting carving slicing stabbing
 		applying touching rubbing snapping`)
 	selfHandlings = canonSetOf(`using holding pressing heating lighting hitting punching banging picking applying
-		touching rubbing snapping hold holds held pulling pull pulls`)
+		touching rubbing snapping hold holds held pulling pull pulls put puts putting`)
 	selfHarmObjects = canonSetOf(`nail nails glass match matches cigarette cigarettes wall walls scab scabs myself
 		cutter cutters pin pins paperclip paperclips belt belts rope ropes rubber rubbers eraser erasers coin coins
 		spoon spoons`)
@@ -13690,7 +13690,10 @@ var (
 	// with no flame (flameWords) before a clause of its own begins: "holding
 	// the bat", "a hammer in woodwork", "the glue gun in art", "matches for
 	// the puja", "my wrist in badminton", "my hands to catch", not "my hand
-	// over the candle". Hair pulled (hairPulls, hairWords) is the harm.
+	// over the candle". Hair pulled (hairPulls, hairWords) is the harm, and
+	// so is the body put (putForms) on, in or over a flame (putOnto): "put my
+	// hand on the stove", not "put the candles on the cake" or "put my hand
+	// near the stove".
 	playGear = canonSetOf(`bat bats stick sticks racket rackets racquet racquets club clubs`)
 	playKit  = canonSetOf(`bat bats stick sticks rod rods hammer gun guns match matches`)
 	playUses = canonSetOf(`woodwork carpentry art craft crafts badminton cricket hockey football tennis
@@ -13701,6 +13704,8 @@ var (
 	flameWords = canonSetOf(`diya diyas candle candles stove stoves gas flame flames fire fires`)
 	hairPulls  = canonSetOf(`pulling pull pulls`)
 	hairWords  = canonSetOf(`hair hairs eyelashes lashes eyebrows brows`)
+	putForms   = canonSetOf(`put puts putting`)
+	putOnto    = canonSetOf(`on in into onto over under against through`)
 	// selfOften, after "every" with nothing after it, are how often the
 	// harm comes: "hurt myself less every time", "every day".
 	selfOften  = canonSetOf(`time day night week morning evening`)
@@ -16968,10 +16973,24 @@ func harmWith(ws []string) bool {
 // matches for the puja", "using my hands to catch", though the body is held
 // over no flame, flamelessUse: not "holding my hand over the candle"), nor
 // "picking my nose". What is pulled (hairPulls) is handled only if it is
-// hair (hairWords): "pulling my hair", not "pulling the rope".
+// hair (hairWords): "pulling my hair", not "pulling the rope"; what is put
+// (putForms) only if it is the body put on, in or over a flame (putOnto,
+// flameWords): "put my hand on the stove", not "put the candles on the cake",
+// "put my hand near the stove" or "put my hands up".
 func harmHandled(handling string, ws []string) bool {
 	if hairPulls[handling] {
 		return anyBefore(ws, hairWords, selfClauses) // "pulling my hair", not "pulling the rope"
+	}
+	if putForms[handling] {
+		for i, w := range ws {
+			if selfClauses[w] {
+				return false
+			}
+			if selfBody[w] || bodyHeads[w] {
+				return i+1 < len(ws) && putOnto[ws[i+1]] && anyBefore(ws[i+2:], flameWords, selfClauses)
+			}
+		}
+		return false
 	}
 	for i, w := range ws {
 		switch {
