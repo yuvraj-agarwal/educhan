@@ -8470,24 +8470,25 @@ func clockTime(ws []string) bool {
 }
 
 var (
-	// explodeWhen open the clause explodesAtNews reads. explodeClockNews in
-	// it are news, and so, except after a clock time, are the rest of
-	// explodeNews, explodeNewsHeads after explodeNewsKinds ("the date
-	// sheet", "the answer key") and explodeReturn with explodePapers ("gives
-	// back the copies"). explodeOut before "out", explodeBack before "back",
+	// explodeWhen open the clause explodesAtNews reads. explodeClockNews in it
+	// are news, and so, except after a clock time, are the rest of
+	// explodeNews, explodeNewsHeads after explodeNewsKinds ("the date sheet",
+	// "the answer key") and explodeReturn with explodePapers ("gives back the
+	// copies"). explodeOut before "out", explodeBack before "back",
 	// explodeReads before "out", explodeHappenings, explodeHits before
-	// explodeScores ("hits a century") and explodeLet before explodeLetWho
-	// and explodeLetGo ("lets us go home early", "says we can go home") are
-	// the happenings a crowd cheers, news except after a clock time too. explodeTriggers are a bomb's timing or people inside,
+	// explodeScores ("hits a century") and explodeLet before explodeLetWho and
+	// explodeLetGo ("lets us go home early", "says we can go home") are the
+	// happenings a crowd cheers, and they too are news unless they follow a
+	// clock time. explodeTriggers are a bomb's timing or people inside,
 	// explodeTiming gates or doors closing, a place filling and "least
 	// expect", explodeHidden, and "what's" before explodeInside, something
 	// hidden ("the bag", "what's in the bag"), explodeAssembly assembly going
-	// on unless something is announced in it (explodeAnnounce),
-	// explodeArrive people arriving, and explodeGoIn before "in" and
-	// explodeBe before "in", "at", "there" or "here" people going in or
-	// somewhere: none of them is news. explodeBeSubjects are explodeBe with
-	// people as their subject, explodeSubjects pronouns for people, and
-	// explodeJoins start another verb's subject.
+	// on unless something is announced in it (explodeAnnounce), explodeArrive
+	// people arriving, and explodeGoIn before "in" and explodeBe before "in",
+	// "at", "there" or "here" people going in or somewhere: none of them is
+	// news. explodeBeSubjects are explodeBe with people as their subject,
+	// explodeSubjects pronouns for people, and explodeJoins start another
+	// verb's subject.
 	explodeWhen     = canonSetOf(`when once if whenever`)
 	explodeTriggers = canonSetOf(`bomb bombs button timer detonate detonator trigger bell bells clock alarm inside
 		full packed crowded everyone's start starts begin begins ring rings strike strikes hits`)
