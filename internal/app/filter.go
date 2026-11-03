@@ -9056,7 +9056,8 @@ func ageCheck(v *view, m []int) bool {
 		}
 		next := nextWords(clauseAfter(v.text, m[1]), 3)
 		if pupils {
-			return len(next) > 0 && reachTails[next[0]] && pupilsSought(wordsIn(v.text[m[1]:min(len(v.text), m[1]+120)]))
+			return pupilsReached(nextWords(sentenceAfter(v.text, m[1]), 10)) &&
+				pupilsSought(wordsIn(v.text[m[1]:min(len(v.text), m[1]+120)]))
 		}
 		if !strings.HasSuffix(noun, "s") {
 			return len(next) > 0 && reachTails[next[0]]
@@ -9222,28 +9223,70 @@ var (
 	soughtWho    = canonSetOf(`want wants wanna interested single online free lonely bored up down like likes`)
 )
 
-// pupilsSought reports secrecy or a meeting in ws, the words after a school
-// year's students or kids asked to get in touch, and nothing they would
-// study or sign up for: "class 8 students dm me, no parents", "class 7 kids
-// dm me, it's a secret", "lets meet after school, just us"; not "class 9
-// students dm me for doubts, no parents needed" or "for the quiz team, it's
-// a secret from the other section".
+// pupilsReached reports a school year's students or kids asked to get in
+// touch in the words after them (next, read past a comma): "class 8
+// students dm me", "class 8 students pls dm me", "class 7 kids, dm me",
+// "class 7 kids who want free robux dm me".
+func pupilsReached(next []string) bool {
+	k := 0
+	for k < len(next) && pupilPleases[next[k]] {
+		k++
+	}
+	if k < len(next) && (is(next[k], "who") || is(next[k], "that")) {
+		for j := k + 1; j < len(next) && j <= k+6; j++ {
+			if reachTails[next[j]] {
+				return true
+			}
+		}
+		return false
+	}
+	return k < len(next) && reachTails[next[k]]
+}
+
+// pupilsSought reports secrecy kept from adults or a meeting in ws, the
+// words after a school year's students or kids asked to get in touch.
+// Parents or teachers kept out ("no parents", "don't tell your mum", not
+// "no parents needed"), "don't tell anyone" and "just us" are secrecy
+// whatever else is said. A secret, a private chat, being alone and a
+// meeting are secrecy only with nothing they would study, sign up for or
+// do as a group (pupilErrands: "for the quiz team, it's a secret from the
+// other section", "secret santa", "a private discord for the batch", "a
+// surprise for ma'am"), and a meeting not in a school's or a group's place
+// ("meeting at lunch", "lets meet in the library", "in room 12"): "class 7
+// kids dm me, it's a secret", "lets meet after school, just us".
 func pupilsSought(ws []string) bool {
-	if anyIn(ws, pupilErrands) {
+	errand := anyIn(ws, pupilErrands)
+	kept := func(i int) bool {
+		for _, p := range ws[max(0, i-3):i] {
+			if keptFrom[p] {
+				return true
+			}
+		}
 		return false
 	}
 	for i, w := range ws {
+		var next string
+		if i+1 < len(ws) {
+			next = ws[i+1]
+		}
 		switch {
+		case parentWords[w] && kept(i) && !parentsNeeded[next]:
+			return true
+		case (is(w, "anyone") || is(w, "anybody")) && i > 0 && is(ws[i-1], "tell") && kept(i-1):
+			return true
+		case is(w, "just") && (is(next, "us") || is(next, "me")):
+			return true
+		case errand:
 		case pupilSecrets[w]:
 			return true
-		case parentWords[w]:
-			for _, p := range ws[max(0, i-3):i] {
-				if keptFrom[p] {
-					return true
-				}
+		case pupilMeets[w]:
+			near := false
+			for _, x := range ws[i+1 : min(len(ws), i+7)] {
+				near = near || pupilPlaces[x]
 			}
-		case is(w, "just") && i+1 < len(ws) && (is(ws[i+1], "us") || is(ws[i+1], "me")):
-			return true
+			if !near {
+				return true
+			}
 		}
 	}
 	return false
@@ -9253,17 +9296,28 @@ var (
 	// pupilWords are a school year's students or kids, offered notes as
 	// often as looked for (pupilsSought).
 	pupilWords = canonSetOf(`student students kid kids`)
-	// pupilSecrets are secrecy or a meeting; parentWords after one of
-	// keptFrom are parents kept out: "no parents", "don't tell your mum".
-	pupilSecrets = canonSetOf(`secret secrets secretly private privately alone meet meetup meeting nobody noone`)
-	parentWords  = canonSetOf(`parents parent mom mum mommy mummy dad daddy papa family`)
-	keptFrom     = canonSetOf(`no without w/o tell dont don't not`)
+	// pupilPleases may come before what a year's students are asked to do:
+	// "pls dm me".
+	pupilPleases = canonSetOf(`pls plz please plss`)
+	// pupilSecrets are a secret, a private chat or being alone, and
+	// pupilMeets a meeting, which pupilPlaces after them make a group's;
+	// parentWords after one of keptFrom are parents or teachers kept out
+	// ("no parents", "don't tell your mum"), unless parentsNeeded follows.
+	pupilSecrets = canonSetOf(`secret secrets secretly private privately alone nobody noone`)
+	pupilMeets   = canonSetOf(`meet meets meetup meeting meetings`)
+	pupilPlaces  = canonSetOf(`library canteen cafeteria room hall lunch recess club clubs ground field lab classroom
+		auditorium gym court`)
+	parentWords   = canonSetOf(`parents parent mom mum mommy mummy dad daddy papa family teacher teachers`)
+	keptFrom      = canonSetOf(`no without w/o tell dont don't not`)
+	parentsNeeded = canonSetOf(`needed required necessary involved`)
 	// pupilErrands are what a year's students are got in touch with for:
-	// notes, doubts, an exam, a form, a team.
+	// notes, doubts, an exam, a form, a team, a club, a debate, a group
+	// chat for the class, secret santa, a surprise for a teacher.
 	pupilErrands = canonSetOf(`notes note doubts doubt help jee neet exam exams test tests paper papers syllabus
 		study studying homework hw assignment assignments quiz form forms project projects team teams book books
 		tuition tuitions revision revise revising olympiad competition trip fee fees result results timetable
-		practical sample farewell fest event committee council election`)
+		practical sample farewell fest event committee council election santa club clubs debate debates mun
+		surprise discord gc formula formulas sheet sheets chess choir band match tournament`)
 )
 
 // canonSetOf is setOf for words looked up in the loose view as well.
