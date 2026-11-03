@@ -2230,6 +2230,18 @@ func (p *passHarness) passExpiresAt(code string) (time.Time, bool) {
 	return expires, true
 }
 
+// termEndsAt reads when the term a payment bought ends, as a refund of it
+// reads it.
+func (p *passHarness) termEndsAt(paymentIntent string) time.Time {
+	p.t.Helper()
+	var ends time.Time
+	if err := p.app.pool.QueryRow(context.Background(), `SELECT ends_at FROM pass_payments WHERE payment_hash = $1`,
+		p.app.passPaymentHash(paymentIntent)).Scan(&ends); err != nil {
+		p.t.Fatalf("the term of %s: %v", paymentIntent, err)
+	}
+	return ends
+}
+
 func (p *passHarness) refund(paymentIntent string) {
 	p.t.Helper()
 	if status := p.webhook(stripeChargeRefunded, map[string]any{
@@ -2299,6 +2311,25 @@ func TestPassRefundTakesOffOneTerm(t *testing.T) {
 	}
 	if status, _ := p.activate(victim.Pass); status != http.StatusOK {
 		t.Fatalf("a disputed renewal cost the holder their Pass: status %d", status)
+	}
+
+	// A renewal refunded moves back only the terms paid after it: the
+	// purchase before it ends where it did. So the purchase, refunded in its
+	// turn while a later renewal is still to come, takes off the whole days
+	// left of its year, and that renewal comes forward to start at the next
+	// midnight and run a year from there.
+	held := p.buy("pi_held")
+	purchaseEnds := p.termEndsAt("pi_held")
+	p.renew(held.Pass, "pi_held_renewed")
+	p.refund("pi_held_renewed")
+	if got := p.termEndsAt("pi_held"); !got.Equal(purchaseEnds) {
+		t.Fatalf("refunding a renewal moved the purchase paid before it to end %v, want %v as before", got, purchaseEnds)
+	}
+	p.renew(held.Pass, "pi_held_renewed_again")
+	refunding := time.Now()
+	p.refund("pi_held")
+	if got, ok := p.passExpiresAt(held.Pass); !ok || !dayRoundedAfter(got, refunding, time.Now(), 365*24*time.Hour) {
+		t.Fatalf("after refunding the purchase the Pass runs to %v (kept: %v), want a year from the midnight after the refund", got, ok)
 	}
 
 	// A renewal of a Pass that had run out, refunded, leaves nothing over: the
@@ -4346,15 +4377,6 @@ func TestPassRefundTakesOffOnlyWhatIsLeft(t *testing.T) {
 	end := first.ExpiresAt
 	r.renew(first.Pass, "pi_three_terms_second")
 	r.renew(first.Pass, "pi_three_terms_third")
-	endsAt := func(paymentIntent string) time.Time {
-		t.Helper()
-		var ends time.Time
-		if err := r.app.pool.QueryRow(context.Background(), `SELECT ends_at FROM pass_payments WHERE payment_hash = $1`,
-			r.app.passPaymentHash(paymentIntent)).Scan(&ends); err != nil {
-			t.Fatalf("the term of %s: %v", paymentIntent, err)
-		}
-		return ends
-	}
 	refundedAt := end.Add(-(265*24 + 12) * time.Hour)
 	if res, err := r.app.store.revokePassPayment(context.Background(), r.app.passPaymentHash("pi_three_terms"), refundedAt); err != nil || res != revokedTerm {
 		t.Fatalf("refund of the purchase: %v, %v", res, err)
@@ -4362,7 +4384,7 @@ func TestPassRefundTakesOffOnlyWhatIsLeft(t *testing.T) {
 	if got, ok := r.passExpiresAt(first.Pass); !ok || !got.Equal(end.AddDate(0, 0, 465)) {
 		t.Fatalf("after refunding the purchase the Pass runs to %v (kept: %v), want %v", got, ok, end.AddDate(0, 0, 465))
 	}
-	if got, want := endsAt("pi_three_terms_second"), dayCeil(refundedAt).AddDate(0, 0, 365); !got.Equal(want) || !want.Equal(end.AddDate(0, 0, 100)) {
+	if got, want := r.termEndsAt("pi_three_terms_second"), dayCeil(refundedAt).AddDate(0, 0, 365); !got.Equal(want) || !want.Equal(end.AddDate(0, 0, 100)) {
 		t.Fatalf("after refunding the purchase the next renewal ends %v, want a whole year from the midnight after the refund, %v", got, want)
 	}
 	secondRefund := refundedAt.AddDate(0, 0, 10)
@@ -4372,7 +4394,7 @@ func TestPassRefundTakesOffOnlyWhatIsLeft(t *testing.T) {
 	if got, ok := r.passExpiresAt(first.Pass); !ok || !got.Equal(end.AddDate(0, 0, 110)) {
 		t.Fatalf("after refunding the first renewal the Pass runs to %v (kept: %v), want %v", got, ok, end.AddDate(0, 0, 110))
 	}
-	if got, want := endsAt("pi_three_terms_third"), dayCeil(secondRefund).AddDate(0, 0, 365); !got.Equal(want) || !want.Equal(end.AddDate(0, 0, 110)) {
+	if got, want := r.termEndsAt("pi_three_terms_third"), dayCeil(secondRefund).AddDate(0, 0, 365); !got.Equal(want) || !want.Equal(end.AddDate(0, 0, 110)) {
 		t.Fatalf("the last renewal's term ends %v, want a whole year from the midnight after the refund, %v", got, want)
 	}
 	// Refunded in its turn an hour later, the last renewal leaves only the
