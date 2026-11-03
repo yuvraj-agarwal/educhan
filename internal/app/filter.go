@@ -8900,13 +8900,22 @@ func payMenace(bought, later []string) bool {
 	if payFinal(later) {
 		return true
 	}
+	food := anyIn(bought, payGoods)
+	pitched := anyIn(bought, pitchHeads) || anyIn(bought, payPlay)
+	placed := 0 // past the last place, vehicle or owner in later
+	for i, w := range later {
+		if placeHeads[w] || vehicleHeads[w] || ownerWords[w] {
+			placed = i + 1
+		}
+	}
 	kept := make([]string, len(later))
 	spared := false
 	for i, w := range later {
 		menace := weaponHeads[w] || bluntHeads[w] || fuelHeads[w] || prepWords[w] || poisonWords[w] ||
 			is(w, "spray") && i > 0 && is(later[i-1], "pepper")
 		switch {
-		case is(w, "dead") && i+1 < len(later) && deadIntensified[later[i+1]], menace && payUse(bought, later, i):
+		case is(w, "dead") && i+1 < len(later) && deadIntensified[later[i+1]],
+			menace && payUse(later, i, food, pitched, placed > i):
 			spared = true
 			continue
 		case menace:
@@ -8936,16 +8945,17 @@ func payAimed(ws []string) bool {
 	return false
 }
 
-// payUse reports, for the word at ws[i] after the poster's own purchase
-// (bought), gear put to its ordinary use: a bat or a stick (playGear) after
-// one of payPlay or with a pitch bought or booked, for no one ("the hockey
-// sticks", "i booked the turf. bring your bats", not "bring your bats for
-// him"), a knife to cut food or what was bought ("a knife to cut the cake",
-// "i ordered the cake. bring a knife to cut it", not "to cut him"), or a
-// lighter for candles or a puja (payLights: "a lighter for the candles")
-// with no one's thing, place or vehicle after it (not "for your hair" or
-// "for the candles. and for the house").
-func payUse(bought, ws []string, i int) bool {
+// payUse reports, for the word at ws[i] after the poster's own purchase,
+// gear put to its ordinary use: a bat or a stick (playGear) after one of
+// payPlay or with a pitch booked or a game named in the purchase (pitched),
+// for no one ("the hockey sticks", "i booked the turf. bring your bats", not
+// "bring your bats for him"), a knife to cut food or, when food was bought
+// (food), "it" ("a knife to cut the cake", "i ordered the cake. bring a knife
+// to cut it", not "to cut him"), or a lighter for candles or a puja
+// (payLights: "a lighter for the candles") with no one's thing, place or
+// vehicle after it (placed: not "for your hair" or "for the candles. and for
+// the house").
+func payUse(ws []string, i int, food, pitched, placed bool) bool {
 	at := func(k int) string {
 		if k < len(ws) {
 			return ws[k]
@@ -8958,7 +8968,7 @@ func payUse(bought, ws []string, i int) bool {
 		if is(at(k), "for") && (objectWords[at(k+1)] || is(at(k+1), "em")) {
 			return false
 		}
-		return i > 0 && payPlay[ws[i-1]] || anyIn(bought, pitchHeads) || anyIn(bought, payPlay)
+		return i > 0 && payPlay[ws[i-1]] || pitched
 	case is(w, "knife") || is(w, "knives"):
 		switch {
 		case is(at(k), "to") && is(at(k+1), "cut"), is(at(k), "for") && is(at(k+1), "cutting"):
@@ -8969,14 +8979,14 @@ func payUse(bought, ws []string, i int) bool {
 			return false
 		}
 		if is(at(k), "it") {
-			return anyIn(bought, payGoods)
+			return food
 		}
 		for k < len(ws) && determiners[ws[k]] {
 			k++
 		}
 		return payGoods[at(k)]
 	case is(w, "lighter") || is(w, "lighters"):
-		if anyIn(ws[i:], placeHeads) || anyIn(ws[i:], vehicleHeads) || anyIn(ws[i:], ownerWords) {
+		if placed {
 			return false // "and for your house"
 		}
 		for k = i + 1; k < len(ws) && k <= i+5; k++ {
@@ -10589,11 +10599,12 @@ type matchCheck func(v *view, m []int) bool
 // ageRuleAfter 80; reported 64 round a quotation and before the words, as well
 // as quotationAround, and each sentence that starts within threatWindow after
 // a quotation it reads as received (ownedAfter, readerAdvised); menace's hints
-// readReach words each way; gameNamed 64 before the sentence; and privateCue
-// the sentence after a visit as well as the one round it. Each is a constant
-// per check, so the count stays linear in the post, but a counted step stands
-// for more time in a body whose matches take those checks
-// (TestFilterCostIsBounded says how much).
+// readReach words each way; gameNamed 64 before the sentence; purchasePaid
+// threatWindow past the promise's sentence, for payMenace; and privateCue the
+// sentence after a visit as well as the one round it. Each is a constant per
+// check, so the count stays linear in the post, but a counted step stands for
+// more time in a body whose matches take those checks (TestFilterCostIsBounded
+// says how much).
 const checkWork = 2 * 64
 
 // checked puts match m to check, counting it in the view's work.
