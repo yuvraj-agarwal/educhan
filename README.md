@@ -619,26 +619,35 @@ writes nothing (no "last used"), the code is stored only as a keyed hash, the
 Pass tables reference only each other, and nothing about a Pass goes into a
 poster ID. A Pass presented on a post that is no good, because it is unknown,
 refunded, replaced or has run out, is treated as no Pass at all: the post is
-held to the captcha like any other, so nothing in the request log tells it
-apart, and its `201` says `"pass": "invalid"` or `"expired"` in the body,
-which no log records, so the page can forget the code or offer to renew it.
-Nothing identifying a Pass is logged. The log says that a Pass was issued,
-renewed or reissued, that a reissue code was made, that a refund or a dispute
-took back an order, a payment's term or a whole Pass, or that a paid Stripe
-checkout matched no open Pass order, and never which; a failure to read a Pass
-on a post is logged without the post's path, which names its board and thread
-(the request's own line keeps the path and its `500`, as for any failed
-request). `TestPassIsNeverStoredOrLogged` posts with a Pass on every posting
-route, a thread and a reply each as JSON and with an image, and a reply by
-thread id, and then searches every table and the log for the code, its hashes,
-the budget key, the collection and reissue nonces, the payment and session
-ids, a reissue code and the buyer's email and name, with positive controls;
-`TestPassTablesCannotBeJoinedToPosts` pins the columns. The webhook handler
-reads a handful of fields and never logs the body, which carries the payer's
-email, name and address: `TestPassLogsAreBare` delivers every event the Pass
-takes, with the payer's details in it, and one whose signature does not
-verify, and holds every Pass log line to its message alone, with no field
-beside it.
+held to the captcha like any other, so its status is one any post can get, and
+its `201` says `"pass": "invalid"` or `"expired"` in the body, which no log
+records, so the page can forget the code or offer to renew it. Nor does the
+request line show how long a post took: looking up a code takes the server a
+database round trip that a post without one does not, and beside the path, which
+names the thread, a duration would mark the posts that sent a code that reads as
+one, good or no good. So the line of a route that takes a post carries its
+method, path and status and no `duration_ms`, and a post leaves the same line,
+but for its time, with a good Pass, one that is no good or none
+(`TestPassNoGoodOnPostsIsNoPass`); `TestPostingLinesAreUntimed` finds every such
+route in the code and holds it to that, and every other route's line to keeping
+its `duration_ms`. How long posts take is left to Cloud Run's request latency
+metrics, which are aggregates. Nothing identifying a Pass is logged. The log
+says that a Pass was issued, renewed or reissued, that a reissue code was made,
+that a refund or a dispute took back an order, a payment's term or a whole Pass,
+or that a paid Stripe checkout matched no open Pass order, and never which; a
+failure to read a Pass on a post is logged without the post's path, which names
+its board and thread (the request's own line keeps the path and its `500`, as
+for any failed request). `TestPassIsNeverStoredOrLogged` posts with a Pass on
+every posting route, a thread and a reply each as JSON and with an image, and a
+reply by thread id, and then searches every table and the log for the code, its
+hashes, the budget key, the collection and reissue nonces, the payment and
+session ids, a reissue code and the buyer's email and name, with positive
+controls; `TestPassTablesCannotBeJoinedToPosts` pins the columns. The webhook
+handler reads a handful of fields and never logs the body, which carries the
+payer's email, name and address: `TestPassLogsAreBare` delivers every event the
+Pass takes, with the payer's details in it, and one whose signature does not
+verify, and holds every Pass log line to its message alone, with no field beside
+it.
 
 Apart from Stripe's webhook, which its signature guards instead, the Pass's
 `POST` endpoints take only a body declared as JSON, which no form can send and
@@ -1633,8 +1642,10 @@ is read, so the refusal costs no cooldown.
 The two posting endpoints read a Pass from `X-Educhan-Pass`, on unbadged posts
 only: a badged post's request is the credential's, and the Pass header is not
 read on it. A Pass that is unknown, refunded or replaced, or has run out, is
-treated as no Pass at all, so nothing about the answer's status or the request
-log tells it apart from a post made without one; the `201` carries
+treated as no Pass at all, so neither the answer's status nor the request log
+tells it apart from a post made without one, or with a good one: the request
+line of a posting endpoint carries no `duration_ms`, which looking the code up
+would lengthen (see [educhan Pass](#educhan-pass)). The `201` carries
 `{"pass":"expired"}` beside the post for a Pass less than a month past its
 expiry, so the client can offer to renew it, and `{"pass":"invalid"}` for any
 other, so it can drop the code. A Pass header sent while the Pass is switched

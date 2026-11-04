@@ -34,8 +34,11 @@ import (
 // The rules that hold it up, in the spirit of verification's (verify.go):
 //
 //  1. Nothing about a Pass reaches a post. The post row, the poster ID and the
-//     log are the same whether or not a Pass was used, and using one writes
-//     nothing, so there is no "last used" to line up against a post.
+//     post's request line are the same whether a good Pass was used, one that
+//     is no good or none: the line has the method, the path and the status,
+//     and no duration, which looking a Pass up would lengthen (requestLogger).
+//     Using one writes nothing, so there is no "last used" to line up against
+//     a post.
 //  2. Nothing about the buyer reaches educhan. They pay on Stripe's own page,
 //     and what educhan keeps of the payment is an HMAC of its id, which lets a
 //     refund or a chargeback take back the time that payment bought, and lets
@@ -1066,7 +1069,9 @@ type passGrant struct {
 // once the poster posts again, would tie the Pass's holder, whom the refund
 // names to the operator in Stripe, to the post. Treated as absent, the post is
 // held to the captcha like any other, and whatever it is refused for is what
-// any post without a Pass can be refused for. The page hears that the Pass is
+// any post without a Pass can be refused for. Nor does the line show the
+// lookup below, which a code that parses costs and no Pass does not: a posting
+// route's line carries no duration (untimed). The page hears that the Pass is
 // no good from the answer's body (passGrant.Refused), which no log records:
 // expired until a month past its expiry, so the page can offer to renew it, and
 // invalid from then on, when it has gone (passCutoff).

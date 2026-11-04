@@ -24,11 +24,13 @@ func chain(h http.Handler, mw ...middleware) http.Handler {
 	return h
 }
 
-// statusRecorder captures the response status for access logs.
+// statusRecorder captures the response status for access logs, and whether
+// the route is one whose line goes without a duration (untimed).
 type statusRecorder struct {
 	http.ResponseWriter
-	status int
-	wrote  bool
+	status  int
+	wrote   bool
+	untimed bool
 }
 
 func (r *statusRecorder) WriteHeader(status int) {
@@ -52,6 +54,15 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 // beside "POST /api/verify/request" at the moment a code was issued is exactly
 // the join verification is built to avoid. Flood control still keys on the
 // address in memory; it is only kept out of the log.
+//
+// The line for a route that takes a post carries no duration either (untimed).
+// How long a post takes depends on what it carried: a Pass code that parses,
+// good or no good, is looked up and no Pass is not, and a badge's credential
+// is checked. Beside the path, which names the thread, and the time, which the
+// post's row holds too, a duration would say which posts in a thread carried a
+// Pass. Nothing else on the line depends on one: a Pass that is no good gets
+// the status no Pass gets (postPass), so a post leaves the same line with a
+// good Pass, one that is no good or none. A field added here must keep that.
 func requestLogger(log *slog.Logger) middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -63,13 +74,25 @@ func requestLogger(log *slog.Logger) middleware {
 			if rec.status >= http.StatusInternalServerError {
 				level = slog.LevelError
 			}
-			log.Log(r.Context(), level, "request",
-				"method", r.Method,
-				"path", r.URL.Path,
-				"status", rec.status,
-				"duration_ms", time.Since(start).Milliseconds(),
-			)
+			attrs := []any{"method", r.Method, "path", r.URL.Path, "status", rec.status}
+			if !rec.untimed {
+				attrs = append(attrs, "duration_ms", time.Since(start).Milliseconds())
+			}
+			log.Log(r.Context(), level, "request", attrs...)
 		})
+	}
+}
+
+// untimed marks a route whose request line goes without a duration, on the
+// statusRecorder requestLogger hands down: every route that takes a post.
+// TestPostingLinesAreUntimed finds those routes in the code, so one added
+// without it fails there.
+func untimed(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if rec, ok := w.(*statusRecorder); ok {
+			rec.untimed = true
+		}
+		h(w, r)
 	}
 }
 

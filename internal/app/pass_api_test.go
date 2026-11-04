@@ -17,6 +17,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -2763,7 +2764,9 @@ func TestPassSharesOneHourlyBudget(t *testing.T) {
 // TestPassNoGoodOnPostsIsNoPass holds a post that presents a Pass that is no
 // good, refunded, replaced or run out, to what a post without one gets: no
 // status of its own for the log to record beside the thread's path, and the
-// Pass's state in the answer's body, which no log records, for the page.
+// Pass's state in the answer's body, which no log records, for the page. The
+// request line of a reply with a good Pass, one that is no good and none is
+// the same but for its time.
 func TestPassNoGoodOnPostsIsNoPass(t *testing.T) {
 	var logs syncBuffer
 	p := passServerLogging(t, nil, &logs)
@@ -2787,35 +2790,42 @@ func TestPassNoGoodOnPostsIsNoPass(t *testing.T) {
 		t.Fatalf("expired Pass: status %d, %+v", status, out)
 	}
 
-	// Refunded, its holder's next reply leaves the same line a reply without
-	// a Pass does.
+	// A reply leaves the same request line, byte for byte but for its time,
+	// with a good Pass, with one that is no good, refunded, run out, unknown or
+	// malformed, and with none: no status of its own, and no duration, which
+	// the Pass's lookup would lengthen (requestLogger).
 	thread := p.createThread("pass-board", "", "", "a thread")
+	good := p.buy("pi_post_good")
 	refunded := p.buy("pi_post_refunded")
 	p.refund("pi_post_refunded")
 	path := fmt.Sprintf("/api/boards/pass-board/threads/%d/posts", thread.ThreadNo)
-	var with, without passResponse
-	if status := p.postWithHeaders(http.Header{passHeader: {refunded.Pass}}, path, map[string]any{"body": "with"}, &with); status != http.StatusCreated || with.Pass != passInvalid {
-		t.Fatalf("a reply with a refunded Pass: status %d, %+v", status, with)
+	presented := []struct{ what, code, answer string }{
+		{"a good Pass", good.Pass, ""},
+		{"a refunded Pass", refunded.Pass, passInvalid},
+		{"a Pass that has run out", issued.Pass, passExpired},
+		{"an unknown Pass", "ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ", passInvalid},
+		{"a malformed Pass", "not a pass", passInvalid},
+		{"no Pass", "", ""},
 	}
-	if status := p.postWithHeaders(nil, path, map[string]any{"body": "without"}, &without); status != http.StatusCreated || without.Pass != "" {
-		t.Fatalf("a reply without a Pass: status %d, %+v", status, without)
-	}
-	var lines []string
-	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
-		if strings.Contains(line, path) {
-			var entry map[string]any
-			if err := json.Unmarshal([]byte(line), &entry); err != nil {
-				t.Fatalf("log line %q: %v", line, err)
-			}
-			delete(entry, "time")
-			delete(entry, "duration")
-			delete(entry, "duration_ms")
-			again, _ := json.Marshal(entry)
-			lines = append(lines, string(again))
+	for _, sent := range presented {
+		header := http.Header{}
+		if sent.code != "" {
+			header.Set(passHeader, sent.code)
+		}
+		var out passResponse
+		if status := p.postWithHeaders(header, path, map[string]any{"body": sent.what}, &out); status != http.StatusCreated || out.Pass != sent.answer {
+			t.Fatalf("a reply with %s: status %d, %+v", sent.what, status, out)
 		}
 	}
-	if len(lines) != 2 || lines[0] != lines[1] {
-		t.Fatalf("the replies with and without a refunded Pass were logged differently:\n%s", strings.Join(lines, "\n"))
+	stamp := regexp.MustCompile(`^\{"time":"[^"]*",`)
+	var lines []string
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		if strings.Contains(line, `"path":"`+path+`"`) {
+			lines = append(lines, stamp.ReplaceAllString(line, `{"time":"",`))
+		}
+	}
+	if len(lines) != len(presented) || slices.ContainsFunc(lines, func(line string) bool { return line != lines[0] }) {
+		t.Fatalf("replies with %d kinds of Pass and none were logged differently:\n%s", len(presented)-1, strings.Join(lines, "\n"))
 	}
 
 	// A badged post is the credential's request: the Pass header is not read,

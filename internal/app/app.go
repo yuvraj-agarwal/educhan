@@ -202,14 +202,16 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /healthz", a.handleHealth)
 	mux.HandleFunc("GET /api/site", a.handleSite)
 
+	// Every route that takes a post is untimed: its request line carries no
+	// duration, which would say what the post carried (requestLogger).
 	mux.HandleFunc("GET /api/boards", a.handleListBoards)
 	mux.HandleFunc("GET /api/boards/{slug}", a.handleGetBoard)
 	mux.HandleFunc("GET /api/boards/{slug}/threads", a.handleIndex)
-	mux.HandleFunc("POST /api/boards/{slug}/threads", a.handleCreateThread)
+	mux.HandleFunc("POST /api/boards/{slug}/threads", untimed(a.handleCreateThread))
 	mux.HandleFunc("GET /api/boards/{slug}/catalog", a.handleCatalog)
 	mux.HandleFunc("GET /api/boards/{slug}/archive", a.handleArchive)
 	mux.HandleFunc("GET /api/boards/{slug}/threads/{no}", a.handleGetThread)
-	mux.HandleFunc("POST /api/boards/{slug}/threads/{no}/posts", a.handleCreatePost)
+	mux.HandleFunc("POST /api/boards/{slug}/threads/{no}/posts", untimed(a.handleCreatePost))
 	mux.HandleFunc("GET /api/boards/{slug}/posts/{no}", a.handleResolvePost)
 
 	// Institutional verification. Nothing here is addressed by anything a post
@@ -233,7 +235,7 @@ func (a *App) Routes() http.Handler {
 	// Thread routes keyed by primary key, kept for callers that hold an ID from
 	// an earlier revision of the API.
 	mux.HandleFunc("GET /api/threads/{id}", a.handleGetThreadByID)
-	mux.HandleFunc("POST /api/threads/{id}/posts", a.handleCreatePostByThreadID)
+	mux.HandleFunc("POST /api/threads/{id}/posts", untimed(a.handleCreatePostByThreadID))
 
 	// Moderation, guarded by the shared moderation key.
 	mux.HandleFunc("POST /api/boards", a.handleCreateBoard)

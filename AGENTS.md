@@ -992,11 +992,18 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   keyed on a hash of the code, and forgotten by the flood-control sweep within a minute
   of its hour ending, on the same terms as an address. A Pass that is no good on a post
   is treated as no Pass, never refused with a status of its own, because a request-log
-  line only a Pass can cause would tie its holder to the thread
-  (`TestPassNoGoodOnPostsIsNoPass`). The Pass skips the captcha only, never the rules, a
-  refusal limit or a cooldown. Only a transaction that writes a `passes` row locks it, so
-  its `xmax` dates nothing its `xmin` does not: `pass_orders.renew_pass_id` is no foreign
-  key, whose check would leave every renewal checkout's transaction id on the Pass's row
+  line only a Pass can cause would tie its holder to the thread. For the same reason the
+  request line of a route that takes a post carries no duration, which looking a code up
+  would lengthen (`untimed` in `Routes`, `requestLogger`), so a post leaves the same
+  line, but for its time, with a good Pass, one that is no good or none
+  (`TestPassNoGoodOnPostsIsNoPass`). A field added to the request line must be the same
+  on a posting route whatever Pass the post carried, and a new route that takes a post is
+  marked `untimed`: `TestPostingLinesAreUntimed` finds every route whose handler can run
+  `postPass` in the code and holds its line to no duration, and every other route's to
+  one. The Pass skips the captcha only, never the rules, a refusal limit or a cooldown.
+  Only a transaction that writes a `passes` row locks it, so its `xmax` dates nothing its
+  `xmin` does not: `pass_orders.renew_pass_id` is no foreign key, whose check would leave
+  every renewal checkout's transaction id on the Pass's row
   (`TestPassRowIsDatedOnlyByItsWrites`). What the key's `ON DELETE SET NULL` did is done
   in code instead: every transaction that deletes a Pass (today a refund or dispute that
   leaves it no paid time to come, and the prune a month past its expiry) clears it from
@@ -1022,16 +1029,16 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   same bound for a paid order (a claim, a reissue code made or redeemed, a refund, Stripe
   reporting it paid again, and counting it as waiting or as a renewal under way, for
   example), so the prune only frees its row (`TestPassOrderPastItsKeepIsGone`). An unpaid
-  order is no longer waited for past its deadline, and goes when something deletes it, the
-  next prune or a claim from its own browser (`claimOne`), say, which the Pass page sends
-  while `GET /api/pass` counts the order as something to collect; a payment Stripe reports
-  after that finds nothing, and the owner is warned. It has gone too once that term has
-  passed since its deadline, pruned yet or not: marking it paid, holding it for a slow
-  payment, counting it as a renewal under way and counting it as something for its browser
-  to collect (`passClaimWaiting`, and what `claimPass` answers is left) all hold it to
-  `passOrderPayable`, one bound, which ends where a paid order's keep does, so none of
-  them takes an order the others have let go, and once nothing is left to collect under a
-  claim, nothing can come under it later (`TestPassOrderPastItsKeepIsGone`,
+  order is no longer waited for past its deadline, and goes when something deletes it,
+  the next prune or a claim from its own browser (`claimOne`), say, which the Pass page
+  sends while `GET /api/pass` counts the order as something to collect; a payment Stripe
+  reports after that finds nothing, and the owner is warned. It has gone too once that
+  term has passed since its deadline, pruned yet or not: marking it paid, holding it for
+  a slow payment, counting it as a renewal under way and counting it as something for its
+  browser to collect (`passClaimWaiting`, and what `claimPass` answers is left) all hold
+  it to `passOrderPayable`, one bound, which ends where a paid order's keep does, so none
+  of them takes an order the others have let go, and once nothing is left to collect
+  under a claim, nothing can come under it later (`TestPassOrderPastItsKeepIsGone`,
   `TestPassReissueWaitsForARenewalUnderWay`,
   `TestPassUnpaidOrderIsPayableUntilItsKeepEnds`, `TestPassPaidAfterItsDeadlineIsKept`).
   Anything new that reads a paid order, or decides what to do with an unpaid one past its
