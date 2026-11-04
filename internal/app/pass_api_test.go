@@ -1114,7 +1114,7 @@ func TestPassPurchase(t *testing.T) {
 		t.Fatalf("issued code %q is not XXXXX-XXXXX-XXXXX-XXXXX", issued.Pass)
 	}
 	if !dayRoundedAfter(issued.ExpiresAt, before, after, 365*24*time.Hour) {
-		t.Errorf("expires %v, want a year from the claim, rounded up to a day", issued.ExpiresAt)
+		t.Errorf("expires %v, want 365 days from the claim, rounded up to a day", issued.ExpiresAt)
 	}
 
 	// The code is shown once; the claim is spent.
@@ -1425,7 +1425,7 @@ func TestPassCollectsOnlyThroughItsOwnClaim(t *testing.T) {
 	before := time.Now()
 	code, issued := p.claim()
 	if code != http.StatusOK || issued.Status != "issued" || issued.Claim || !dayRoundedAfter(issued.ExpiresAt, before, time.Now(), year) {
-		t.Fatalf("claim of the latest checkout: status %d, %+v; want a Pass for a year from the claim", code, issued)
+		t.Fatalf("claim of the latest checkout: status %d, %+v; want a Pass for 365 days from the claim", code, issued)
 	}
 	// The first tab, paid later, is not collected here and changes nothing
 	// about the Pass the second one made.
@@ -1881,14 +1881,14 @@ func TestPassExpiredCheckoutIsDropped(t *testing.T) {
 func TestPassRenewalOfAPassThatIsGone(t *testing.T) {
 	p := passServer(t, nil)
 
-	// Past its grace month (30 days): refused before Stripe is asked for
+	// Past its 30 days of grace: refused before Stripe is asked for
 	// anything.
 	lapsed := p.buy("pi_lapsed_long_ago")
 	p.exec(`UPDATE passes SET expires_at = $1`, time.Now().Add(-30*24*time.Hour-time.Hour))
 	var out passResponse
 	if status := p.post("/api/pass/checkout", map[string]any{"adult": true, "renew": lapsed.Pass}, &out); status != http.StatusForbidden ||
 		refusalState(t, out) != passInvalid {
-		t.Fatalf("renewing a Pass past its grace month: status %d, %+v", status, out)
+		t.Fatalf("renewing a Pass past its 30 days of grace: status %d, %+v", status, out)
 	}
 	if n := p.stripe.sessionCount(); n != 1 {
 		t.Fatalf("Stripe opened %d sessions, want only the purchase's", n)
@@ -1917,12 +1917,12 @@ func TestPassRenewalOfAPassThatIsGone(t *testing.T) {
 		t.Fatal("a refused renewal gave the browser a claim")
 	}
 
-	// Run past its grace month while Stripe was opening the checkout, but not
-	// pruned yet: the order is held to the clock as it is written, once Stripe
-	// has answered, not to the one the checkout read before asking, and is
-	// refused all the same. Nothing moves the Pass's expiry here: its month
-	// ends two seconds on, while the checkout's own lookup finds it, and runs
-	// out while Stripe is opening the session.
+	// Run past its 30 days of grace while Stripe was opening the checkout, but
+	// not pruned yet: the order is held to the clock as it is written, once
+	// Stripe has answered, not to the one the checkout read before asking, and
+	// is refused all the same. Nothing moves the Pass's expiry here: its 30
+	// days of grace end two seconds on, while the checkout's own lookup finds
+	// it, and run out while Stripe is opening the session.
 	ageing := p.buy("pi_aged_meanwhile")
 	gone := time.Now().Add(2 * time.Second)
 	p.exec(`UPDATE passes SET expires_at = $1 WHERE token_hash = $2`,
@@ -1942,7 +1942,7 @@ func TestPassRenewalOfAPassThatIsGone(t *testing.T) {
 		t.Fatalf("the checkout's own lookup found the Pass gone before Stripe was asked (status %d, %+v); the test proves nothing", status, out)
 	}
 	if status != http.StatusConflict || out.Pass != passInvalid {
-		t.Fatalf("renewal of a Pass that ran past its grace month mid-checkout: status %d, %+v", status, out)
+		t.Fatalf("renewal of a Pass that ran past its 30 days of grace mid-checkout: status %d, %+v", status, out)
 	}
 	if n := p.count("pass_orders"); n != 0 {
 		t.Fatalf("a renewal of a lapsed Pass left %d orders", n)
@@ -1971,7 +1971,7 @@ func TestPassRenewalOfAPassThatIsGone(t *testing.T) {
 
 // TestPassThatIsGoneIsNamedByNoOrder holds every deletion of a Pass to the
 // orders that renew it: a refund or a dispute that leaves it no paid time to
-// come, and the prune a month past its expiry, each clear it from those
+// come, and the prune 30 days past its expiry, each clear it from those
 // orders, paid or not, in the transaction that deletes it, as the foreign
 // key's ON DELETE SET NULL once did (0012). A paid renewal is kept for up to
 // its deadline and its term so its owner can reissue it, and all that time an
@@ -2201,10 +2201,10 @@ func TestPassRenewal(t *testing.T) {
 		t.Fatalf("the renewed code: status %d, %+v", status, active)
 	}
 
-	// An expired Pass can still be renewed within its grace month, from now.
-	// Checked as typed, in lower case and without its dashes, it is refused
-	// with the code as the server writes it and the day it ran out, so the
-	// page can keep it to renew.
+	// An expired Pass can still be renewed within its 30 days of grace, from
+	// now. Checked as typed, in lower case and without its dashes, it is
+	// refused with the code as the server writes it and the day it ran out, so
+	// the page can keep it to renew.
 	ranOut := dayCeil(time.Now().Add(-72 * time.Hour))
 	p.exec(`UPDATE passes SET expires_at = $1`, ranOut)
 	typed := strings.ToLower(strings.ReplaceAll(issued.Pass, "-", ""))
@@ -2216,7 +2216,7 @@ func TestPassRenewal(t *testing.T) {
 	before := time.Now()
 	if status, out := p.claim(); status != http.StatusOK ||
 		!dayRoundedAfter(out.ExpiresAt, before, time.Now(), 365*24*time.Hour) {
-		t.Fatalf("renewing an expired Pass: status %d, %+v; want a year from the claim", status, out)
+		t.Fatalf("renewing an expired Pass: status %d, %+v; want 365 days from the claim", status, out)
 	}
 	if status, _ := p.activate(issued.Pass); status != http.StatusOK {
 		t.Fatalf("the code after renewing an expired Pass: status %d", status)
@@ -2393,11 +2393,11 @@ func TestPassRefundTakesOffOneTerm(t *testing.T) {
 		t.Fatalf("a disputed renewal cost the holder their Pass: status %d", status)
 	}
 
-	// A renewal refunded moves back only the terms paid after it: the
-	// purchase before it ends where it did. So the purchase, refunded in its
-	// turn while a later renewal is still to come, takes off the whole days
-	// left of its year, and that renewal comes forward to start at the next
-	// midnight and run a year from there.
+	// A renewal refunded moves back only the terms paid after it: the purchase
+	// before it ends where it did. So the purchase, refunded in its turn while
+	// a later renewal is still to come, takes off the whole days left of its
+	// 365, and that renewal comes forward to start at the next midnight and run
+	// 365 days from there.
 	held := p.buy("pi_held")
 	purchaseEnds := p.termEndsAt("pi_held")
 	p.renew(held.Pass, "pi_held_renewed")
@@ -2409,7 +2409,7 @@ func TestPassRefundTakesOffOneTerm(t *testing.T) {
 	refunding := time.Now()
 	p.refund("pi_held")
 	if got, ok := p.passExpiresAt(held.Pass); !ok || !dayRoundedAfter(got, refunding, time.Now(), 365*24*time.Hour) {
-		t.Fatalf("after refunding the purchase the Pass runs to %v (kept: %v), want a year from the midnight after the refund", got, ok)
+		t.Fatalf("after refunding the purchase the Pass runs to %v (kept: %v), want 365 days from the midnight after the refund", got, ok)
 	}
 
 	// A renewal of a Pass that had run out, refunded, leaves nothing over: the
@@ -3254,11 +3254,11 @@ func TestSweepPrunesThePassTables(t *testing.T) {
 			h.exec(`INSERT INTO passes (id, token_hash, expires_at) VALUES
 				(1, '\x01', $1), (2, '\x02', $2)`, days(-31), days(-1))
 			// Each paid order is kept for its own term past its deadline, and
-			// no longer: a year's or a 30-day one whose deadline is an hour
+			// no longer: a 365-day or a 30-day one whose deadline is an hour
 			// less than its term ago stays, and one an hour more goes; a
-			// two-year one stays 400 days on. The sweeper is run without
-			// EDUCHAN_PASS_DAYS (the server that is not on sale here has
-			// none), and needs none.
+			// 730-day one stays 400 days on. The sweeper is run without
+			// EDUCHAN_PASS_DAYS (the server that is not on sale here has none),
+			// and needs none.
 			termAgo := func(n int, more time.Duration) time.Time {
 				return now.Add(-time.Duration(n)*24*time.Hour - more)
 			}
@@ -3281,7 +3281,7 @@ func TestSweepPrunesThePassTables(t *testing.T) {
 				t.Fatalf("sweep: %v", err)
 			}
 			for table, want := range map[string]string{
-				// A Pass a month past expiry goes; one within its grace month stays.
+				// A Pass 30 days past expiry goes; one within its 30 days of grace stays.
 				"SELECT string_agg(id::text, ',' ORDER BY id) FROM passes": "2",
 				// Unpaid past its deadline goes; paid stays a term past it.
 				"SELECT string_agg(encode(session_hash, 'hex'), ',' ORDER BY session_hash) FROM pass_orders": "a2,a3,a5,a7,a8",
@@ -4418,7 +4418,7 @@ func TestPassReadsEveryClaimCookie(t *testing.T) {
 // takes nothing off the renewal paid after it, where it once took the
 // renewal's time and deleted the Pass.
 func TestPassRefundTakesOffOnlyWhatIsLeft(t *testing.T) {
-	// A month's Pass runs out and is renewed in its grace month; then the
+	// A 30-day Pass runs out and is renewed in its 30 days of grace; then the
 	// purchase is disputed.
 	p := passServer(t, func(cfg *Config) { cfg.Pass.Days = 30 })
 	issued := p.buy("pi_month")
@@ -4428,7 +4428,7 @@ func TestPassRefundTakesOffOnlyWhatIsLeft(t *testing.T) {
 	renewed := p.renew(issued.Pass, "pi_next_month")
 	p.webhook(stripeDisputeCreated, map[string]any{"object": "dispute", "payment_intent": "pi_month"})
 	if got, ok := p.passExpiresAt(issued.Pass); !ok || !got.Equal(renewed.ExpiresAt) {
-		t.Fatalf("disputing a purchase whose month had run left the Pass at %v (kept: %v), want %v", got, ok, renewed.ExpiresAt)
+		t.Fatalf("disputing a purchase whose 30 days had run left the Pass at %v (kept: %v), want %v", got, ok, renewed.ExpiresAt)
 	}
 	// Refunding the renewal, all of it still to come, ends the Pass.
 	p.refund("pi_next_month")
@@ -4436,30 +4436,30 @@ func TestPassRefundTakesOffOnlyWhatIsLeft(t *testing.T) {
 		t.Fatalf("a Pass with its only time to come refunded: status %d, %+v", status, out)
 	}
 
-	// A year's Pass, renewed at once: the purchase refunded after its year
-	// takes nothing off, and the renewal refunded part way through its year
+	// A 365-day Pass, renewed at once: the purchase refunded after its 365 days
+	// takes nothing off, and the renewal refunded part way through its own
 	// takes off what is left of it, to the day.
 	q := passServer(t, nil)
 	bought := q.buy("pi_year")
 	again := q.renew(bought.Pass, "pi_second_year")
 	later := time.Now().AddDate(0, 0, 370)
 	if res, err := q.app.store.revokePassPayment(context.Background(), q.app.passPaymentHash("pi_year"), later); err != nil || res != revokedTerm {
-		t.Fatalf("refund of the purchase after its year: %v, %v", res, err)
+		t.Fatalf("refund of the purchase after its 365 days: %v, %v", res, err)
 	}
 	if got, ok := q.passExpiresAt(bought.Pass); !ok || !got.Equal(again.ExpiresAt) {
-		t.Fatalf("refunding a purchase whose year had run left the Pass at %v (kept: %v), want %v", got, ok, again.ExpiresAt)
+		t.Fatalf("refunding a purchase whose 365 days had run left the Pass at %v (kept: %v), want %v", got, ok, again.ExpiresAt)
 	}
 	if res, err := q.app.store.revokePassPayment(context.Background(), q.app.passPaymentHash("pi_second_year"), later); err != nil || res != revokedPass {
 		t.Fatalf("refund of the renewal part way through: %v, %v", res, err)
 	}
 
-	// Bought and renewed twice, a year each. The purchase refunded with 265
+	// Bought and renewed twice, 365 days each. The purchase refunded with 265
 	// and a half days of it left takes the 265 whole days off, so it stops at
-	// the next midnight and the renewals come forward whole: the first now
-	// runs a year from that midnight, to 100 days past the purchase's end, not
-	// 365, rather than losing the half day the refund would otherwise round
-	// off it. Refunded ten days later, that renewal takes off the 355 whole
-	// days left of it, and the last renewal keeps its whole year, from the
+	// the next midnight and the renewals come forward whole: the first now runs
+	// 365 days from that midnight, to 100 days past the purchase's end, not
+	// 365, rather than losing the half day the refund would otherwise round off
+	// it. Refunded ten days later, that renewal takes off the 355 whole days
+	// left of it, and the last renewal keeps all 365 of its days, from the
 	// midnight after that refund.
 	r := passServer(t, nil)
 	first := r.buy("pi_three_terms")
@@ -4983,30 +4983,30 @@ func TestPassOrderKeepsItsTerm(t *testing.T) {
 	})
 	bought := p.checkout("")
 	uncollected := p.otherBrowser().checkout("")
-	// The operator sells two years from now on, and restarts.
+	// The operator sells 730 days from now on, and restarts.
 	q := p.twin(func(c *PassConfig) { c.Days = 730 })
 	var status passResponse
 	if q.get("/api/pass", &status); status.Days != 730 {
 		t.Fatalf("the restarted server sells %d days", status.Days)
 	}
 	q.paid(bought, "pi_month")
-	month := 30 * 24 * time.Hour
+	thirtyDays := 30 * 24 * time.Hour
 	before := time.Now()
 	code, issued := q.claim()
-	if code != http.StatusOK || issued.Status != "issued" || !dayRoundedAfter(issued.ExpiresAt, before, time.Now(), month) {
-		t.Fatalf("a month's order collected after the change: status %d, %+v; want it to run a month from the claim", code, issued)
+	if code != http.StatusOK || issued.Status != "issued" || !dayRoundedAfter(issued.ExpiresAt, before, time.Now(), thirtyDays) {
+		t.Fatalf("a 30-day order collected after the change: status %d, %+v; want it to run 30 days from the claim", code, issued)
 	}
 	q.paid(p.checkout(issued.Pass), "pi_month_renewal")
 	if code, renewed := q.claim(); code != http.StatusOK || renewed.Status != "renewed" ||
 		!renewed.ExpiresAt.Equal(issued.ExpiresAt.AddDate(0, 0, 30)) {
-		t.Fatalf("a month's renewal collected after the change: status %d, %+v", code, renewed)
+		t.Fatalf("a 30-day renewal collected after the change: status %d, %+v", code, renewed)
 	}
 	q.paid(uncollected, "pi_uncollected_month")
 	_, _, token := q.reissueCode("mod-key", "pi_uncollected_month")
 	before = time.Now()
 	if code, out := q.otherBrowser().redeem(token); code != http.StatusOK || out.Status != "issued" ||
-		!dayRoundedAfter(out.ExpiresAt, before, time.Now(), month) {
-		t.Fatalf("a month's order reissued after the change: status %d, %+v", code, out)
+		!dayRoundedAfter(out.ExpiresAt, before, time.Now(), thirtyDays) {
+		t.Fatalf("a 30-day order reissued after the change: status %d, %+v", code, out)
 	}
 }
 
@@ -5178,10 +5178,10 @@ func TestPassRevocationIsDayRounded(t *testing.T) {
 }
 
 // TestPassRevocationRunsFromTheLatest holds the record of a refunded or
-// disputed payment to a month from the last refund or dispute Stripe reports
-// for it, as the README says: a dispute that follows a refund of the same
-// payment, or the refund delivered again, starts the month again rather than
-// leaving the first one's date.
+// disputed payment to 30 days from the last refund or dispute Stripe reports
+// for it, rounded up to the next midnight UTC, as the README says: a dispute
+// that follows a refund of the same payment, or the refund delivered again,
+// starts the 30 days again rather than leaving the first one's date.
 func TestPassRevocationRunsFromTheLatest(t *testing.T) {
 	for _, later := range []struct {
 		name   string
@@ -5214,13 +5214,13 @@ func TestPassRevocationRunsFromTheLatest(t *testing.T) {
 	}
 }
 
-// TestPassRefundCancelsAPassInItsGraceMonth holds a refund or dispute of any
-// payment on a Pass that has run out, and can still be renewed for its grace
-// month, to cancelling it outright, as the README says: nothing of its time is
+// TestPassRefundCancelsAPassInItsGrace holds a refund or dispute of any payment
+// on a Pass that has run out, and can still be renewed for its 30 days of
+// grace, to cancelling it outright, as the README says: nothing of its time is
 // left to take off, so the code the buyer was paid back for cannot be renewed.
 // Nor can the Pass be reissued, from the payment refunded or from the one it
 // left: no Pass is left from either, and the owner is told so.
-func TestPassRefundCancelsAPassInItsGraceMonth(t *testing.T) {
+func TestPassRefundCancelsAPassInItsGrace(t *testing.T) {
 	for _, c := range []struct{ name, event, payment string }{
 		{"refund of the renewal", stripeChargeRefunded, "pi_grace_renewal"},
 		{"dispute of the purchase", stripeDisputeCreated, "pi_grace_bought"},
@@ -5245,14 +5245,14 @@ func TestPassRefundCancelsAPassInItsGraceMonth(t *testing.T) {
 				t.Fatalf("%s: status %d", c.event, status)
 			}
 			if n := p.count("passes"); n != 0 {
-				t.Fatalf("%s left %d Passes in their grace month", c.name, n)
+				t.Fatalf("%s left %d Passes in their 30 days of grace", c.name, n)
 			}
 			if status, out := p.activate(issued.Pass); status != http.StatusForbidden || refusalState(t, out) != passInvalid {
 				t.Fatalf("the Pass after the refund: status %d, %+v", status, out)
 			}
 			var renewal passResponse
 			if status := p.post("/api/pass/checkout", map[string]any{"adult": true, "renew": issued.Pass}, &renewal); status != http.StatusForbidden {
-				t.Fatalf("renewing a Pass cancelled in its grace month: status %d", status)
+				t.Fatalf("renewing a Pass cancelled in its 30 days of grace: status %d", status)
 			}
 			for _, payment := range []string{"pi_grace_bought", "pi_grace_renewal"} {
 				if status, out, _ := p.reissueCode("mod-key", payment); status != http.StatusNotFound || out.Error != passReissueMissing {
@@ -5263,22 +5263,22 @@ func TestPassRefundCancelsAPassInItsGraceMonth(t *testing.T) {
 	}
 }
 
-// TestPassPastItsGraceMonthIsGone holds a Pass a month past its expiry to one
-// rule wherever it is read (passCutoff): it has gone, as if the prune had
-// deleted it, though no prune has run. Checking it, posting with it, renewing
-// it, asking again for it with the claim or reissue code that made it, a
-// "paid" event delivered again for its payment, refunding that payment,
-// collecting a paid renewal of it, reissuing it, and redeeming a reissue code
-// made for it before it went, the one its right moved to while a renewal is
-// under way included, each find no Pass, and the prune that follows changes
-// none of their answers. An hour inside the month, each finds it, run out.
-func TestPassPastItsGraceMonthIsGone(t *testing.T) {
+// TestPassPastItsGraceIsGone holds a Pass 30 days past its expiry to one rule
+// wherever it is read (passCutoff): it has gone, as if the prune had deleted
+// it, though no prune has run. Checking it, posting with it, renewing it,
+// asking again for it with the claim or reissue code that made it, a "paid"
+// event delivered again for its payment, refunding that payment, collecting a
+// paid renewal of it, reissuing it, and redeeming a reissue code made for it
+// before it went, the one its right moved to while a renewal is under way
+// included, each find no Pass, and the prune that follows changes none of their
+// answers. An hour inside those 30 days, each finds it, run out.
+func TestPassPastItsGraceIsGone(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		past bool
 	}{
-		{"an hour inside its grace month", false},
-		{"an hour past its grace month", true},
+		{"an hour inside its 30 days of grace", false},
+		{"an hour past its 30 days of grace", true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
@@ -5335,7 +5335,7 @@ func TestPassPastItsGraceMonthIsGone(t *testing.T) {
 				t.Fatal("a reissue code was not made")
 			}
 
-			// Every Pass and every term ran out a month ago, give or take the
+			// Every Pass and every term ran out 30 days ago, give or take the
 			// hour, and nothing has pruned them since.
 			expires := time.Now().Add(-passExpiredGrace + time.Hour)
 			if c.past {
@@ -5420,7 +5420,7 @@ func TestPassPastItsGraceMonthIsGone(t *testing.T) {
 			// differently once it has.
 			var aged int
 			if err := p.app.pool.QueryRow(ctx, `SELECT count(*) FROM passes WHERE expires_at = $1`, expires).Scan(&aged); err != nil || aged != 5 {
-				t.Fatalf("%d Passes a month past their expiry left before the prune (%v), want all 5", aged, err)
+				t.Fatalf("%d Passes 30 days past their expiry left before the prune (%v), want all 5", aged, err)
 			}
 			if err := p.app.store.prunePasses(ctx, time.Now()); err != nil {
 				t.Fatal(err)
@@ -5439,7 +5439,7 @@ func TestPassPastItsGraceMonthIsGone(t *testing.T) {
 }
 
 // TestPassOrderPastItsKeepIsGone holds a paid order nobody collected to one
-// keep rule, as TestPassPastItsGraceMonthIsGone holds a Pass to one grace
+// keep rule, as TestPassPastItsGraceIsGone holds a Pass to one grace
 // rule: once it is its own term past its deadline (passOrderKept), it has gone
 // for every purpose, before any prune, exactly as once the prune has deleted
 // it, and an hour before that it is there for every purpose. Collecting it by
@@ -5773,7 +5773,7 @@ func TestPassUnpaidOrderIsPayableUntilItsKeepEnds(t *testing.T) {
 // TestPassReissueCodeOutlivesNothing holds a reissue code's deadline, stored
 // and answered, to what it is for: a week, to the next midnight UTC, unless a
 // paid order's keep ends sooner, or the Pass it gives a new code has gone
-// sooner, a month past its expiry as it was when the code was made. A renewal
+// sooner, 30 days past its expiry as it was when the code was made. A renewal
 // of that Pass afterwards does not lengthen the code, and a refund of another
 // of its payments that ends the Pass sooner still leaves the code giving
 // nothing.
@@ -5828,8 +5828,8 @@ func TestPassReissueCodeOutlivesNothing(t *testing.T) {
 		t.Fatalf("a reissue code for a Pass that has gone in two weeks: status %d, %+v; want the first UTC midnight a week on", status, out)
 	}
 
-	// Renewed, the Pass runs a year more, and the code made before stays
-	// good only until the moment the Pass would have gone without it.
+	// Renewed, the Pass runs 365 days more, and the code made before stays good
+	// only until the moment the Pass would have gone without it.
 	ending.renew(endingPass.Pass, "pi_pass_ending_renewal")
 	if got := stored("pi_pass_ending"); !got.Equal(goneAt) {
 		t.Fatalf("the renewal moved the reissue code's deadline to %v, want %v", got, goneAt)

@@ -4068,7 +4068,7 @@ func TestPassNoticeGoesWithWhatItSaid(t *testing.T) {
 }
 
 // A code handed over whose Pass's expiry has passed by the server's clock, as
-// it came (a reissue code's, for a Pass in its month of grace, say) or since,
+// it came (a reissue code's, for a Pass in its 30 days of grace, say) or since,
 // is never called ready, kept or not, whatever this computer's clock says: it
 // has run out and needs renewing (TestPassRunOutIsJudgedByTheServersClock).
 // Beside a good Pass held, which the code box will not put another code in
@@ -4409,8 +4409,8 @@ func TestPassCopyMatchesWhatTheServerDoes(t *testing.T) {
 	}
 	// A lost code is reissued from the payment that bought the Pass, or, once
 	// that is refunded or disputed, only from one payment left paying for all
-	// its time (passReissueNoOrigin), and not at all for a Pass more than a
-	// month past its expiry, which the server no longer keeps
+	// its time (passReissueNoOrigin), and not at all for a Pass more than 30
+	// days past its expiry, which the server no longer keeps
 	// (passExpiredGrace), so every promise of a reissue code for a lost code
 	// says it may no longer be possible then, in these words.
 	held := words(jsFunction(t, script, "passHeldHTML"))

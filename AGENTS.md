@@ -625,7 +625,7 @@ has changed one of those properties and needs a browser check before the test ch
   the browser stores nothing, which the page cannot tell from a full store
   (`PASS_NOT_KEPT` the same). A code not held whose Pass's expiry has passed by the
   server's clock (`ranOut`, through `serverNow`), as it came, a reissue code's for a
-  Pass in its month of grace say, or since, is never called ready: kept and gone, it
+  Pass in its 30 days of grace say, or since, is never called ready: kept and gone, it
   says its Pass has run out and needs it to renew; not kept, it says it has run out,
   with what would let it be renewed where the box is drawn, the site allowed to store
   data and the code entered with no good Pass held, and beside a good Pass held, in a
@@ -905,7 +905,7 @@ has changed one of those properties and needs a browser check before the test ch
   screen still comes first. A post whose Pass was no good is a `201` like any other,
   carrying `"pass": "invalid"` or `"expired"`: the page forgets the first, marks the
   second run out without a date, and says the post was sent, in a notice noted as one that
-  says what the browser holds. A code typed in after it ran out, until a month past its
+  says what the browser holds. A code typed in after it ran out, until 30 days past its
   expiry, is kept with the date the server gives. Whether a Pass has run out is the
   server's to say, so the page judges it by the server's clock (`serverNow`: this
   computer's clock moved by `serverClockOffset`, which `noteServerClock` keeps, in memory
@@ -1006,17 +1006,17 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   every renewal checkout's transaction id on the Pass's row
   (`TestPassRowIsDatedOnlyByItsWrites`). What the key's `ON DELETE SET NULL` did is done
   in code instead: every transaction that deletes a Pass (today a refund or dispute that
-  leaves it no paid time to come, and the prune a month past its expiry) clears it from
+  leaves it no paid time to come, and the prune 30 days past its expiry) clears it from
   every order that renews it, writing to `pass_orders` alone, so no order, paid or not,
   names a deleted Pass (`TestPassThatIsGoneIsNamedByNoOrder`); anything new that deletes
-  a Pass must do the same. A Pass a month past its expiry has gone for every purpose,
+  a Pass must do the same. A Pass 30 days past its expiry has gone for every purpose,
   pruned yet or not: every lookup of a Pass but `moveOrigin`'s takes only one whose
   `expires_at` is after `passCutoff(now)`, through `passByToken` and `passWithToken` or
   in its own query (`renewPass` and `createPassReissue`, for example), and what a
   transaction then reads or writes of the Pass it found, under the lock, follows from
   that lookup (`revokeTerm` after `revokePassPayment`'s, for example), so whatever
   reaches it (such as a check, a post, a renewal, a claim, a reissue code or a refund)
-  finds it gone, and the prune just deletes its rows (`TestPassPastItsGraceMonthIsGone`);
+  finds it gone, and the prune just deletes its rows (`TestPassPastItsGraceIsGone`);
   anything new that looks a Pass up must do the same. The `now` a lookup is held to is
   read just before the store call that makes it, so one made after a call to Stripe is
   held to the clock once Stripe has answered (`createPassOrder`,
@@ -1044,7 +1044,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   Anything new that reads a paid order, or decides what to do with an unpaid one past its
   deadline, must do the same. A reissue code's deadline never runs past what it is for as
   that stands when the code is made: a week, the end of its order's keep, or the moment
-  its Pass would be a month past its expiry, whichever comes first; a renewal afterwards
+  its Pass would be 30 days past its expiry, whichever comes first; a renewal afterwards
   does not move it, and a Pass ended sooner by a refund or dispute of another of its
   payments leaves the code giving nothing (`TestPassReissueCodeOutlivesNothing`).
   `TestPassIsNeverStoredOrLogged`, `TestPassTablesCannotBeJoinedToPosts` and

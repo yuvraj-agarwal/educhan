@@ -1,4 +1,4 @@
--- The educhan Pass: a term (a year by default) of skipping the captcha,
+-- The educhan Pass: a term (365 days by default) of skipping the captcha,
 -- bought for a fee.
 --
 -- The privacy property these tables hold up is that a Pass can never be traced
@@ -38,7 +38,7 @@
 -- payment still counts, unless it comes once the order's own term has passed
 -- since that deadline; paid and never collected, it is kept for that term past
 -- its deadline, so the owner can still reissue it, and counts as gone from then
--- on, pruned yet or not, as a Pass does a month past its expiry.
+-- on, pruned yet or not, as a Pass does 30 days past its expiry.
 
 CREATE TABLE IF NOT EXISTS passes (
     id         BIGSERIAL PRIMARY KEY,
@@ -55,7 +55,7 @@ CREATE INDEX IF NOT EXISTS passes_expires_idx ON passes (expires_at);
 -- The payments behind a Pass: the first purchase and every renewal. Refunding
 -- or disputing one of a Pass not yet gone takes the part of its term still to
 -- come off the Pass's expiry and deletes its row; a Pass left with no time to
--- come goes too, and these rows with it. Once the Pass is a month past its
+-- come goes too, and these rows with it. Once the Pass is 30 days past its
 -- expiry, a refund or dispute finds no Pass, and its rows are left to the
 -- prune, which deletes them with it.
 CREATE TABLE IF NOT EXISTS pass_payments (
@@ -103,14 +103,14 @@ CREATE TABLE IF NOT EXISTS pass_orders (
     -- The Pass this purchase renews, when the checkout was sent its code. NULL
     -- buys a new Pass, and so does a renewal whose Pass has gone since: the
     -- transaction that deletes a Pass (a refund or a dispute that leaves it no
-    -- paid time to come, or the prune a month past its expiry) sets this to
+    -- paid time to come, or the prune 30 days past its expiry) sets this to
     -- NULL in every order naming it, so a paid order kept for its owner to
     -- reissue names no deleted Pass (the README says what the database files
-    -- still show of it), and one still naming a Pass a month past its expiry,
+    -- still show of it), and one still naming a Pass 30 days past its expiry,
     -- until the prune deletes it, is collected as one naming none. It is not a
     -- foreign key, whose check would lock the Pass's row and leave the
-    -- checkout's transaction id on it (above); clearing it writes to this
-    -- table alone.
+    -- checkout's transaction id on it (above); clearing it writes to this table
+    -- alone.
     renew_pass_id BIGINT,
     -- The term the order buys, in days: EDUCHAN_PASS_DAYS when the checkout
     -- started. Collecting, renewing and pruning the order all use this, so a
@@ -125,10 +125,11 @@ CREATE INDEX IF NOT EXISTS pass_orders_expires_idx ON pass_orders (expires_at);
 
 -- Payments refunded in full or disputed: the processor can deliver a refund
 -- ahead of a retried "paid" event, and this is what stops that late event from
--- turning a refunded purchase into a Pass. Kept for a month from the last full
+-- turning a refunded purchase into a Pass. Kept for 30 days from the last full
 -- refund or dispute the processor reports for the payment, a repeated delivery
 -- included, longer than the processor retries an event, rounded up to a UTC
--- midnight. A partial refund writes nothing.
+-- midnight, and on until the prune after that, since its lookup takes no bound.
+-- A partial refund writes nothing.
 CREATE TABLE IF NOT EXISTS pass_revocations (
     payment_hash BYTEA PRIMARY KEY,
     expires_at   TIMESTAMPTZ NOT NULL
@@ -141,7 +142,7 @@ CREATE TABLE IF NOT EXISTS pass_revocations (
 -- used, replaced by a newer one, cancelled by a refund or a dispute or by a
 -- renewal of a Pass whose right had moved, or past its deadline: a week,
 -- rounded up to a UTC midnight like an order's, or sooner if what it is for
--- goes sooner (a paid order's keep ending, or its Pass a month past its expiry
+-- goes sooner (a paid order's keep ending, or its Pass 30 days past its expiry
 -- as that expiry stood when the code was made). One for a right that moved is
 -- refused, and kept, while a renewal of its Pass is under way.
 CREATE TABLE IF NOT EXISTS pass_reissues (
