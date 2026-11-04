@@ -2408,13 +2408,16 @@ let passClaimGone = 0;
 // passForgetting settles once every request to drop this browser's claim that
 // this tab knows to be on its way has: its own (forgetPassClaim), and another
 // tab's, by that tab's mark going (followPassForget, heedPassForgetsUnderWay).
-// It is null while there is none. Until the server has them, the claim is
-// still this browser's, and GET /api/pass still says there is something to
-// collect, so nothing starts collecting meanwhile: the Pass page waits for
-// them before asking (renderPass), and so does a collection before each claim
-// (collectPass). Waiting on every one, a checkout started once Remove's was
-// answered cannot have its claim dropped by a Stop pressed before it and
-// answered after it, in this tab or another.
+// It is null while there is none. Until the server has them, the claim is still
+// this browser's, and GET /api/pass still says there is something to collect,
+// so nothing starts collecting meanwhile: a drawing of the Pass page waits,
+// before it asks, for those on their way when it began (renderPass), and a
+// collection, before each claim, for those on their way then (collectPass); a
+// forget that comes while either waits ends it (passVisit), so it draws nothing
+// and claims nothing, though a drawing it ends still asks GET /api/pass.
+// Waiting on every one, a checkout started once Remove's was answered cannot
+// have its claim dropped by a Stop pressed before it and answered after it, in
+// this tab or another.
 let passForgetting = null;
 
 // passForgetWaits holds each of those forgets, by its mark's key, as { code,
@@ -3335,17 +3338,18 @@ function passCanBeKept() {
 }
 
 // loadPassInfo asks whether the Pass is on sale and on what terms, and whether
-// this browser has a purchase to collect. A server that did not answer is
-// kept apart from one that does not sell the Pass, so the page does not say
-// the second when it means the first. An answer with no purchase to collect,
-// or from a server that sells no Pass, tells this tab that nothing was left
-// for this browser to collect as of when it was asked (sent), which takes off
-// a claim notice said for a forget that went before that (heedPassClaimGone).
+// this browser has a purchase to collect. A server that did not answer is kept
+// apart from one that does not sell the Pass, so the page does not say the
+// second when it means the first. An answer with no purchase to collect, or
+// from a server that sells no Pass, tells this tab that nothing was left for
+// this browser to collect as of when it was asked (sent), which takes off a
+// claim notice said for a forget that went before that (heedPassClaimGone).
 // That answer is final: the server counts as something to collect every order
 // under the claim that a payment Stripe reports could still make a Pass of, an
-// unpaid one past its deadline included, until a claim from this browser
-// deletes that one, which the page sends whenever the answer says there is
-// something (collectPass), so nothing can come under the claim afterwards.
+// unpaid one past its deadline included, until something deletes that one, the
+// prune or a claim from this browser, say, which the Pass page sends when it
+// draws an answer that says there is something (collectPass); so once it counts
+// none, nothing can come under the claim afterwards.
 async function loadPassInfo() {
   const sent = Date.now();
   try {
@@ -3400,10 +3404,11 @@ function passRunOutText() {
 // both. Like any notice, one goes when the reader dismisses it, when a later
 // notice is put up in its place, when the reader sends something or picks a
 // file (a code, Buy, a post or an image, say), and when this tab draws a page
-// afresh (render): one the reader moves to, or the Pass page brought back from
-// the back-forward cache (the pageshow listener), while a tab brought back on
-// any other page keeps its notice. Besides those, these rules take one off, for
-// something other than the reader (takePassNoticeOff):
+// afresh (render), such as one the reader moves to, a thread page Update draws
+// again, or the Pass page brought back from the back-forward cache (the
+// pageshow listener), while a tab brought back on any other page keeps its
+// notice. Besides those, these rules take one off, for something other than the
+// reader (takePassNoticeOff):
 //
 // - A held notice says what this browser holds (notePassHeld): a Pass taken on,
 //   good until a date, renewed or run out, one this browser could not store, or
@@ -3449,12 +3454,15 @@ function passRunOutText() {
 //   Verify page its press drew, only what it took, or nothing if a Remove or
 //   Forget pressed since, here or in another tab, or another tab's removal of
 //   the Pass, came while it waited (passNoticeForgets, below). For Remove and
-//   Forget, what tells this tab so first is a forget pressed after its own and
-//   answered with the claim dropped, since this tab's own collection and GET
-//   /api/pass wait for its forget (passForgetting): a Remove or Forget, here or
-//   in another tab, which also moves passNoticeForgets, so Forget says nothing,
-//   or a Stop in another tab, which can be pressed there only once its wait on
-//   this forget is over (PASS_FORGET_WAIT_MS), so Forget says what it took. Put
+//   Forget, what can tell this tab so first is a forget pressed after its own
+//   and answered with the claim dropped, a Remove or Forget, here or in another
+//   tab, which also moves passNoticeForgets, so Forget says nothing, or a Stop
+//   in another tab, which can be pressed there only once its wait on this
+//   forget is over (PASS_FORGET_WAIT_MS), so Forget says what it took; or GET
+//   /api/pass asked after the press by a drawing of the Pass page begun before
+//   it, which waits only for the forgets on their way when it began
+//   (renderPass). A collection sends no claim once the press has ended it, and
+//   a drawing begun after the press waits for its forget (passForgetting). Put
 //   up, Remove's and Forget's say what they took with the claim's warning, or
 //   the warning alone once such a Remove, Forget or removal has come meanwhile.
 //   A forget pressed since and not yet answered leaves it to be put up, and
@@ -6656,12 +6664,13 @@ document.addEventListener("click", (event) => {
   // it asks for a step, the claim's warning alone once such a forget or removal
   // has come, unless this tab has learned that nothing is left to collect since
   // the press (passClaimGone): then only what this one took is said, over that
-  // Verify page, and nothing once such a forget or removal has come. What tells
-  // it so first is a forget pressed after it and answered with the claim
-  // dropped, since this tab's collection and the Pass page's answer wait for
-  // this forget (passForgetting): a Remove or Forget, which leaves nothing to
-  // say, or a Stop in another tab, pressed there once its wait on this forget
-  // is over.
+  // Verify page, and nothing once such a forget or removal has come. What can
+  // tell it so first is a forget pressed after it and answered with the claim
+  // dropped, a Remove or Forget, which leaves nothing to say, or a Stop in
+  // another tab, pressed there once its wait on this forget is over, or the
+  // answer to GET /api/pass of a drawing of the Pass page begun before the
+  // press, which waits only for the forgets on their way when it began (Pass
+  // notices).
   if (event.target.closest('[data-action="forget-browser"]')) {
     event.preventDefault();
     const at = Date.now();

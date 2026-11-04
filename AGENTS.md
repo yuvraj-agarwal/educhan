@@ -718,12 +718,15 @@ has changed one of those properties and needs a browser check before the test ch
   a reissue it dropped would be spent for nothing, though a reissue answer that lands
   after it does not draw back the claim Stop dropped (`passForgets`, read before the
   request). Until the server has that request (`passForgetting`), nothing collects:
-  `renderPass` and `collectPass` wait on it, and Check now and Stop collecting it here
-  stay off meanwhile, in every tab and anything drawn meanwhile (`PASS_COLLECT_BUTTONS`,
-  which `drawPass` and `stopForPassForget` turn off); turned away, Stop turns them back
-  on, says so (a claim notice, below) and goes on collecting. The browser's other tabs
-  do all of this too: each forget keeps a mark of its own while its request is on its way,
-  under `educhan:pass-forget:` and a random token, holding the forget pressed (`remove:`,
+  `renderPass` waits on the forgets on their way when it begins, `collectPass` on those on
+  their way before each claim, and a forget that comes while either waits ends it
+  (`passVisit`), so it draws and claims nothing, though an ended `renderPass` still asks
+  `GET /api/pass`; Check now and Stop collecting it here stay off meanwhile, in every tab
+  and anything drawn meanwhile (`PASS_COLLECT_BUTTONS`, which `drawPass` and
+  `stopForPassForget` turn off); turned away, Stop turns them back on, says so (a claim
+  notice, below) and goes on collecting. The browser's other tabs do all of this too: each
+  forget keeps a mark of its own while its request is on its way, under
+  `educhan:pass-forget:` and a random token, holding the forget pressed (`remove:`,
   `browser:` or `stop:`) and the time it was set, so two forgets at once never share one,
   and, written just before it is taken off, educhan's answer (`PASS_FORGET_DROPPED` or
   `PASS_FORGET_KEPT`, read by `passMarkRead`), which the other tabs heed
@@ -841,77 +844,79 @@ has changed one of those properties and needs a browser check before the test ch
   `sent`, an answer that is final, since nothing can come under a claim once nothing is
   left under it). A forget not yet answered, answered with the claim kept, or whose tab
   closed first (its mark timed out, `passForgetLeft`), and a Pass stored, changed or
-  removed in another tab leave it, since dropping a true warning costs the next person
-  at the computer a Pass, and keeping a stale one an extra press. Like any notice, a
-  claim notice goes when the reader dismisses it, when a later notice is put up in its
-  place, when the reader sends something or picks a file (a code, Buy, a post or an
-  image, say), and when the tab draws a page afresh (`render`, which calls
-  `clearNotice`): the page the reader moves to, or the Pass page brought back from the
-  back-forward cache (the `pageshow` listener). A tab brought back on any other page
-  keeps it, where a mark answered and taken off while the tab was in the cache reaches
-  it only if the browser then hands it the mark's `storage` event, as Chromium does. A
-  failed forget's notice is put up only while `passClaimGone` is not past its own `at`
-  (`passClaimGone <= at`, read once the answer is in), Remove's and Forget's as what the
-  forget took with the claim's warning, or the warning alone once `passNoticeForgets`
+  removed in another tab leave it, since dropping a true warning costs the next person at
+  the computer a Pass, and keeping a stale one an extra press. Like any notice, a claim
+  notice goes when the reader dismisses it, when a later notice is put up in its place,
+  when the reader sends something or picks a file (a code, Buy, a post or an image, say),
+  and when the tab draws a page afresh (`render`, which calls `clearNotice`), such as the
+  page the reader moves to, a thread page its Update draws again, or the Pass page brought
+  back from the back-forward cache (the `pageshow` listener). A tab brought back on any
+  other page keeps it, where a mark answered and taken off while the tab was in the cache
+  reaches it only if the browser then hands it the mark's `storage` event, as Chromium
+  does. A failed forget's notice is put up only while `passClaimGone` is not past its own
+  `at` (`passClaimGone <= at`, read once the answer is in), Remove's and Forget's as what
+  the forget took with the claim's warning, or the warning alone once `passNoticeForgets`
   has moved since the press. Past it, `forgetPassOrder`'s and Stop's say nothing, Remove
   nothing beyond what its press said, and Forget, over the Verify page its press drew,
-  only what it took, or nothing once `passNoticeForgets` has moved. For Remove and
-  Forget the first thing that can move `passClaimGone` past `at` is a forget pressed
-  after theirs and answered with the claim dropped, since this tab's `collectPass` and
-  `loadPassInfo` wait on `passForgetting`: a Remove or Forget, here or in another tab,
-  which also moves `passNoticeForgets`, so Forget says nothing, or a Stop in another
-  tab, which can be pressed there only once its wait on this forget is over
-  (`PASS_FORGET_WAIT_MS`), so Forget says what it took. A forget pressed since and not
-  yet answered leaves it to be put up, and takes it off if its answer drops the claim.
-  Remove's and Forget's, held notices too since they say the browser holds no Pass, give
-  way to the claim's warning alone, a claim notice still with the same `at`, wherever a
-  held notice would go (`dropStalePassNotice`, `dropForgottenPassNotice`, through
-  `showNotice`, which keeps focus on the dismiss button). Another tab's Remove or Forget
-  takes a notice off by its mark (`stopForPassForget`), and so does its removal of the
-  Pass with a code to read (`followPassStorage`: an invalid code found there, or a
-  Remove whose mark this tab missed), both through `dropForgottenPassNotice`: a held
-  notice on any page and any other notice on the Pass page, but not a claim notice,
-  which stays, or, held too, gives way as above; Stop's mark leaves every notice. Taken
-  off by anything but the reader (`takePassNoticeOff`, which `dropStalePassNotice`,
-  `dropForgottenPassNotice` and `heedPassClaimGone` use), it hands focus on its
-  dismiss button to `el.main`, with `preventScroll`, rather than drop it to the top of
-  the document, and the drawing after keeps it there (`redrawPass`, by its id). The held
-  panel's Check it again and the steps beside a code the browser could not keep are
-  offered only where the code box is drawn (`box`). Another tab's Remove, Forget, new
-  code or finding that its code is no longer valid reaches this one by the `storage`
-  event. Remove and Forget set their mark (`forgetPassClaim`) before they take the Pass
-  from storage, or, for Forget, the badge, the poster key and the name (only the nonces
-  and this tab's own checkout marks, which other tabs leave be, go first), so this tab
-  hears the mark first and drops every code just handed over, kept or not, with any code
-  it took the place of or carried (`stopForPassForget`), and the removal after it finds
-  nothing left to keep. Any other removal is followed as this tab's own finding that the
-  code is no longer valid (`followPassStorage`, through `forgetInvalidCode`, with the code
-  `passCodeIn` reads from the event's `oldValue`): only the code removed goes. A removal
-  with no code to read, or an event whose `key` is `null` (storage cleared from outside
-  the page, which never calls `localStorage.clear()`), takes nothing off, since the panel
-  says what is held. Another code stored there leaves a code just handed over, kept or
-  not, beside any code it took the place of or carried, and each change draws the Pass
-  page again. All of this needs a browser that stores: one that stores nothing at all
-  tells its other tabs nothing, and a code on screen there stays until the reader leaves
-  the Pass page, and one that lets the Pass go but will not store the mark, its storage
-  full say, has the other tabs take the removal for a finding that the code is no longer
-  valid. A page brought back from the back-forward cache is drawn again through `render`
-  (the `pageshow` listener), so the age screen still comes first. A post whose Pass was no
-  good is a `201` like any other, carrying `"pass": "invalid"` or `"expired"`: the page
-  forgets the first, marks the second run out without a date, and says the post was
-  sent, in a notice noted as one that says what the browser holds. A code typed in after
-  it ran out, until a month past its expiry, is kept with the date the server gives.
-  Whether a Pass has run out is the server's to say, so the page judges it by the
-  server's clock (`serverNow`: this computer's clock moved by `serverClockOffset`, which
-  `noteServerClock` keeps, in memory only, from the `Date` header of the latest
-  `no-store` answer `api()` reads, every JSON answer being one), and by this computer's
-  clock alone until an answer has come; the header is in whole seconds, so it is good to
-  a second or two. `storedPass`'s `expired`, which the held panel's status, its "good
-  until" and renewal wording, Check it again and every notice read, and
-  `passIssuedHTML`'s `ranOut` go by it, so a slow clock does not call a run-out Pass
-  good, nor a fast one a good Pass run out. A Pass the server says has run out,
-  answering Check it again, the check of the code held after a renewal collected here
-  or after a claim or reissue code whose answer was lost (`recheckPass`, from
+  only what it took, or nothing once `passNoticeForgets` has moved. For Remove and Forget
+  what can move `passClaimGone` past `at` first is a forget pressed after theirs and
+  answered with the claim dropped, a Remove or Forget, here or in another tab, which also
+  moves `passNoticeForgets`, so Forget says nothing, or a Stop in another tab, which can
+  be pressed there only once its wait on this forget is over (`PASS_FORGET_WAIT_MS`), so
+  Forget says what it took; or the `GET /api/pass` of a `renderPass` begun before the
+  press, which awaits only the forgets on their way when it began and so can ask after the
+  press. A `collectPass` sends no claim once the press has ended it (`passVisit`), and a
+  `renderPass` begun after the press waits for its forget (`passForgetting`). A forget
+  pressed since and not yet answered leaves it to be put up, and takes it off if its
+  answer drops the claim. Remove's and Forget's, held notices too since they say the
+  browser holds no Pass, give way to the claim's warning alone, a claim notice still with
+  the same `at`, wherever a held notice would go (`dropStalePassNotice`,
+  `dropForgottenPassNotice`, through `showNotice`, which keeps focus on the dismiss
+  button). Another tab's Remove or Forget takes a notice off by its mark
+  (`stopForPassForget`), and so does its removal of the Pass with a code to read
+  (`followPassStorage`: an invalid code found there, or a Remove whose mark this tab
+  missed), both through `dropForgottenPassNotice`: a held notice on any page and any other
+  notice on the Pass page, but not a claim notice, which stays, or, held too, gives way as
+  above; Stop's mark leaves every notice. Taken off by anything but the reader
+  (`takePassNoticeOff`, which `dropStalePassNotice`, `dropForgottenPassNotice` and
+  `heedPassClaimGone` use), it hands focus on its dismiss button to `el.main`, with
+  `preventScroll`, rather than drop it to the top of the document, and the drawing after
+  keeps it there (`redrawPass`, by its id). The held panel's Check it again and the steps
+  beside a code the browser could not keep are offered only where the code box is drawn
+  (`box`). Another tab's Remove, Forget, new code or finding that its code is no longer
+  valid reaches this one by the `storage` event. Remove and Forget set their mark
+  (`forgetPassClaim`) before they take the Pass from storage, or, for Forget, the badge,
+  the poster key and the name (only the nonces and this tab's own checkout marks, which
+  other tabs leave be, go first), so this tab hears the mark first and drops every code
+  just handed over, kept or not, with any code it took the place of or carried
+  (`stopForPassForget`), and the removal after it finds nothing left to keep. Any other
+  removal is followed as this tab's own finding that the code is no longer valid
+  (`followPassStorage`, through `forgetInvalidCode`, with the code `passCodeIn` reads from
+  the event's `oldValue`): only the code removed goes. A removal with no code to read, or
+  an event whose `key` is `null` (storage cleared from outside the page, which never calls
+  `localStorage.clear()`), takes nothing off, since the panel says what is held. Another
+  code stored there leaves a code just handed over, kept or not, beside any code it took
+  the place of or carried, and each change draws the Pass page again. All of this needs a
+  browser that stores: one that stores nothing at all tells its other tabs nothing, and a
+  code on screen there stays until the reader leaves the Pass page, and one that lets the
+  Pass go but will not store the mark, its storage full say, has the other tabs take the
+  removal for a finding that the code is no longer valid. A page brought back from the
+  back-forward cache is drawn again through `render` (the `pageshow` listener), so the age
+  screen still comes first. A post whose Pass was no good is a `201` like any other,
+  carrying `"pass": "invalid"` or `"expired"`: the page forgets the first, marks the
+  second run out without a date, and says the post was sent, in a notice noted as one that
+  says what the browser holds. A code typed in after it ran out, until a month past its
+  expiry, is kept with the date the server gives. Whether a Pass has run out is the
+  server's to say, so the page judges it by the server's clock (`serverNow`: this
+  computer's clock moved by `serverClockOffset`, which `noteServerClock` keeps, in memory
+  only, from the `Date` header of the latest `no-store` answer `api()` reads, every JSON
+  answer being one), and by this computer's clock alone until an answer has come; the
+  header is in whole seconds, so it is good to a second or two. `storedPass`'s `expired`,
+  which the held panel's status, its "good until" and renewal wording, Check it again and
+  every notice read, and `passIssuedHTML`'s `ranOut` go by it, so a slow clock does not
+  call a run-out Pass good, nor a fast one a good Pass run out. A Pass the server says has
+  run out, answering Check it again, the check of the code held after a renewal collected
+  here or after a claim or reissue code whose answer was lost (`recheckPass`, from
   `confirmRenewal` and `passAfterLostAnswer`), or a code typed in, is stored with its
   date and `expired: true` (`storePass(code, expires, true)`), and counts as run out
   whatever either clock says until it is stored again without the mark, renewed say; a
@@ -1013,17 +1018,17 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   Pass, and `moveOrigin`, which a refund of the order calls on it, finds none of its
   terms still running. A paid order nobody collected has gone the same way once its own
   term has passed since its deadline, pruned yet or not: every read of a paid order that
-  decides what to do with it holds it to `passOrderKept` (a claim, a reissue code made or
-  redeemed, a refund, Stripe reporting it paid again, and counting it as waiting or as a
-  renewal under way, for example), so the prune only frees its row
-  (`TestPassOrderPastItsKeepIsGone`). An unpaid order is no longer waited for past its
-  deadline, and goes when something deletes it, the next prune or a claim from its own
-  browser (`claimOne`), say, which the Pass page sends while `GET /api/pass` counts the
-  order as something to collect; a payment Stripe reports after that finds nothing, and
-  the owner is warned. It has gone too once that term has passed since its deadline,
-  pruned yet or not: marking it paid, holding it for a slow payment, counting it as a
-  renewal under way and counting it as something for its browser to collect
-  (`passClaimWaiting`, and what `claimPass` answers is left) all hold it to
+  decides what to do with it holds it to `passOrderKept`, or to `passOrderPayable`, the
+  same bound for a paid order (a claim, a reissue code made or redeemed, a refund, Stripe
+  reporting it paid again, and counting it as waiting or as a renewal under way, for
+  example), so the prune only frees its row (`TestPassOrderPastItsKeepIsGone`). An unpaid
+  order is no longer waited for past its deadline, and goes when something deletes it, the
+  next prune or a claim from its own browser (`claimOne`), say, which the Pass page sends
+  while `GET /api/pass` counts the order as something to collect; a payment Stripe reports
+  after that finds nothing, and the owner is warned. It has gone too once that term has
+  passed since its deadline, pruned yet or not: marking it paid, holding it for a slow
+  payment, counting it as a renewal under way and counting it as something for its browser
+  to collect (`passClaimWaiting`, and what `claimPass` answers is left) all hold it to
   `passOrderPayable`, one bound, which ends where a paid order's keep does, so none of
   them takes an order the others have let go, and once nothing is left to collect under a
   claim, nothing can come under it later (`TestPassOrderPastItsKeepIsGone`,

@@ -340,10 +340,11 @@ func termDays(base, expiry time.Time) int {
 
 // passClaimDeadline is the deadline of an order started at now: a week on,
 // rounded up to a UTC midnight, so the stored deadline dates a checkout to the
-// day and not the microsecond. From then on an unpaid order is no longer
-// waited for, and a claim deletes it (claimOne), though a payment Stripe
-// reports for it first still counts until its own term has passed since
-// (passOrderPayable); a paid one is kept for that term past it (passOrderEnd).
+// day and not the microsecond. From then on an unpaid order is no longer waited
+// for, and goes when something deletes it, the prune (prunePasses) or a claim
+// (claimOne), say, though a payment Stripe reports for it before then still
+// counts until its own term has passed since (passOrderPayable); a paid one is
+// kept for that term past it (passOrderEnd).
 func passClaimDeadline(now time.Time) time.Time {
 	return dayCeil(now.Add(passClaimTTL))
 }
@@ -1620,14 +1621,15 @@ func (s *Store) dropUnpaidPassOrder(ctx context.Context, sessionHash []byte) err
 }
 
 // passClaimWaiting reports whether any of a browser's claims has anything to
-// collect: an order that can still bring a Pass, since a payment Stripe
-// reports for it would still count (passOrderPayable). That is a paid order
-// while it is kept, until its own term past its deadline, and an unpaid one
-// until that term has passed too, whatever its deadline: inside its deadline a
-// claim is told to wait, and past it a claim deletes the order, so a payment
-// reported after that finds nothing (claimOne). So an answer that nothing is
-// waiting is final: no order under the claims can be paid any more, so nothing
-// can come under them later. It reads without the lock, as passByToken does.
+// collect: an order that can still bring a Pass, since a payment Stripe reports
+// for it would still count (passOrderPayable). That is a paid order while it is
+// kept, until its own term past its deadline, and an unpaid one until that term
+// has passed too, whatever its deadline: inside its deadline a claim is told to
+// wait, and past it something deletes the order, a claim (claimOne) or the
+// prune (prunePasses), say, so a payment reported after that finds nothing. So
+// an answer that nothing is waiting is final: no order under the claims can be
+// paid any more, so nothing can come under them later. It reads without the
+// lock, as passByToken does.
 func (s *Store) passClaimWaiting(ctx context.Context, claimHashes [][]byte, now time.Time) (bool, error) {
 	return claimsWaiting(ctx, s.pool, claimHashes, now)
 }
