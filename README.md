@@ -789,11 +789,12 @@ is gone. If the renewal goes unpaid, or is refunded or disputed before it is
 collected, the reissue code works again until its deadline, as it does once a
 paid renewal nobody collected has gone, its own term past its deadline (above).
 An unpaid checkout goes unpaid once a payment Stripe reports for it would no
-longer count: when its order goes, as it does when Stripe closes the checkout or
-the order is pruned past its deadline, by the daily sweep, the next checkout or
-a claim from its own browser, and once the order's own term has passed since
-that deadline, pruned yet or not (above). The purchase keeps its own right
-whatever renewal is under way.
+longer count: when its order goes, as it does when Stripe reports the checkout
+expired or its payment failed, or reports it paid with a payment already
+refunded, or past its deadline when the daily sweep or the next checkout prunes
+it or a claim from its own browser deletes it, and once the order's own term has
+passed since that deadline, pruned yet or not (above). The purchase keeps its
+own right whatever renewal is under way.
 
 **Setting it up.** In Stripe: a one-time Price for the Pass with a fixed amount
 in one currency alone, with no currency options for others

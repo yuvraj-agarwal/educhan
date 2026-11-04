@@ -31,14 +31,21 @@
 --     time of every payment anyway.
 --
 -- pass_orders is the exception, as verification_pending is for 0004: a row
--- there lives from checkout until the Pass is collected, and is deleted the
--- moment it is. Unpaid, it is deleted at the first prune (a checkout, the daily
--- sweep, or a claim from its own browser) after its deadline, a week after
--- checkout (longer while a slow payment confirms), and until then a late
--- payment still counts, unless it comes once the order's own term has passed
--- since that deadline; paid and never collected, it is kept for that term past
--- its deadline, so the owner can still reissue it, and counts as gone from then
--- on, pruned yet or not, as a Pass does 30 days past its expiry.
+-- there lives from checkout until the Pass is collected, by a claim from the
+-- browser that started it or by a reissue code, and is deleted the moment it
+-- is. Unpaid, it is deleted when the processor reports its checkout expired, a
+-- day after checkout unless it completed with a payment still confirming, or
+-- its payment failed, or reports it paid with a payment already refunded or
+-- disputed. Otherwise it is no longer waited for once past its deadline, a week
+-- after checkout (longer while a slow payment confirms), and is deleted by
+-- whichever comes first of the next prune (a checkout or the daily sweep) and a
+-- claim from its own browser; until then a late payment still counts, unless it
+-- comes once the order's own term has passed since that deadline. Paid and
+-- never collected, it is deleted when its payment is refunded or disputed, and
+-- is otherwise kept for that term past its deadline, so the owner can still
+-- reissue it, and counts as gone from then on, pruned yet or not, as a Pass
+-- does 30 days past its expiry, until the next prune or a claim from its own
+-- browser deletes it.
 
 CREATE TABLE IF NOT EXISTS passes (
     id         BIGSERIAL PRIMARY KEY,

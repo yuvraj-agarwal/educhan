@@ -633,10 +633,11 @@ func (a *App) handlePassCheckout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Orders past their deadline, refunds past their 30 days and Passes past
-	// their 30 days of grace go here as well as in the sweep, so a busy server
-	// keeps nothing past its time between two sweeps. A Pass past its grace
-	// counts as gone before then (passCutoff), so this only frees rows.
+	// Orders no longer kept (passOrderKept), refunds past their 30 days and
+	// Passes past their 30 days of grace go here as well as in the sweep, so a
+	// busy server keeps nothing past its time between two sweeps. A Pass past
+	// its grace counts as gone before then (passCutoff), so this only frees
+	// rows.
 	//
 	// A client gone meanwhile, a checkout the page called off by a forget or
 	// by leaving, is no fault, so it is not logged, here or below, as a.fail
@@ -1386,9 +1387,10 @@ func (a *App) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		if outcome == paidUnmatched {
 			// No order still there to be paid or still kept, and no Pass still
 			// there, has this payment: a checkout of something else sold on the
-			// same Stripe account, say, an unpaid order paid after all once it
-			// was pruned after its deadline, or once its own term had passed
-			// since that deadline, pruned yet or not (markPassOrderPaid), or a
+			// same Stripe account, say, an unpaid order paid after all once
+			// something deleted it past its deadline (the prune, or a claim
+			// from its own browser, claimOne), or once its own term had passed
+			// since that deadline, deleted yet or not (markPassOrderPaid), or a
 			// delivery repeated after the order or Pass it bought has gone (an
 			// order its own term past its deadline, a Pass 30 days past its
 			// expiry or ended by a refund or dispute of another of its
@@ -1551,16 +1553,16 @@ const (
 // collected, while it is kept (passOrderKept), and after, when the payment is
 // found on its Pass instead, while that Pass has not gone (passCutoff); once
 // either has gone, a delivery again finds nothing, as once it is pruned. A
-// payment already refunded is refused, since Stripe may deliver a refund
-// before a retried "paid", and its order, which can never be paid now, is
-// deleted, so the browser that started it stops waiting for it. An unpaid
-// order past its claim deadline is still marked until something deletes it,
-// the next prune say: the money has been taken, and a paid order waits to be
-// collected or reissued for its own term past that deadline (prunePasses). Once
-// that term has passed too, the order would be gone for every purpose the
-// moment it was marked (passOrderKept), so it is not marked, pruned yet or not
-// (passOrderPayable): the event finds nothing, as once it is pruned, and the
-// owner is warned the same way.
+// payment already refunded is refused, since Stripe may deliver a refund before
+// a retried "paid", and its order, which can never be paid now, is deleted, so
+// the browser that started it stops waiting for it. An unpaid order past its
+// claim deadline is still marked until something deletes it, the next prune or
+// a claim from its own browser (claimOne), say: the money has been taken, and a
+// paid order waits to be collected or reissued for its own term past that
+// deadline (prunePasses). Once that term has passed too, the order would be
+// gone for every purpose the moment it was marked (passOrderKept), so it is not
+// marked, pruned yet or not (passOrderPayable): the event finds nothing, as
+// once it is pruned, and the owner is warned the same way.
 func (s *Store) markPassOrderPaid(ctx context.Context, sessionHash, paymentHash []byte, now time.Time) (paidOutcome, error) {
 	var outcome paidOutcome
 	err := s.passTx(ctx, func(tx pgx.Tx) error {
@@ -1603,11 +1605,12 @@ func (s *Store) markPassOrderPaid(ctx context.Context, sessionHash, paymentHash 
 }
 
 // holdPassOrder keeps an unpaid order until at least until. A checkout
-// completed with a payment that takes days to confirm, a bank debit say,
-// would otherwise be pruned at its deadline before the money arrived. An order
-// that has gone at now, its own term past its deadline (passOrderPayable), is
-// not held, pruned yet or not, as once it is pruned: no payment Stripe reports
-// for it counts any more, and holding it would make one count again.
+// completed with a payment that takes days to confirm, a bank debit say, would
+// otherwise go past its deadline, at the next prune or a claim from its own
+// browser, before the money arrived. An order that has gone at now, its own
+// term past its deadline (passOrderPayable), is not held, pruned yet or not, as
+// once it is pruned: no payment Stripe reports for it counts any more, and
+// holding it would make one count again.
 func (s *Store) holdPassOrder(ctx context.Context, sessionHash []byte, until, now time.Time) error {
 	return s.passTx(ctx, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
@@ -1656,9 +1659,16 @@ func claimsWaiting(ctx context.Context, q rowReader, claimHashes [][]byte, now t
 
 // dropPassClaims moves the order under each of a browser's claims under a
 // random hash of its own, which no token hashes to, so the claims collect
-// nothing. The orders are otherwise left as they were: paid, or paid later,
-// each waits to be reissued from its payment like any order nobody
-// collected, and unpaid it goes at the first prune past its deadline.
+// nothing, and no claim reaches the orders again. They are otherwise left as
+// they were. Paid, or paid later, each waits to be reissued from its payment
+// like any order nobody collected, and goes when a reissue code redeems it,
+// when its payment is refunded or disputed while it is kept, or at the first
+// prune (prunePasses) once its own term past its deadline has passed. Unpaid,
+// it goes when Stripe reports its checkout expired or its payment failed
+// (dropUnpaidPassOrder), or reports it paid with a payment already refunded or
+// disputed (markPassOrderPaid), and otherwise at the first prune past its
+// deadline, a checkout or the daily sweep: a claim, which would delete it then
+// too (claimOne), no longer finds it.
 func (s *Store) dropPassClaims(ctx context.Context, claimHashes [][]byte) error {
 	return s.passTx(ctx, func(tx pgx.Tx) error {
 		for _, claimHash := range claimHashes {
@@ -2105,20 +2115,21 @@ func (s *Store) createPassReissue(ctx context.Context, paymentHash, tokenHash []
 	return state, until, err
 }
 
-// renewalUnderWay reports whether a payment holds the right to reissue its
-// Pass that moved to it when the purchase was refunded or disputed
-// (moveOrigin), while any order renews that Pass, paid or not yet. A reissue
-// then would hand the payer the Pass with that renewal still to land on it,
-// and somebody else's time with it, so it waits: an unpaid order counts while
-// a payment Stripe reports for it would still count (passOrderPayable, the
-// bound markPassOrderPaid holds it to), so until it goes, when Stripe closes
-// its checkout or it is pruned past its deadline, by prunePasses or by a claim
-// from its own browser (claimOne), say, and never once its own term has passed
-// since that deadline, pruned yet or not, when nothing can pay it any more; a
-// paid one, once it is no longer kept (passOrderKept); a refunded or disputed
-// one goes at once; and a collected one takes the right away (renewPass). A
-// Pass that has gone (passCutoff) has no renewal under way, as once the prune
-// has cleared it from its orders.
+// renewalUnderWay reports whether a payment holds the right to reissue its Pass
+// that moved to it when the purchase was refunded or disputed (moveOrigin),
+// while any order renews that Pass, paid or not yet. A reissue then would hand
+// the payer the Pass with that renewal still to land on it, and somebody else's
+// time with it, so it waits: an unpaid order counts while a payment Stripe
+// reports for it would still count (passOrderPayable, the bound
+// markPassOrderPaid holds it to), so until it goes, when Stripe reports its
+// checkout expired or its payment failed, or reports it paid with a payment
+// already refunded or disputed, or past its deadline when the prune
+// (prunePasses) or a claim from its own browser (claimOne) deletes it, and
+// never once its own term has passed since that deadline, pruned yet or not,
+// when nothing can pay it any more; a paid one, once it is no longer kept
+// (passOrderKept); a refunded or disputed one goes at once; and a collected one
+// takes the right away (renewPass). A Pass that has gone (passCutoff) has no
+// renewal under way, as once the prune has cleared it from its orders.
 func renewalUnderWay(ctx context.Context, tx pgx.Tx, paymentHash []byte, now time.Time) (bool, error) {
 	var renewing bool
 	err := tx.QueryRow(ctx, `
