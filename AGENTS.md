@@ -5,17 +5,18 @@ repository contains the working prototype: a Go HTTP API plus an embedded web UI
 by PostgreSQL. Boards, anonymous posting (tripcodes, per-thread poster IDs), image
 attachments, a paginated index, a catalog view, a per-board archive, threads with quote
 links and post markup (spoilers, highlighted code, maths, cross-board links), per-client
-flood control, key-authenticated moderation and board management, and optional
-institutional verification badges are implemented. Janitor accounts, bans, and reports are
-not.
+flood control, a self-hosted proof-of-work captcha, key-authenticated moderation and
+board management, and optional institutional verification badges are implemented. Janitor
+accounts, bans, and reports are not.
 
 ## Stack & layout
 
 - **Go 1.22** (standard library HTTP, `log/slog`), **PostgreSQL 16**, `pgx`/`pgxpool`,
-  `golang.org/x/image` (WebP decoding and thumbnail scaling).
+  `golang.org/x/image` (WebP decoding and thumbnail scaling), `golang.org/x/crypto`
+  (PBKDF2, for the captcha).
 - `cmd/server` — entrypoint (config, logger, graceful shutdown), plus the one-shot
   `-sweep` mode that deletes expired archived threads, rewrites and vacuums the
-  verification tables, and exits.
+  verification tables, deletes spent captcha answers past their day, and exits.
 - `internal/app`
   - `app.go` — wiring and routes; `config.go` — environment configuration.
   - `handlers.go` — HTTP handlers, validation, JSON responses.
@@ -25,6 +26,9 @@ not.
   - `sweep.go` — the archive sweeper behind `educhan -sweep`.
   - `verify.go` — institutional verification: handlers, credential format, cookies;
     `verify_domains.go` + `verify_domains.txt` — the academic domain allowlist.
+  - `captcha.go` — the captcha (build plan 2.6): ALTCHA-format challenges, checking
+    answers, and the per-address challenge meter; spent answers are `SpendCaptcha` in
+    `store.go`.
   - `store.go` — all SQL; `models.go` — the JSON-facing types.
   - `identity.go` — anonymous names, tripcodes, the poster key, poster IDs; `text.go` —
     post text rules, including where `[code]`, `[math]`, `[eqn]` and `[spoiler]` tags
@@ -33,7 +37,8 @@ not.
   - `ratelimit.go` — per-client flood control, and the sweep that forgets expired entries.
   - `migrate.go` + `migrations/*.sql` — versioned migrations.
   - `web/` — the embedded single-page UI (`index.html`, `app.css`, `app.js`), plus
-    third-party browser builds under `web/lib/` (highlight.js, KaTeX).
+    third-party browser builds under `web/lib/` (highlight.js, KaTeX, ALTCHA's PBKDF2
+    worker).
 - `internal/media` — image validation, thumbnailing, and the blob-storage interface with
   its two implementations: the local filesystem (`local.go`) and Google Cloud Storage
   (`gcs.go`), selected by `EDUCHAN_MEDIA_BACKEND`. `conformance_test.go` is one suite run
@@ -132,7 +137,7 @@ field, and everything else stays the same. Uploads are off unless
 `GET /api/site` says which, with the size limit:
 
 ```bash
-curl -s localhost:8080/api/site   # -> {"uploads":true,"max_upload_bytes":8388608}
+curl -s localhost:8080/api/site   # -> {"uploads":true,"max_upload_bytes":8388608,"captcha":false}
 
 # Thread with an image, then read back the attachment metadata
 TNO=$(curl -s -X POST localhost:8080/api/boards/meta/threads \
@@ -240,6 +245,18 @@ Flood control is on by default (`EDUCHAN_THREAD_COOLDOWN=30`, `EDUCHAN_POST_COOL
 EDUCHAN_THREAD_COOLDOWN=0 EDUCHAN_POST_COOLDOWN=0 EDUCHAN_UPLOAD_COOLDOWN=0 make run
 ```
 
+The captcha is off unless `EDUCHAN_CAPTCHA_SECRET` is set, to at least 32 bytes, and
+`GET /api/site` says which. The curl examples above assume it is off: with it on, every
+post without a badge and every code request is refused (`403`, `"captcha": "required"`)
+unless it carries a solved puzzle as `"captcha"` (a form field beside an image), so test
+it in a browser at `http://localhost:8080`, where the page solves one. A badged post
+needs none. The puzzle needs Web Crypto, which a browser gives `localhost` but not a LAN
+address over plain HTTP, where the page says the check needs https instead:
+
+```bash
+EDUCHAN_CAPTCHA_SECRET=$(openssl rand -hex 32) make run
+```
+
 For UI changes, the app is served at `http://localhost:8080` (dark-themed single page:
 board index at `/meta/`, catalog at `/meta/catalog`, thread at
 `/meta/thread/{no}`). Prefer a browser walkthrough for anything that affects
@@ -254,9 +271,12 @@ CI runs no browser, so the client's privacy and safety invariants are pinned by 
 that read `app.js` (`web_invariants_test.go`): the poster key and the credential only in
 `submit`, the age screen storing its outcome alone and sending nothing, the badge's 18+
 box never ticked in advance or kept, `/api/site` fetched only past the age screen,
-KaTeX's options, and the highlighting cap. They are
-a floor, not a proof; a change that trips one has changed one of those properties and
-needs a browser check before the test changes.
+KaTeX's options, the highlighting cap, and the captcha's (its answer in memory only, its
+puzzle started only by something done in or to a form that needs it and never on render,
+each answer handed to one request, its request sent only from a form still on screen
+once it has waited for its puzzle, and held while it waits, and skipped only by a badged
+post). They are a floor, not a proof; a change that trips one has changed one of those
+properties and needs a browser check before the test changes.
 
 ### Front end conventions
 
@@ -369,21 +389,251 @@ needs a browser check before the test changes.
   same-thread quote link) only calls `focusHash()`, so revealed spoilers stay revealed. A
   disabled file input is left out of `FormData`, and `submit` posts as JSON when it is.
 - **A server that takes no images.** `loadSite` reads `GET /api/site`
-  (`{"uploads","max_upload_bytes"}`) into `state.site`. With `uploads` false, `formHTML`
-  draws no image field at all — no picker, no drop hint, no Spoiler image box — a file
-  dropped on the form goes nowhere and `UPLOADS_OFF_REASON` says why, `threadCounts` and
-  `badgesHTML` say nothing about the cap (a count of images posted before the switch
-  stays), the catalog leaves out its empty "no image" box, and the empty-post notice
-  stops offering an image. Until `/api/site` answers, or if it never does, the forms are
-  drawn as before. Either way the server's `image uploads are switched off on this
-  server` is handled like `image limit reached`: `blockFileField` takes the file off with
-  the reason, the text stays for the next press, and `state.site.uploads` turns false for
-  the rest of the visit. The client knows both refusals by `UPLOADS_SWITCHED_OFF` and
-  `IMAGE_LIMIT_REACHED`, which `TestClientKnowsTheServersImageRefusals` checks against
-  what the server answers, so change their words on both sides together.
-  `max_upload_bytes` is the server-wide limit: a picked file over it is taken off the
-  form at once, and the picker's hint and the `413` notice name it through
-  `uploadLimitText` — never a board, since no board has a limit of its own.
+  (`{"uploads","max_upload_bytes","captcha"}`) into `state.site`. With `uploads` false,
+  `formHTML` draws no image field at all — no picker, no drop hint, no Spoiler image box —
+  a file dropped on the form goes nowhere and `UPLOADS_OFF_REASON` says why,
+  `threadCounts` and `badgesHTML` say nothing about the cap (a count of images posted
+  before the switch stays), the catalog leaves out its empty "no image" box, and the
+  empty-post notice stops offering an image. Until `/api/site` answers, or if it never
+  does, the forms are drawn as before. Either way the server's `image uploads are switched
+  off on this server` is handled like `image limit reached`: `blockFileField` takes the
+  file off with the reason, the text stays for the next press, and `state.site.uploads`
+  turns false for the rest of the visit. The client knows both refusals by
+  `UPLOADS_SWITCHED_OFF` and `IMAGE_LIMIT_REACHED`, which
+  `TestClientKnowsTheServersImageRefusals` checks against what the server answers, so
+  change their words on both sides together. `max_upload_bytes` is the server-wide limit:
+  a picked file over it is taken off the form at once, and the picker's hint and the `413`
+  notice name it through `uploadLimitText` — never a board, since no board has a limit of
+  its own.
+- **The captcha** (`/* Captcha */` in `app.js`, server side in `captcha.go`). `loadSite`
+  reads `captcha` from `GET /api/site` into `state.site.captcha`, and a form's note on
+  the check is drawn by its button only while that is on. The puzzle starts only on
+  something done in or to a form that needs it, never on render: focus moving into a box
+  to write in, however it gets there (the `focusin` listener; a quote and the `/verify`
+  buttons put the focus there too; the badge box is not one), unticking the badge on a
+  form whose tick stopped a puzzle or that already has something written or attached
+  (`captchaBadgeToggled`, `captchaFormHasWriting`), the page taking a ticked badge out
+  of a form on screen with something written or attached (`withdrawBadgeOption`, for the
+  badge changed in another tab or in this one, and a refusal of the badge as expired or
+  revoked; never Forget this browser, which sends nothing, nor `/verify` loading over
+  the form; a form off the screen then, while a post link's lookup loads say, starts
+  none, nor does the form a redraw draws in its place, noted or told of the refusal),
+  the press that is then refused once to say so, on a form with something written or
+  attached (`submit`), an image picked or dropped on it and attached
+  (`captchaImageAttached`; not one a re-render puts back), a refusal saying it spent the
+  answer while its form is on screen, and a press with no good answer held. Ticking the
+  badge stops it unless a request is waiting for it (`stopCaptcha`, which says whether
+  it stopped one). It runs ALTCHA's vendored worker in up to `CAPTCHA_MAX_WORKERS`
+  copies with interleaved counters (side by side where the browser allows; Chromium runs
+  their Web Crypto on one thread), and only in a secure context (`CAPTCHA_INSECURE`
+  otherwise) with `Worker` and `crypto.subtle` (`CAPTCHA_FAILED` otherwise), failing
+  before any fetch, and only on a response shaped like a challenge
+  (`CAPTCHA_UNAVAILABLE` otherwise); a `429` from `/api/captcha` says too many checks
+  were started from the reader's network, with its wait (`captchaBusy`), never a post's
+  or a code request's cooldown. Every copy is terminated when the puzzle ends, a throw
+  while starting them included. A copy that times out answers `null`, and the puzzle is
+  said to have taken too long (`CAPTCHA_TOO_SLOW`) only when every copy did, failed
+  (`CAPTCHA_FAILED`) otherwise. The answer is kept in the `captcha` object in memory
+  only, never in storage or a draft, and read only by `captchaAnswer`, `takeCaptcha`,
+  `keepCaptcha` and `solveCaptcha`. `sendWithCaptcha` sends a post or a code request,
+  solving first when needed, and only from a form still on screen (`formOnScreen`: in
+  the document, and on the page it was pressed on, by `routeKey` for a posting form,
+  which a redraw of its page carries, and, for a `/verify` form, which none does, by the
+  render it was drawn for) in a browser not forgotten since the press, asked once it has
+  waited for the puzzle and again when a refusal of its answer arrives; one with an
+  answer held already, or needing none, goes with the press. A form's page is the one
+  noted as it was drawn (`drawnFor.route`, read at the press), by the render that drew
+  it, or by `drawVerifyStep` for each step of `/verify`, one Forget this browser draws
+  over the error of a `/verify` that would not load say, never a render begun since that
+  has not drawn yet: a post's board and thread are where it goes, and it is the page a
+  post or a code request is answered on, so one pressed just after a link is answered as
+  off the screen, a post going to its form's own board and thread, unless the page being
+  loaded has its form's `routeKey` (another page of the same board's index, say, or its
+  thread again), which carries it (`carriedDraft`, below). Each request takes its answer
+  out of the page as it is handed over (`takeCaptcha`), so a second press while one is
+  on its way solves a fresh puzzle, and puts it back (`keepCaptcha`: only into an empty
+  place, only while good) only when it left it unspent, or may have spent it without
+  saying so, as when it brought no response, or the `500` for a spend whose database
+  reply was lost: if spent, the first request whose `checkCaptcha` can look it up is
+  refused as used and solves a fresh one, while one refused before that check (a reply
+  to a thread locked meanwhile, or an image whose header does not read, say) or by a
+  lookup that fails (a `500` with no header) does not learn it was used and puts it back
+  again on the same terms, and one checked after the secret was rotated is refused as
+  invalid and solves a fresh one too. One that waited for its puzzle, and whose form has
+  left the screen by the time it is solved, is dropped unsent with its answer put back,
+  on the same terms, while one with an answer held already, or needing none, goes with
+  the press. Sent or not, one whose form has left the screen is not navigated from and
+  says nothing on the page the reader went to; a post that did go still empties and
+  releases its form, wherever it is. A post's form keeps instead the way to word what it
+  would have been told on screen (`unsaidNotices`), such as the refusal or, for a post
+  not sent, that nothing was posted (`errorMessage`, or `FORGOTTEN_BEFORE_SENDING` when
+  a forget since the press had come by the time it was dropped), worded when a redraw
+  tells it (`restoreDraft`, `render`), for the form then drawn or kept and the text it
+  holds then, with whether it had the focus at the press, until a redraw tells it or its
+  next press takes it out, one refused before anything is sent included, which after a
+  refusal of the image itself first switches the picker off as below, unless an image
+  has been attached since, which is left for the server to answer. Any redraw that
+  brings the form back to its page tells it, whenever it began: `captureDraft` carries a
+  form held or still owed a notice into a redraw of its own page, a post link's lookup
+  into its thread say, or Update, the same link again or Back to that page, pressed
+  before the answer or after it. It says that notice once and gives the focus as
+  `release` would, as it puts the form's values back into its own page (`restoreDraft`),
+  or as it keeps that page, form and all, when it will not load, ahead of why
+  (`render`), where a refusal of the image itself also switches the picker off and puts
+  the thread's counts in step, as on screen (`blockRefusedPicker`); a page drawn afresh
+  draws both from what the server says by then. A render a newer one overtakes says
+  nothing, leaving that to the newer one; a redraw that does not bring the form back,
+  such as one for another page, one the reader begins once the page has blanked, a post
+  link's lookup that fails, whenever it fails, or the thread's load after it failing
+  once the page has blanked, either drawing its error in the page's place as another
+  page that will not load does, or one that draws the thread locked or archived
+  meanwhile, which draws no form and keeps the unsent text under its note
+  (`keepUnsentDraft`), says nothing either, and the form takes its entry with it. From
+  the press to the answer the form is held (`holdForm`: controls switched off once the
+  form has been read and checked, straight into the `try` whose catch releases them, and
+  switched back on after a refusal, with the focus on the button, without scrolling to
+  it, if the form had it and it is still lost, on the page or nowhere, or after a
+  success once the form is emptied; a badge box drawn into the form meanwhile, for a
+  badge stored in another tab or by a confirmation in this one, say, is drawn switched
+  off and switched back on with them, and one taken out, the badge forgotten say, stays
+  out (`drawBadgeOption`); `app.css` makes the held controls look switched off). A
+  redraw of the form's own page while the form is held or still owed a notice (above),
+  such as Update, or another page of the same board's index, which has the same
+  `routeKey` (the view, the board and the thread, never the index page), keeps the page,
+  dimmed, in place of the skeleton (`keepPage` in `render`), with the thread its
+  controls read and the open image left as they are until something is drawn in its
+  place (`leavePage`), as every render leaves them, a post link's lookup included, so a
+  refusal answered while that redraw loads updates the page on screen, and puts the held
+  form itself into the new page in place of the one drawn there, its `<details>` opened
+  (`heldForms`, `captureDraft`, `restoreDraft`); a form answered by then is read for its
+  values like any draft, emptied after a success, and told what it would have been told
+  if it was answered off the screen (above), or, refused on screen with the focus given
+  back to its button (`refocusedForms`, noted by `release` and taken out at every
+  press), has the new form's button given it in place of that one, gone with the old
+  page; one whose ticked badge the server refused as expired or revoked while it was
+  away is noted as well (`badgeWithdrawn`), which that notice takes the place of, while
+  a redraw that reads the form once it owes none, after a press refused as empty say,
+  carries the note into the form it draws, so its next press is refused once. A redraw
+  whose form is pressed while it loads does the same: `captureDraft` notes with a form
+  it reads for its values how often it had been pressed (`presses`), and `carriedDraft`
+  carries the form held instead once it has been pressed since, as `keepPage`, the
+  skeleton's timer, the failure branch and `restoreDraft` each read the draft when they
+  use it, so a post pressed while a redraw that brings its form back loads, Update or a
+  post link's lookup into its thread say, is answered as if pressed just before it
+  began: on its form once that is back on its page, a success going to the new post and
+  a refusal said once, with the focus as on screen, and as off the screen while the
+  lookup has it away, with no copy of what it sent left in a new form. A press refused
+  then before anything is sent, an empty one say, has the form carried held too, so a
+  redraw with its `routeKey` keeps the page for it, with no skeleton, and a failed load
+  keeps it, while the same press made just before the redraw began has the form read for
+  its values, and the page is not kept for it. A draft, held or not, is keyed by the
+  page on screen (`drawnFor` in `captureDraft`), never by a render begun since that has
+  not drawn yet, so the second of a double click neither carries the form into the page
+  it goes to nor keeps the page on screen under that page's address. A redraw that fails
+  to load leaves the kept page on screen, held form and all, with the address bar,
+  `renderedPath`, `state.route` and `state.thread` put back as that page was drawn for
+  them (`drawnFor`, noted by the render that drew it, however many redraws of it have
+  failed since) and the error in a notice. The address bar goes back
+  (`history.replaceState`) by replacing the history entry the reader is on when the
+  redraw fails, so after a link, with nothing pressed while the redraw loads, the
+  history holds the kept page twice and the first Back stays on it (`popstate` finds
+  `renderedPath` and only moves to the fragment), and a Back or Forward that will not
+  load leaves the entry it went to holding the kept page. A link pressed while a redraw
+  for another address loads, the same one again or a jump within the page, adds an
+  entry, and that is the one replaced, so the entry for the page that failed is left
+  behind it and Back loads that page again; after Update, whose page is the one kept,
+  the entry a jump within the page leaves behind is the kept page's own, and Back stays
+  on it. A render a newer one has overtaken draws nothing, loaded or not, and says
+  nothing (`overtaken`, which the board, thread and /verify views ask once their request
+  is answered, as does every redraw of /verify, after a confirmation or a forget say, a
+  forget drawing it only while /verify is the page being drawn), so of two redraws only
+  the later one is shown or said to have failed. Either way the post goes ahead and is
+  answered on the form on screen, and a success goes to it. The loading state, the
+  dimming and the skeleton that may follow it, is the latest render's (`rendersBegun`):
+  every render begun, whatever its view, ends any before it (`endLoading`), so an older
+  render still loading neither blanks a newer page nor shows one still loading as
+  loaded. When the hold ends, success or refusal, `release` leaves the held form's
+  picker as a redraw meanwhile drew it, switched off with that drawing's reason (or the
+  site's, where it drew none) or switched on (`redrawnPickers`), and a refusal of the
+  image itself (image limit reached, uploads switched off) then switches it off and puts
+  the thread's counts in step (`blockRefusedPicker`): the submit handler does so for a
+  form on screen, and for one answered off the screen the page a failed redraw keeps for
+  it does (`render`), while a page drawn afresh draws its picker and counts from what
+  the server says by then, the image having gone at the refusal. A picker `release`
+  switches off loses its image, and `release` then returns the reason, which every later
+  notice but those two refusals, a refusal's or a forget's, adds, saying the image was
+  taken off and why (`imageTakenOff`), or, for a refusal of the thread itself (archived,
+  locked, gone), only that it was taken off, since no post can go there. A refusal
+  answered while a redraw loads, before it draws, ends the same: when the new page takes
+  the image off (`pickerRefusal`), `restoreDraft` words the refusal's notice again with
+  that reason, as the submit handler kept it (`refusalNotices`), or adds the image's
+  going and why to any other notice on screen, rather than putting the picker's reason
+  in its place, but for the refusal of the image itself it has just said from
+  `unsaidNotices`, which says so already: an image attached since then goes with nothing
+  added, as on the page a failed redraw keeps, so the refusal is said once. Each notice
+  is worded for what the form still holds when it is worded: its text read from the box
+  after `release` and the image it sent unless `release` took that off, or, for one a
+  redraw tells or rewords, the text and image of the form it draws or keeps
+  (`errorMessage`'s `hasText`, `hasImage` and `imageOff`). A post left with nothing is
+  told nothing of what it holds, and one left with nothing because `release` took its
+  image off is told to write something instead, unless the thread takes no posts at all.
+  A request that succeeds keeps the answer it took; a refusal carrying `"captcha"` drops
+  it and, while the form is on screen, sends once more with a fresh one, whose refusal
+  says nothing was posted, or for a code request that no code was sent, and `"required"`
+  also turns `state.site.captcha` on for a page drawn without knowing, as a `404` from
+  `GET /api/captcha` turns it off, the request then going without an answer. Any other
+  refusal, or no response at all, puts the answer back, on `keepCaptcha`'s terms, unless
+  it carries `Educhan-Captcha: spent` (`CAPTCHA_SPENT_HEADER`, set by `spendCaptcha`, a
+  `429` from the second flood-control check included), which drops it and starts the
+  next puzzle at once if the form is on screen and the browser not forgotten since the
+  press. A post that carries the badge never waits for or sends an answer (`() =>
+  state.site.captcha && !held`), and a code request always does. `CAPTCHA_LIFETIME_MS`
+  must be no more than the server's `captchaTTL` less a minute.
+  `TestCaptchaAnswerStaysInMemory`, `TestCaptchaIsAskedForOnlyWhenSomeoneWrites`,
+  `TestCaptchaIsSkippedOnlyByABadgedPost`, `TestClientAndServerAgreeOnTheCaptcha` (which
+  also holds `CAPTCHA_TIMEOUT_MS` to the two minutes, the hardest base puzzle at 4 ms an
+  attempt to half of it, `CAPTCHA_MAX_WORKERS` to the four copies the README names,
+  counting interleaved, and a `404` from `/api/captcha` to turning the captcha off),
+  `TestCaptchaWorkersAreAlwaysStopped`, `TestARequestGoesOnlyFromAFormOnScreen`,
+  `TestAPendingFormIsHeld`, `TestAHeldFormSurvivesARedrawOfItsPage`,
+  `TestCaptchaRefusalSaysWhatTheFormStillHolds`, `TestTheCaptchaFAQSaysWhatThePageDoes`,
+  `TestCaptchaIsNotWorkedOnForNothing`, `TestEachCaptchaAnswerGoesOnOneRequest` and
+  `TestForgettingTheBrowserCancelsWhatIsOnItsWay` pin these; the worker needs no CSP
+  change (`TestContentSecurityPolicyNeedsNoExceptionForTheCaptcha`). The server's
+  figures that the README, `.env.example` and `app.js` quote (300 challenges a minute,
+  half an hour, a work of 1500, a secret of at least 32 bytes) are pinned as figures,
+  not by the names of their constants (`TestTheCaptchaNumbersTheDocsQuote`), so changing
+  one means changing those pages too. On the server the answer is checked
+  (`checkCaptcha`: signature, expiry, the work, and a lookup that it is not already
+  spent) before flood control. A lookup that fails, or a spend the database does not
+  apply (one that raises, say), answers `500` "could not check the captcha", with no
+  captcha reason and no spent header, and starts no cooldown: the request has not spent
+  the answer, so the page puts it back for the next press, on `keepCaptcha`'s terms
+  (`TestAFailedCaptchaLookupOrSpendKeepsTheAnswer`, where it posts once the database is
+  back). A spend the database applied but whose reply was lost answers the same, though
+  the answer is spent (above). Flood control comes in two halves: the check
+  (`notCoolingDown`, or `waitedOut` for a code request) refuses with a `429` and starts
+  nothing, then the answer is spent (`spendCaptcha`), and only then does `allow` (or
+  `allowAction`) check again and start the cooldowns, before any upload is processed. So
+  a request refused as used, which only a replay racing its original can be at that
+  point, starts no cooldown (`TestALostSpendStartsNoCooldown`), and of a burst from one
+  address that all passed the first check and need the same cooldown (new threads or
+  replies on one board, or images anywhere), or of code requests from one client or for
+  one email address, at most one goes ahead, and the second check refuses a request only
+  for a cooldown one that went ahead started (`TestABurstFromOneAddressPostsOnce` for
+  threads, `TestABurstOfRepliesFromOneAddressPostsOnce` for replies,
+  `TestABurstOfImagesFromOneAddressPostsOnce` for images on two boards, and
+  `TestABurstOfCodeRequestsFromOneClientSendsOneCode` and
+  `TestABurstOfCodeRequestsForOneAddressSendsOneCode` for code requests; each holds its
+  burst at the spends (`spendingBurst`) until all of it has passed the first check, so
+  it fails on every run if the second check, or one of its keys, is dropped from its
+  handler). A request refused by the second check that carried an answer has spent it
+  and carries the spent header; one refused by the first kept its answer. A badged burst
+  posts once too (`TestABadgedBurstFromOneAddressPostsOnce`), but spends nothing between
+  the halves, so the first check alone holds it and the test does not pin the second. In
+  the posting handlers the check is the last refusal before flood control; in
+  `handleVerifyRequest` it comes straight after the 18+ attestation, before the address
+  is parsed.
 - A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
   half-written post — the attached file included, via `DataTransfer` — across it. New
   fields need adding there too. The spoiler box lives in the file preview and is
@@ -425,24 +675,125 @@ needs a browser check before the test changes.
   readers to verify (`data-verify-footer` in `index.html`) stays hidden until
   `GET /api/verify` says the feature is on. The header's Verify link stays regardless:
   `/verify` also holds Forget this browser.
-- The verification credential lives in `localStorage` under `educhan:credential` and
-  is attached to exactly one request in the whole application: the badged post, in
+- The verification credential lives in `localStorage` under `educhan:credential` and is
+  attached to exactly one request in the whole application: the badged post, in
   `submit`. `readBadge()` decodes its claims locally to decide what to show — the
   signature is the server's to check, and it re-derives the label from its own record on
   every badged post, so a forged local claim buys a 403 and nothing else. A posting
-  form's badge box sits in a slot that names the badge it offers (`data-badge-option`,
-  a number `badgeNumber` gives each credential the page reads, never the credential
-  itself), and a post goes out only under the badge its box named. The badge can change
-  under a form: Verify pressed for another address, and the reader gone on to a board
-  before the answer. That answer redraws the box of any form on screen for the new
-  badge, unticked, and says so if it had been ticked (`offerHeldBadge`); before it, a box
-  ticked for one institution sent the other's credential
-  (`TestPostingFormSendsOnlyTheBadgeItNames`). A post refused because the badge it
-  carried expired or was revoked forgets that credential only while it is still the one
-  stored. One stored since — that answer, or a badge issued in another tab, which is
-  what revoked it — is offered in its place, and the notice says so
-  (`sayBadgeReplaced`): forgetting whatever was stored deleted a badge the server cannot
-  hand out again.
+  form's badge box sits in a slot that names the badge it offers (`data-badge-option`, a
+  number `badgeNumber` gives each credential the page reads, never the credential
+  itself, which `badgeOffered` reads back), and a post goes out only under the badge its
+  box named: before that, a box ticked for one institution sent the other's credential
+  when the badge changed under the form, Verify pressed for another address and the
+  reader gone on to a board before the answer
+  (`TestPostingFormSendsOnlyTheBadgeItNames`). No open tab goes on offering a badge
+  storage no longer holds, and the next form a tab draws offers the one it holds: a tab
+  that sees the credential change in another (Forget this credential or Forget this
+  browser pressed there, the badge refused there as expired or revoked, another address
+  verified there) reads it again and, when it is not the badge that tab offered, draws
+  the option again in every posting form on screen for the badge it holds now, unticked,
+  or none (`drawBadgeOption`, which moves focus on the box to the box drawn in its
+  place, or to the form's button when there is none), and draws `/verify` again only if
+  it shows the badge panel, once the page has asked the server, and not if another step
+  has been drawn there meanwhile (`renderVerify`, which leaves that drawing alone while
+  it is on screen). The address step is left as it is, as is one the reader moves to
+  (Verify another address, Use a different address) while a redraw asks the server, and
+  so is a code step unless the badge read in is one newly verified there: the browser
+  has one verification in progress, held by its cookie, so that badge spent or replaced
+  the code a step asks for when no confirmation of it is on its way, and the step goes,
+  drawn again as the panel with a notice if it is on screen, once the page has asked the
+  server (`codeSpentElsewhere`; `CODE_SPENT_ELSEWHERE` says an address was verified in
+  another tab and the code here no longer works, never that the one is why). A
+  confirmation already on its way (one at most, since Verify requests go one at a time),
+  counted on the step (`confirming`) from before it is sent until it is answered,
+  whether its form is still on screen or `/verify` has been drawn again over it, may
+  have reached the server first and verified this tab's address, so it is left to its
+  answer, the step only marked (`spentElsewhere`): a success draws the panel for the
+  badge it earned, over its own form or over the code step `/verify` drawn again
+  meanwhile shows, once the page has asked the server, unless a forget has drawn
+  `/verify` meanwhile, whose notice stays; and a refusal of any kind puts the step away
+  then, with the notice wherever a code step is on screen. A code request still on its
+  way draws its code step when answered, the cookie its answer sets holding the
+  browser's verification from then on (`followCredentialStorage`, by the `storage`
+  event, `TestForgettingTheBadgeReachesEveryTab`). A form that had the badge ticked,
+  idle or with its badged post on its way (unless the badge is settled first, as when
+  that post goes through, the badge with it), refuses its next press once, saying the
+  badge has gone, that the badge the page holds now, if any, is offered unticked, and
+  that pressing again posts without it, under the same ID as the reader's unbadged posts
+  in a reply's thread while the poster key is the one it had (`withdrawBadgeOption`,
+  `badgeWithdrawn`, `TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress`): said nothing,
+  the post would go out tied to those posts, which the badge's own ID is there to keep
+  apart. With something written or attached, that form also starts the puzzle the post
+  then needs, as the reader's own untick would, so the press after the refused one
+  usually finds it solved; a form noted by a redraw (`restoreDraft`), since drawing a
+  page starts nothing, starts it at the refused press. A redraw's draft carries a ticked
+  badge as the badge it was ticked for, and ticks the new form's box only if the form
+  offers that one: a form offering none, or another verified meanwhile, is noted
+  instead, so no badge goes out that the reader did not tick, and the reader ticking or
+  unticking the box takes the note off. A press with the box ticked that finds the page
+  holding another badge than the one its box was drawn for, or none, is a badge taken
+  from under the form: its box is drawn again and the press refused once with the note.
+  Wherever the page's badge changes while a posting form may be on screen, the option is
+  drawn again in the forms there as for another tab's change: a confirmation answered
+  after the reader left `/verify` (`offerHeldBadge`), the feature switched off or the
+  badge run out as `/verify` loads (`loadVerification`, which starts no puzzle, as
+  drawing a page never does), and a badged post refused as expired or revoked, for a
+  form on the page the reader went to meanwhile, and for `/verify` there, drawn again
+  where it shows that badge's panel, as another tab's is, so it says why the badge went
+  (`TestAFormSendsOnlyTheBadgeItWasDrawnFor`). A held form a redraw has taken off the
+  screen, while a post link's lookup draws its skeleton say, misses each of these, so
+  `restoreDraft`, putting it back, draws its option again if the page no longer holds
+  the badge its box was drawn for, noting a ticked box but starting no puzzle
+  (`TestForgettingTheBadgeReachesEveryTab`). Forget this browser takes the option out
+  without a word and drops the note: a word would tell whoever presses next that the
+  browser held a badge, and with the poster key gone the post shares an ID with none
+  made before. A badged post refused as expired or revoked forgets the credential it
+  sent only while storage still holds it, so a badge verified since in this browser
+  stays, and its form, still on screen with something written or attached, starts the
+  puzzle the post it goes on to needs: forgetting whatever was stored deleted a badge
+  the server cannot hand out again. The refusal's notice tells a form on screen; one off
+  the screen, while a post link's lookup loads say, is noted, starting nothing, and
+  keeps the way to word that notice: a redraw that carries it held, begun before the
+  answer or after it while the notice is still unsaid, words it and says it as it puts
+  the form's values back into its own page, noting nothing on the form it draws and
+  ticking its box there only for a box ticked since, on the page still in sight
+  meanwhile, for the badge that form offers, or keeps that page, form and all, when it
+  will not load, dropping the note. A press before then drops the notice and is refused
+  once by the note, unless it is refused before that, as empty say, and a redraw after
+  such a press carries the note, so the form it draws refuses its next press once. When
+  storage holds another badge, verified since in this browser (in another tab, or in
+  this one by a confirmation answered after the reader left /verify), at the answer for
+  a form on screen, or for one off it at the answer or by the time a redraw tells it,
+  and the browser has not been forgotten since the press by the time the form is told (a
+  badge stored after a forget is someone else's, so the form is then told the server's
+  words), the form is told so in the page's own words rather than the server's "verify
+  again" (`badgeReplacedNotice`), on screen at the answer or, off it, when a redraw
+  tells it: its badge was replaced by one verified since in this browser, so nothing was
+  posted, and, unless the post is left with nothing in it when the notice is worded,
+  neither text nor image (the form is then told only what went, and, for an image
+  `release` took off, why and, by `imageTakenOff`, to write something instead), pressing
+  again posts without a badge, and ticking the form's box, which now offers the new one,
+  posts with that one. It reads the badge held, the form's box, the poster key and what
+  the post holds, text and image, when it is worded, as it is said: on screen at the
+  answer; off it, by the redraw that tells it, for the form drawn or kept then; and
+  again by a redraw loading meanwhile that takes the image off, for the form it draws
+  and the text put back into it (`restoreDraft`), the page kept on screen until then
+  still in the reader's hands, that form then dropping a note left on it since (a box
+  ticked since and taken out with its badge, say). Each can change by then: with no
+  badge held, forgotten since, it ends with what pressing again does; with another,
+  verified since, it names that one; with the new badge's box ticked since, it says that
+  pressing again posts with that badge; and for a post left with nothing in it since,
+  its text erased say, it says only what went. Unless a redraw that takes the image off
+  words it again, a notice on screen stays as it was worded through a change made after
+  it is said, a badge forgotten or verified in another tab say, so it names the badge it
+  was worded for, while the form's box is drawn again for the badge held then, or taken
+  out with none, a box ticked then refusing the next press once, saying why
+  (`followCredentialStorage`). That notice is its one refusal for the badge, so a note
+  left on it while the post was on its way goes, whatever left it: a change of badge in
+  another tab (`followCredentialStorage`), a confirmation answered in this one
+  (`submitVerification`), another badged post's refusal in this one (`submit`),
+  `/verify` loading over the form (`loadVerification`), or a redraw that puts it back
+  (`restoreDraft`).
 - The poster key lives in `localStorage` under `educhan:poster-key`: 16 random bytes as
   22 characters of unpadded base64url, made by `posterKey()` on the first post rather
   than the first visit. `submit` sends it in `X-Educhan-Poster-Key` on thread-create and
@@ -461,138 +812,202 @@ needs a browser check before the test changes.
 - "Forget this browser" on `/verify` (`forgetBrowser`), shown in every state — the
   code-entry step included (`TestEveryVerifyStateOffersToForgetTheBrowser`) — removes
   the credential, the poster key and the remembered name, and leaves the age answer. It
-  is what the FAQ's shared-computer advice points to: the key left behind would give the
-  next person at the computer the same IDs in the same threads.
-- The Verify page's steps (`verifyViewHTML`, `verifyStep`): the code step comes first and
-  is decided on `verifyStep.step` alone, so a pending code's box shows whether or not a
-  badge is held, since a badge is replaced only once the new one is confirmed
+  also cancels what is on its way: a code request still waiting on its turn or its
+  puzzle, or a post still waiting on its puzzle, for its first send or for the second
+  after a refused answer, is not sent, and one whose first send has gone is not sent
+  again when its answer is refused after the forget (a post's form is released with its
+  text and, while on screen, says why: `FORGOTTEN_BEFORE_SENDING`, on the error
+  `notSent` makes, which `sendWithCaptcha` throws in place of the send; `/verify` is
+  drawn again at an empty address step), and a code request, a confirmation or a post
+  answered after it stores nothing, neither a badge nor a name, and leaves no note that
+  a badge was lost (`browserForgets` for a post, and for a Verify request the new step
+  the forget moves the page to, `TestForgettingTheBrowserCancelsWhatIsOnItsWay`). That
+  covers what every educhan tab open in the browser has on its way, not only the tab it
+  was pressed in: `forgetBrowser` posts `FORGET_MESSAGE` on `FORGET_CHANNEL`, a
+  `BroadcastChannel`, and every other tab answers with `forgottenElsewhere`, which runs
+  the same `forgetOnThisPage` as the pressing tab (what is on its way, a redraw's draft
+  included, the badge and the poster key the page holds, the code step, the note, and
+  the Name and the badge option of every posting form on screen, whose note on the
+  anti-spam check then says what a form without the option says: `drawBadgeOption`,
+  without a word at its next press, which would say the browser held a badge) and draws
+  `/verify` again if it is showing. A held form a redraw has taken off the screen, while
+  a post link's lookup draws its skeleton say, is out of its reach: its draft carries
+  `browserForgets` as it was (`captureDraft`), and `restoreDraft`, putting it back,
+  forgets it as those on screen are forgotten (`forgetForm`) if a forget it missed has
+  come since, and reads one answered while away as of the newest forget it had, so its
+  Name, the one forgotten, is not restored. A forget that reached it on screen, its page
+  kept while Update loads say, is not done again (`forgottenAt`, which `forgetForm`
+  notes), so a Name typed after it, which a post pressed since may be going out under,
+  is left as it is. The message is one constant that says nothing about anyone. The
+  pressing tab clears storage before it posts the message, emptying the credential
+  before it removes it: a tab that hears storage first, which no browser rules out,
+  takes the badge option out of its forms as for any badge gone but starts no puzzle for
+  them (`followCredentialStorage`), since a forget sends nothing. Because storage is
+  cleared first, another tab can store the credential, the poster key or the name again,
+  for a post or a confirmation it handles before it hears; each tab notes what it stores
+  of those three (`storedHere`), and on hearing removes each only while storage still
+  holds it as that tab stored it: never a badge confirmed or a key made in another tab
+  since, however late it hears (a name is compared by its text, so the same name stored
+  since goes too). In a browser without `BroadcastChannel` a forget covers the tab it
+  was pressed in, and the other tabs drop only the badge, as they do for Forget this
+  credential (`TestForgettingTheBrowserReachesEveryTab`). It is what the FAQ's
+  shared-computer advice points to: the key left behind would give the next person at
+  the computer the same IDs in the same threads.
+- The Verify page's steps (`verifyViewHTML`, `verifyStep`): the code step comes first
+  and is decided on `verifyStep.step` alone, so a pending code's box shows whether or
+  not a badge is held, since a badge is replaced only once the new one is confirmed
   (`TestVerifyCodeBoxShowsWhileACodeIsPending`). A refusal after which the server holds
-  nothing pending (`NO_CODE_PENDING`, `CODE_EXPIRED`, `CODE_GUESSES_SPENT`: its own words,
-  held to them by `TestClientKnowsWhenNoCodeIsPending`) goes back to the address step,
-  which says why at the top of its form (`verifyStep.ended`, `CODE_ENDED_NOTES`) and
-  brings that into view, since on a phone the notice is a screen above it; a wrong code
-  keeps the box. An expired code reaches a browser as `NO_CODE_PENDING`, not
+  nothing pending (`NO_CODE_PENDING`, `CODE_EXPIRED`, `CODE_GUESSES_SPENT`: its own
+  words, held to them by `TestClientKnowsWhenNoCodeIsPending`) goes back to the address
+  step, which says why at the top of its form (`verifyStep.ended`, `CODE_ENDED_NOTES`)
+  and brings that into view, since on a phone the notice is a screen above it; a wrong
+  code keeps the box. An expired code reaches a browser as `NO_CODE_PENDING`, not
   `CODE_EXPIRED`: the pending cookie lasts exactly as long as the code, so the browser
   has dropped it by then, and that note leads with expiry
-  (`TestAnExpiredCodeIsSaidToHaveExpired`). The server answers the wrong code that spends
-  the last attempt with `CODE_GUESSES_SPENT`, so the box a wrong code leaves up takes the
-  right code until it expires. Every other refusal — a wrong code, the 18+ box unticked,
-  an address the allowlist does not know, a cooldown, no answer — leaves the step as it
-  is and is said in its form, under the fields and above the buttons
-  (`VERIFY_REFUSED_HTML`, `refuseVerification`), which puts the reader back in the field
-  it is about, a wrong code selected. A refusal is kept with its step for the rest of the
-  visit (`verifyRefusal`, put away by `render()` and by sending again), so the step drawn
-  again says it: one that came in while `render()` was still asking before it drew the
-  step had no form to be said in, and was lost. The step drawn again starts with its
-  fields empty, since nothing typed is kept with it, so it says the refusal without "What
-  you wrote is still in the box", which only the form that sent the request, still holding
-  what was typed, says (`sayVerifyRefusal`'s `sentIt`, the refusal's `redrawn`,
-  `TestVerifyStepDrawnAgainIsNotToldWhatWasTypedIsThere`): said there, a request with no
-  answer told the reader their address or code was in the empty field the focus was put
-  in. Forget this browser's confirmation is said under its button
-  (`confirmBrowserForgotten`). `submitVerification` says its refusals in the form, never
-  in the notice (`TestVerifyRefusalsAreSaidInTheForm`, which follows its calls down). Two
-  calls on an issued badge can raise one: `storeCredential`'s, when the browser will not
-  store it, and `offerHeldBadge`'s, on a page with a posting form whose ticked badge box
-  it unticked. An answer belongs to the step it was sent from:
-  `submitVerification` notes `verifyStep` before it sends (`sentFrom`) and drops an
-  answer, storing, setting and drawing nothing, once the page has moved to another step.
-  Forget this browser is the button that can do that while a request is out, and it has to
-  win over a badge on its way, which would otherwise be stored after the browser was
-  forgotten; the form's own other buttons wait on the answer. They wait in the step drawn
-  again for a reader who leaves the page and comes back before the answer, too: the wait
-  is kept in `verifyBusy`, not only on the buttons of the form that sent the request, and
-  `verifyViewHTML` draws that step waiting, so nothing can give up a step whose badge the
-  server is issuing (for the same address, retiring the one held here) or send a second
-  code while the page goes on to show the first one's box. No second request goes out
-  from a step whose first is out, and one from another step waits until
-  `submitVerification` is done with the one before it (`verifyRequest`), then goes only
-  if the page is still on its step: a dropped answer's pending-code cookie still lands,
-  and the browser keeps whichever lands last, so a code box drawn after Forget this
-  browser once refused its own right code while the server checked it against the
-  address asked for before. That wait ends: each Verify request — the address, the code,
-  and the `GET /api/verify` that `renderVerify` asks before an issued badge is drawn —
-  goes with `verifyDeadline()`'s signal and is given up once `VERIFY_TIMEOUT_MS` has
-  passed, which `api()` turns into the unreachable refusal. Send code and Verify say it
-  on their own step and drop it on any other. The GET only asks whether verification is
-  on, and `loadVerification` takes nothing from a request that got no answer, given up,
-  unreachable or refused: what the server said last stands, so a badge just issued is
-  drawn, focused and offered on posting forms all the same. Taken as "off", the GET
-  given up after a Verify drew "not configured" in the badge's place and took the badge
-  off every posting form, and the footer's Verify link away, for the rest of the visit.
-  Only an answer says verification is off (`answered`); until there is one, the page
-  says it couldn't reach educhan rather than that the server is not configured for it.
-  The deadline is longer than `ReadHeaderTimeout` and `WriteTimeout` in
-  `cmd/server/main.go` together, so nothing given up was still to be answered; the test
-  reads both, so a change to them changes it too. The signal reaches `fetch` only through
-  `api()`'s spread of the caller's options, so `api()` is held line for line up to its
-  fetch: built field by field, it dropped the signal with every other check passing.
-  Without the deadline, one request whose answer never came, over a connection gone
-  silent, held every later one, the step Forget this browser drew included, at Sending…
-  until a reload. Telling answers apart by step needs every change of step to assign a
-  new object: nothing edits one in place, and the places that make one are a list the
-  test holds (`TestVerifyAnswersBelongToTheStepTheyWereSentFrom`). An answer that
-  arrives after the reader has left the page (`onVerifyPage`) only sets `verifyStep`:
-  nothing is drawn over the page they went to, and coming back shows the step it left
-  (`TestVerifyAnswersDrawOnlyOnTheVerifyPage`). `renderVerify` is how
-  `render()` draws the page for a reader arriving at it, and how an issued badge is drawn,
-  each after one more request; when the page has been drawn in place for another step
-  meanwhile, it leaves that drawing alone only while it is still on the page. Every step
-  is drawn through `drawVerifyStep`, which notes the step and the drawing, and
+  (`TestAnExpiredCodeIsSaidToHaveExpired`). The server answers the wrong code that
+  spends the last attempt with `CODE_GUESSES_SPENT`, so the box a wrong code leaves up
+  takes the right code until it expires. Every other refusal — a wrong code, the 18+ box
+  unticked, an address the allowlist does not know, a cooldown, the anti-spam check, no
+  answer — leaves the step as it is and is said in its form, under the fields and above
+  the buttons (`VERIFY_REFUSED_HTML`, `refuseVerification`), which puts the reader back
+  in the field it is about, a wrong code selected. A refusal is kept with its step for
+  the rest of the visit (`verifyRefusal`, put away by `render()` and by sending again),
+  so the step drawn again says it: one that came in while `render()` was still asking
+  before it drew the step had no form to be said in, and was lost. The step drawn again
+  starts with its fields empty, since nothing typed is kept with it, so it says the
+  refusal without "What you wrote is still in the box", which only the form that sent
+  the request, still holding what was typed, says (`sayVerifyRefusal`'s `sentIt`, the
+  refusal's `redrawn`, `TestVerifyStepDrawnAgainIsNotToldWhatWasTypedIsThere`): said
+  there, a request with no answer told the reader their address or code was in the empty
+  field the focus was put in. Forget this browser's confirmation is said under its
+  button (`confirmBrowserForgotten`). `submitVerification` says its refusals in the
+  form, never in the notice, but for one: a confirmation refused once another tab has
+  verified a badge, whose code step goes and whose `/verify` is drawn again as that
+  badge's panel, with no form to say it in, so the notice says why
+  (`codeSpentElsewhere`). The only other call that can raise one is `storeCredential`'s,
+  when the browser will not store an issued badge (`TestVerifyRefusalsAreSaidInTheForm`,
+  which follows its calls down); `offerHeldBadge`, run on an issued badge for a reader
+  gone on to a page with a posting form, says nothing then, and a form whose ticked box
+  it drew again is told at its next press. An answer belongs to the step it was sent
+  from: `submitVerification` notes `verifyStep` before it sends (`sentFrom`) and drops
+  an answer, storing, setting and drawing nothing, once the page has moved to another
+  step. Forget this browser, pressed here or heard from another tab, is what can do that
+  while a request is out, and it has to win over a badge on its way, which would
+  otherwise be stored after the browser was forgotten; the form's own other buttons wait
+  on the answer, and so do its fields (`holdForm`), so what the form shows meanwhile is
+  what was sent. They wait in the step drawn again for a reader who leaves the page and
+  comes back before the answer, too: the wait is kept in `verifyBusy`, not only on the
+  buttons of the form that sent the request, and `verifyViewHTML` draws that step
+  waiting, so nothing can give up a step whose badge the server is issuing (for the same
+  address, retiring the one held here) or send a second code while the page goes on to
+  show the first one's box. No second request goes out from a step whose first is out,
+  and one from another step waits until `submitVerification` is done with the one before
+  it (`verifyRequest`), then goes only if the page is still on its step: a dropped
+  answer's pending-code cookie still lands, and the browser keeps whichever lands last,
+  so a code box drawn after Forget this browser once refused its own right code while
+  the server checked it against the address asked for before. A code request needs the
+  anti-spam check while it is on, and solves its puzzle in its turn (`sendWithCaptcha`),
+  so one request at a time holds across the puzzle: a second press of Send code
+  meanwhile sends nothing, and a request from another step waits for it. Send code says
+  "Checking…" while the puzzle is solved, in the form and in the step drawn again
+  (`VERIFY_SOLVING`, the step's `solving`), and "Sending…" once the request goes. A code
+  request whose form has left the screen by the time its puzzle is solved, the reader
+  gone to another page or `/verify` drawn again, is not sent (`notSent`), and its answer
+  is kept for the next press while it is still good and the page holds no other
+  (`keepCaptcha`); the step drawn again is let go, saying nothing. That wait ends: each
+  Verify request — the address, the code, and the `GET /api/verify` that `renderVerify`
+  asks before an issued badge is drawn — goes with `verifyDeadline()`'s signal and is
+  given up once `VERIFY_TIMEOUT_MS` has passed from when it is sent, which `api()` turns
+  into the unreachable refusal; a code request's puzzle is not counted, since its
+  challenge is asked for within the same time and its workers give up after
+  `CAPTCHA_TIMEOUT_MS`. Send code and Verify say it on their own step and drop it on any
+  other. The GET only asks whether verification is on, and `loadVerification` takes
+  nothing from a request that got no answer, given up, unreachable or refused: what the
+  server said last stands, so a badge just issued is drawn, focused and offered on
+  posting forms all the same. Taken as "off", the GET given up after a Verify drew "not
+  configured" in the badge's place and took the badge off every posting form, and the
+  footer's Verify link away, for the rest of the visit. Only an answer says verification
+  is off (`answered`); until there is one, the page says it couldn't reach educhan
+  rather than that the server is not configured for it. The deadline is longer than
+  `ReadHeaderTimeout` and `WriteTimeout` in `cmd/server/main.go` together, so nothing
+  given up was still to be answered; the test reads both, so a change to them changes it
+  too. The signal reaches `fetch` only through `api()`'s spread of the caller's options,
+  so `api()` is held line for line up to its fetch: built field by field, it dropped the
+  signal with every other check passing. Without the deadline, one request whose answer
+  never came, over a connection gone silent, held every later one, the step Forget this
+  browser drew included, at Sending… until a reload. Telling answers apart by step needs
+  every change of step to assign a new object: nothing edits one in place, and the
+  places that make one are a list the test holds
+  (`TestVerifyAnswersBelongToTheStepTheyWereSentFrom`); the marks that say what is on
+  its way from a step (`solving`, `confirming`, `spentElsewhere`) are not changes of
+  step. An answer that arrives after the reader has left the page (`onVerifyPage`) only
+  sets `verifyStep`: nothing is drawn over the page they went to, and coming back shows
+  the step it left (`TestVerifyAnswersDrawOnlyOnTheVerifyPage`). `renderVerify` is how
+  `render()` draws the page for a reader arriving at it, and how an issued badge, a
+  forget, a badge refused on a post and a change heard from another tab draw it, each
+  after one more request; it draws nothing once a newer render has begun (`overtaken`),
+  and when the page has been drawn in place for another step meanwhile, it leaves that
+  drawing alone only while it is still on the page. Every step is drawn through
+  `drawVerifyStep`, which notes the step and the drawing, and what the page was drawn
+  for (`drawnFor`), so a press of its form is judged on that page; its callers draw only
+  while /verify is the page on screen (`onVerifyPage`), and it notes `drawnFor` only
+  then, so Keep my badge, Verify another address and Use a different address do nothing
+  on a /verify the reader has left, still on screen while the next page loads;
   `verifyStepOnScreen` asks whether that drawing is still there. Skipping regardless, a
-  code box drawn while `render()` was still asking was drawn over by the loading skeleton
-  or by the page just left, its answer landing late, and nothing drew it again;
+  code box drawn while `render()` was still asking was drawn over by the loading
+  skeleton or by the page just left, its answer landing late, and nothing drew it again;
   redrawing regardless, the badge's late redraw wiped Forget this browser's
-  confirmation. The skeleton stands in only for the view it dims (`beginLoading`), and
-  the page is titled either way (`TestVerifyStepIsDrawnForAReaderArriving`). What runs
-  once each answer is in is held statement for statement, and so are `onVerifyPage`,
-  `verifyViewHTML` up to its code step, and `loadVerification`, the one place that sets
-  whether verification is on and whether the server has said
-  (`TestVerifyCodeBoxShowsWhileACodeIsPending`,
+  confirmation. The skeleton stands in only for the view it dims, and only for the
+  latest render (`beginLoading`), and the page is titled either way
+  (`TestVerifyStepIsDrawnForAReaderArriving`). What runs once each answer is in is held
+  statement for statement, and so are `onVerifyPage`, `verifyViewHTML` up to its code
+  step, and `loadVerification`, the one place that sets whether verification is on and
+  whether the server has said (`TestVerifyCodeBoxShowsWhileACodeIsPending`,
   `TestVerifyAnswersDrawOnlyOnTheVerifyPage`, `TestVerifyRefusalsAreSaidInTheForm`): a
   gate on a held badge in any of them, or in `renderVerify`, hides a pending code's box
   with every other check passing. So does one in what runs on the box once it is drawn:
   `drawVerifyStep`, `showVerifyField`, `sayVerifyRefusal`, what `renderVerify`'s callers
   run on what it drew (`focusHash` in `render()`, `showHeldBadge` after Verify,
-  `confirmBrowserForgotten` after Forget this browser), what `renderVerify` and the
-  requests it waits on run once their answers are in, since an answer can draw the box
-  while it is still asking (the rest of `api()`, `loadVerification`'s `readBadge`, and
-  `announce`), and every top-level function those call, however far down
+  `confirmBrowserForgotten` after Forget this browser, `showNotice` after a forget or a
+  verification heard from another tab), what `renderVerify` and the requests it waits on
+  run once their answers are in, since an answer can draw the box while it is still
+  asking (the rest of `api()`, `loadVerification`'s `readBadge` and `offerHeldBadge`,
+  and `announce`), and every top-level function those call, however far down
   (`revealClearOfHeader`, `refuseVerification` and the helpers the code step's template
-  interpolates). The test finds that set by following the calls rather than from a
-  list, and holds each function in it whole, so a function new to the path fails it
-  until it is held too: holding the answer alone left `showVerifyField` and
-  `revealClearOfHeader` checked for a few words, and a gate in either took the code form
-  out of the page. Following calls down does not reach what runs once each call that
-  drew the box returns, so that is held line for line too, up to where the browser
-  takes over: the page's submit listener to the end of its Verify branch (the one
-  listener a Verify form's submit reaches), the forget buttons' callbacks, and
-  `render()` from its `finally` on, which leaves the Verify page with `focusHash` alone
-  run on it, not the posts and drafts every other page gets; `beginLoading`, whose
-  `finish` that `finally` calls, and `navigate`, which waits on `render()`, are held
-  whole, and every other call of either is a statement nothing waits on. A gate in the
-  submit listener after `submitVerification`, in what `render()` ran once it had drawn
-  the page for a badge holder coming back to it, or in `announce`, took the box away
-  with every function check passing. What runs on the box with no call from any of
-  that is not followed: the page's listeners (a click into the code box runs the click
-  listener and `isInternalLink`, a scroll runs `hideQuotePreview`, and keys, changes,
-  pointers, hovers and drags have theirs), its timers, and the answers to requests sent
-  from other pages. Down their calls lie `render()` and every page, more than a test can
-  hold whole, and a gate on a held badge in `hideQuotePreview` or `isInternalLink` took
-  the box away with every check passing. So what can tell whether a badge is held — the
+  interpolates). The test finds that set by following the calls rather than from a list,
+  and holds each function in it whole, so a function new to the path fails it until it
+  is held too: holding the answer alone left `showVerifyField` and `revealClearOfHeader`
+  checked for a few words, and a gate in either took the code form out of the page.
+  Following calls down does not reach what runs once each call that drew the box
+  returns, so that is held line for line too, up to where the browser takes over: the
+  page's submit listener to the end of its Verify branch (the one listener a Verify
+  form's submit reaches), the forget buttons' callbacks, and `render()` from its
+  `finally` on, which leaves the Verify page with at most `focusHash` run on it, not the
+  posts and drafts every other page gets; `beginLoading`, whose `finish` that `finally`
+  calls, and `navigate`, which waits on `render()`, are held whole, and every other call
+  of either is a statement nothing waits on. A gate in the submit listener after
+  `submitVerification`, in what `render()` ran once it had drawn the page for a badge
+  holder coming back to it, or in `announce`, took the box away with every function
+  check passing. What runs on the box with no call from any of that is not followed: the
+  page's listeners (a click into the code box runs the click listener and
+  `isInternalLink`, a scroll runs `hideQuotePreview`, and keys, changes, pointers,
+  hovers and drags have theirs), its timers, and the answers to requests sent from other
+  pages. Down their calls lie `render()` and every page, more than a test can hold
+  whole, and a gate on a held badge in `hideQuotePreview` or `isInternalLink` took the
+  box away with every check passing. So what can tell whether a badge is held — the
   verification state or a badge, read as a property (`state.verification`, a `.badge`
   off anything), destructured or bound under its own name (`{ verification: { badge } }
   = state`), or named in a string; `loadVerification`, which returns the state,
   `readBadge`, `storedCredential`, `localStorage` and the credential's key; and the
   markup only a held badge draws (Keep my badge, `#verify-badge`, a posting form's badge
   box and its number) — is named only in the places
-  `TestOnlyKnownPlacesTellWhetherABadgeIsHeld` lists, top-level block by block. It counts
-  names in the code alone, not in the copy every page shows (`jsCodeText`), so a gate on
-  a held badge that names any of them fails it wherever it is put, a listener included;
-  counting property reads alone, it let a destructured read in `hideQuotePreview` take
-  the box away. A name made at run time — `state[k]` for a computed `k`, or the page's
-  text read back for its wording — is past what counting names can see, and is for
-  review to catch. `replacing` puts the badge panel away for
+  `TestOnlyKnownPlacesTellWhetherABadgeIsHeld` lists, top-level block by block. It
+  counts names in the code alone, not in the copy every page shows (`jsCodeText`), so a
+  gate on a held badge that names any of them fails it wherever it is put, a listener
+  included; counting property reads alone, it let a destructured read in
+  `hideQuotePreview` take the box away. A name made at run time — `state[k]` for a
+  computed `k`, or the page's text read back for its wording — is past what counting
+  names can see, and is for review to catch. `replacing` puts the badge panel away for
   "Verify another address", and both steps then offer "Keep my badge" back to it
   (`TestReplacingABadgeCanGoBackToIt`). Keep my badge reads the badge again before it
   draws, so one that ran out, or was forgotten in another tab, while the page was on
@@ -600,13 +1015,14 @@ needs a browser check before the test changes.
   why at its top, shown and focused in the panel's place (`showHeldBadge`). Why a badge
   went (`badgeLost`, `badgeLostHTML`) is said at the top of the code step as well as the
   address step, and put away by `drawVerifyStep`, so it is said once whichever way the
-  step is drawn; put away by `renderVerify` alone, an expiry noticed on the code step
-  went unsaid (`TestAGoneBadgeIsSaidToHaveGone`). Forgetting the badge or the browser
-  starts over at the address step; Forget this credential says so at the top of it
+  step is drawn, and by a forget of the browser, so it never greets the next person; put
+  away by `renderVerify` alone, an expiry noticed on the code step went unsaid
+  (`TestAGoneBadgeIsSaidToHaveGone`). Forgetting the badge or the browser starts over at
+  the address step; Forget this credential says so at the top of it
   (`CREDENTIAL_FORGOTTEN`) and focuses that, since the redraw took the focused button
-  (`TestForgettingTheCredentialSaysSo`). A reload drops a pending code too, since nothing
-  about it is stored: the page shows the badge held here, or the address step when there
-  is none.
+  (`TestForgettingTheCredentialSaysSo`). A reload drops a pending code too, since
+  nothing about it is stored: the page shows the badge held here, or the address step
+  when there is none.
   Whatever a step draws in place of another, or says, is brought into view clear of the
   sticky header (`revealClearOfHeader`, which measures it) and focused without scrolling
   (`showVerifyField`, `showHeldBadge`): `focus()` and `scrollIntoView()` take an element
@@ -649,11 +1065,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   grooming usually starts, and having nowhere private to move to is educhan's biggest
   safety asset (§3.4 item 1). The rules and the posting form say so in as many words.
 - **The credential gates three things and nothing else**: the badge on a post, skipping
-  the captcha, and posting on `/u/` boards, the last two not built yet. Anything more
-  behind it starts to make the badge an account, and accounts are what Australia's
-  under-16 law and the US state laws on minors' accounts attach to (§4.5, §4.6).
+  the captcha, and posting on `/u/` boards, the last not built yet. Anything more behind
+  it starts to make the badge an account, and accounts are what Australia's under-16 law
+  and the US state laws on minors' accounts attach to (§4.5, §4.6).
   `TestCredentialIsReadOnlyOnTheBadgePath` and `TestCredentialHasNoEffectOffTheBadgePath`
-  hold the code to the badge alone today.
+  hold the code to the badge path: the captcha is skipped only by a post that asks for
+  the badge and gets it, never by holding a credential (`TestBadgedPostsSkipTheCaptcha`).
 - **Bump order only.** The index and the catalog list stickies, then threads by their
   last bump, and nothing else moves a thread: no "popular", "trending" or "hot", and no
   ranking by views, likes, replies or images, because ranking by popularity is what
@@ -690,11 +1107,11 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   disagree about a file's header.
 - Uploads are off unless `EDUCHAN_UPLOADS_ENABLED` is set (`Config.UploadsEnabled`).
   `GET /api/site` (`handleSite`) reports the switch and the size limit behind the 413
-  as `{"uploads","max_upload_bytes"}`, so the client can draw the form to match. It is
-  configuration: it reads nothing from the request, sets no cookie, and answers every
-  caller the same (`TestSiteReportsTheUploadSettings`, and it is on
-  `TestCredentialHasNoEffectOffTheBadgePath`'s list). Keep it that way; anything about
-  the caller belongs nowhere near it.
+  as `"uploads"` and `"max_upload_bytes"` (beside `"captcha"`), so the client can draw
+  the form to match. It is configuration: it reads nothing from the request, sets no
+  cookie, and answers every caller the same (`TestSiteReportsTheUploadSettings`, and it
+  is on `TestCredentialHasNoEffectOffTheBadgePath`'s list). Keep it that way; anything
+  about the caller belongs nowhere near it.
 - With uploads off, `parseSubmission` holds a multipart body to `maxRequestBytes` (the
   JSON cap, well above the longest legal post) instead of `MaxUploadBytes` plus
   overhead, and answers an overflow with the switched-off `403`
@@ -728,7 +1145,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   deleted. Nothing enforces the cap against the counter. The order in `createPost` is:
   parse the body, resolve the badge, then `ReplyRefusal` — a lock-free read that
   makes `CreateReply`'s checks in its order (missing, archived, locked, and for an
-  image the cap, counted from the posts like the real check) — then flood control,
+  image the cap, counted from the posts like the real check) — then the captcha check
+  (`checkCaptcha`), then flood control's check (`notCoolingDown`), then the captcha
+  spend (`spendCaptcha`), then flood control again as the cooldowns start (`allow`),
   then the upload is stored, then `CreateReply`. So the common refusal costs no
   cooldown and stores nothing, and the client's "send the text on its own" goes
   through at once (`TestRefusedRepliesCostNoCooldown`). The pre-check decides
@@ -772,7 +1191,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   their files behind (`deploy/README.md`). Under the same lock, after the migrations,
   `renameReservedBoards` moves any board whose slug has since been reserved to
   `<slug>-board` (`TestBoardsUnderNewlyReservedSlugsAreRenamed`), so reserving a new
-  word needs no migration of its own.
+  word needs no migration of its own. The lock is the session's, so a connection that
+  cannot give it back is closed (`TestAnUnlockThatFailsClosesItsConnection`) rather than
+  handed back to the pool, where it would keep every other instance waiting in `migrate`.
   A new column on `posts` also means adding it to `TestPostsTableColumnsArePinned`
   (`verify_api_test.go`) in the same change: everything on that table is stored about
   every poster, so each column is there because somebody decided it should be.
@@ -791,44 +1212,132 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   it means.
 - **The sweeper** (`educhan -sweep`, `sweep.go`) deletes archived threads once their
   board's `archive_days` have passed. It is a one-shot mode rather than a timer because
-  Cloud Run only gives a service CPU during requests; in production it is a Cloud Run Job
-  on a Cloud Scheduler trigger, which `deploy/README.md` section 2.9 sets up. `SweepArchived` in
-  `store.go` takes batches of `sweepBatchSize` (100) with `FOR UPDATE SKIP LOCKED` against
-  a cutoff fixed when the sweep starts, so a sweep always terminates. Each batch queues
-  the storage keys of its files in `media_deletions` (`0007`) in the same transaction
-  as it deletes the rows; afterwards `removeQueuedMedia` takes the queue one key per
-  transaction (`NextMediaDeletion`, `SKIP LOCKED`), removes the file and forgets the
-  key. A file the store refuses to delete keeps its key and is retried by the next
-  sweep (`TestSweepRetriesFilesItCouldNotRemove`). A file the store does not hold keeps
-  its key too and fails the sweep, because every queued key is a file the server
-  stored: a sweeper whose media settings differ from the server's would otherwise
-  delete nothing and report success (`TestSweepAgainstAnotherMediaStoreFails`). That is
-  why the sweep checks with `Get` before `Delete` rather than going through
-  `removeBlobs`, whose `Delete` treats a missing key as done, as a moderator's
-  deletion should. A cancelled sweep stops between files, never between a file and
-  its key. Last — after the media pass, whatever it found, but not after a database
-  error or a cancellation — it calls `RewriteCredentials` (see **Verified Anonymity**
-  below). It logs one record of counts and nothing that names a board or thread or
-  says anything of a credential, failures included, and the error it returns has the
-  key taken out (`TestSweepLogsOnlyCounts`). `credentials_rewritten` is the number of
-  rows the rewrite copied: on a night its transaction commits, every row in the
-  credentials table, expired ones no confirmation has pruned yet included, even if
-  a later step then fails; on a night it does not — the sweep stopped before it, or
-  the rewrite failed, as when its lock times out — 0, whatever the table holds
-  (`TestSweepFailsWhenTheVerificationTablesAreHeld`). Night after night it is a
-  history of the table's size, which the database does not keep, but for that: a 0
-  on a night that exits non-zero can be a rewrite that did not run, and the error
-  says which step failed. Nothing finer belongs beside it. It returns an error —
-  a non-zero exit — on a database failure, a file it could not remove or did not
-  find, a rewrite or vacuum of the verification tables that did not finish, a
-  vacuum of `pg_statistic` that did not finish (which a role that owns the tables
-  but not the database gets every night), or a database a newer release migrated
-  (`TestSchemaFromANewerReleaseStopsTheSweeper`). When more than one of those fails,
-  the error carries each, so that a failing vacuum of `pg_statistic` does not hide
-  files missing from the media store (`TestSweepErrorNamesEveryStepThatFailed`).
-  It builds its App with `New` like the server, and runs without the salt, the
-  moderation key and the verification secret on purpose, so `New` warns about none
-  of them: those warnings are
+  Cloud Run only gives a service CPU during requests; in production it is a Cloud Run
+  Job on a Cloud Scheduler trigger, which `deploy/README.md` section 2.9 sets up.
+  `SweepArchived` in `store.go` takes batches of `sweepBatchSize` (100) with `FOR UPDATE
+  SKIP LOCKED` against a cutoff fixed when the sweep starts, so a sweep always
+  terminates. Each batch queues the storage keys of its files in `media_deletions`
+  (`0007`) in the same transaction as it deletes the rows; afterwards
+  `removeQueuedMedia` takes the queue one key per transaction (`NextMediaDeletion`,
+  `SKIP LOCKED`), removes the file and forgets the key. A batch that fails is rolled
+  back, and the sweep removes no files after it: every key queued so far, by the batches
+  before it or by an earlier sweep, waits for the next sweep. A file the store refuses
+  to delete keeps its key and is retried by the next sweep
+  (`TestSweepRetriesFilesItCouldNotRemove`). A file the store does not hold keeps its
+  key too and fails the sweep, because every queued key is a file the server stored: a
+  sweeper whose media settings differ from the server's would otherwise delete nothing
+  and report success (`TestSweepAgainstAnotherMediaStoreFails`). That is why the sweep
+  checks with `Get` before `Delete` rather than going through `removeBlobs`, whose
+  `Delete` treats a missing key as done, as a moderator's deletion should. A cancelled
+  sweep stops between files, never between a file and its key, and a stop while it looks
+  up the next key ends the lookup there, with nothing in hand
+  (`TestSweepStoppedLookingForAFileStopsThere`). Then — after the media pass, whatever
+  it found, but not after a batch that failed or a database error or a cancellation in
+  the media pass (`TestSweepPrunesSpentCaptchasWhenDeletingThreadsFails` and
+  `TestSweepPrunesSpentCaptchasWhenTheMediaQueueFails` check that it is skipped) — it
+  calls `RewriteCredentials` (see **Verified Anonymity** below) on the sweep's own
+  context, so that a stop has PostgreSQL cancel the statement it is in. Last, whatever
+  happened to the threads, the files and the rewrite, `PruneSpentCaptchas` deletes the
+  spent captcha answers past their day (`captcha_spent`, `0013`), the ones no later
+  spend pruned: after a batch that failed, as a broken queue fails the batch of an image
+  thread that is due (`TestSweepPrunesSpentCaptchasWhenDeletingThreadsFails`), a removal
+  the store refused (`TestSweepRetriesFilesItCouldNotRemove`), a file it did not hold
+  (`TestSweepAgainstAnotherMediaStoreFails`), a queue it could not read once the threads
+  were done (`TestSweepPrunesSpentCaptchasWhenTheMediaQueueFails`) or a rewrite or
+  vacuum that failed (`TestSweepErrorNamesEveryStepThatFailed`) too, and a failure there
+  never keeps deleted threads' images up
+  (`TestSweepRemovesFilesWhenTheCaptchaCleanupFails`). `captcha_spent` is neither
+  rewritten nor vacuumed: its rows' columns hold a hash and a UTC calendar day, nothing
+  that points at a request or a credential, though the transaction id a row was written
+  with lies beside its post's or code request's while the row lives, and in the table's
+  file after it is deleted until its space there is written over (README's privacy
+  section and "Captcha"). A stop is no exception: the prune runs on
+  `context.WithoutCancel`, as the file in hand does, within `spentPruneTimeout` (five
+  seconds, inside the ten Cloud Run allows between SIGTERM and SIGKILL:
+  `TestSweepsPruneIsGivenFiveSeconds`, and `TestSweepsPruneGivesUpAtItsBound` through
+  `Config.spentPruneWithin`), counted from the stop on a sweep stopped before it,
+  however long the sweep had run by then (`TestStoppedSweepsPruneCountsFromTheStop`,
+  `TestSweepStoppedLateStillPrunesSpentCaptchas`), so a sweep cancelled before its
+  batches (`TestSweepStopsWhenCancelled`), among its files
+  (`TestSweepStoppedAmongItsFilesStillPrunesSpentCaptchas`) or during its rewrite
+  (`TestSweepStoppedDuringTheRewriteStillPrunesSpentCaptchas`) prunes all the same, and
+  its error is the stop, PostgreSQL's report of the statement it cancelled included if
+  it cancelled one, with any file it found missing or could not remove before it
+  (`TestSweepStoppedAmongItsFilesStillSaysWhatItCouldNotRemove`), and the prune's own
+  failure if the prune could not finish (its database not answering, say, or the stop's
+  wait for the file in hand or the rewrite's cancel leaving it no time), beside it, but
+  no prune failed on the stopped context. It logs one record of counts and nothing that
+  names a board or thread or says anything of a credential, failures included, and the
+  error it returns has the key taken out (`TestSweepLogsOnlyCounts`).
+  `credentials_rewritten` is the number of rows the rewrite copied: on a night its
+  transaction commits, every row in the credentials table, expired ones no confirmation
+  has pruned yet included, even if a later step then fails; on a night it does not — the
+  sweep stopped before it, or the rewrite failed, as when its lock times out — 0,
+  whatever the table holds (`TestSweepFailsWhenTheVerificationTablesAreHeld`). Night
+  after night it is a history of the table's size, which the database does not keep, but
+  for that: a 0 on a night that exits non-zero can be a rewrite that did not run, and
+  the error says which step failed. Nothing finer belongs beside it. `spent_captchas` is
+  the number of spent answers the prune deleted. It returns an error — a non-zero exit —
+  on a stop before its rewrite is over, a database failure, a file it could not remove
+  or did not find, a rewrite or vacuum of the verification tables that did not finish, a
+  vacuum of `pg_statistic` that did not finish (which a role that owns the tables but
+  not the database gets every night), a prune that did not finish, or a database a newer
+  release migrated (`TestSchemaFromANewerReleaseStopsTheSweeper`). When more than one of
+  those fails, the error carries each, so that a failing vacuum of `pg_statistic` does
+  not hide files missing from the media store
+  (`TestSweepErrorNamesEveryStepThatFailed`). A stop that comes once the rewrite is
+  over, while the spent answers go, or once a failure, a batch's or the files' own, has
+  left the rest to the next sweep, finds nothing left to stop and adds no error of its
+  own: the sweep ends as one that was not stopped would, failing only if its pass failed
+  (`TestSweepStoppedWhileItPrunesEndsAsIfNotStopped`). `runSweep` in `cmd/server` writes
+  the sweep's error before it closes the App, and waits on the close for
+  `sweepCloseTimeout` (two seconds) at most, since pgx gives a connection that has
+  stopped answering fifteen: so with the database not answering, a sweep stopped once
+  under way writes its error about five seconds after the stop at most, once the prune
+  gives up (`TestStoppedSweepExitsWhenTheDatabaseStopsAnswering`, a whole process behind
+  a proxy that stops forwarding), or a little over six if a rewrite or vacuum it finds
+  in hand has to give up first, which can leave the prune no time (the stop waits
+  `cancelGrace`, three seconds, for PostgreSQL to answer its cancel request and as long
+  again for pgx's own: `TestStoppedRewriteExitsWhenTheDatabaseStopsAnswering`), and
+  exits within the close's two after that, inside Cloud Run's ten, as long as no file
+  deletion is in hand when the media store or the database stops answering, since the
+  file in hand waits on both. In sweep mode `run` takes the signal context before `New`,
+  so a stop while the sweep is still starting up ends `New` with the stop as its error,
+  which is written, and the process exits 1 with nothing deleted, the spent answers
+  included: while it connects, waits for or runs migrations, or checks a Cloud Storage
+  bucket, which `NewGCSStore` does on the context it is given while its client is built
+  on one that outlives it (`TestSweepStoppedWhileStartingUpWritesItsError`, connecting
+  to a proxy that answers nothing, waiting on the migrations' lock, and checking a
+  bucket that never answers), and while `migrate` waits for the two answers it waits for
+  whatever the stop, both within `migrateAnswerTimeout` (two seconds) of the stop: a
+  migration's COMMIT once sent, so a stop as it commits leaves the migration applied and
+  recorded and the next not begun, rather than reported as failed, and the migrations'
+  lock given back, which also has two seconds at most from when it is sent
+  (`TestAnUnansweredUnlockIsGivenUpWithoutAStop`: an unlock never answered, with no
+  stop, is given up two seconds after it is sent, and the sweep goes on and exits 0). A
+  commit no stop has come to is not cut short, its two seconds starting at the stop or
+  at startup's bound (`TestASlowCommitIsWaitedOnWithoutAStop`). `New` looks at its
+  context after `migrate` (`TestSweepStoppedAsMigrateFinishesEndsThere`: an unlock the
+  database never answers, one it answers slowly with a spent answer past its day left in
+  place, a commit it answers slowly, one it never answers, and one answered 1.8 seconds
+  after the stop with the unlock after it never answered, which ends two seconds after
+  the stop rather than two after it was sent); after the domain file, whose read the
+  stop does not cut short and which can wait, on a slow mount say
+  (`TestSweepStoppedWhileStartingUpWritesItsError`, a domain file that is a FIFO written
+  to only after the stop); and after the media store, for one that answers just as the
+  stop comes, which no test reaches: making the local upload directory does not wait,
+  and a bucket check the stop lands in ends with it. The error is written at once, or
+  once that answer or the domain file's read comes, unless the database stops answering
+  while the sweep is connected to it, when `New` first gives up the connection, which
+  pgx allows fifteen seconds, seventeen after a commit or an unlock left unanswered.
+  Every error `run` ends on is written once, as `msg=fatal`
+  (`TestSweepModeFailsWithoutADatabase`, `TestServingFailsWhenTheAddressIsTaken` and the
+  stopped sweeps above), and a flag or a setting it cannot read is then the only line
+  written: the flag set writes nothing of its own, and the usage only for `-h`
+  (`TestRunRefusesWhatItDoesNotUnderstand` and `TestRunWritesTheUsageWhenAsked`, which
+  run the whole process and read all it writes). It builds its App with `New` like the
+  server, and runs without the salt, the moderation key, the verification secret and the
+  captcha secret on purpose, so `New` warns about none of them: those warnings are
   `WarnServingSettings`, which only `serve` in `cmd/server` calls
   (`TestSweepModeLogsNoServerWarnings`, `TestServingWarningsAreTheServersAlone`). A new
   warning about a server-only setting goes there, not in `New`. **Legal holds (build
@@ -885,58 +1394,79 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   whose thread is being swept or deleted waits for the deletion and is then dropped,
   rather than failing the foreign key and the reply with it
   (`TestReplyQuotingAPostBeingDeletedStillPosts`).
-- Config via env vars: `DATABASE_URL`, `EDUCHAN_ADDR`, `EDUCHAN_POSTER_ID_SALT`,
-  `EDUCHAN_TRUST_PROXY`, `EDUCHAN_THREAD_COOLDOWN`, `EDUCHAN_POST_COOLDOWN`,
-  `EDUCHAN_UPLOAD_COOLDOWN`, `EDUCHAN_LOG_FORMAT`, `EDUCHAN_MEDIA_BACKEND`,
-  `EDUCHAN_UPLOAD_DIR`, `EDUCHAN_GCS_BUCKET`, `EDUCHAN_GCS_PREFIX`,
-  `EDUCHAN_MAX_UPLOAD_BYTES`, `EDUCHAN_MOD_KEY`, `EDUCHAN_VERIFY_SECRET`,
-  `EDUCHAN_VERIFY_CODE_TTL`, `EDUCHAN_VERIFY_CREDENTIAL_TTL`, `EDUCHAN_VERIFY_COOLDOWN`,
-  `EDUCHAN_VERIFY_DOMAINS`, `EDUCHAN_UPLOADS_ENABLED`, `EDUCHAN_MAIL_DEV`,
-  `EDUCHAN_DB_MAX_CONNS`. See `.env.example` and the README table.
+- Config via env vars, listed in `.env.example` and the README table: `DATABASE_URL`,
+  `EDUCHAN_ADDR`, `EDUCHAN_POSTER_ID_SALT`, `EDUCHAN_TRUST_PROXY`,
+  `EDUCHAN_THREAD_COOLDOWN`, `EDUCHAN_POST_COOLDOWN`, `EDUCHAN_UPLOAD_COOLDOWN`,
+  `EDUCHAN_LOG_FORMAT`, `EDUCHAN_MEDIA_BACKEND`, `EDUCHAN_UPLOAD_DIR`,
+  `EDUCHAN_GCS_BUCKET`, `EDUCHAN_GCS_PREFIX`, `EDUCHAN_MAX_UPLOAD_BYTES`,
+  `EDUCHAN_MOD_KEY`, `EDUCHAN_VERIFY_SECRET`, `EDUCHAN_VERIFY_CODE_TTL`,
+  `EDUCHAN_VERIFY_CREDENTIAL_TTL`, `EDUCHAN_VERIFY_COOLDOWN`, `EDUCHAN_VERIFY_DOMAINS`,
+  `EDUCHAN_UPLOADS_ENABLED`, `EDUCHAN_MAIL_DEV`, `EDUCHAN_DB_MAX_CONNS`,
+  `EDUCHAN_CAPTCHA_SECRET`, `EDUCHAN_CAPTCHA_WORK`.
   `listenAddr` in `config.go` also reads `PORT` — the bare port number Cloud Run injects —
   when `EDUCHAN_ADDR` is unset, so a container listens where the platform expects. An
   explicit `EDUCHAN_ADDR` still wins, which is why the deploy config leaves it unset.
-- Flood control lives in `ratelimit.go` and is applied by `postCooldowns`/`allow` in
-  `handlers.go`. Thread and reply cooldowns are keyed per board and client, the upload
-  cooldown per client across the whole server. A submission clears every cooldown that
-  applies to it or none is started, so a post refused by one limit is not charged for the
-  other; `allowAll` is what enforces that. Nothing is refunded once a cooldown starts,
-  so every refusal that can be known up front comes before `allow`: a malformed poster
-  key, the body, a badge the poster cannot have, uploads switched off, a file its header
-  shows to be unusable (`media.Inspect` in `parseSubmission`: not an accepted format,
-  or more than `media.MaxPixels`), and a reply the thread would refuse
-  (`ReplyRefusal`). Decoding the pixels is not up front, because it is the cost the
-  upload cooldown limits, so an image that fails to decode is refused by `storeUpload`
-  after `allow` (`TestImagesRefusedByTheirHeaderStartNoCooldown` pins both sides).
-  State is per process and in memory — a shared backend means replacing
-  `cooldownLimiter`, which nothing else depends on.
+- Flood control lives in `ratelimit.go` and is applied in `handlers.go` in two halves:
+  `notCoolingDown` checks the cooldowns `postCooldowns` lists and starts nothing, and
+  `allow` checks them again and starts them all once the captcha answer is spent, so a
+  post refused as used starts none. Thread and reply cooldowns are keyed per board and
+  client, the upload cooldown per client across the whole server. A submission clears
+  every cooldown that applies to it or none is started, so a post refused by one limit
+  is not charged for the other; `allowAll` is what enforces that. It checks every
+  cooldown and starts them all while holding one lock that every admission takes
+  (`admission`), so of simultaneous requests for one key at most one is admitted, and a
+  request is refused only by a cooldown an admitted action started. It can be none, when
+  an admitted request took first another cooldown that each of them needs: two image
+  threads to one board are both refused by the upload cooldown an image reply elsewhere
+  started (`TestAllowAllRefusesOnlyForACooldownAnAdmittedRequestHolds`,
+  `TestAllowAllAdmitsOneOfARace`). Nothing is refunded once an action is admitted, so
+  every refusal knowable up front comes before `allow`, such as a malformed poster key,
+  the body, a badge the poster cannot have, uploads switched off, a file its header
+  shows to be unusable (`media.Inspect` in `parseSubmission`, which reads the format and
+  the size without decoding), a reply the thread would refuse (`ReplyRefusal`), and a
+  captcha answer that is missing, wrong, expired or already spent (`checkCaptcha`).
+  Decoding the pixels is not up front, because it is the cost the upload cooldown
+  limits, so an image whose pixels fail to decode is refused by `storeUpload` after
+  `allow` (`TestImagesRefusedByTheirHeaderStartNoCooldown` pins both sides). Nor is a
+  change to the thread after `ReplyRefusal` read it, archived, locked or deleted
+  meanwhile, or its last image slot taken by a racing reply, which `CreateReply` refuses
+  after `allow` too. State is per process and in memory, the captcha's challenge count
+  (`captchaMeter`) included — a shared backend means replacing `cooldownLimiter`, which
+  nothing else depends on, and the meter.
   The keys carry client addresses, so the limiters are also a privacy surface: `New`
-  builds a `cooldownSweep` over all four limiters and starts its timer, which drops
-  every expired entry each `cooldownSweepInterval` (one minute), and `Close` stops it.
-  **While the process has CPU, an address is held in memory no longer than the
-  longest cooldown that applies to it plus one minute**, counted from its last action
-  that started one, busy server or quiet. A host that gives CPU only during requests,
-  which is Cloud Run's default (request-based billing), holds the timer back on an
-  idle instance, so `beforeEachRequest` (in `Routes`) runs an overdue sweep before a
-  request is handled; until a request arrives or the instance stops, an idle instance
-  still holds what it last saw, and on Cloud Run the one-minute bound needs CPU always
-  allocated (`--no-cpu-throttling`). The README's Flood control section states the
-  bound with that condition, and anything the client says about addresses rests on
-  it, which is why the FAQ promises no time limit. A longer interval, a new limiter
-  left out of the sweep, a limiter keyed on something that outlives its cooldown, or
-  the request-path sweep dropped from `Routes` breaks it
-  (`TestSweepExpiredKeepsOnlyLiveCooldowns`, `TestSweepCooldownsRunsUntilStopped`,
+  builds a `cooldownSweep` over all four limiters and the captcha's challenge meter
+  (`captchaMeter`, anything with `sweepExpired` is `expiring`) and starts its timer,
+  which drops every expired entry each `cooldownSweepInterval` (one minute), and `Close`
+  stops it. The meter counts in one-minute windows and forgets an address's count when
+  its window ends, so it is a one-minute cooldown for this bound
+  (`TestCaptchaMeterForgetsAddresses`).
+  **While the process has CPU, an address is held in memory no longer than the longest
+  cooldown that applies to it plus one minute**, counted from its last action that
+  started one, busy server or quiet. A host that gives CPU only during requests, which is
+  Cloud Run's default (request-based billing), holds the timer back on an idle instance,
+  so `beforeEachRequest` (in `Routes`) runs an overdue sweep before a request is handled;
+  until a request arrives or the instance stops, an idle instance still holds what it
+  last saw, and on Cloud Run the one-minute bound needs CPU always allocated
+  (`--no-cpu-throttling`). The README's Flood control section states the bound with that
+  condition, and anything the client says about addresses rests on it, which is why the
+  FAQ promises no time limit. A longer interval, a new limiter left out of the sweep, a
+  limiter keyed on something that outlives its cooldown, or the request-path sweep
+  dropped from `Routes` breaks it (`TestSweepExpiredKeepsOnlyLiveCooldowns`,
+  `TestSweepCooldownsRunsUntilStopped`,
   `TestCooldownSweepRunsBeforeARequestOnceItIsOverdue`, and
   `TestFloodControlForgetsAddressesOnAQuietServer` and
   `TestFloodControlForgetsAddressesBeforeTheNextRequest`, which shorten the period
   through `Config.cooldownSweepEvery`). The record-time sweep past
-  `cooldownSweepThreshold` only bounds a burst between two ticks.
+  `cooldownSweepThreshold` only bounds a burst between two ticks, and runs again only
+  once the map has doubled since the last sweep (`sweepAt`): a map of live cooldowns,
+  which no sweep can shrink, swept on every record would cost every admission a pass over
+  it while holding `admission` (`TestCooldownLimiterSweepsOnceEachTimeItDoubles`).
 - `EDUCHAN_TRUST_PROXY` is a hop count, not a boolean (`true` still means 1). `clientIP`
   in `middleware.go` reads the Nth `X-Forwarded-For` entry **from the right**, because each
   proxy appends and everything to the left is client-supplied; a chain shorter than the
   configured depth or a non-IP entry falls back to the peer address. Setting it higher than
-  the real chain hands clients control of their own rate-limit bucket, and of their poster
-  ID when they send no poster key.
+  the real chain hands clients control of their own rate-limit bucket, their captcha
+  challenge count, and their poster ID when they send no poster key.
 - Moderation is one shared key rather than accounts: `authorizeMod` in `moderation.go` is
   the single gate, so replacing it with real janitor roles later touches only that file.
   Deleting a post or thread removes the attachment blobs after the transaction commits; a
@@ -1031,15 +1561,15 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     credentials every night.** Every row carries `xmin`, the id of the transaction that
     wrote it, and posts carry `created_at`, so a credential's `xmin` among the posts'
     dates its issuance to the minutes between two of them; freezing keeps `xmin`, and
-    `ctid` follows issuance order. `RewriteCredentials` (`store.go`), the sweep's last
-    step, works on a connection of its own, with `lock_timeout` at five seconds,
-    `client_min_messages` at `warning` (so that neither `DATABASE_URL` nor a role's or
-    the database's default can hide the `55P03` below), a handler that collects
-    notices, and pgx's `CancelRequestContextWatcherHandler`. A cancelled sweep
-    (SIGTERM, Ctrl-C) must have asked PostgreSQL to stop the statement in flight by
-    the time it returns and the process exits: PostgreSQL does not notice a closed
-    socket until the statement ends, so a `VACUUM FULL` nobody cancelled runs on,
-    holding its table, and commits. Two things see to it, and either alone does
+    `ctid` follows issuance order. `RewriteCredentials` (`store.go`), the sweep's step
+    before the spent captcha answers' prune, works on a connection of its own, with
+    `lock_timeout` at five seconds, `client_min_messages` at `warning` (so that neither
+    `DATABASE_URL` nor a role's or the database's default can hide the `55P03` below),
+    a handler that collects notices, and pgx's `CancelRequestContextWatcherHandler`. A
+    cancelled sweep (SIGTERM, Ctrl-C) must have asked PostgreSQL to stop the statement
+    in flight by the time it returns and the process exits: PostgreSQL does not notice
+    a closed socket until the statement ends, so a `VACUUM FULL` nobody cancelled runs
+    on, holding its table, and commits. Two things see to it, and either alone does
     while PostgreSQL answers promptly. The handler sends the cancel request at once
     and has the statement wait up to `cancelGrace` (three seconds) for PostgreSQL's
     answer, so the statement has stopped, with PostgreSQL's `57014`, before the
@@ -1090,8 +1620,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     fails if the confirmation's counts were in by then; it sweeps from an `App` of its
     own, as the Job does, and waits the 65 seconds out). The app package's harness sets
     the wait to zero for every other test there; `cmd/server`'s `-sweep` tests build
-    their `App` with `New`, as the Job does, and wait the full 65 seconds per sweep,
-    three sweeps in all. Then `VACUUM (FULL, SKIP_LOCKED, SKIP_DATABASE_STATS)` on each table,
+    their `App` with `New`, as the Job does, and wait the full 65 seconds per sweep
+    that gets that far, five sweeps in all (`TestSweepModeSweepsAndExits`' two,
+    `TestSweepModeLogsNoServerWarnings`, `TestASlowCommitIsWaitedOnWithoutAStop` and
+    `TestAnUnansweredUnlockIsGivenUpWithoutAStop`); a test there that needs only the
+    schema migrates it with `migrateSchema`, which stops after `New`, rather than with a
+    sweep. Then `VACUUM (FULL, SKIP_LOCKED, SKIP_DATABASE_STATS)` on each table,
     outside the transaction, writes both tables to new files without the dead versions
     — or the deleted pending rows, with their email hash and an expiry to the
     microsecond — and drops the old files, which are not wiped (the README's
@@ -1244,20 +1778,22 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     `TestSweepLeavesNoScanTimeFromBeforeIt` and
     `TestVerificationTablesKeepNoStatistics` hold it.
   - **The credential is a header, not a cookie, and this is load-bearing.** It is
-    returned by `/api/verify/confirm`, kept by the client in `localStorage`, and sent
-    in `X-Educhan-Credential` only on posts that ticked the badge box. A cookie would be
+    returned by `/api/verify/confirm`, kept by the client in `localStorage`, and sent in
+    `X-Educhan-Credential` only on posts that ticked the badge box. A cookie would be
     attached to every request to the origin, which would turn the badge into a stable
-    identifier for a poster's whole session whether or not they ever used it. Never add
-    a cookie fallback, and never read the credential from a handler that is not creating
-    a post — `TestCredentialIsReadOnlyOnTheBadgePath` parses this package and pins the
-    call graph (header read in `credential`, called only by `postBadge`, called only by
-    the two posting handlers), and `TestCredentialHasNoEffectOffTheBadgePath` presents a
-    valid credential to every other endpoint and diffs the responses. In particular
-    `GET /api/verify` reports whether the feature is configured and nothing about the
-    caller: answering "am I verified?" would mean the credential travelling off the
-    badge path. The client reads its own label and expiry out of the credential locally.
-    The one thing besides the label that leaves the badge path is the credential's random
-    id, and only as far as the badged post's poster ID (see **Poster IDs** above).
+    identifier for a poster's whole session whether or not they ever used it. Never add a
+    cookie fallback, and never read the credential from a handler that is not creating a
+    post — `TestCredentialIsReadOnlyOnTheBadgePath` parses this package and pins the call
+    graph (header read in `credential`, called only by `postBadge`, called only by the
+    two posting handlers), and `TestCredentialHasNoEffectOffTheBadgePath` presents a
+    valid credential to every other endpoint and diffs the responses
+    (`TestCredentialHasNoEffectOnTheCaptcha` for `GET /api/captcha`, whose challenges are
+    random). In particular `GET /api/verify` reports whether the feature is configured
+    and nothing about the caller: answering "am I verified?" would mean the credential
+    travelling off the badge path. The client reads its own label and expiry out of the
+    credential locally. The one thing besides the label that leaves the badge path is the
+    credential's random id, and only as far as the badged post's poster ID (see **Poster
+    IDs** above).
   - The trade-off `localStorage` buys that with is documented in the README: it is
     JS-readable where an HttpOnly cookie was not, which is acceptable because the CSP
     forbids inline scripts (`TestWebAssetsHaveNoInlineStylesOrScripts` keeps it that
@@ -1311,8 +1847,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   any suffix. Plus-addressing is stripped from the uniqueness key and dots deliberately
   are not: that is a Gmail convention, and applying it everywhere would fold two real
   people at one institution into one identity.
-- Code requests reuse `cooldownLimiter` through `allowAction`, keyed per client **and** per
-  address hash in one `allowAll` call, so a refused request starts neither cooldown. The
+- Code requests reuse `cooldownLimiter` through `waitedOut` and `allowAction`, keyed per
+  client **and** per address hash, so a refused request starts neither cooldown. The
   attempt cap on a pending row is what keeps a six-digit code safe; a wrong guess is
   committed rather than rolled back, which is why `ConfirmVerification` returns its outcome
   beside the transaction error instead of through it.
@@ -1345,12 +1881,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `internal/app/sweep_test.go`, `internal/app/poster_id_test.go`,
   `internal/app/verify_api_test.go`, `internal/app/verify_transport_test.go`,
   `internal/app/migrate_test.go`, `internal/app/markup_api_test.go`,
-  `internal/app/logging_test.go`, `internal/app/media_backend_test.go`, and
-  `TestClientKnowsTheServersImageRefusals`, `TestClientKnowsWhenNoCodeIsPending` and
-  `TestAnExpiredCodeIsSaidToHaveExpired` in `internal/app/web_invariants_test.go`) run
-  the whole app against an isolated schema in `TEST_DATABASE_URL` (falling back to
-  `DATABASE_URL`), so
-  they are safe to run against the development database. `testServer` builds its `Config` directly, which leaves every
+  `internal/app/logging_test.go`, `internal/app/media_backend_test.go`,
+  `internal/app/captcha_api_test.go`, and `TestClientKnowsTheServersImageRefusals`,
+  `TestClientKnowsWhenNoCodeIsPending` and `TestAnExpiredCodeIsSaidToHaveExpired` in
+  `internal/app/web_invariants_test.go`) run the whole app against an isolated schema in
+  `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so they are safe to run against
+  the development database. `testServer` builds its `Config` directly, which leaves every
   cooldown at zero unless a test asks for one, and gives the client a cookie jar so the
   two-step verification exchange behaves as it does in a browser. `verifyServer` adds a
   secret and a capturing `mailer.Sender`, which is how a test reads the code back; the
@@ -1360,11 +1896,25 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   post that asks for a badge, and the poster key on any other. A post carrying both is
   never sent by the client, and the tests that cover it set the headers explicitly.
   Tests post to boards they create with `addBoard` (`api_test.go`), never to seeded
-  ones, so they do not depend on which boards the migrations seed;
-  `TestBoardsAreSeeded` is the one test that names the seeded set.
+  ones, so they do not depend on which boards the migrations seed; `TestBoardsAreSeeded`
+  is the one test that names the seeded set.
   A migration's effect on existing data is tested by stopping a schema at an earlier
   version with `databaseAt` (`migrate_test.go`), writing rows into it with plain SQL, and
   starting a server on it with `serverOn`, which applies the rest. Sweep tests call
   `app.sweep` with a small batch to cover the loop, and backdate `archived_at` with
   `archiveThread` rather than waiting. `cmd/server/main_test.go` runs the `-sweep` mode as
   a whole process against its own schema in the same database.
+  The two packages' tests share that database, and `go test ./...` runs the packages at
+  once, so each can hold off the other's vacuums: a statement in the database still
+  running from before a sweep's rewrite committed, a transaction there reading from one
+  snapshot taken by then, or a transaction anywhere on the instance that had written
+  something by then keeps the sweep's vacuum trying again. `cmd/server`'s tests give
+  each sweep 65 seconds and a minute of slack for that (`sweepsOwnTime`). The other way
+  round, the app package's tests whose vacuum has a few seconds of patience or less, or
+  whose deadline after the vacuum is a few seconds, take the advisory lock
+  `horizonLockID` exclusive (`keepOtherHoldersAway`), and `cmd/server`'s tests that keep
+  a transaction open in the database for more than a second, as those that stop a sweep
+  whose database has stopped answering it do, take it shared for as long as they do
+  (`holdingTheHorizon`). Both ask again and again (`pg_try_advisory_lock`, or its shared
+  form) rather than wait for the lock in a statement, which would hold a snapshot
+  itself; both packages' tests define the key, which must stay the same in each.

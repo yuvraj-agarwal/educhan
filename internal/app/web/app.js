@@ -84,10 +84,11 @@ const state = {
   // holds, which the server is never asked about outside of using it.
   verification: { answered: false, enabled: false, badge: null },
   // What this server takes, from GET /api/site: whether it accepts images at
-  // all, and the largest it accepts. Until that answers, or if it never does,
-  // the picker is offered as it always was and the size limit is unknown (0);
-  // the server's refusal is the last word either way.
-  site: { uploads: true, maxUploadBytes: 0 },
+  // all, the largest it accepts, and whether a post needs the captcha. Until
+  // that answers, or if it never does, the picker is offered as it always was,
+  // the size limit is unknown (0) and no answer is sent; the server's refusal
+  // is the last word either way.
+  site: { uploads: true, maxUploadBytes: 0, captcha: false },
 };
 
 const el = {
@@ -157,6 +158,7 @@ async function api(path, options = {}) {
     const err = new Error((payload && payload.error) || `${res.status} ${res.statusText}`);
     err.status = res.status;
     err.payload = payload;
+    err.headers = res.headers;
     throw err;
   }
   return payload;
@@ -164,18 +166,34 @@ async function api(path, options = {}) {
 
 // errorMessage turns an API failure into something worth reading. The server's
 // own message is kept; only the cases where it needs context are rewritten.
-// What is being sent stays in its form after a refusal, so these say so.
-// action is what was refused — "post", or "code" for a verification code
-// request — so a cooldown tells the reader to do that again, not something
-// they were not doing. kept is false for a refusal said over a form that was
-// not the one sent, and so does not hold what was written: a Verify step drawn
-// again while its request was out (sayVerifyRefusal).
-function errorMessage(err, { hasText = true, action = "post", kept = true } = {}) {
+// What was being sent stays in its form after a refusal, as far as the form
+// still holds it, so these say what it holds: hasText, whether it holds text,
+// hasImage, whether it holds an image, and imageOff, why the image is gone when
+// a redraw while the post was held had release take it off ("" when it did not:
+// holdForm). The caller adds that to anything but the two refusals of the image
+// itself (imageTakenOff). A form holds what it sent at the answer, but for what
+// release took off; a notice worded later, by a redraw, reads what the reader
+// has left in it since, its text erased, say, or its image taken out. action is
+// what was refused — "post", or "code" for a verification code request — so a
+// cooldown tells the reader to do that again, not something they were not
+// doing. kept is false for a refusal said over a form that was not the one
+// sent, and so does not hold what was written: a Verify step drawn again while
+// its request was out (sayVerifyRefusal).
+function errorMessage(err, { hasText = true, hasImage = true, imageOff = "", action = "post", kept = true } = {}) {
+  // Nothing is left of the post, neither text nor image: an image-only post
+  // whose image release took off, say, or a text-only post whose text the
+  // reader has erased since.
+  const nothingLeft = !hasText && (imageOff !== "" || !hasImage);
   if (err.unreachable) {
-    return kept ? `${UNREACHABLE} What you wrote is still in the box.` : UNREACHABLE;
+    return nothingLeft || !kept
+      ? UNREACHABLE
+      : hasText
+        ? `${UNREACHABLE} What you wrote is still in the box.`
+        : `${UNREACHABLE} Your image is still attached.`;
   }
   if (err.status === 413) {
-    return imageTooLargeMessage();
+    // An image taken off since cannot be swapped for a smaller one.
+    return imageOff ? "That image was too large." : imageTooLargeMessage();
   }
   if (err.status === 429) {
     const seconds = err.payload && err.payload.retry_after;
@@ -202,13 +220,68 @@ function errorMessage(err, { hasText = true, action = "post", kept = true } = {}
       ? `${UPLOADS_OFF_REASON} The image has been taken off your post. Post again to send the text on its own.`
       : `${UPLOADS_OFF_REASON} Write something to post text instead.`;
   }
+  // The captcha refused the fresh answer sent after it refused the first, which
+  // a working server does not: nothing was posted or sent, and pressing the
+  // button again solves another. A first refusal is answered by that second
+  // send or, when the form has gone or the browser was forgotten since the
+  // press, by an error marked notSent instead, which the callers answer without
+  // coming here, but for a post whose form had gone, in a browser not forgotten
+  // since the press (below).
+  if (err.status === 403 && err.payload && err.payload.captcha) {
+    if (action === "code") {
+      return "The anti-spam check didn't go through, so no code was sent. Request a code again.";
+    }
+    if (nothingLeft) {
+      return "The anti-spam check didn't go through, so nothing was posted.";
+    }
+    return hasText
+      ? "The anti-spam check didn't go through, so nothing was posted. Your text is still in the box; post again."
+      : "The anti-spam check didn't go through, so nothing was posted. Your image is still attached; post again.";
+  }
+  // A post not sent because its form had left the screen, the reader having
+  // gone to another page, is told so only by a redraw that carries its form
+  // held (captureDraft), after a post link's lookup into its thread say, as it
+  // puts its values back into its own page (restoreDraft) or keeps that page
+  // (render): on screen it would have gone, so it is told that nothing was
+  // posted and, unless release left it nothing to post, to post again.
+  if (err.notSent) {
+    if (nothingLeft) {
+      return "You left this page before the post went through, so nothing was posted.";
+    }
+    return hasText
+      ? "You left this page before the post went through, so nothing was posted. Your text is still in the box; post again."
+      : "You left this page before the post went through, so nothing was posted. Your image is still attached; post again.";
+  }
   if (err.status === 403 && err.message === "thread is archived") {
-    return "This thread was archived while you were writing, so it no longer takes replies. Your text is still in the box.";
+    const kept = hasText ? " Your text is still in the box." : "";
+    return `This thread was archived while you were writing, so it no longer takes replies.${kept}`;
   }
   if (err.status === 403) {
     return `${err.message}.`;
   }
   return err.message;
+}
+
+// imageTakenOff follows a notice about a post with why its image is gone, when
+// release took it off (reason, the note the picker was switched off with:
+// holdForm), and tells a post left with nothing to send to write something
+// instead. A post left with its text needs nothing more: the next press sends
+// the text on its own. A refusal of the thread itself (closed: archived,
+// locked, or gone) leaves nothing a post can do there, so the notice says only
+// that the image was taken off: the picker's reason, which says text replies
+// still work, and the advice to write one would point at a press the server
+// will refuse again.
+function imageTakenOff(message, reason, { hasText, isThread, closed = false }) {
+  if (!reason) {
+    return message;
+  }
+  // The server's own words, passed on as they are, end without a full stop.
+  const said = /[.!?]$/.test(message) ? message : `${message}.`;
+  if (closed) {
+    return `${said} The image has been taken off your post.`;
+  }
+  const next = hasText ? "" : isThread ? " Write something to post text instead." : " Write a reply to post text instead.";
+  return `${said} The image has been taken off your post. ${reason}${next}`;
 }
 
 /* Storage ------------------------------------------------------------------ */
@@ -229,6 +302,14 @@ function storageSet(key, value) {
     localStorage.setItem(key, value);
   } catch {
     // Not kept; whatever it was for is asked for or made again next time.
+  }
+}
+
+function storageRemove(key) {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // Nothing was stored, so nothing needs removing.
   }
 }
 
@@ -1291,6 +1372,12 @@ function postHTML(post, context) {
 // Only one posting form is on screen at a time, so these ids are unique.
 const FIELD_IDS = { subject: "f-subject", name: "f-name", body: "f-body", image: "f-image" };
 
+// What a posting form says beside its button while the captcha is on: a form
+// that offers the badge says a badged post skips the check, and one without
+// the option, drawn so or with it since taken out (drawBadgeOption), does not.
+const CHECK_HINT = "Your browser does a quick anti-spam check first.";
+const CHECK_HINT_WITH_BADGE = "Unless the post carries your badge, your browser does a quick anti-spam check first.";
+
 // fileFieldHTML draws the image picker. `blocked` is the reason it cannot be
 // used, when there is one; the field then renders exactly as blockFileField
 // leaves a live one, so a refusal mid-draft and a fresh render look the same.
@@ -1356,6 +1443,13 @@ function formHTML({ kind, slug, thread = null, open = false }) {
         </div>`
     : "";
 
+  // Said where the button is, since pressing it may wait on the puzzle. No
+  // link to the FAQ's entry here: leaving the page would lose the post.
+  let check = "";
+  if (state.site.captcha) {
+    check = ` <span data-check-hint>${held ? CHECK_HINT_WITH_BADGE : CHECK_HINT}</span>`;
+  }
+
   // Under the message, on every form: no contact details, because they are
   // how a conversation leaves the site for a private one, which educhan
   // deliberately does not have.
@@ -1387,7 +1481,7 @@ function formHTML({ kind, slug, thread = null, open = false }) {
           <button class="btn primary" type="submit">${isThread ? "Create thread" : "Post reply"}</button>
           ${sage}
           ${badge}
-          <span class="hint">Posting is anonymous.</span>
+          <span class="hint">Posting is anonymous.${check}</span>
         </div>
       </form>
     </details>`;
@@ -1414,56 +1508,191 @@ function badgeOffered(form) {
   return slot ? slot.dataset.badgeOption : "";
 }
 
-// offerHeldBadge brings the badge box of every posting form on screen into
-// line with the badge this browser holds now. A form offers the badge held
-// when it was drawn, and the badge can change under it: Verify pressed for
-// another address, and the reader gone on to a board before the answer came.
-// That form went on saying "post with" the badge before, while a post sent
-// from it carried the new credential, so a box ticked for one institution put
-// the post out under another. Now a box naming a badge no longer held is drawn
-// again, unticked, for the badge held now, or taken out when there is none,
-// and the half-written post is left where it is. A box the reader had ticked
-// is said to have been unticked (sayBadgeUnticked), and a box that had the
-// focus hands it to the box drawn in its place, or to the form's button when
-// there is none, rather than dropping it to the page. The Name field is left
-// as it is too: a remembered name or tripcode put back on a post written to
-// go out badged would tie it to the reader's unbadged posts.
-function offerHeldBadge() {
+// drawBadgeOption brings a posting form's badge box into line with the badge
+// this browser holds now. A form offers the badge held when it was drawn, and
+// the badge can change under it: Verify pressed for another address, and the
+// reader gone on to a board before the answer came, say, or the badge
+// forgotten, refused or replaced in another tab. That form went on saying "post
+// with" the badge before, while a post sent from it carried the new credential,
+// so a box ticked for one institution put the post out under another. Now a box
+// naming a badge no longer held is drawn again, unticked, for the badge held
+// now, or taken out when there is none, and the half-written post is left where
+// it is. The form's note on the anti-spam check is worded again to match, since
+// only a form that offers a badge says a badged post skips it. A box that had
+// the focus hands it to the box drawn in its place, or to the form's button
+// when there is none, rather than dropping it to the page. The Name field is
+// left as it is too: a remembered name or tripcode put back on a post written
+// to go out badged would tie it to the reader's unbadged posts. A box drawn
+// into a form held while its request is pending, whether or not it had a box
+// before, is drawn switched off, as holdForm switched off the controls that
+// were on, and switched on with them when the hold ends: what is sent was read
+// at the press, so a box ticked meanwhile would show a badge the post does not
+// carry. A box taken out of a held form stays out. It says whether the box it
+// drew over was ticked.
+function drawBadgeOption(form) {
   const held = state.verification.badge;
   const number = held ? held.number : "";
-  let unticked = false;
-  for (const slot of el.main.querySelectorAll("[data-badge-option]")) {
-    if (slot.dataset.badgeOption === number) continue;
-    const box = slot.querySelector('input[name="badge"]');
-    if (box && box.checked) unticked = true;
-    const focused = slot.contains(document.activeElement);
-    slot.dataset.badgeOption = number;
-    slot.innerHTML = badgeOptionHTML(held);
-    const next = slot.querySelector('input[name="badge"]') || slot.closest("form").querySelector('button[type="submit"]');
-    if (focused && next) next.focus({ preventScroll: true });
+  const slot = form.querySelector("[data-badge-option]");
+  if (!slot || slot.dataset.badgeOption === number) return false;
+  const box = slot.querySelector('input[name="badge"]');
+  const ticked = Boolean(box && box.checked);
+  const focused = slot.contains(document.activeElement);
+  slot.dataset.badgeOption = number;
+  slot.innerHTML = badgeOptionHTML(held);
+  const drawn = slot.querySelector('input[name="badge"]');
+  if (drawn && heldForms.has(form)) {
+    drawn.disabled = true;
+    heldForms.get(form).push(drawn);
   }
-  if (unticked) sayBadgeUnticked();
+  const check = form.querySelector("[data-check-hint]");
+  if (check) check.textContent = held ? CHECK_HINT_WITH_BADGE : CHECK_HINT;
+  const next = drawn || form.querySelector('button[type="submit"]');
+  if (focused && next) next.focus({ preventScroll: true });
+  return ticked;
 }
 
-// sayBadgeUnticked says why a badge box the reader ticked is ticked no longer:
-// the badge it named is not the one this browser holds now.
-function sayBadgeUnticked() {
+// The posting forms whose ticked badge went from under them: their box drawn
+// again for the badge held now, unticked, or taken out (drawBadgeOption),
+// because another tab forgot, refused or replaced the badge
+// (followCredentialStorage), or this tab replaced it, refused it on a post from
+// another page or heard it was switched off or had run out, whether the form
+// was idle or its badged post was on its way, or by a press that found the page
+// holding a badge other than the one the box was drawn for (badgeOffered), or
+// drawn again by a redraw that offers another badge or none (restoreDraft), or
+// because the server refused it on the form's own post while the form was off
+// the screen, where the refusal says nothing then (submit); a redraw that
+// carries the form held says the refusal instead, as it puts its values back
+// into its own page, not carrying the note (restoreDraft), or keeps that page,
+// dropping it (render), unless a press refused before the note could refuse it,
+// as empty say, has dropped that refusal first, when the note stays, for the
+// form that redraw draws or the page it keeps. Said nothing, the form's next
+// press would post without the badge, under the ID the reader's other posts in
+// the thread without one share, which is what a badged post's own ID is there
+// to keep apart. So that press is refused, once, saying so (submit), and the
+// one after it posts. A badged post that goes through takes the note with it,
+// as does a refusal of it that tells the form, on screen, that its badge was
+// replaced, that notice being its one refusal (submit), or a redraw that words
+// that notice again for the form it draws (restoreDraft), and so does the
+// reader ticking or unticking the box. Each is kept with the number of the
+// badge that went (badgeNumber), and the poster key storage held then, for the
+// notice to name that ID only while the key is the same (badgeWithdrawnNotice).
+// It lives with the form, and a draft carries it across a re-render (formDraft,
+// restoreDraft). Forget this browser drops it: the key goes too, so the next
+// post has an ID of its own.
+const badgeWithdrawn = new WeakMap();
+
+// withdrawBadgeOption is drawBadgeOption for a form whose badge has gone from
+// under it, noting the form in badgeWithdrawn if its box was ticked. A ticked
+// box drawn again unticked, in a form with some of the post in it, also starts
+// the puzzle the form now needs, as the reader's own untick would
+// (captchaBadgeToggled), so the press after the one the note refuses usually
+// finds it solved; but not with startNothing: when the badge went with the
+// browser forgotten in another tab, which starts nothing here, or as /verify
+// is drawn over the form (loadVerification), or a redraw puts a held form back
+// (restoreDraft), since drawing a page starts nothing, or as the form's own
+// badged post is refused while the form is off the screen, where nobody is
+// writing in it (submit). A form noted then starts it at the press the note
+// refuses (submit).
+function withdrawBadgeOption(form, startNothing) {
+  const offered = badgeOffered(form);
+  const key = storageGet(POSTER_KEY_STORAGE_KEY) || "";
+  if (!drawBadgeOption(form)) return;
+  badgeWithdrawn.set(form, { number: offered, key });
+  if (!startNothing && captchaFormNeedsIt(form) && captchaFormHasWriting(form)) {
+    prepareCaptcha();
+  }
+}
+
+// offerHeldBadge brings every posting form on screen but except into line
+// with the badge this browser holds now, whatever changed it, noting each form
+// whose ticked box that unticks (withdrawBadgeOption).
+function offerHeldBadge(startNothing = false, except = null) {
+  for (const form of el.main.querySelectorAll("form[data-kind]")) {
+    if (form !== except) withdrawBadgeOption(form, startNothing);
+  }
+}
+
+// What a posting form says when its badge has gone from the browser and it
+// was asked to post with it.
+const BADGE_GONE = "Your badge is no longer available in this browser — verify again to post with it.";
+
+// badgeWithdrawnNotice is what the press of a form in badgeWithdrawn is told:
+// that the badge has gone, and what pressing again does (pressedWithoutBadge).
+// The form offers the badge held now, if there is one, not ticked: ticking it
+// is the reader's choice, and takes the note off.
+function badgeWithdrawnNotice(form, { key }) {
   const held = state.verification.badge;
-  showNotice(
-    held
-      ? `Your badge in this browser is now Verified: ${held.label}, not the one you ticked, so the box is unticked. Tick it again to post with this badge.`
-      : "Your badge is no longer available in this browser — verify again to post with it.",
-  );
+  const gone = held
+    ? `The badge you ticked for this post has gone from this browser, and the one this form now offers, Verified: ${held.label}, is not ticked.`
+    : BADGE_GONE;
+  return `${gone} ${pressedWithoutBadge(form, key)}`;
 }
 
-// sayBadgeReplaced says why a badged post was not sent when the badge it
-// carried is no longer valid and this browser holds another, stored since the
-// post went out. The server's own words send the reader to verify again, for
-// a badge the form already offers them (offerHeldBadge).
-function sayBadgeReplaced(held) {
-  showNotice(
-    `The badge this post carried is no longer valid, so the post was not sent. Your badge in this browser is now Verified: ${held.label}. Tick its box to post with it.`,
-  );
+// pressedWithoutBadge says what the next press of a form that has lost its
+// badge does: it posts without one. A reply then goes out under the same ID as
+// the reader's posts in the thread without a badge while storage holds key, the
+// poster key it held when the badge went, the key that ID is made from: a
+// forget in another tab that this one hears of only as the badge going, in a
+// browser without BroadcastChannel, takes the key away too, and a new thread
+// has no posts yet to share an ID with.
+function pressedWithoutBadge(form, key) {
+  const sameID = form.dataset.kind === "reply" && key !== "" && key === storageGet(POSTER_KEY_STORAGE_KEY);
+  return sameID
+    ? "Pressing again posts this without a badge, under the same ID as the posts you make in this thread without one."
+    : "Pressing again posts this without a badge.";
+}
+
+// What a posting form says when the server refuses its badged post as expired
+// or revoked while storage holds another badge, verified since in this browser,
+// in another tab or in this one by a confirmation answered after the reader
+// left /verify, and the browser has not been forgotten since the press by the
+// time the form is told: on screen, storage holding that badge at the answer;
+// for a form answered off the screen, at the answer or when a redraw tells it
+// (unsaidNotices). A badge stored after a forget is someone else's, so the form
+// is then told the server's words (submit).
+const BADGE_REPLACED = "The badge this post carried was replaced by one verified since in this browser, so nothing was posted.";
+
+// badgeReplacedNotice is that form's notice, in place of the server's, which
+// says to verify again: that would cost another emailed code, and replace the
+// badge the browser already holds. It is the form's one refusal for the badge
+// that went, so it says what pressing again does (pressedWithoutBadge), and how
+// to post with the new badge: the form offers it, not ticked (drawBadgeOption).
+// A post left with nothing in it, neither text nor image (errorMessage's
+// hasImage), has nothing to press again for, and the notice then says only what
+// went (imageTakenOff adds why, and to write something, for an image release
+// took off). It reads the badge held, the box of the form it is given, the
+// poster key and what the post holds when it is worded, as it is said: on
+// screen at the answer; for a form answered off the screen, by the redraw that
+// tells it, for the form drawn or kept then (unsaidNotices); and again by a
+// redraw loading meanwhile that takes the image off, for the form it draws and
+// the text put back into it (restoreDraft), that form then losing a note left
+// on it since, the notice being its one refusal. Each of those can change by
+// then: with no badge held by then, forgotten since, it ends with what pressing
+// again does, there being no box to tick; with another, verified since, it
+// names that one, which the form offers; with the new badge's box ticked since,
+// it says that pressing again posts with that badge; and for a post left with
+// nothing in it since, its text erased say, it says only what went. Unless a
+// redraw that takes the image off words it again, a notice on screen stays as
+// it was worded through a change made after it is said, a badge forgotten or
+// verified in another tab say, so it names the badge it was worded for: the
+// change shows on the form itself, whose box is drawn again for the badge held
+// then or taken out, a box ticked then refusing the next press once, saying why
+// (followCredentialStorage). In a browser forgotten since the press, the form
+// is told the server's words instead (BADGE_REPLACED).
+function badgeReplacedNotice(form, { hasText, hasImage, imageOff }) {
+  if (!hasText && (imageOff !== "" || !hasImage)) {
+    return BADGE_REPLACED;
+  }
+  const held = state.verification.badge;
+  const box = field(form, "badge");
+  if (held && box && box.checked && badgeOffered(form) === held.number) {
+    return `${BADGE_REPLACED} The box for the new badge, Verified: ${held.label}, is ticked, so pressing again posts this with that badge.`;
+  }
+  const press = pressedWithoutBadge(form, storageGet(POSTER_KEY_STORAGE_KEY) || "");
+  if (!held) {
+    return `${BADGE_REPLACED} ${press}`;
+  }
+  return `${BADGE_REPLACED} ${press} To post it with the new badge, Verified: ${held.label}, tick its box.`;
 }
 
 /* File field behaviour ------------------------------------------------------ */
@@ -1472,7 +1701,8 @@ function isAcceptedImage(file) {
   return ACCEPTED_IMAGES.split(",").includes(file.type) || ACCEPTED_EXTENSIONS.test(file.name);
 }
 
-// setFile puts a dropped file into the form's file input. Assigning a FileList
+// setFile puts a dropped file into the form's file input, and says whether it
+// took it, for the caller to show it (updateFileField). Assigning a FileList
 // needs a DataTransfer, which is also how the draft is carried across a
 // re-render.
 function setFile(field, file) {
@@ -1480,9 +1710,13 @@ function setFile(field, file) {
   if (!input || !file) {
     return false;
   }
-  // A drop reaches a blocked field too; say why it was not taken.
+  // A drop reaches a blocked field too; say why it was not taken. A picker
+  // switched off only while its post is pending (holdForm) takes nothing
+  // either: the post has already been read.
   if (input.disabled) {
-    showNotice(field.querySelector(".file-blocked").textContent);
+    if (field.classList.contains("blocked")) {
+      showNotice(field.querySelector(".file-blocked").textContent);
+    }
     return false;
   }
   if (!isAcceptedImage(file)) {
@@ -1496,7 +1730,6 @@ function setFile(field, file) {
   } catch {
     return false;
   }
-  updateFileField(field);
   return true;
 }
 
@@ -1526,6 +1759,47 @@ function blockFileField(field, reason) {
   note.textContent = reason;
   note.hidden = false;
   field.classList.add("blocked");
+}
+
+// unblockFileField switches a picker back on, as fileFieldHTML draws a live
+// one, for a held form whose page was redrawn with the picker live while it
+// was held (holdForm). It leaves whatever image the picker holds.
+function unblockFileField(field) {
+  const input = field.querySelector(".file-input");
+  const note = field.querySelector(".file-blocked");
+  input.disabled = false;
+  note.textContent = "";
+  note.hidden = true;
+  field.classList.remove("blocked");
+}
+
+// blockRefusedPicker switches off the picker of a form whose image the server
+// refused itself, the thread's image limit reached (limitReached) or uploads
+// switched off, with the reason, and puts the thread on screen, the form's own,
+// in step with what the refusal taught the page: on screen at the refusal
+// (submit), or for a form answered off the screen meanwhile on the page a
+// failed redraw keeps, form and all (render), or at the form's next press if
+// that comes first, unless an image has been attached since (submit). A page
+// drawn afresh draws both from what the server says by then, and needs neither.
+function blockRefusedPicker(form, limitReached) {
+  const fileField = form.querySelector("[data-file-field]");
+  const thread = state.thread;
+  if (limitReached) {
+    if (fileField) {
+      blockFileField(fileField, imageLimitReason(thread && thread.board));
+    }
+    // The summary line was drawn before the thread filled up; it says so now,
+    // as a fresh render of the thread would.
+    if (thread) {
+      thread.at_image_limit = true;
+      if (thread.board && thread.board.image_limit > 0) {
+        thread.images = Math.max(Number(thread.images) || 0, thread.board.image_limit);
+      }
+    }
+  } else if (fileField) {
+    blockFileField(fileField, UPLOADS_OFF_REASON);
+  }
+  redrawThreadCounts();
 }
 
 function clearFileField(field) {
@@ -1676,6 +1950,9 @@ function pagerHTML(slug, page, pages) {
 
 async function renderIndex(route) {
   const index = await api(`/api/boards/${encodeURIComponent(route.slug)}/threads?page=${route.page}`);
+  if (overtaken(route)) {
+    return;
+  }
   const { board } = index;
 
   const threads = index.threads
@@ -1714,6 +1991,9 @@ async function renderIndex(route) {
 
 async function renderCatalog(route) {
   const catalog = await api(`/api/boards/${encodeURIComponent(route.slug)}/catalog`);
+  if (overtaken(route)) {
+    return;
+  }
   const { board } = catalog;
 
   const tiles = catalog.threads
@@ -1750,6 +2030,9 @@ async function renderCatalog(route) {
 
 async function renderThread(route) {
   const detail = await api(`/api/boards/${encodeURIComponent(route.slug)}/threads/${route.no}`);
+  if (overtaken(route)) {
+    return;
+  }
   const { board } = detail;
   // Kept for what the page learns about the thread after drawing it: a reply
   // refused at the image limit updates its summary line from here.
@@ -1827,6 +2110,9 @@ function archiveKeptFor(board) {
 
 async function renderArchive(route) {
   const archive = await api(`/api/boards/${encodeURIComponent(route.slug)}/archive`);
+  if (overtaken(route)) {
+    return;
+  }
   const { board } = archive;
   const label = boardLabel(board.slug);
 
@@ -1865,12 +2151,16 @@ async function renderArchive(route) {
 // would earn, so a reload starts over rather than resuming. replacing is for
 // the address step alone: it was asked for over a badge this browser holds
 // ("Verify another address"), where the page would otherwise show that badge.
-// While a code is pending the code box shows whatever is held. ended is for
-// the address step too: why the code box it replaced has gone, when the server
-// dropped the code being typed (CODE_ENDED_NOTES). A change of step puts a new
-// object here and never edits the one in place: submitVerification tells an
-// answer that is still wanted from one the reader has moved on from by
-// whether verifyStep is the object it was sent from.
+// While a code is pending the code box shows whatever is held. ended is for the
+// address step too: why the code box it replaced has gone, when the server
+// dropped the code being typed (CODE_ENDED_NOTES). A request out from a step
+// marks it without changing it: solving, while a code request waits on its
+// puzzle, for the step drawn again to say so (verifyViewHTML); confirming,
+// while a code is being confirmed, and spentElsewhere, once another tab's
+// verification has put that code past use (codeSpentElsewhere). Nothing else
+// edits a step in place, and a change of step puts a new object here:
+// submitVerification tells an answer that is still wanted from one the reader
+// has moved on from by whether verifyStep is the object it was sent from.
 let verifyStep = { step: "email", label: "" };
 
 // The step a Verify request is out from, while it is out, and null otherwise
@@ -1883,43 +2173,51 @@ let verifyStep = { step: "email", label: "" };
 // one's box.
 let verifyBusy = null;
 
-// The last Verify request submitVerification took on, as a promise that
-// settles once it is done with that request, whatever the answer was and
-// whether or not it was sent. The next request, from whichever step, waits for
-// it before it is sent. An answer from a step the reader has left is dropped,
-// but not the cookie it carries: the server checks a code against the
-// pending-code cookie the browser holds, and the browser holds whichever one
-// landed last. Sent side by side, a code asked for from the address step that
-// Forget this browser drew could land before one still out from the step it
-// replaced, and the code box then on screen refused its own right code,
-// spending its attempts, while the server checked it against the other address.
-// So the wait has to end, and every request it can wait on is given up once
-// its time is out (verifyDeadline). Without that, one request whose answer
-// never came, over a connection gone silent, held every later one from any
-// step until a reload, the fresh step Forget this browser draws included,
-// while the page said only that it was sending.
+// The last Verify request submitVerification took on, as a promise that settles
+// once it is done with that request, whatever the answer was and whether or not
+// it was sent. The next request, from whichever step, waits for it before it is
+// sent. An answer from a step the reader has left is dropped, but not the
+// cookie it carries: the server checks a code against the pending-code cookie
+// the browser holds, and the browser holds whichever one landed last. Sent side
+// by side, a code asked for from the address step that Forget this browser drew
+// could land before one still out from the step it replaced, and the code box
+// then on screen refused its own right code, spending its attempts, while the
+// server checked it against the other address. So the wait has to end, and
+// every request it can wait on is given up once its time is out
+// (verifyDeadline), and so is the puzzle a code request solves in its turn: its
+// challenge is asked for within the same time, and its workers give up after
+// CAPTCHA_TIMEOUT_MS (solveCaptcha). Without that, one request whose answer
+// never came, over a connection gone silent, held every later one from any step
+// until a reload, the fresh step Forget this browser draws included, while the
+// page said only that it was sending.
 let verifyRequest = Promise.resolve();
 
-// VERIFY_TIMEOUT_MS is how long a Verify request is given before the page gives
-// it up. Send code and Verify then say they couldn't reach educhan
-// (UNREACHABLE); the GET that asks whether verification is on leaves the page
-// with what the server said last (loadVerification), so a badge just issued is
-// still drawn and offered. It is longer than the server takes to answer or give
-// up — ten seconds to read a request's headers and thirty to write its answer,
-// in cmd/server/main.go — so a request given up is one whose answer was not
-// coming. Giving it up cancels it: an answer that comes after is not taken, the
-// pending-code cookie with it, so the request that goes next still sets the
-// cookie the browser keeps.
+// VERIFY_TIMEOUT_MS is how long a Verify request is given, from when it is
+// sent, before the page gives it up. Send code and Verify then say they
+// couldn't reach educhan (UNREACHABLE); the GET that asks whether verification
+// is on leaves the page with what the server said last (loadVerification), so a
+// badge just issued is still drawn and offered. It is longer than the server
+// takes to answer or give up — ten seconds to read a request's headers and
+// thirty to write its answer, in cmd/server/main.go — so a request given up is
+// one whose answer was not coming. Giving it up cancels it: an answer that
+// comes after is not taken, the pending-code cookie with it, so the request
+// that goes next still sets the cookie the browser keeps.
 const VERIFY_TIMEOUT_MS = 45000;
 
 // verifyDeadline is the signal a Verify request is sent with, which fires once
-// VERIFY_TIMEOUT_MS has passed. It is a controller and a timer rather than
-// AbortSignal.timeout, which Safari has only since 16: the page opens on
-// iPhones whose last update is iOS 15 (the age screen's <dialog> needs 15.4),
-// and there that call would throw before Send code went out.
-function verifyDeadline() {
+// VERIFY_TIMEOUT_MS has passed, timed from when the request is sent: a code
+// request's puzzle before it is not counted (submitVerification). It is a
+// controller and a timer rather than AbortSignal.timeout, which Safari has only
+// since 16: the page opens on iPhones whose last update is iOS 15 (the age
+// screen's <dialog> needs 15.4), and there that call would throw before Send
+// code went out. The challenge a puzzle is solved from is asked for with it
+// too, following the signal that stops the puzzle (stop), since AbortSignal.any
+// is newer still: a code request waits for that puzzle in its turn, and every
+// Verify request after it waits for that turn (verifyRequest).
+function verifyDeadline(stop) {
   const deadline = new AbortController();
   setTimeout(() => deadline.abort(), VERIFY_TIMEOUT_MS);
+  if (stop) stop.addEventListener("abort", () => deadline.abort(), { once: true });
   return deadline.signal;
 }
 
@@ -1989,6 +2287,37 @@ let badgeLost = "";
 
 const CREDENTIAL_FORGOTTEN = "This browser no longer holds a badge.";
 
+// How many times "Forget this browser" has been pressed, on this page or, where
+// the browser has BroadcastChannel, on any other educhan page open in it. A
+// request notes it at the press: one still waiting on its puzzle after another
+// press is not sent, and an answer that arrives after one keeps nothing.
+// Forgetting has to cover what was already on its way.
+let browserForgets = 0;
+
+// Every open educhan tab hears "Forget this browser" pressed in any other on
+// FORGET_CHANNEL, so a forget covers what the others hold and have on their
+// way, as it does its own. The one message is FORGET_MESSAGE, a constant: it
+// says nothing about anyone, only that the browser was forgotten.
+const FORGET_CHANNEL = "educhan:forget-browser";
+const FORGET_MESSAGE = "forget";
+// What a posting form says when the browser was forgotten before its post went
+// through, which stops it going: while it waited on its puzzle for its first
+// send or, once the first had gone, before the second that the server's
+// refusal of its answer calls for, when a request had gone but nothing was
+// posted.
+const FORGOTTEN_BEFORE_SENDING = "This browser was forgotten before the post went through, so nothing was posted.";
+
+// What this tab has itself written to storage of what a forget removes, by
+// storage key: the credential, the poster key and the remembered name, each as
+// it was last written here. The tab a forget is pressed in removes all three
+// and then tells the others, so a tab that handled a confirmation or a post in
+// between may have written one back before it heard; when it hears, it removes
+// each that storage still holds as this tab wrote it (forgottenElsewhere). A
+// badge confirmed or a key made in another tab since the forget is never one,
+// however late it hears, since both are random; a name is compared by its
+// text, so the same name stored since by another tab goes too.
+const storedHere = new Map();
+
 // localStorage throws rather than degrading in some privacy modes, so every
 // access is guarded. Losing the credential costs a full re-verification: the
 // server hands a badge out once and cannot show the same one again.
@@ -2000,11 +2329,19 @@ function storedCredential() {
   }
 }
 
+// BADGE_NOT_STORED is what the page says when storage refuses a badge just
+// earned.
+const BADGE_NOT_STORED = "This browser will not let the page store your badge, so it cannot be used here.";
+
+// storeCredential stores a badge just earned, and says whether it could.
 function storeCredential(token) {
   try {
     localStorage.setItem(CREDENTIAL_STORAGE_KEY, token);
+    storedHere.set(CREDENTIAL_STORAGE_KEY, token);
+    return true;
   } catch {
-    showNotice("This browser will not let the page store your badge, so it cannot be used here.");
+    showNotice(BADGE_NOT_STORED);
+    return false;
   }
 }
 
@@ -2023,7 +2360,19 @@ function forgetCredential() {
 // threads, and see which posts there were yours — and the remembered name,
 // with its tripcode secret. The age answer stays: it says nothing about any
 // post. Like forgetting the badge, it is entirely local.
+// It also cancels what is on its way (forgetOnThisPage), here and, through
+// FORGET_CHANNEL, in every other open tab that hears it: a code request or a
+// post still waiting on its puzzle is not sent, and a code request, a
+// confirmation or a post sent before it keeps nothing when its answer comes
+// back after it, neither the badge the server issued nor the code step nor the
+// name, nor a note that a badge was lost.
 function forgetBrowser() {
+  forgetOnThisPage();
+  // Emptied before it is removed, so that every other tab hears the badge go
+  // as the browser forgotten, in the order storage keeps, whether this
+  // forget's message on FORGET_CHANNEL reaches it before the storage event or
+  // after, which no browser promises either way (followCredentialStorage).
+  storageSet(CREDENTIAL_STORAGE_KEY, "");
   forgetCredential();
   for (const key of [POSTER_KEY_STORAGE_KEY, NAME_STORAGE_KEY]) {
     try {
@@ -2032,7 +2381,213 @@ function forgetBrowser() {
       // Nothing was stored, so nothing needs removing.
     }
   }
+  // Storage is shared, and has been cleared here, so the other tabs remove
+  // only what storage still holds as they last wrote it themselves
+  // (storedHere): what they wrote back before they heard, or a name stored
+  // since in the same words.
+  if (forgetChannel) {
+    forgetChannel.postMessage(FORGET_MESSAGE);
+  }
+}
+
+// forgetOnThisPage is the part of forgetting the browser that a page holds
+// itself rather than in storage, run in the tab where it was pressed and in
+// every tab that hears it. It cancels what is on its way from the page: a post
+// or a redraw's draft by browserForgets (restoreDraft), and a Verify request
+// by moving the page to a new step, which drops an answer sent from the step
+// before (submitVerification). It drops the badge read from storage, the
+// poster key the page keeps for itself, what it noted it stored, and the code
+// step and the note about a lost badge, which would greet the next person
+// with the last one's institution; and forgets every posting form on screen
+// (forgetForm). A held form a redraw has taken off the screen, while a post
+// link's lookup draws its skeleton say, is forgotten as the redraw puts it
+// back (restoreDraft).
+function forgetOnThisPage() {
+  browserForgets += 1;
+  state.verification.badge = null;
+  badgeLost = "";
+  verifyStep = { step: "email", label: "" };
   pagePosterKey = "";
+  storedHere.clear();
+  for (const form of el.main.querySelectorAll("form[data-kind]")) {
+    forgetForm(form);
+  }
+}
+
+// forgetForm is what forgetting the browser does to a posting form: it empties
+// the Name, drawn with the forgotten name, which would post under its tripcode,
+// and takes out the option to post with the badge, which names the institution
+// as well (drawBadgeOption, the page holding no badge by then). Nothing is said
+// at the form's next press, though the badge was ticked or the form noted
+// (badgeWithdrawn), as after another tab took a badge away: that would tell
+// whoever presses it that this browser held a badge, and with the poster key
+// gone too the post has an ID of its own, shared with none of the posts made
+// before the forget. It notes the forget it did (forgottenAt).
+function forgetForm(form) {
+  const name = field(form, "name");
+  if (name) {
+    name.defaultValue = "";
+    name.value = "";
+  }
+  badgeWithdrawn.delete(form);
+  drawBadgeOption(form);
+  forgottenAt.set(form, browserForgets);
+}
+
+// The forget that last reached each posting form, by form, as browserForgets
+// counted it (forgetForm). A held form a redraw carries across is forgotten as
+// it is put back only for a forget it missed while off the screen, not again
+// for one it had on screen: the Name it shows then was typed after that
+// forget, and a post pressed since may be going out under it (restoreDraft).
+const forgottenAt = new WeakMap();
+
+// forgottenElsewhere is a tab's answer to Forget this browser pressed in
+// another: what this tab wrote back to storage since that tab cleared it goes
+// (storedHere), and what the page holds goes, as it did there, and /verify,
+// when it is on screen here, is drawn again without the badge or the code step,
+// unless the reader has drawn another step there by the time the page has asked
+// the server (renderVerify). Its notice says why, at the top of the page: the
+// reader was not at the button that would say it below
+// (confirmBrowserForgotten). A badge or a key storage holds that this tab did
+// not write stays, whenever this tab hears: it was stored since the forget, by
+// someone else. A name stored since in the words this tab last wrote goes too,
+// which forgets more than it needs to, never less.
+function forgottenElsewhere() {
+  for (const [key, value] of storedHere) {
+    if (storageGet(key) === value) {
+      storageRemove(key);
+    }
+  }
+  forgetOnThisPage();
+  if (onVerifyPage() && ageStatus() === "ok") {
+    renderVerify().then((drawn) => {
+      if (drawn) {
+        showNotice(BROWSER_FORGOTTEN);
+      }
+    });
+  }
+}
+
+// forgetChannel is this tab's end of FORGET_CHANNEL, opened once at start-up,
+// or null in a browser without BroadcastChannel, or one that will not open it:
+// there a forget covers the tab it was pressed in, and the other tabs drop
+// only the badge, as they do for Forget this credential
+// (followCredentialStorage).
+const forgetChannel = openForgetChannel();
+
+function openForgetChannel() {
+  if (typeof BroadcastChannel !== "function") {
+    return null;
+  }
+  try {
+    const channel = new BroadcastChannel(FORGET_CHANNEL);
+    channel.addEventListener("message", (event) => {
+      if (event.data === FORGET_MESSAGE) {
+        forgottenElsewhere();
+      }
+    });
+    return channel;
+  } catch {
+    return null;
+  }
+}
+
+// followCredentialStorage is a tab's answer to the badge changing in another
+// tab of this browser: Forget this credential or Forget this browser pressed
+// there, the server refusing the badge there as run out or replaced, or another
+// address verified there. The browser holds one badge, in storage, so this tab
+// reads it again, and a badged post from here sends only the badge the browser
+// still holds; the next form or /verify page this tab draws shows it. If that
+// is not the one this tab held, every posting form on screen offers the badge
+// read now, unticked, or none (drawBadgeOption), and one that had the badge
+// before ticked is noted to say so at its next press (withdrawBadgeOption,
+// badgeWithdrawn), as is a held form a redraw has taken off the screen, once
+// it is put back (restoreDraft); and /verify, when it shows the badge panel, is
+// drawn again, unless the reader has drawn another step there by the time the
+// page has asked the server (renderVerify). /verify showing the address step
+// is left as it is, whatever badge it was drawn over, so a reader filling it
+// in, or waiting on a code request, loses nothing. So is a code step, unless
+// the badge read in is one newly verified there (codeSpentElsewhere). An
+// emptied credential is the browser forgotten in another tab (forgetBrowser):
+// the forms change as for any badge gone, before or after its message on
+// FORGET_CHANNEL is heard here, but start no puzzle, since a forget starts
+// nothing.
+function followCredentialStorage(event) {
+  if (event.key !== CREDENTIAL_STORAGE_KEY && event.key !== null) {
+    return;
+  }
+  if (!readStoredBadge()) {
+    return;
+  }
+  offerHeldBadge(event.key === CREDENTIAL_STORAGE_KEY && event.newValue === "");
+  const panel = el.main.querySelector('[data-action="forget-verification"]');
+  if (onVerifyPage() && ageStatus() === "ok" && panel) {
+    renderVerify();
+  }
+}
+
+window.addEventListener("storage", followCredentialStorage);
+
+// readStoredBadge reads the badge storage holds into the page, as it stands
+// now, and says whether it is not the one the page held. A badge newly
+// verified in another tab puts away a code step this tab drew
+// (codeSpentElsewhere).
+function readStoredBadge() {
+  const offered = state.verification.badge;
+  state.verification.badge = state.verification.enabled ? readBadge() : null;
+  const held = state.verification.badge;
+  const changed = held ? !(offered && held.token === offered.token) : offered !== null;
+  if (held && changed) {
+    codeSpentElsewhere();
+  }
+  return changed;
+}
+
+// What /verify says when the code step it showed is put away after another tab
+// verified an address (codeSpentElsewhere), at once or once a confirmation of
+// the step from here, on its way meanwhile, is refused (submitVerification). It
+// says the two things that are so whenever it is shown, and not that the one
+// caused the other: a confirmation from here that reached the server first and
+// lost its answer spent the code itself.
+const CODE_SPENT_ELSEWHERE = "An address was verified in another tab, and the code asked for here no longer works.";
+
+// codeSpentElsewhere is a tab's answer to a badge newly verified in another:
+// the browser has one verification in progress at a time, held by its cookie,
+// so a code step this tab drew, with no confirmation of it on its way, is for a
+// code that verified the badge there or was replaced by the one that did, and
+// the server takes it no more. The step goes, so /verify next shows the badge
+// panel, and is drawn again now, with a word on why, when a code step is on
+// screen, unless the reader has drawn another step there by the time the page
+// has asked the server (renderVerify): an address step the reader moved to
+// meanwhile is left as it is. A confirmation of the step already on its way
+// (Verify requests go one at a time, so there is at most one), counted on the
+// step (confirming) whether its form is still on screen or /verify has been
+// drawn again over it since, may have reached the server before the other
+// tab's verification and verified this tab's address, so it is left to its
+// answer: the step is only marked (spentElsewhere), and submitVerification
+// settles it. A success stores the badge it earned and draws the panel for it,
+// on /verify, once the page has asked the server; a refusal of any kind comes
+// back here, and the step goes as above. A code request from this tab still on
+// its way is not a code step yet, and draws its own when answered: the cookie
+// that answer sets holds the browser's verification from then on, and its code
+// is the one asked for.
+function codeSpentElsewhere() {
+  if (verifyStep.step !== "code") {
+    return;
+  }
+  if (verifyStep.confirming > 0) {
+    verifyStep.spentElsewhere = true;
+    return;
+  }
+  verifyStep = { step: "email", label: "" };
+  const step = el.main.querySelector('form[data-verify="confirm"]');
+  if (onVerifyPage() && ageStatus() === "ok" && step) {
+    renderVerify().then((drawn) => {
+      if (drawn) {
+        showNotice(CODE_SPENT_ELSEWHERE);
+      }
+    });
+  }
 }
 
 // forgetBrowserHTML is the control for forgetBrowser, on the Verify page
@@ -2171,13 +2726,25 @@ async function loadVerification() {
     // waits, so it is given up in time like the others (verifyDeadline).
     answer = await api("/api/verify", { signal: verifyDeadline() });
   } catch {
-    // Verification is an extra; the board works without knowing about it.
+    // Verification is an extra; the board works without knowing about it. A
+    // failed request withdraws nothing the page knew: the feature stays as the
+    // last answer had it, off only until one has come, and the badge is read
+    // from storage as after any answer, so one confirmed just before this
+    // request is still offered.
   }
   // What the server said last is read once the request is over, not before
   // it: another request to ask can have had its answer meanwhile.
   const answered = !!answer || state.verification.answered;
   const enabled = answer ? !!answer.enabled : state.verification.enabled;
   state.verification = { answered, enabled, badge: enabled ? readBadge() : null };
+  // A posting form still on screen, the page before /verify while it is drawn,
+  // offers the badge it was drawn for: switched off on the server, run out, or
+  // replaced, that badge gives way to the one read now as for one gone in
+  // another tab (followCredentialStorage), but starts no puzzle: this is
+  // /verify being drawn over the form, and drawing a page never starts one. A
+  // form noted here and drawn again by a later render starts it at the press
+  // the note refuses.
+  offerHeldBadge(true);
   if (el.verifyFooter) {
     el.verifyFooter.hidden = !enabled;
   }
@@ -2237,9 +2804,12 @@ const VERIFY_REFUSED_HTML = `<p class="verify-refused" id="f-verify-refused" rol
 
 // What a step's submit button says while its request is out: in the form that
 // sent it (submitVerification), and in the step drawn again for a reader who
-// came back to the page before the answer (verifyViewHTML).
+// came back to the page before the answer (verifyViewHTML). VERIFY_SOLVING is
+// what Send code says before that, while the request waits on its puzzle
+// (sendWithCaptcha), as a posting form's button does.
 const VERIFY_SENDING = "Sending…";
 const VERIFY_CHECKING = "Verifying…";
+const VERIFY_SOLVING = "Checking…";
 
 // refuseVerification says why the form was refused, in the form, and puts the
 // reader back in the field it is about. invalid marks that field as what was
@@ -2381,6 +2951,12 @@ function verifyViewHTML() {
       ${forgetBrowserHTML()}`;
   }
 
+  // The badge panel, unless the reader is replacing the badge: a code asked
+  // for over a badge, after Verify another address or with its request on its
+  // way while another tab verified one, is typed in all the same, in the code
+  // step above, since the badge it earns replaces the one held. A code step
+  // drawn before another tab verified a badge is put away, once any
+  // confirmation of it on its way is answered (codeSpentElsewhere).
   if (v.badge && !verifyStep.replacing) {
     return `
       <div class="board-head"><h1>Institutional verification</h1></div>
@@ -2439,7 +3015,7 @@ function verifyViewHTML() {
       </label>
       ${VERIFY_REFUSED_HTML}
       <div class="actions">
-        <button class="btn primary" type="submit"${wait}>${busy ? VERIFY_SENDING : "Send code"}</button>
+        <button class="btn primary" type="submit"${wait}>${busy ? (verifyStep.solving ? VERIFY_SOLVING : VERIFY_SENDING) : "Send code"}</button>
         ${keep}
       </div>
     </form>
@@ -2452,10 +3028,24 @@ function verifyViewHTML() {
 // (badgeLost) is said once and then put away: the address step and the code
 // step say it, and a badge panel drawn instead is for a badge held since.
 // Said and put away only in renderVerify, it was lost to the code step, which
-// did not say it, and never said by Keep my badge, which draws in place.
+// did not say it, and never said by Keep my badge, which draws in place. It is
+// also where the page notes what it was drawn for as a render notes it
+// (drawnFor), with no thread and no image open, so that a press of its form is
+// judged on that page (submitVerification) whatever the drawing replaced: the
+// page a render of /verify still loading has yet to replace, say, or, for a
+// drawing after a forget, the error of a /verify that would not load, which
+// notes nothing. It notes that only while the Verify page is the one on screen
+// (onVerifyPage), as every caller draws it: a step drawn over a page the reader
+// is leaving, still on screen while the next loads, would have its press judged
+// on the page they went to, and sent from there.
 function drawVerifyStep() {
   el.main.innerHTML = verifyViewHTML();
   verifyShown = { step: verifyStep, node: el.main.firstElementChild, at: performance.now() };
+  state.thread = null;
+  expandedLink = null;
+  if (onVerifyPage()) {
+    drawnFor = { path: renderedPath, route: state.route, thread: null };
+  }
   badgeLost = "";
 }
 
@@ -2480,28 +3070,35 @@ function sayVerifyRefusal(form, sentIt = false) {
 
 // renderVerify draws the Verify page once it has asked the server whether
 // verification is on here, and says whether it did. render() comes here for a
-// reader arriving at the page, and the page's own buttons and answers come
-// here to draw a step after that request. The reader can leave while it asks —
-// after pressing Verify, say, since an issued badge is drawn through here — and
-// then nothing is drawn over the page they went to.
+// reader arriving at the page, and the page's own buttons and answers come here
+// to draw a step after that request, as do the changes this tab hears of from
+// another (forgottenElsewhere, followCredentialStorage, codeSpentElsewhere) and
+// a badge refused on a post sent from another page (submit). The reader can
+// leave while it asks — after pressing Verify, say, since an issued badge is
+// drawn through here — and then nothing is drawn over the page they went to.
+// Nothing is drawn or said either once a newer render has begun while it asks,
+// for Verify in the header pressed again, say (overtaken): as for the other
+// views, the page is that render's to draw.
 //
 // The page can also move to another step while it asks, and be drawn for that
-// step in place, by an answer or a button. That drawing, while it is on
-// screen, is left alone: drawing the step again would take away what was said
-// there and where the reader was put. Forget this browser pressed while an
-// issued badge was being drawn had its confirmation wiped, and the focus with
-// it, by the badge's late redraw. But a drawing that has itself been drawn
-// over is drawn again. A code box drawn while render() was still asking was
-// replaced by the page the reader had just left, whose answer came in late,
-// or by the loading skeleton; left out, it was nowhere, and that page stayed
-// under the Verify address until the reader went somewhere else.
+// step in place, by an answer, a button or a forget heard from another tab.
+// That drawing, while it is on screen, is left alone: drawing the step again
+// would take away what was said there and where the reader was put. Forget this
+// browser pressed while an issued badge was being drawn had its confirmation
+// wiped, and the focus with it, by the badge's late redraw. But a drawing that
+// has itself been drawn over is drawn again. A code box drawn while render()
+// was still asking was replaced by the page the reader had just left, whose
+// answer came in late, or by the loading skeleton; left out, it was nowhere,
+// and that page stayed under the Verify address until the reader went somewhere
+// else.
 //
-// The page is titled whether or not it is drawn here: render() titles each
-// page as it draws it, and the drawing left alone is one it did not make.
+// The page is titled whether or not it is drawn here: render() titles each page
+// as it draws it, and the drawing left alone is one it did not make.
 async function renderVerify() {
   const step = verifyStep;
+  const route = state.route;
   await loadVerification();
-  if (!onVerifyPage()) return false;
+  if (!onVerifyPage() || overtaken(route)) return false;
   announce("Institutional verification");
   if (verifyStep !== step && verifyStepOnScreen()) return false;
   drawVerifyStep();
@@ -2704,10 +3301,10 @@ const FAQ_SECTIONS = [
           a name.</li>
         <li>educhan doesn't save IP addresses, the numbers that identify an internet
           connection. They aren't written to its logs or its database, and posts aren't
-          stored with one. When you post or ask for a badge code, the server holds your IP
-          address in its memory, and only there, so it can stop anyone doing either too
-          often. Once it no longer needs it for that, it clears it out the next time it
-          tidies up.</li>
+          stored with one. When you post, ask for a badge code or start the
+          <a href="#faq-check">anti-spam check</a>, the server holds your IP address in its
+          memory, and only there, so it can stop anyone doing any of these too often. Once it
+          no longer needs it for that, it clears it out the next time it tidies up.</li>
         <li>educhan never asks for your email address unless you want a badge, and even then
           it keeps only a scrambled fingerprint of it, never the address itself
           (<a href="#faq-badge">more about the badge</a>).</li>
@@ -2763,6 +3360,23 @@ const FAQ_SECTIONS = [
         <a href="/verify#forget-browser">Verify</a> page before you leave. The badge stays in
         that browser for whoever uses it next, and so do the key your IDs are made from and
         your name.</p>`,
+  },
+  {
+    id: "faq-check",
+    question: "What is the anti-spam check?",
+    answer: `
+      <p>On sites that have it switched on, your browser solves a small maths puzzle before
+        each post goes, and before it asks for a badge code. You don't have to do anything:
+        the puzzle starts when you move into a box to write in, quote a post or attach an
+        image, and usually takes a few seconds, while you write. That costs a person almost
+        nothing, and slows down a program that posts over and over. If the puzzle hasn't
+        finished when you press the button, the button says <strong>Checking…</strong>
+        until it has.</p>
+      <p>The puzzle comes from educhan itself, not from Google or any other company, and no
+        cookie is set for it. Each answer is used once, for one post or one code request. So
+        that it can't be used twice, the server keeps a scrambled fingerprint of the puzzle for
+        a day or so, which holds nothing about you or what you wrote. Posts with the
+        <a href="#faq-badge">verified badge</a> skip the check.</p>`,
   },
   {
     id: "faq-tripcodes",
@@ -3170,24 +3784,55 @@ function emptyStateHTML(message, slug = null) {
   return `<p class="empty">${esc(message)}<br />${board}<a href="/">Back to the board list</a></p>`;
 }
 
+// The loading state, the dimming and the skeleton that may follow it, is the
+// latest render's. rendersBegun counts the renders begun, whatever their view,
+// and beginning one ends the loading state of any before it (endLoading), so a
+// page that loads nothing, the rules say, is never left dimmed, or blanked, by
+// an older render still loading. loadingTimer times the latest one's skeleton.
+let rendersBegun = 0;
+let loadingTimer = 0;
+
+// endLoading takes the loading state off the page: the dimming, and the
+// skeleton not yet drawn.
+function endLoading() {
+  clearTimeout(loadingTimer);
+  el.main.removeAttribute("aria-busy");
+}
+
 // beginLoading dims the current view and only falls back to a skeleton if the
 // request is slow enough to notice, which keeps fast navigations from flashing.
+// skeleton says, when that time comes, whether to draw it: while it says no,
+// the current view stays, dimmed, however long it takes. The skeleton is drawn,
+// and the finish it returns takes the dimming off, only while its render is
+// still the latest: an overtaken render's skeleton would blank the newer page
+// for good, since the overtaken render then draws nothing, and its finish would
+// show a newer render still loading, a kept page say, as loaded. The latest is
+// counted rather than asked of overtaken: a kept page whose redraw fails puts
+// back the route it was drawn for, which overtakes that redraw too. A skeleton
+// drawn leaves the page it replaces (leavePage).
+//
 // The skeleton stands in for the view it dims, and for nothing drawn since: a
 // Verify step that an answer drew in place while the page was loading stays
 // as it was drawn, with the field it put the reader in, rather than going
-// under a skeleton to be drawn again without it (renderVerify). What it hands
-// back runs once the page is drawn, a pending code's box included, so it is
-// held whole (TestVerifyCodeBoxShowsWhileACodeIsPending).
-function beginLoading() {
+// under a skeleton to be drawn again without it (renderVerify), and so does
+// /verify drawn again for a forget heard from another tab while a render of it
+// loads (forgottenElsewhere). What it hands back runs once the page is drawn,
+// a pending code's box included, so it is held whole
+// (TestVerifyCodeBoxShowsWhileACodeIsPending).
+function beginLoading({ skeleton = () => true } = {}) {
+  const begun = rendersBegun;
   el.main.setAttribute("aria-busy", "true");
   const dimmed = el.main.firstChild;
-  const timer = setTimeout(() => {
-    if (el.main.firstChild !== dimmed) return;
-    el.main.innerHTML = '<div class="skeleton"><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div></div>';
+  loadingTimer = setTimeout(() => {
+    if (begun === rendersBegun && el.main.firstChild === dimmed && skeleton()) {
+      el.main.innerHTML = '<div class="skeleton"><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div></div>';
+      leavePage();
+    }
   }, 250);
   return () => {
-    clearTimeout(timer);
-    el.main.removeAttribute("aria-busy");
+    if (begun === rendersBegun) {
+      endLoading();
+    }
   };
 }
 
@@ -3196,6 +3841,28 @@ function beginLoading() {
 async function resolvePost(route) {
   const found = await api(`/api/boards/${encodeURIComponent(route.slug)}/posts/${route.no}`);
   return `${threadPath(found.board || route.slug, found.thread_no)}#p${found.no}`;
+}
+
+// overtaken says whether a newer render has begun since the one for route. An
+// overtaken render draws nothing, loaded or not, and leaves the screen to the
+// newer one: the board and thread views ask once their request is answered,
+// and render after the board list and before anything else it does to the
+// page. A redraw that fails and keeps its page puts back the route that page
+// was drawn for, which overtakes every render still loading. /verify asks once
+// it has asked the server, for a render or a redraw of the page alike, and asks
+// too whether it is still the page on screen, and whether the reader has drawn
+// another step there meanwhile (renderVerify).
+function overtaken(route) {
+  return state.route !== route;
+}
+
+// leavePage forgets what the page on screen gave its controls to read, its
+// thread and the image open on it, as render draws the skeleton, the age screen
+// or an error in its place. A page drawn in its place sets both for itself
+// (render, drawVerifyStep).
+function leavePage() {
+  state.thread = null;
+  expandedLink = null;
 }
 
 // The draft defaults to whatever is on screen now; a render that hands over to
@@ -3207,25 +3874,43 @@ async function render({ draft = captureDraft() } = {}) {
   if (/^\/u-[^/]/.test(pathname)) {
     window.history.replaceState(null, "", pathname.replace(/^\/u-/, "/u/") + search + hash);
   }
-  const requested = window.location.href;
-  renderedPath = window.location.pathname + window.location.search;
+  // The address asked for, less its fragment, which a jump within the page
+  // moves without going anywhere else.
+  const requested = window.location.pathname + window.location.search;
+  renderedPath = requested;
   const route = parseRoute();
   state.route = route;
-  state.thread = null;
+  // The loading state is this render's from here: whatever an older one left
+  // loading ends (beginLoading).
+  rendersBegun += 1;
+  endLoading();
+  // What the page on screen gives its controls to read, its thread and the
+  // image open on it, stays as it is while this render loads, whatever it loads
+  // (a post link's lookup, say, and the thread it goes on to), until something
+  // is drawn in the page's place (leavePage, drawVerifyStep, and below): a
+  // refusal answered meanwhile updates the page it is shown on, and Escape
+  // closes the image open there. A redraw with the routeKey of the page a post
+  // is on its way from, or whose form has yet to be told what it missed off the
+  // screen, or whose form is pressed while it loads, Update say, keeps the page
+  // on screen (below), where a post link's lookup, whose routeKey is its own,
+  // does not. That is read as the draft stands when it is used (carriedDraft).
+  const keepPage = () => {
+    const carried = carriedDraft(draft);
+    return Boolean(carried && carried.held && carried.key === routeKey(route));
+  };
   renderNav(route);
   clearNotice();
   // A refusal said in a Verify form goes with the notice: the page arrived at
   // is a new visit, and a step drawn there starts without it.
   verifyRefusal = null;
   hideQuotePreview();
-  // Whatever was expanded belongs to the view being replaced.
-  expandedLink = null;
 
   // Until the age screen has its answer, nothing of the site is shown or even
   // fetched, apart from the two pages that say what answering means.
   const age = ageStatus();
   const ungated = UNGATED_VIEWS.has(route.view);
   if (age !== "ok" && !ungated) {
+    leavePage();
     renderAgeGate(age);
     return;
   }
@@ -3233,7 +3918,13 @@ async function render({ draft = captureDraft() } = {}) {
   // left, on the next page that needs it.
   closeAgeScreen();
 
-  const finish = beginLoading();
+  // A redraw with the routeKey of the page a post is on its way from, or whose
+  // form has yet to be told what it missed off the screen (captureDraft), keeps
+  // the page on screen, dimmed, rather than a skeleton, so the form stays in
+  // the document until it goes into the new page (restoreDraft), and so does
+  // one whose form is pressed before the skeleton would be drawn
+  // (carriedDraft).
+  const finish = beginLoading({ skeleton: () => !keepPage() });
   let resolved = null;
   try {
     if (age === "ok") {
@@ -3243,6 +3934,9 @@ async function render({ draft = captureDraft() } = {}) {
         // The rules and the FAQ need nothing from the server, so a board list
         // that will not load costs them only the navigation.
         if (!ungated) throw err;
+      }
+      if (overtaken(route)) {
+        return;
       }
       renderNav(route);
     }
@@ -3279,6 +3973,9 @@ async function render({ draft = captureDraft() } = {}) {
         announce("Page not found");
     }
   } catch (err) {
+    if (overtaken(route)) {
+      return;
+    }
     // An expired thread and a mistyped board look the same from here, and both
     // are better served by a way out than by the raw error. A post number the
     // server cannot take at all (0, or more digits than a post number has) is
@@ -3296,6 +3993,63 @@ async function render({ draft = captureDraft() } = {}) {
         : "That board or thread is not here — it may have been deleted, or have aged out of the archive.";
       board = known ? route.slug : null;
     }
+    // A redraw that kept the page for its form (above) leaves the page there,
+    // form and all, when the new one will not load: a post still on its way
+    // goes ahead and is answered on its form, and a success goes to the new
+    // post, as without the redraw. The address bar, renderedPath and the route
+    // are put back as the page was drawn for them (drawnFor), however many
+    // redraws of it have failed, and so is its thread, which a refusal answered
+    // meanwhile has updated; the image open on it stays open. The address bar
+    // goes back by replacing the history entry the reader is on, the fragment
+    // kept, so a jump within the page or a reload stays on the page kept. After
+    // a link, with nothing pressed while the redraw loads, the history then
+    // holds that page twice, and the first Back from it stays on it (popstate
+    // finds the address the page was drawn for and only moves to the fragment);
+    // a Back or Forward that will not load leaves the entry it went to holding
+    // the page kept. A link pressed while a redraw for another address loads,
+    // the same one again or a jump within the page, adds an entry, and that is
+    // the one replaced, so the entry for the page that failed is left behind it
+    // and Back loads that page again. After Update, whose page is the one kept,
+    // the entry a jump within the page leaves behind is the kept page's own,
+    // and Back stays on it. The error is a notice above the page, after
+    // anything said since the redraw began, the post's own answer say. The
+    // notice is an alert, so it is heard, and the title stays the page's. A
+    // form answered while it was off the screen, as a post link's lookup into
+    // its thread loaded say, is told first what it would have been told on
+    // screen (unsaidNotices), worded as it is told, for the form as it stands
+    // then, its text, its image and its badge box included, its button given
+    // the focus and a refusal of its badge said in place of the note the
+    // refusal left, as restoreDraft does when the redraw draws; and a refusal
+    // of its image switches its picker off and puts the thread's counts in
+    // step, as on screen (blockRefusedPicker), which a page drawn afresh does
+    // itself. The draft is read as it stands now, so a form pressed while the
+    // redraw loaded is that form, held (carriedDraft).
+    draft = carriedDraft(draft);
+    if (keepPage() && draft.held.isConnected) {
+      renderedPath = drawnFor.path;
+      window.history.replaceState(window.history.state, "", drawnFor.path + window.location.hash);
+      state.route = drawnFor.route;
+      state.thread = drawnFor.thread;
+      const unsaid = takeUnsaidNotice(draft.held);
+      if (unsaid && unsaid.badgeRefused) {
+        badgeWithdrawn.delete(draft.held);
+      }
+      if (unsaid && unsaid.imageRefused) {
+        blockRefusedPicker(draft.held, unsaid.limitReached);
+      }
+      const body = field(draft.held, "body");
+      const image = field(draft.held, "image");
+      const words = unsaid
+        ? unsaid.word(draft.held, Boolean(body && body.value.trim()), Boolean(image && image.files.length))
+        : "";
+      const said = el.notice.hidden ? "" : el.notice.querySelector(".notice-text").textContent;
+      showNotice([words, said, message].filter(Boolean).join(" "));
+      if (unsaid && unsaid.focused && (!document.activeElement || document.activeElement === document.body)) {
+        draft.held.querySelector('button[type="submit"]')?.focus({ preventScroll: true });
+      }
+      return;
+    }
+    leavePage();
     el.main.innerHTML = emptyStateHTML(message, board);
     announce(notFound ? "Not found" : "Could not load this page");
     return;
@@ -3303,29 +4057,48 @@ async function render({ draft = captureDraft() } = {}) {
     finish();
   }
 
-  // The Verify page has no posts to finish and no posting form to give a
-  // draft back to, so once it is drawn the jump to a fragment is all that
-  // runs on it: the FAQ links to /verify#forget-browser. What runs on a
-  // pending code's box once it is drawn is held whole
+  // The Verify page has no posts to finish and no posting form to give a draft
+  // back to, so once it is drawn the jump to a fragment is all that runs on it:
+  // the FAQ links to /verify#forget-browser. A render a newer one overtook
+  // while it loaded drew nothing (renderVerify), and runs nothing either, as on
+  // every other page (below): the jump would move the page the reader went to.
+  // What runs on a pending code's box once it is drawn is held whole
   // (TestVerifyCodeBoxShowsWhileACodeIsPending), and the rest of render()
   // serves every page: a gate on a held badge there could take the box away
   // from a badge holder coming back to the page with every check passing.
   if (route.view === "verify") {
-    focusHash();
+    if (!overtaken(route)) {
+      focusHash();
+    }
     return;
   }
   if (resolved !== null) {
     // The history entry is replaced rather than added: /post/N is an address,
     // not a page, and Back should not land on it only to bounce forward again.
-    // Skipped if the reader went somewhere else while the number was looked up.
-    if (window.location.href === requested) {
+    // Skipped if the reader went somewhere else while the number was looked up,
+    // but not for a jump within the page meanwhile, the skip link or a quote
+    // of a post that is not on it, say: that moves only the fragment, and the
+    // thread is drawn at the post as if nothing had been pressed.
+    if (!overtaken(route) && window.location.pathname + window.location.search === requested) {
       window.history.replaceState(null, "", resolved);
       await render({ draft });
     }
     return;
   }
+  // A render overtaken while it loaded drew nothing, and leaves the screen to
+  // the newer one. Otherwise the page is this render's now, with no image open
+  // on it yet, and a thread for its controls to read only if it is a thread's,
+  // which renderThread noted as it drew it.
+  if (overtaken(route)) {
+    return;
+  }
+  if (route.view !== "thread") {
+    state.thread = null;
+  }
+  drawnFor = { path: renderedPath, route, thread: state.thread };
+  expandedLink = null;
   enhancePosts(el.main);
-  restoreDraft(draft);
+  restoreDraft(carriedDraft(draft));
   focusHash();
 }
 
@@ -3372,13 +4145,65 @@ function field(form, name) {
 
 // A re-render replaces the form, so anything half-written is carried across —
 // "Update" on a busy thread must not cost you the reply you were typing.
+// A form whose post is on its way (holdForm) is carried as itself: restoreDraft
+// puts it, still held, in the new page, so the post on its way is what that
+// page shows, and is read for its values only if its post has been answered by
+// then (emptied after a success, released after a refusal). So is a form
+// answered off the screen that has not been told yet what it missed
+// (unsaidNotices), whatever begins the redraw, Update or Back say, so that the
+// redraw tells it as one that carried it held from before the answer would. It
+// is carried with browserForgets as it was, so that a forget the form misses
+// while the redraw has it off the screen reaches it as it goes back. A draft is
+// keyed by the page on screen, which the render that drew it noted (drawnFor),
+// not by the newest render begun: one begun before the last has drawn, the
+// second of a double click say, would carry this page's form, held or not, into
+// the form of the page it goes to. A form read for its values is noted with
+// them, with how often it had been pressed (presses), so that one pressed while
+// the redraw loads is carried held after all (carriedDraft).
 function captureDraft() {
+  const key = routeKey(drawnFor.route || state.route);
   const form = el.main.querySelector("form[data-kind]");
   if (!form) {
     // A reply the thread closed on is carried as far as its text goes.
     const unsent = el.main.querySelector("textarea[data-unsent]");
-    return unsent ? { key: routeKey(state.route), open: true, body: unsent.value } : null;
+    return unsent ? { key, open: true, body: unsent.value } : null;
   }
+  if (heldForms.has(form) || unsaidNotices.has(form)) {
+    return { key, held: form, forgets: browserForgets };
+  }
+  return { key, ...formDraft(form), from: form, pressed: presses.get(form) ?? 0 };
+}
+
+// carriedDraft is the draft a redraw carries, as of now. One read from a form
+// for its values stands for that form only until the form is pressed: any press
+// made while the redraw loads, its page still on screen, form and all, has the
+// form itself carried held, whatever has become of the press since. A post
+// pressed then is carried as one pressed just before the redraw began would
+// have been (captureDraft), and so is a press refused then before anything is
+// sent, an empty one say, though the same press made just before the redraw
+// began has the form read for its values. So a redraw with the form's routeKey,
+// Update say, keeps the page on screen for any press made while it loads, with
+// no skeleton, and keeps it, form and all, when the new page will not load
+// (render), while a post link's lookup into its thread blanks the page all the
+// same once it is slow enough to draw its skeleton; and the page drawn, by the
+// redraw or the thread the lookup goes on to, puts the form back, or reads it
+// as it is by then (restoreDraft), rather than the values read before the
+// press, which the form a post went from would leave in the new form, to be
+// posted twice.
+function carriedDraft(draft) {
+  if (!draft || !draft.from || (presses.get(draft.from) ?? 0) === draft.pressed) {
+    return draft;
+  }
+  return { key: draft.key, held: draft.from, forgets: draft.forgets };
+}
+
+// formDraft reads what a posting form holds, noting browserForgets as it was,
+// so that restoreDraft can tell a Name read before a forget. A ticked badge is
+// read as the badge it was ticked for, by the number of the one its box offers
+// (badgeOffered), and a form whose ticked badge went from under it
+// (badgeWithdrawn) as ticked for the badge that went, with the key it was
+// noted with.
+function formDraft(form) {
   const image = field(form, "image");
   const details = form.closest("details");
   const value = (name) => {
@@ -3388,14 +4213,15 @@ function captureDraft() {
   const sage = field(form, "sage");
   const badge = field(form, "badge");
   const spoiler = field(form, "spoiler");
+  const ticked = badgeWithdrawn.get(form) || (badge && badge.checked ? { number: badgeOffered(form) } : null);
   return {
-    key: routeKey(state.route),
+    forgets: browserForgets,
     open: details ? details.open : true,
     subject: value("subject"),
     name: value("name"),
     body: value("body"),
     sage: sage ? sage.checked : false,
-    badge: badge && badge.checked ? badgeOffered(form) : "",
+    badge: ticked,
     file: image && image.files ? image.files[0] : null,
     spoiler: spoiler ? spoiler.checked : false,
   };
@@ -3406,33 +4232,169 @@ function restoreDraft(draft) {
     return;
   }
   const form = el.main.querySelector("form[data-kind]");
+  // A form carried held whose post has been answered by now: on screen while
+  // its page was drawn again, its notice said then, or off the screen, before
+  // the redraw began or while it loaded, its notice said here (below). So is
+  // one pressed while the redraw loaded and refused before anything was sent,
+  // an empty press say, its notice said then too (carriedDraft).
+  let answeredForm = null;
+  if (draft.held) {
+    const held = draft.held;
+    // The newest forget the form has had: the last before the redraw carried
+    // it (captureDraft), or one since that reached it on screen, its page kept
+    // there while the redraw loads say (forgottenAt).
+    const forgets = Math.max(draft.forgets, forgottenAt.get(held) ?? 0);
+    // Still held, its post still on its way: the form itself takes the place
+    // of the one just drawn for the same thread, or the same board's new
+    // thread, so the post is answered there.
+    if (
+      heldForms.has(held) &&
+      form &&
+      form.dataset.kind === held.dataset.kind &&
+      form.dataset.thread === held.dataset.thread
+    ) {
+      // Its picker goes as the new page drew one: switched off with that
+      // page's reason, the thread having reached its image limit since the
+      // press say, or with the site's where it drew none, the site taking no
+      // images; or live, the limit raised since a press on a full thread say.
+      // Until the hold ends it shows what is being sent, so that waits until
+      // then (holdForm).
+      if (held.querySelector("[data-file-field]")) {
+        redrawnPickers.set(held, pickerRefusal(form));
+      }
+      // A forget and a change of the badge reach the forms on screen
+      // (forgetOnThisPage, followCredentialStorage), and this one may have
+      // been off it, while a post link's lookup drew its skeleton say, so what
+      // either would have done to it there is done now. A forget it has not
+      // had (forgets) forgets it (forgetForm); one it had on screen is not
+      // done again, so a Name typed since, which a post pressed since may be
+      // going out under, stays. A box offering a badge other than the one the
+      // page holds now (badgeOffered) is drawn again for that one, as another
+      // tab's change draws it, noting a ticked box, but starts no puzzle, since
+      // drawing a page never does (withdrawBadgeOption). That costs one number
+      // on the draft and one per form forgotten, the badge being kept with the
+      // form's box already. Keeping the forms off the screen where every forget
+      // and change of badge could reach them would cost more: the list would
+      // have to keep a form answered while away, too, until its page is drawn
+      // (below).
+      if (forgets !== browserForgets) {
+        forgetForm(held);
+      } else {
+        withdrawBadgeOption(held, true);
+      }
+      form.replaceWith(held);
+      const details = held.closest("details");
+      if (details) details.open = true;
+      return;
+    }
+    // Otherwise it is read for its values, and as of the newest forget it has
+    // had: one answered while away missed any forget since, so its Name, the
+    // one forgotten, is not restored, nor its badge (below), while a Name typed
+    // after a forget it had on screen is. A ticked badge refused as expired or
+    // revoked while it was away left a note (submit), which the refusal's
+    // notice, said here, takes the place of (below).
+    answeredForm = heldForms.has(held) ? null : held;
+    draft = { key: draft.key, ...formDraft(held), forgets };
+  }
   if (!form) {
     keepUnsentDraft(draft);
     return;
   }
+  // A form answered while off the screen, while a post link's lookup into its
+  // thread loaded say, was told nothing then. It is told now, once, what it
+  // would have been told on screen (unsaidNotices), after its values go back
+  // into its page (below). A thread drawn locked or archived meanwhile has no
+  // form to tell, and its own note says why no post can go there
+  // (keepUnsentDraft, above).
+  const unsaid = answeredForm ? takeUnsaidNotice(answeredForm) : undefined;
   // An empty field is restored as empty: a Name the poster cleared stays
-  // cleared, rather than the form's remembered name coming back.
+  // cleared, rather than the form's remembered name coming back. A Name read
+  // before "Forget this browser" was pressed, here or in another tab, is not
+  // restored at all: the forget emptied the box on screen, but the draft of a
+  // redraw then on its way still held the forgotten name, tripcode secret
+  // included. The new form keeps the Name it was drawn with.
+  const forgotten = draft.forgets !== browserForgets;
   for (const name of ["subject", "name", "body"]) {
     const node = field(form, name);
-    if (node && name in draft) {
+    if (node && name in draft && !(name === "name" && forgotten)) {
       node.value = draft[name];
     }
   }
   const sage = field(form, "sage");
   if (sage) sage.checked = draft.sage;
-  // The badge box is ticked again only for the badge it was ticked for. A
-  // badge issued while the page was being drawn is offered unticked in the
-  // new form, and the notice says so (sayBadgeUnticked), as it does when the
-  // form on screen changes badge (offerHeldBadge).
+  // A badge ticked in the draft is ticked again only if the new form offers the
+  // same one. One the new form does not offer, gone from the browser meanwhile,
+  // is noted as one taken out of the form would be, and so is one whose new
+  // form offers another, verified in another tab or in this one meanwhile:
+  // ticked here, that one would go out unasked for, and offered unticked, it
+  // would let the next press post without a badge unsaid. A draft read before a
+  // forget brings neither back (forgetOnThisPage). Nor is any noted on a form
+  // whose notice, said below, refuses its badge: that notice is the form's
+  // refusal for its badge, as on screen, where the refusal notes none, and as
+  // on the page a failed redraw keeps, which drops the note (render). The draft
+  // holds the badge refused as ticked, noted when it went (formDraft), unless
+  // the reader has changed the box since, on the form while it was still in
+  // sight, which takes the note off; a box ticked then for the badge the new
+  // form offers is ticked again, and the notice of a replaced badge, worded
+  // once the box is set, says so (badgeReplacedNotice).
   const badge = field(form, "badge");
-  const ticked = draft.badge || "";
-  if (badge) badge.checked = ticked !== "" && ticked === badgeOffered(form);
-  if (ticked !== "" && ticked !== badgeOffered(form)) sayBadgeUnticked();
+  const ticked = forgotten ? null : draft.badge;
+  const same = Boolean(ticked && badge && ticked.number === badgeOffered(form));
+  if (badge) badge.checked = same;
+  if (ticked && !same && !(unsaid && unsaid.badgeRefused)) {
+    badgeWithdrawn.set(form, { number: ticked.number, key: ticked.key ?? (storageGet(POSTER_KEY_STORAGE_KEY) || "") });
+  }
+  // A form answered off the screen is told now, with its values back, what it
+  // would have been told on screen (unsaidNotices), such as the refusal or, for
+  // a post not sent, that nothing was posted, worded for the new form as it
+  // stands: its text and the image going back into it (below), and for the
+  // notice of a replaced badge, the badge held, the box as just set and the
+  // poster key (badgeReplacedNotice). Each can have changed since the answer:
+  // the text erased or the image taken out while the form was still in sight,
+  // say, or the badge forgotten or another verified; and after Forget this
+  // browser the form is told the server's words (BADGE_REPLACED). Its button
+  // gets the focus as it would have (below). After a refusal of its image,
+  // which took the image off, the new page's picker and counts, drawn from what
+  // the server says by then, stand as drawn (blockRefusedPicker).
+  const words = unsaid ? unsaid.word(form, Boolean(draft.body.trim()), Boolean(draft.file)) : "";
+  if (unsaid) {
+    showNotice(words);
+  }
 
   // A form with no image field, on a site that takes no images, gets no file
-  // back; a switched-off field refuses it in setFile and says why.
+  // back; a switched-off field refuses it in setFile and says why. A held form
+  // answered while its page was drawn again, refused say, has its notice on
+  // screen already, said then or above, and an image the new page takes none of
+  // is taken off as release takes it off when the redraw comes first, the
+  // notice saying so rather than giving way to the picker's reason: the
+  // refusal's own notice, still on screen, is worded again with that reason
+  // (refusalNotices), and any other has it added (imageTakenOff). So whichever
+  // comes first, the answer or the redraw, the notice ends the same. Worded
+  // again, the notice reads the text put back into this form, and the notice of
+  // a replaced badge reads the form's box as just set too (badgeReplacedNotice)
+  // and is its one refusal for the badge, as on screen: a note set on it above,
+  // for a box ticked since and taken out since with its badge say, goes, the
+  // notice saying what pressing again does then. The one case with nothing
+  // added is the notice of a refusal of the image itself said above, the image
+  // limit reached or uploads switched off, which says already that the image
+  // was taken off and why: an image attached since goes with nothing said, the
+  // picker left as the new page drew it, as on the page a failed redraw keeps
+  // (blockRefusedPicker), so the refusal is said once.
   const fileField = form.querySelector("[data-file-field]");
-  if (fileField && draft.file && setFile(fileField, draft.file)) {
+  const refusal = answeredForm && draft.file ? pickerRefusal(form) : "";
+  if (refusal && unsaid && unsaid.imageRefused) {
+    // Taken off: the new form is left without it.
+  } else if (refusal) {
+    const said = el.notice.hidden ? "" : el.notice.querySelector(".notice-text").textContent;
+    const refused = refusalNotices.get(answeredForm);
+    const kept = { hasText: Boolean(draft.body.trim()), isThread: form.dataset.kind === "thread" };
+    const unchanged = refused && said === (unsaid ? words : refused.told);
+    if (unchanged && refused.replaced) {
+      badgeWithdrawn.delete(form);
+    }
+    showNotice(unchanged ? refused.notice(refusal, form, kept.hasText) : said ? imageTakenOff(said, refusal, kept) : refusal);
+  } else if (fileField && draft.file && setFile(fileField, draft.file)) {
+    updateFileField(fileField);
     // Only alongside the file it was ticked for.
     const spoiler = field(form, "spoiler");
     if (spoiler) spoiler.checked = draft.spoiler;
@@ -3441,6 +4403,26 @@ function restoreDraft(draft) {
   if (details && (draft.open || draft.body || draft.file)) {
     details.open = true;
   }
+  // As a refusal on screen gives it (holdForm): on the button, without
+  // scrolling, if the form had the focus at the press and it is lost now, on
+  // the page itself or nowhere. A form refused on screen while the redraw
+  // loaded had it given back then, on a button that has gone with the old page
+  // since (refocusedForms), so the new form's button takes its place.
+  const focused = unsaid ? unsaid.focused : refocusedForms.has(answeredForm);
+  if (focused && (!document.activeElement || document.activeElement === document.body)) {
+    form.querySelector('button[type="submit"]')?.focus({ preventScroll: true });
+  }
+}
+
+// pickerRefusal is why a posting form just drawn takes no image: the reason
+// its picker was drawn switched off with, or the site's where it drew none,
+// the site taking no images; "" for a picker drawn live.
+function pickerRefusal(form) {
+  const drawn = form.querySelector("[data-file-field]");
+  if (!drawn) {
+    return UPLOADS_OFF_REASON;
+  }
+  return drawn.classList.contains("blocked") ? drawn.querySelector(".file-blocked").textContent : "";
 }
 
 // keepUnsentDraft is for a draft whose thread was archived or locked under it:
@@ -3585,8 +4567,11 @@ function hideQuotePreview() {
 
 /* Quoting ------------------------------------------------------------------ */
 
+// A reply box switched off while its post is pending (holdForm) takes no
+// quote, which would be left out of the post and wiped by the reset after it;
+// the post number then goes to the post, as on a page with no reply form.
 function quoteTarget() {
-  return el.main.querySelector('form[data-kind="reply"] textarea[name="body"]');
+  return el.main.querySelector('form[data-kind="reply"] textarea[name="body"]:not(:disabled)');
 }
 
 function insertQuote(no) {
@@ -3688,12 +4673,16 @@ document.addEventListener("click", (event) => {
   }
 
   // Forgetting a badge is entirely local: the server was never told which
-  // browser held it, so there is nothing there to tell. The address step that
-  // takes the badge panel's place opens by saying the badge has gone
-  // (badgeLost), and that is brought into view clear of the header and
-  // focused, with the address form under it. The redraw took the button and
-  // the focus with it, and left a keyboard on the page itself, with nothing
-  // to tell a screen reader that the badge was gone.
+  // browser held it, so there is nothing there to tell. The browser's other
+  // tabs see it go from storage and stop offering it (followCredentialStorage).
+  // The address step that takes the badge panel's place opens by saying the
+  // badge has gone (badgeLost), and that is brought into view clear of the
+  // header and focused, with the address form under it. The redraw took the
+  // button and the focus with it, and left a keyboard on the page itself, with
+  // nothing to tell a screen reader that the badge was gone. Either forget
+  // draws /verify again only while it is the page on screen, and not over a
+  // step the reader has drawn since (renderVerify): pressed on a page the
+  // reader has just left, it leaves the screen to the page they went to.
   if (event.target.closest('[data-action="forget-verification"]')) {
     event.preventDefault();
     forgetCredential();
@@ -3709,14 +4698,15 @@ document.addEventListener("click", (event) => {
     return;
   }
 
-  // Forgetting the browser also moves the page to a new step, so a badge
-  // still on its way from Verify is dropped when it lands (submitVerification)
-  // rather than stored after the browser was forgotten.
+  // Forgetting the browser also moves the page to a new step
+  // (forgetOnThisPage), so a badge still on its way from Verify is dropped when
+  // it lands (submitVerification) rather than stored after the browser was
+  // forgotten, and a code request still waiting on its puzzle or its turn is
+  // not sent. The other tabs hear it on FORGET_CHANNEL (forgetBrowser).
   if (event.target.closest('[data-action="forget-browser"]')) {
     event.preventDefault();
     clearNotice();
     forgetBrowser();
-    verifyStep = { step: "email", label: "" };
     renderVerify().then((drawn) => {
       if (drawn) confirmBrowserForgotten();
     });
@@ -3726,13 +4716,17 @@ document.addEventListener("click", (event) => {
   // Keeping the badge gives up replacing it: the page goes back to the badge
   // held here, and a code already sent is left to expire unused. The badge is
   // read again first, since it can run out, or be forgotten in another tab,
-  // while the page is on another step. Drawn from what was read before, a
-  // badge that had expired came back as if it were live, "good until" a time
-  // gone by, and went on being offered on posting forms for the server to
-  // refuse. A badge that has gone leaves the address step, which opens by
-  // saying why (badgeLost), and showHeldBadge shows and focuses that instead.
+  // while the page is on another step. Drawn from what was read before, a badge
+  // that had expired came back as if it were live, "good until" a time gone by,
+  // and went on being offered on posting forms for the server to refuse. A
+  // badge that has gone leaves the address step, which opens by saying why
+  // (badgeLost), and showHeldBadge shows and focuses that instead. Pressed on a
+  // Verify page the reader has just left, still on screen while the next page
+  // loads, it does nothing, as the forget buttons draw nothing there
+  // (renderVerify): the page is the one they went to.
   if (event.target.closest('[data-action="verify-keep"]')) {
     event.preventDefault();
+    if (!onVerifyPage()) return;
     clearNotice();
     state.verification.badge = readBadge();
     if (!state.verification.badge && !badgeLost) badgeLost = CREDENTIAL_FORGOTTEN;
@@ -3745,10 +4739,14 @@ document.addEventListener("click", (event) => {
   // Verifying again from here means starting at the address field, with the
   // badge already held staying valid until the new one replaces it. Whatever
   // was said was about the step being left, so it goes with it: a refusal in
-  // that step's form goes with the form, and the notice is put away.
+  // that step's form goes with the form, and the notice is put away. Pressed on
+  // a Verify page the reader has just left, it does nothing, as Keep my badge
+  // does: a Send code pressed on the step it drew would go from the page they
+  // went to.
   const restart = event.target.closest('[data-action="verify-again"], [data-action="verify-restart"]');
   if (restart) {
     event.preventDefault();
+    if (!onVerifyPage()) return;
     clearNotice();
     // replacing shows the address form over a badge that is still held and
     // still usable — it is retired by the new one, not by asking for one.
@@ -3779,6 +4777,17 @@ document.addEventListener("click", (event) => {
 // The address the view on screen was rendered for, less its fragment.
 let renderedPath = null;
 
+// What the page on screen was drawn for: its address, less the fragment, its
+// route, and the thread its controls read. The render that draws a page notes
+// them, and drawVerifyStep notes them for every Verify step it draws, whatever
+// drew it: render, an answer, a button, or a redraw after a forget say. Nothing
+// is noted for the skeleton, the age screen or the error of a page that would
+// not load, none of which draws a form that reads it: drawnFor names the page
+// drawn before them until another is drawn. A redraw that keeps the page for a
+// post on its way, and then will not load, puts them back, the address in the
+// address bar too (render).
+let drawnFor = { path: null, route: null, thread: null };
+
 // A same-page quote link or backlink only moves the fragment, and the browser
 // reports that as a history change too. Re-rendering for it would fetch the
 // thread again and rebuild it, hiding every spoiler the reader had revealed and
@@ -3808,9 +4817,14 @@ el.main.addEventListener("change", (event) => {
   if (field && event.target.matches(".file-input")) {
     clearNotice();
     updateFileField(field);
+    captchaImageAttached(event.target.form);
   }
   if (event.target.matches('input[type="checkbox"][name="badge"]')) {
+    // Ticking or unticking the badge a form offers is the reader's choice,
+    // made after the one a note on the form is about (badgeWithdrawn).
+    badgeWithdrawn.delete(event.target.form);
     badgeToggled(event.target);
+    captchaBadgeToggled(event.target);
   }
 });
 
@@ -3876,8 +4890,9 @@ document.addEventListener("dragover", (event) => {
   }
   event.preventDefault();
   const field = dropField(event.target);
-  // A blocked picker is not a drop target; the drop itself says why.
-  if (field && !field.classList.contains("blocked")) {
+  // A switched-off picker, blocked or held while its post is pending, is not a
+  // drop target; the drop on a blocked one says why.
+  if (field && !field.querySelector(".file-input").disabled) {
     field.classList.add("dragging");
   }
 });
@@ -3905,8 +4920,20 @@ document.addEventListener("drop", (event) => {
     return;
   }
   field.classList.remove("dragging");
-  clearNotice();
-  setFile(field, event.dataTransfer.files[0]);
+  // A file the form took is shown as a picked one is, in place of whatever was
+  // said before it. setFile takes the file and says whether it did, and says
+  // why itself when it refuses one because the picker is blocked or the file is
+  // not an accepted image; any other refusal, such as a picker switched off
+  // only while its post is pending, no file, or a browser that cannot build a
+  // DataTransfer or set input.files, says nothing, and what is on screen stays.
+  // Only a file the form took starts the puzzle: a held form's own image is its
+  // pending post's, which already has its answer or is waiting on the puzzle
+  // being solved for it.
+  if (setFile(field, event.dataTransfer.files[0])) {
+    clearNotice();
+    updateFileField(field);
+    captchaImageAttached(field.closest("form"));
+  }
 });
 
 /* Poster key --------------------------------------------------------------- */
@@ -3937,11 +4964,647 @@ function posterKey() {
   }
   try {
     localStorage.setItem(POSTER_KEY_STORAGE_KEY, pagePosterKey);
+    storedHere.set(POSTER_KEY_STORAGE_KEY, pagePosterKey);
   } catch {
     // Kept for this page only.
   }
   return pagePosterKey;
 }
+
+/* Captcha ----------------------------------------------------------------- */
+
+// The captcha (build plan 2.6) is a puzzle the browser solves before a post,
+// or a request for a verification code, goes out. educhan serves it itself:
+// GET /api/captcha hands out a challenge the server signed, ALTCHA's worker,
+// vendored under /lib/altcha/, finds the counter whose PBKDF2 key starts with
+// the prefix the challenge gives, and the request carries the answer. Nothing
+// goes to anyone but educhan, and nothing is asked of the reader.
+//
+// The puzzle is solved in the background, and starts only on something done in
+// or to a form that needs it, never when a page is drawn: focus moving into a
+// box to write in, however it gets there (a click or tap, Tab, or the page
+// putting it there to quote a post, for "Verify another address" or "Use a
+// different address", or after a press with nothing written); an image picked
+// or dropped on it and attached (not one a re-render puts back); unticking the
+// badge on a form whose tick stopped a puzzle, or that already has something
+// written or attached, and the page taking a ticked badge out of a form on
+// screen with something written or attached, the badge having gone from the
+// browser or given way to another, in another tab or in this one, by anything
+// but Forget this browser or /verify being drawn over the form, or been refused
+// as expired or revoked (a form off the screen then, while a post link's lookup
+// loads say, starts none, nor does the form a redraw draws in its place, noted
+// or told of the refusal), and the press then refused once to say so, of a form
+// with something written or attached; a refusal saying it spent the answer,
+// while the form is on screen; and a press with no good answer held and none
+// being solved. By the time a post is written its puzzle is usually solved. The
+// answer is kept in memory only, never in storage or a draft, and is good for
+// one request.
+const CAPTCHA_WORKER_SRC = "/lib/altcha/pbkdf2.js";
+// The server sets this header, to "spent", on every response to a request whose
+// answer it has used up, a refusal included, but one: a 500 for a spend whose
+// reply from the database was lost (captchaSpentHeader in captcha.go).
+const CAPTCHA_SPENT_HEADER = "Educhan-Captcha";
+// Up to this many copies of the worker share a puzzle, each trying every nth
+// counter, for a browser that runs them side by side. How much the extra
+// copies help differs by browser: Chromium runs every copy's Web Crypto on one
+// thread, so there they take turns.
+const CAPTCHA_MAX_WORKERS = 4;
+// CAPTCHA_LIFETIME_MS is how long after its challenge was fetched an answer is
+// used for. The server takes one for half an hour (captchaTTL in captcha.go);
+// this leaves the slack for a slow clock and a slow request, and an answer
+// older than this is replaced before a post goes out with it.
+const CAPTCHA_LIFETIME_MS = 25 * 60 * 1000;
+// A copy of the worker gives up after this long, so a puzzle that cannot be
+// solved, which a working server never sends, stops using the processor. The
+// hardest puzzle a server gives a reader posting at a person's pace asks at
+// most 15,000 attempts (maxCaptchaWork and captchaMaxScale in captcha.go):
+// at most a minute for a slow phone at 4 ms an attempt, half of this
+// (TestClientAndServerAgreeOnTheCaptcha).
+const CAPTCHA_TIMEOUT_MS = 2 * 60 * 1000;
+// What a post or a code request says when the browser could not solve the
+// puzzle: it has no Web Worker or Web Crypto, or the worker would not run.
+const CAPTCHA_FAILED =
+  "Your browser couldn't finish the anti-spam check, so nothing was sent. Try again, or try another browser.";
+// What it says on a page that is not a secure context, plain HTTP to anywhere
+// but this computer: no browser gives such a page the Web Crypto the worker
+// needs, so trying again, or in another browser, would not help.
+const CAPTCHA_INSECURE = "The anti-spam check needs a secure (https) connection to this site, so nothing was sent.";
+// What it says when every copy of the worker gave up at CAPTCHA_TIMEOUT_MS:
+// the server asks an address for harder puzzles while it asks for many, and
+// eases off within a minute.
+const CAPTCHA_TOO_SLOW = "The anti-spam check took too long, so nothing was sent. Wait a minute and try again.";
+// What it says when the server could not make a challenge.
+const CAPTCHA_UNAVAILABLE = "The anti-spam check couldn't start, so nothing was sent. Try again in a moment.";
+// captchaBusy is what it says when the server hands out no more puzzles to
+// this address for now (a 429 from /api/captcha, with how long to wait): too
+// many have been asked for from it this minute, which a whole campus behind
+// one address can do. It is not a post's or a code request's cooldown, so it
+// is not worded as one.
+function captchaBusy(err) {
+  const seconds = err.payload && err.payload.retry_after;
+  const wait = seconds ? `Wait ${plural(seconds, "second", "seconds")}` : "Wait a minute";
+  return `Too many anti-spam checks have been started from your network, so nothing was sent. ${wait} and try again.`;
+}
+
+// The answer this page holds, until a request takes it: goodUntil is when it is
+// replaced rather than sent, by this browser's clock. solving is the puzzle in
+// progress, which a post waits for rather than starting another; stop stops
+// it, and waiting counts the requests waiting for it.
+const captcha = { answer: "", goodUntil: 0, solving: null, stop: null, waiting: 0 };
+
+// captchaFormNeedsIt says whether a form's request will need an answer: a post
+// without a badge, or a request for a verification code, while the server has
+// the captcha on.
+function captchaFormNeedsIt(form) {
+  if (!state.site.captcha || !(form instanceof HTMLFormElement)) {
+    return false;
+  }
+  if (form.dataset.verify) {
+    return form.dataset.verify === "request";
+  }
+  const badge = field(form, "badge");
+  return Boolean(form.dataset.kind) && !(badge && badge.checked);
+}
+
+// prepareCaptcha starts solving in the background, if nothing is solved or
+// solving already. A failure here is not shown: the request that needs the
+// answer tries again and says what went wrong.
+function prepareCaptcha() {
+  captchaAnswer().catch(() => {});
+}
+
+// captchaAnswer resolves to an answer to send: the one held, if it is still
+// good, or a fresh one. Either stays held until a request takes it
+// (takeCaptcha).
+function captchaAnswer() {
+  if (captcha.answer && Date.now() < captcha.goodUntil) {
+    return Promise.resolve(captcha.answer);
+  }
+  if (!captcha.solving) {
+    const stop = new AbortController();
+    const solving = solveCaptcha(stop.signal).finally(() => {
+      if (captcha.solving === solving) {
+        captcha.solving = null;
+        captcha.stop = null;
+      }
+    });
+    captcha.solving = solving;
+    captcha.stop = stop;
+  }
+  return captcha.solving;
+}
+
+// stopCaptcha stops the puzzle solving in the background, unless a request is
+// waiting for it: a post that will carry the badge needs none. It says whether
+// it stopped one.
+function stopCaptcha() {
+  if (captcha.stop && captcha.waiting === 0) {
+    captcha.stop.abort();
+    captcha.solving = null;
+    captcha.stop = null;
+    return true;
+  }
+  return false;
+}
+
+// captchaFormHasWriting says whether a posting form holds any of the post yet:
+// a subject, a message or an image. The name is left out, because the form is
+// drawn with the remembered one and the badge box empties and refills it.
+function captchaFormHasWriting(form) {
+  const written = (name) => {
+    const box = field(form, name);
+    return Boolean(box && box.value.trim());
+  };
+  const image = field(form, "image");
+  return written("subject") || written("body") || Boolean(image && image.files && image.files.length);
+}
+
+// An image picked or dropped is some of the post, as writing in a box is: the
+// puzzle starts for it in a form that needs it, once the image is attached (a
+// file over the size limit is taken straight back off, and starts nothing).
+// Not when a re-render puts a draft's image back (restoreDraft), which is
+// drawing a page.
+function captchaImageAttached(form) {
+  const image = form instanceof HTMLFormElement ? field(form, "image") : null;
+  if (captchaFormNeedsIt(form) && image && image.files && image.files.length) {
+    prepareCaptcha();
+  }
+}
+
+// The forms whose badge, when ticked, stopped a puzzle in progress.
+const captchaStoppedByBadge = new WeakSet();
+
+// Ticking the badge stops the puzzle, unless a request is waiting for it.
+// Unticking it starts the puzzle again where the tick stopped one, or where the
+// form already has something written or attached; on any other form it waits,
+// as on a form whose badge was never ticked, for focus to move into a box to
+// write in.
+function captchaBadgeToggled(box) {
+  const form = box.form;
+  if (box.checked) {
+    if (stopCaptcha() && form) {
+      captchaStoppedByBadge.add(form);
+    }
+    return;
+  }
+  const stopped = Boolean(form) && captchaStoppedByBadge.delete(form);
+  if (captchaFormNeedsIt(form) && (stopped || captchaFormHasWriting(form))) {
+    prepareCaptcha();
+  }
+}
+
+// takeCaptcha takes an answer captchaAnswer gave out of the page, for one
+// request: no other request is handed it while that one is on its way, and a
+// press elsewhere meanwhile solves a fresh puzzle. The server would take one
+// answer from only one of two requests, and refuse the other as used. It says
+// what it took, and until when it is good, or null when another request took
+// it first.
+function takeCaptcha(answer) {
+  if (!answer || captcha.answer !== answer) {
+    return null;
+  }
+  const taken = { answer, goodUntil: captcha.goodUntil };
+  captcha.answer = "";
+  captcha.goodUntil = 0;
+  return taken;
+}
+
+// keepCaptcha puts back an answer a request took and did not spend, or that may
+// have spent it without saying so: it was not sent, the server refused the
+// request without using it, or what came back did not say, as when nothing came
+// back at all or what came was the 500 for a spend whose reply from the
+// database was lost. It goes back only while the page holds no other answer,
+// and only while it is still good.
+function keepCaptcha(taken) {
+  if (taken && !captcha.answer && Date.now() < taken.goodUntil) {
+    captcha.answer = taken.answer;
+    captcha.goodUntil = taken.goodUntil;
+  }
+}
+
+// solveCaptcha fetches a challenge and solves it, unless signal stops it
+// first. The answer is ALTCHA's payload: the challenge as issued, and the
+// solution, as base64 JSON. The time the worker took is left out; the server
+// would not read it. A page that cannot run the worker, which needs Web Crypto
+// and so a secure context, is told so before a challenge is fetched for
+// nothing. A response that is not a challenge, a proxy's page say, is taken
+// for a server that could not make one. The challenge is given up once
+// VERIFY_TIMEOUT_MS has passed (verifyDeadline), as a Verify request is, so a
+// connection gone silent fails the puzzle, as unreachable, rather than holding
+// for ever the requests waiting on it.
+async function solveCaptcha(signal) {
+  if (!window.isSecureContext) {
+    throw new Error(CAPTCHA_INSECURE);
+  }
+  if (typeof Worker !== "function" || !(window.crypto && crypto.subtle)) {
+    throw new Error(CAPTCHA_FAILED);
+  }
+  let challenge;
+  try {
+    challenge = await api("/api/captcha", { signal: verifyDeadline(signal) });
+  } catch (err) {
+    if (err.status === 429) {
+      throw new Error(captchaBusy(err));
+    }
+    throw err.status >= 500 ? new Error(CAPTCHA_UNAVAILABLE) : err;
+  }
+  if (
+    !challenge ||
+    !challenge.parameters ||
+    typeof challenge.parameters !== "object" ||
+    typeof challenge.signature !== "string"
+  ) {
+    throw new Error(CAPTCHA_UNAVAILABLE);
+  }
+  const fetched = Date.now();
+  const solution = await runCaptchaWorkers(challenge, signal);
+  captcha.answer = btoa(
+    JSON.stringify({
+      challenge: { parameters: challenge.parameters, signature: challenge.signature },
+      solution: { counter: solution.counter, derivedKey: solution.derivedKey },
+    }),
+  );
+  captcha.goodUntil = fetched + CAPTCHA_LIFETIME_MS;
+  return captcha.answer;
+}
+
+// runCaptchaWorkers solves a challenge across copies of the worker, each
+// counting from its own start in steps of their number, and stops them all at
+// the first answer, or when signal says to. Exactly one counter answers a
+// challenge, so whichever copy it falls to finds it, and the rest are stopped
+// short.
+function runCaptchaWorkers(challenge, signal) {
+  const failed = () => new Error(CAPTCHA_FAILED);
+  const count = Math.min(CAPTCHA_MAX_WORKERS, Math.max(1, navigator.hardwareConcurrency || 1));
+  const workers = [];
+  return new Promise((resolve, reject) => {
+    let left = count;
+    let timedOut = 0;
+    let settled = false;
+    const finish = (settle, value) => {
+      if (settled) return;
+      settled = true;
+      for (const worker of workers) worker.terminate();
+      settle(value);
+    };
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    signal.addEventListener("abort", () => finish(reject, signal.reason), { once: true });
+    // A copy that gave up, threw, or never loaded is out; the puzzle fails
+    // only when every copy is, and took too long when every copy ran out of
+    // time.
+    const giveUp = (outOfTime) => {
+      left -= 1;
+      if (outOfTime) timedOut += 1;
+      if (left === 0) finish(reject, timedOut === count ? new Error(CAPTCHA_TOO_SLOW) : failed());
+    };
+    // Anything that throws while the copies are started, a worker the browser
+    // will not make or a message it will not send, fails the puzzle and stops
+    // every copy started so far.
+    try {
+      for (let i = 0; i < count; i++) {
+        const worker = new Worker(CAPTCHA_WORKER_SRC);
+        workers.push(worker);
+        worker.onmessage = (event) => {
+          const solution = event.data;
+          if (solution && typeof solution.derivedKey === "string" && Number.isInteger(solution.counter)) {
+            finish(resolve, solution);
+          } else {
+            // The worker answers null when it ran out of time, and an error
+            // when it could not work at all.
+            giveUp(solution === null);
+          }
+        };
+        worker.onerror = (event) => {
+          event.preventDefault();
+          giveUp(false);
+        };
+        worker.postMessage({
+          type: "work",
+          challenge: { parameters: challenge.parameters },
+          counterMode: "uint32",
+          counterStart: i,
+          counterStep: count,
+          timeout: CAPTCHA_TIMEOUT_MS,
+        });
+      }
+    } catch {
+      finish(reject, failed());
+    }
+  });
+}
+
+// sendWithCaptcha sends a request that may need the captcha: needsIt() says
+// whether it does, and send(answer) makes the request, with "" for no answer.
+// The answer is taken out of the page for this request alone (takeCaptcha):
+// another press while this request is on its way, from a form on another page
+// say, solves a fresh puzzle rather than sending the same answer, which the
+// server would let only one of the two use. It is put back (keepCaptcha, while
+// it is good and only into an empty place) only when this request left it
+// unspent, or may have, as when it brought no response, or the one refusal that
+// cannot say (below).
+// A refusal of the answer itself, for being missing, out of date, used or
+// wrong, comes before anything is stored or sent, so the answer is dropped and
+// the request sent once more with a fresh one, and the reader presses the
+// button once. (A used answer was spent by an earlier request, whose cooldowns
+// can refuse the resend; that refusal keeps the fresh answer, as below.) Any
+// other refusal but that one says whether the server spent the answer before
+// refusing, with the Educhan-Captcha: spent header. A refusal with the header
+// drops the answer and, while onScreen() holds (below), starts the next puzzle
+// at once, so it is ready, or nearly, when the reader presses again: an image
+// whose pixels failed to decode once the answer was spent, say, or a cooldown
+// that another request from this address started between flood control's check
+// before the spend and its check after it, a 429 like the one for a cooldown
+// found before the spend. A refusal without the header, such as one of what was
+// written or for a cooldown found before the spend, leaves the answer held: it
+// is put back for the next press, on keepCaptcha's terms, and that press goes
+// straight out. With no answer from the server at all the answer is put back
+// too; if it had been spent, the first request whose captcha check on the
+// server can look it up is refused as "used" and solves a fresh one here, while
+// one refused before that check, a reply to a thread locked meanwhile or an
+// image whose header does not read say, or whose lookup fails, a 500 with no
+// header, puts it back again, and one checked after the server's secret was
+// rotated is refused as invalid instead, and solves a fresh one too. So it is
+// after the one refusal that cannot say: a 500 for a spend the database applied
+// but whose reply was lost, which carries no header though the answer is spent.
+// solving(true) and solving(false) bracket the time spent on the puzzle.
+// onScreen() says whether the form the request came from is still on screen
+// (formOnScreen), and the browser not forgotten since the press. A request
+// whose form has gone, because the reader went to another page, or that Forget
+// this browser cancelled meanwhile, is not sent, the first time or once more
+// after a refused answer. That is asked once it has waited for the puzzle,
+// solved since the press, its answer then put back for the next press, on
+// keepCaptcha's terms, and again when a refusal of the answer arrives, perhaps
+// after a forget heard while the first send was on its way. Either way
+// sendWithCaptcha throws the error notSent makes, for a caller that says
+// nothing on a page the reader went to and, on a form still on screen, which
+// only the forget stops, says why. A post's form keeps how to word what it
+// would have been told, for a redraw that carries it held to word and say
+// (unsaidNotices). Neither the second send nor the next puzzle is started for
+// one. A request with an answer held already, or needing none, goes with the
+// press, made on a form on screen: one pressed while a render for another page
+// loads, its page still drawn, form and all, goes as it would have just before
+// that render began, its answer judged by where the reader is when it comes
+// (onScreen).
+// Pressing Update while a post waits does not take its form away: the redrawn
+// page shows the same form, still held, as does another page of the same
+// board's index, drawn with the same new-thread form, and a redraw that will
+// not load leaves the page on screen, form and all.
+async function sendWithCaptcha(needsIt, send, solving, onScreen) {
+  for (let retried = false; ; retried = true) {
+    let taken = null;
+    let waited = false;
+    if (needsIt()) {
+      solving(true);
+      captcha.waiting += 1;
+      try {
+        // Taken as soon as it is handed over, in the same step. An answer
+        // another request waiting on the same puzzle took first is not shared:
+        // this one solves another. One held already is handed over at once;
+        // anything else is the puzzle, waited for.
+        do {
+          const ready = captchaAnswer();
+          waited = waited || ready === captcha.solving;
+          taken = takeCaptcha(await ready);
+        } while (!taken);
+      } catch (err) {
+        // The server has switched the captcha off since this page learned it
+        // was on, so the request goes without an answer.
+        if (err.status !== 404) {
+          throw err;
+        }
+        state.site.captcha = false;
+      } finally {
+        captcha.waiting -= 1;
+        solving(false);
+      }
+    }
+    const answer = taken ? taken.answer : "";
+    if (waited && !onScreen()) {
+      keepCaptcha(taken);
+      throw notSent();
+    }
+    try {
+      return await send(answer);
+    } catch (err) {
+      const reason = err.payload && err.payload.captcha;
+      if (!reason) {
+        if (!(err.headers && err.headers.get(CAPTCHA_SPENT_HEADER) === "spent")) {
+          keepCaptcha(taken);
+        } else if (answer && needsIt() && onScreen()) {
+          prepareCaptcha();
+        }
+        throw err;
+      }
+      // The page was drawn without knowing the captcha is on: /api/site did
+      // not answer, or the server has switched it on since.
+      if (reason === "required") {
+        state.site.captcha = true;
+      }
+      if (retried || !needsIt()) {
+        throw err;
+      }
+      if (!onScreen()) {
+        throw notSent();
+      }
+    }
+  }
+}
+
+// notSent is the error sendWithCaptcha throws for a request it did not send,
+// marked so that the caller can tell it from a refusal: its message is for
+// nobody.
+function notSent() {
+  const err = new Error("not sent");
+  err.notSent = true;
+  return err;
+}
+
+// formOnScreen says whether a form is still the one the reader is looking at:
+// in the document, on the page that drew it. Going to another page changes
+// state.route at once, while the old form stays in the document until the new
+// page is drawn over it. A form's route is the page it is on at the press, as
+// what drew that page noted it (drawnFor), the render or, for /verify,
+// drawVerifyStep, never a render begun since that has not drawn yet: pressed
+// just after a link, a post is answered as off the screen while state.route has
+// another routeKey, and on the form again once a redraw of its own page, a post
+// link's lookup into its thread say, carries it, and a code request waiting on
+// its puzzle as off the screen (below). A redraw of the same page, Update say,
+// or of another page of the same board's index (the same routeKey), keeps a
+// posting form whose post is on its way in the document, one pressed while the
+// redraw loads included (carriedDraft): it puts the form in place of the one
+// the new page draws for the same thread or board (restoreDraft) or, when the
+// new page will not load, leaves the page on screen, form and all (render).
+// Either way the post goes ahead and is answered on that form. Only a new page
+// that draws no such form, the thread locked or archived meanwhile, takes it
+// off the screen. No redraw carries a /verify form, so one is on screen only
+// until the next render, of /verify too, one begun just before its press
+// included, or the next step drawn: a code request whose form has gone by the
+// time its puzzle is solved is not sent (submitVerification). One sent already
+// is answered on the step it was sent from, whichever drawing of it is on
+// screen.
+function formOnScreen(form, route) {
+  return form.isConnected && (form.dataset.kind ? routeKey(state.route) === routeKey(route) : state.route === route);
+}
+
+// The forms holdForm holds, each with the controls it switched off, for release
+// to switch back on: a badge box drawn into the form during the hold among them
+// (drawBadgeOption).
+const heldForms = new WeakMap();
+
+// How many times each posting form has been pressed (submit), for a redraw to
+// tell whether the form it read its draft from has been pressed since
+// (carriedDraft).
+const presses = new WeakMap();
+
+// The posting forms whose last press was refused on screen with its button
+// given the focus back (holdForm), for a redraw loading meanwhile that puts
+// such a form's values into its new page, the old form, button and all, gone as
+// the page is drawn again, to give the new form's button the focus as well
+// (restoreDraft). Every press takes its form out first (submit).
+const refocusedForms = new WeakSet();
+
+// How the last redraw of a held form's page drew the picker there, by form:
+// the reason it was drawn switched off with, or "" for one drawn live, or the
+// site's reason where it drew none, on a site that takes no images
+// (restoreDraft). The held picker shows the image of the post on its way until
+// the hold ends, and goes as the redraw drew it then (holdForm).
+const redrawnPickers = new WeakMap();
+
+// How each posting form's last refusal was worded, by form, as a function of
+// why release took its image off ("" for not at all), of the form it is said to
+// and of whether that form holds text and an image, with whether it is the
+// notice of a replaced badge and, for a form told on screen, the words it was
+// told: a refusal answered while a redraw of the page loads, which then draws
+// the picker switched off, is worded again with the picker's reason for the
+// form that redraw draws and the text put back into it (restoreDraft), so it
+// reads as it would had the redraw come first, and the notice of a replaced
+// badge, its one refusal for the badge, then takes off a note that form was
+// given (badgeWithdrawn). The words it was told on screen, or for a form
+// answered off the screen the words the redraw has just told it
+// (unsaidNotices), say whether its notice is still the one on screen, however
+// the page has changed since, a badge forgotten or verified meanwhile say,
+// which the wording reads as it stands then (badgeReplacedNotice). The two
+// refusals of the image itself take the image off themselves, and keep nothing
+// here.
+const refusalNotices = new WeakMap();
+
+// What each posting form would have been told when its post was answered, or
+// dropped unsent, had it been on screen then, by form: how to word the notice
+// the submit handler would have shown, as a function of the form it is said to
+// and of whether that form holds text and an image (word), whether the form had
+// the focus at the press, whether the notice is the refusal of its badge, and
+// whether it is a refusal of the image itself, for the thread's image limit or
+// not. A form a redraw has taken off the screen, while a post link's lookup
+// loads say, is told nothing then. A redraw that carries it held, begun before
+// the answer or after it, Update or Back say (captureDraft), tells it then,
+// once, if it puts its values back into its own page (restoreDraft) or keeps
+// that page, form and all, when it will not load (render), switching its picker
+// off there after a refusal of the image (blockRefusedPicker). It is worded as
+// it is told, for the form drawn or kept and as things stand then: its text and
+// its image, which the reader can still change while the form is in sight, as a
+// post link's lookup loads say, and for the notice of a replaced badge, the
+// badge held, the form's box and the poster key (badgeReplacedNotice), which a
+// forget of the badge or another badge verified can change, the notice then
+// naming no badge or the one held then, and a badge stored where none was held
+// at the answer has the form told that notice rather than the server's words,
+// while after Forget this browser the form is told the server's words
+// (BADGE_REPLACED). Every press of the form takes out what is left unsaid, one
+// refused before it is sent included, acting first on a refusal of the image
+// unless an image has been attached since (submit), so a form is told only of
+// the press it is answering, and a form that does not come back, to a page
+// drawn for another address say, takes its entry with it.
+const unsaidNotices = new WeakMap();
+
+// takeUnsaidNotice takes out what a form answered off the screen was not told
+// (unsaidNotices), for the redraw that tells it, so it is told once.
+function takeUnsaidNotice(form) {
+  const unsaid = unsaidNotices.get(form);
+  unsaidNotices.delete(form);
+  return unsaid;
+}
+
+// holdForm switches off a form's controls while its request is pending, from
+// the press until the answer, with whatever the reader wrote left where it is.
+// What is sent was read from the form at the press, so a change made in the
+// meantime would be left out of it, and wiped by the reset after a success. It
+// returns release, which switches back on the controls it switched off, a badge
+// box drawn into the form meanwhile among them (drawBadgeOption), and no
+// others: a picker switched off for its own reason stays off. When the hold
+// ends, success or refusal, release leaves the picker as a redraw of the page
+// meanwhile drew it (redrawnPickers): switched off with that drawing's reason,
+// or on, or off with the site's reason where the redraw drew none. A picker it
+// switches off loses the image it held, and release then returns the reason,
+// for the notice to say why the image went (imageTakenOff), and "" otherwise. A
+// refusal of the image itself, the image limit reached or uploads switched off,
+// then switches the picker off (blockRefusedPicker): the submit handler does
+// that for a form on screen, and for one answered off the screen the page a
+// failed redraw keeps for it does (render), or the form's next press if that
+// comes first, unless an image has been attached since, which is left for the
+// server to answer (submit), while a page drawn afresh draws its picker as the
+// server says by then. With refocus, a form that had the focus at the press,
+// which disabling the focused control took away, gets it back on its button,
+// ready to press again (put back in a box to write in, it would start another
+// puzzle), and, for a posting form, the only kind noted for it
+// (refocusedForms), so does the button of the form a redraw loading meanwhile
+// then draws in its place (restoreDraft). That is only while the focus is still
+// lost, on the page itself or nowhere: a reader who moved it during the wait,
+// to read a post say, keeps it where they put it. And it does not scroll the
+// page: a reader who scrolled away during the wait stays where they are. The
+// notice saying what happened is at the top of the page, in view only of a
+// reader who is there. Until release, the form is in heldForms, and a redraw of
+// its page carries it across as it is (captureDraft, restoreDraft).
+function holdForm(form) {
+  const controls = Array.from(form.elements).filter((control) => !control.disabled);
+  const focused = form.contains(document.activeElement);
+  for (const control of controls) {
+    control.disabled = true;
+  }
+  heldForms.set(form, controls);
+  return (refocus) => {
+    heldForms.delete(form);
+    for (const control of controls) {
+      control.disabled = false;
+    }
+    let imageOff = "";
+    if (redrawnPickers.has(form)) {
+      const reason = redrawnPickers.get(form);
+      const picker = form.querySelector("[data-file-field]");
+      redrawnPickers.delete(form);
+      if (reason) {
+        if (picker.querySelector(".file-input").files.length > 0) {
+          imageOff = reason;
+        }
+        blockFileField(picker, reason);
+      } else {
+        unblockFileField(picker);
+      }
+    }
+    const lost = !document.activeElement || document.activeElement === document.body;
+    if (refocus && focused && lost) {
+      form.querySelector('button[type="submit"]')?.focus({ preventScroll: true });
+      if (form.dataset.kind) {
+        refocusedForms.add(form);
+      }
+    }
+    return imageOff;
+  };
+}
+
+// The puzzle starts when focus moves into a box to write in, in a form that
+// needs it, however it gets there: a click or tap, Tab, or the page putting it
+// there (quoting a post, "Verify another address" and "Use a different
+// address" on /verify, and a press with nothing written). Not on the badge box,
+// and not in a form whose badge is ticked (see captchaBadgeToggled for a reader
+// who ticks it later).
+el.main.addEventListener("focusin", (event) => {
+  const box = event.target;
+  if (box.matches("textarea, input[type=text], input[type=email]") && captchaFormNeedsIt(box.form)) {
+    prepareCaptcha();
+  }
+});
 
 /* Submitting --------------------------------------------------------------- */
 
@@ -3955,11 +5618,31 @@ el.main.addEventListener("submit", async (event) => {
     await submitVerification(form);
     return;
   }
+  // What an earlier press answered off the screen left unsaid goes at every
+  // press, one refused here before anything is sent included, an empty one or
+  // one the badge's note stops say: from here the form is told only of this
+  // press, whatever it is told. A refusal of the image itself is acted on
+  // first, as on screen it was at once and as the page a failed redraw keeps
+  // would have acted on it: the picker is switched off and the thread's counts
+  // put in step (blockRefusedPicker), so this press is judged as it would have
+  // been there. An image attached since is left for the server to answer
+  // instead, rather than taken off unsaid.
+  const owed = takeUnsaidNotice(form);
+  const image = field(form, "image");
+  if (owed && owed.imageRefused && !(image && image.files.length)) {
+    blockRefusedPicker(form, owed.limitReached);
+  }
+  // Every press is counted, one refused below before anything is sent included,
+  // so that a redraw loading meanwhile, whose draft was read from this form
+  // before it, carries the form itself, held, as it carries a post pressed
+  // before it began (carriedDraft), and the focus an earlier refusal gave back
+  // is no longer this press's to give again (refocusedForms).
+  presses.set(form, (presses.get(form) ?? 0) + 1);
+  refocusedForms.delete(form);
   const button = form.querySelector('button[type="submit"]');
   const data = new FormData(form);
   const name = String(data.get("name") || "");
   const body = String(data.get("body") || "");
-  const image = field(form, "image");
   const file = image && !image.disabled && image.files[0];
 
   if (!body.trim() && !file) {
@@ -3969,134 +5652,340 @@ el.main.addEventListener("submit", async (event) => {
     return;
   }
 
-  // The one request in the application that carries the credential. It goes
-  // out only because this box is ticked, so an anonymous post is anonymous at
-  // the request layer too, not merely in what it displays.
-  const wantsBadge = data.get("badge") === "on";
-  const held = wantsBadge ? state.verification.badge : null;
-  // And only under the badge the box named. One issued or lost since the form
-  // was drawn sends nothing: the box is drawn again, unticked, for the badge
-  // held now, and the notice says why (offerHeldBadge), for the reader to
-  // choose again.
-  if (wantsBadge && !(held && badgeOffered(form) === held.number)) {
-    offerHeldBadge();
+  // A box ticked for a badge the page no longer holds is a badge taken out
+  // from under the form, now: the credential goes only as the badge the box
+  // named (badgeOffered), so one stored since, verified in this tab or
+  // another, never goes out under a box that named another, and none goes once
+  // the page holds none. The box is drawn again, unticked, for the badge held
+  // now, or taken out (withdrawBadgeOption).
+  const badgeBox = field(form, "badge");
+  const offered = state.verification.badge;
+  if (badgeBox && badgeBox.checked && !(offered && badgeOffered(form) === offered.number)) {
+    withdrawBadgeOption(form, false);
+  }
+
+  // A form whose ticked badge was taken out from under it says so before its
+  // post goes without one, once; the press after it posts (badgeWithdrawn).
+  // The box drawn in its place, if the page holds a badge now, takes the focus,
+  // for the reader to tick it there. That post needs the puzzle the badge
+  // would have skipped, which starts now if it has not: the page taking the
+  // badge out starts it only for a form on screen as it goes
+  // (withdrawBadgeOption), and a redraw that carries the note (restoreDraft),
+  // or /verify drawn over the form (loadVerification), starts none, since
+  // drawing a page never does.
+  if (badgeWithdrawn.has(form)) {
+    const withdrawn = badgeWithdrawn.get(form);
+    badgeWithdrawn.delete(form);
+    showNotice(badgeWithdrawnNotice(form, withdrawn));
     const box = field(form, "badge");
     if (box) box.focus();
+    if (captchaFormNeedsIt(form) && captchaFormHasWriting(form)) {
+      prepareCaptcha();
+    }
     return;
   }
+
+  // The one request in the application that carries the credential. It goes
+  // out only because this box is ticked, and only as the badge it names
+  // (above), so an anonymous post is anonymous at the request layer too, not
+  // merely in what it displays.
+  const wantsBadge = data.get("badge") === "on";
+  const held = wantsBadge ? state.verification.badge : null;
   // A badged post carries the credential and not the poster key. The server
   // derives a badged post's ID from the credential, so the key would do
   // nothing there, and sending the two together would put this browser's key
   // beside its credential in one request — the only place they could meet.
   const headers = held ? { [CREDENTIAL_HEADER]: held.token } : { [POSTER_KEY_HEADER]: posterKey() };
 
+  // The page the form is on, which the render that drew it noted (drawnFor),
+  // never one begun since that has not drawn yet, after a link pressed just
+  // before say: its board is where the post goes, and it is the page the post
+  // is answered on (formOnScreen).
+  const route = drawnFor.route;
   const isThread = form.dataset.kind === "thread";
   const payload = { name, body, badge: wantsBadge };
   let path;
   if (isThread) {
     payload.subject = String(data.get("subject") || "");
-    path = `/api/boards/${encodeURIComponent(state.route.slug)}/threads`;
+    path = `/api/boards/${encodeURIComponent(route.slug)}/threads`;
   } else {
     payload.sage = data.get("sage") === "on";
-    path = `/api/boards/${encodeURIComponent(state.route.slug)}/threads/${form.dataset.thread}/posts`;
+    path = `/api/boards/${encodeURIComponent(route.slug)}/threads/${form.dataset.thread}/posts`;
   }
 
-  // A post with an image goes as multipart; text-only posts stay on JSON.
-  const requestBody = file ? data : JSON.stringify(payload);
-
   const label = button.textContent;
-  button.disabled = true;
-  button.textContent = file ? "Uploading…" : "Posting…";
+  const sending = file ? "Uploading…" : "Posting…";
+  const onScreen = () => formOnScreen(form, route);
+  // "Forget this browser", pressed in another tab while the post waits on its
+  // puzzle, stops it as it stops a code request: sent, it would go under the
+  // Name and the poster key the forget took away, while its form shows
+  // neither. A post that went before the forget is answered on its form, and
+  // keeps nothing (below); one refused for its answer is not sent again.
+  const forgets = browserForgets;
+  const forgotten = () => forgets !== browserForgets;
+  // Read above, and held from here until the post has gone or been refused, so
+  // what the form shows meanwhile is what is sent, but for what a forget or a
+  // change of badge does to it meanwhile, such as the Name emptied (forgetForm)
+  // or the badge box taken out, or drawn for another badge, switched off and
+  // unticked (drawBadgeOption), while the post, if it goes, carries what was
+  // read at the press. Whether the form has the focus at the press is noted for
+  // a refusal answered off the screen (unsaidNotices); holdForm notes it for
+  // one on screen.
+  const focused = form.contains(document.activeElement);
+  const release = holdForm(form);
+  button.textContent = sending;
   clearNotice();
   try {
-    const created = await api(path, { method: "POST", body: requestBody, headers });
+    // A badged post skips the captcha; any other carries an answer when the
+    // server asks for one. A post with an image goes as multipart, with the
+    // answer as a field beside it; text-only posts stay on JSON.
+    const created = await sendWithCaptcha(
+      () => state.site.captcha && !held,
+      (answer) => {
+        // The second send, after a refused answer, carries the fresh one or,
+        // when the server has switched the captcha off, none.
+        data.delete("captcha");
+        delete payload.captcha;
+        if (answer && file) {
+          data.set("captcha", answer);
+        } else if (answer) {
+          payload.captcha = answer;
+        }
+        return api(path, { method: "POST", body: file ? data : JSON.stringify(payload), headers });
+      },
+      (solving) => {
+        button.textContent = solving ? "Checking…" : sending;
+      },
+      () => onScreen() && !forgotten(),
+    );
     // The remembered name is the one for unbadged posts; a badged post's name
-    // is never offered on the next form, where the badge starts unticked.
-    if (!held) {
+    // is never offered on the next form, where the badge starts unticked. A
+    // post that went before "Forget this browser" and was answered after it
+    // leaves the name forgotten, in storage and in the form below.
+    if (!held && forgets === browserForgets) {
       storageSet(NAME_STORAGE_KEY, name);
+      storedHere.set(NAME_STORAGE_KEY, name);
     }
-    // Clear before navigating so the draft carried across the re-render is the
-    // empty form rather than the post that just went through. reset() puts the
-    // Name back to what the form was drawn with, so it is set again: to the
-    // name just used — empty, if the poster cleared it — or after a badged
-    // post to the remembered one.
+    // Cleared, wherever the form is, so the draft carried across a re-render
+    // is the empty form rather than the post that just went through: the
+    // navigation below, or a redraw of the page that carried the form while
+    // it was held (captureDraft). reset() puts the Name back to what the form
+    // was drawn with, so it is set again: to the name just used — empty, if
+    // the poster cleared it — or, after a badged post or a forget, to the
+    // remembered one.
     form.reset();
+    // A badge taken out while the post was on its way went with the post.
+    badgeWithdrawn.delete(form);
     const nameField = field(form, "name");
     if (nameField) {
-      nameField.value = held ? storageGet(NAME_STORAGE_KEY) || "" : name;
+      nameField.value = held || forgets !== browserForgets ? storageGet(NAME_STORAGE_KEY) || "" : name;
     }
     const fileField = form.querySelector("[data-file-field]");
     if (fileField) {
       clearFileField(fileField);
     }
+    release(false);
+    // A reader who left while the post was on its way has a page of their own
+    // choosing on screen now, perhaps another post being written: the post
+    // went, and that page is left as it is.
+    if (!onScreen()) {
+      return;
+    }
     await navigate(`${threadPath(created.board, created.thread_no)}#p${created.no}`);
   } catch (err) {
+    // Switched back on first, so a picker switched off below stays off. A
+    // redraw while the post was held may have release switch the picker off,
+    // taking the image off, and say why (imageOff).
+    const shown = onScreen();
+    const imageOff = release(shown);
+    button.textContent = label;
     // A credential the server will not honour again is dropped rather than
     // offered for the next post; the response says which case this is. The
-    // option goes with it — taken out of this form (offerHeldBadge) rather
-    // than re-rendering, which leaves the half-written post exactly where it
-    // is — so the retry that follows is an ordinary post instead of the same
-    // refusal. The notice below says why.
-    //
-    // Only the credential refused is dropped, and only while it is the one
-    // stored. Another can have been stored since the post went out: a Verify
-    // answer that landed while it was on its way, or a badge issued in another
-    // tab, which is what revoked this one. Dropping whatever was stored then
-    // deleted that badge, which the server hands out once and cannot show
-    // again. The form is brought into line with the badge held now instead,
-    // and the notice says that one is offered (sayBadgeReplaced).
+    // option goes with it (drawBadgeOption), offering the badge storage holds
+    // now in its place, unticked, or none — drawing the box again in this form
+    // rather than re-rendering leaves the half-written post exactly where it is
+    // — so the retry that follows is an ordinary post instead of the same
+    // refusal. Why it went is kept for /verify to say, unless the browser was
+    // forgotten meanwhile: the badge went with it, a badge stored since is
+    // someone else's, and the note would tell the next person there had been
+    // one. What was refused is the credential this post sent (held), and only
+    // that one goes, and only while it is the one stored: storage may hold
+    // another by now, verified since in this browser, in another tab or by a
+    // confirmation in this one, which is what revoked this one, or none,
+    // forgotten since. Deleting whatever was stored then deleted that badge,
+    // which the server hands out once and cannot show again. The page reads
+    // that one (readStoredBadge), as it does for any change of storage
+    // (followCredentialStorage), so a code step drawn here before that
+    // verification goes as it would there (codeSpentElsewhere). The form
+    // offered the one refused, so its box goes either way. Its box was ticked,
+    // so the post it goes on to is one the box no longer skips the puzzle for:
+    // that starts now, as for the reader's own untick (captchaBadgeToggled), on
+    // a form still on screen with some of the post in it. A form still on
+    // screen is told by the refusal's notice (below). One off the screen, while
+    // a post link's lookup loads say, is told nothing here, so it is noted as
+    // for any ticked badge that goes from under a form (withdrawBadgeOption,
+    // starting nothing), and keeps what it would have been told, worded when it
+    // is said (below). A redraw that carries it held, begun before the answer
+    // or after it while that notice is still unsaid (captureDraft), says that
+    // notice in place of the note, as it puts its values back into its own page
+    // (restoreDraft) or keeps that page (render). A press before then drops
+    // that notice and is refused once by the note, rather than posting without
+    // the badge unsaid (submit), unless it is refused before that, as empty
+    // say, when the note stays, for the next press or for the form a redraw
+    // then draws (formDraft). When the page holds another badge by then, and
+    // the browser was not forgotten meanwhile, the form is told so in its own
+    // words (badgeReplacedNotice), on screen now or, off it, when a redraw
+    // tells it, if the browser has not been forgotten by then either, as a form
+    // off the screen is too when the page holds none now but one by the time a
+    // redraw tells it; not in the server's words, which send the reader to
+    // verify again. That notice is its one refusal for the badge: a note left
+    // on it while the post was on its way goes, whatever left it, so the next
+    // press is not refused for the badge again. What can leave one then is a
+    // change of badge in another tab (followCredentialStorage), a confirmation
+    // answered in this one (submitVerification), another badged post's refusal
+    // in this one (below), /verify loading over the form (loadVerification), or
+    // a redraw that puts it back (restoreDraft). The other posting forms on the
+    // page the reader went to, drawn for the badge that has gone, are brought
+    // into line with the one held now as for a badge gone in another tab, and
+    // so is /verify there showing the panel for it, drawn again to say why it
+    // went.
     const reason = err.payload && err.payload.credential;
-    let replacedBy = null;
+    let replaced = false;
     if (held && (reason === "expired" || reason === "revoked")) {
-      if (storedCredential() === held.token) {
+      if (forgets === browserForgets && storedCredential() === held.token) {
         forgetCredential();
         badgeLost =
           reason === "expired"
             ? "Your badge has expired."
             : "That badge was replaced by a newer verification.";
-      } else {
-        state.verification.badge = readBadge();
-        replacedBy = state.verification.badge;
+      } else if (forgets === browserForgets) {
+        readStoredBadge();
       }
-      offerHeldBadge();
-    }
-    // The cap was reached after this form was drawn: take the image off and
-    // switch the picker off, so the next press posts the text that is left.
-    if (err.status === 403 && err.message === IMAGE_LIMIT_REACHED) {
-      const fileField = form.querySelector("[data-file-field]");
-      const thread = state.thread;
-      if (fileField) {
-        blockFileField(fileField, imageLimitReason(thread && thread.board));
+      replaced = forgets === browserForgets && state.verification.badge !== null;
+      offerHeldBadge(false, form);
+      const panel = el.main.querySelector('[data-action="forget-verification"]');
+      if (onVerifyPage() && ageStatus() === "ok" && panel) {
+        renderVerify();
       }
-      // The summary line was drawn before the thread filled up; it says so
-      // now, as a fresh render of the thread would.
-      if (thread) {
-        thread.at_image_limit = true;
-        if (thread.board && thread.board.image_limit > 0) {
-          thread.images = Math.max(Number(thread.images) || 0, thread.board.image_limit);
+      if (shown) {
+        drawBadgeOption(form);
+        if (replaced) {
+          badgeWithdrawn.delete(form);
         }
-        redrawThreadCounts();
+        if (captchaFormNeedsIt(form) && captchaFormHasWriting(form)) {
+          prepareCaptcha();
+        }
+      } else {
+        withdrawBadgeOption(form, true);
       }
     }
     // The site takes no images, which this page was drawn without knowing:
     // /api/site did not answer, or the server has been switched over since.
-    // The image comes off the same way, and the page knows for the rest of
-    // the visit, so the next form it draws has no image field.
-    if (err.status === 403 && err.message === UPLOADS_SWITCHED_OFF) {
+    // The page knows for the rest of the visit, so the next form it draws has
+    // no image field, and the image comes off this one as below.
+    const uploadsOff = err.status === 403 && err.message === UPLOADS_SWITCHED_OFF;
+    if (uploadsOff) {
       state.site.uploads = false;
+    }
+    // What a notice says the form still holds is what it holds when the notice
+    // is worded, here after release: its text, read from the box, and the image
+    // it sent, if any, unless release took that off, which the notice then
+    // says, with why (imageTakenOff). The two refusals of the image itself say
+    // so in their own words. A notice worded again later, by a redraw say,
+    // reads the text and the image then (below).
+    const box = field(form, "body");
+    const hasText = Boolean(box && box.value.trim());
+    const hasImage = Boolean(file);
+    const limitReached = err.status === 403 && err.message === IMAGE_LIMIT_REACHED;
+    // A thread archived, locked or gone (or, for a new thread, its board gone)
+    // takes no post at all, whatever is left of this one.
+    const closed =
+      err.status === 404 || (err.status === 403 && (err.message === "thread is archived" || err.message === "thread is locked"));
+    // Worded for the image release took off, or for none, for the form it is
+    // said to and for whether that form holds text and an image, and kept with
+    // the form, with whether it is the notice of a replaced badge: a redraw
+    // still loading that then takes the image off words it again, as it would
+    // have read had the redraw come first, for the form that redraw draws and
+    // the text put back into it (restoreDraft), and a form off the screen, told
+    // nothing here, is told it worded as things stand when it is told (below).
+    // The notice of a replaced badge is worded so only while the browser has
+    // not been forgotten since the press: a badge stored after a forget is
+    // someone else's, so the form is then told the server's words
+    // (BADGE_REPLACED). For a form off the screen it is the notice of a
+    // replaced badge too when storage holds none at the answer but holds one by
+    // the time a redraw tells the form, verified in another tab meanwhile say,
+    // so the form is not sent to verify again for a badge the browser holds. A
+    // post not sent from a form off the screen (below) is worded as the
+    // forget's if the browser had been forgotten since the press by the time it
+    // was dropped, which would have stopped it on screen too, and otherwise as
+    // one not sent because the reader left its page (errorMessage).
+    const badgeRefused = Boolean(held) && (reason === "expired" || reason === "revoked");
+    const stoppedByForget = err.notSent && forgotten();
+    const said = (off, on, text, image) =>
+      stoppedByForget
+        ? FORGOTTEN_BEFORE_SENDING
+        : (replaced || (!shown && badgeRefused && state.verification.badge !== null)) && !forgotten()
+          ? badgeReplacedNotice(on, { hasText: text, hasImage: image, imageOff: off })
+          : errorMessage(err, { hasText: text, hasImage: image, imageOff: off });
+    const notice = (off, on = form, text = hasText, image = hasImage) =>
+      imageTakenOff(said(off, on, text, image), off, { hasText: text, isThread, closed });
+    // A form that has left the screen, with or without its post sent, is said
+    // nothing about on the page the reader went to, and that page is changed
+    // for it only as above, for the badge the refusal forgot: its posting forms
+    // lose the option, and /verify showing that badge's panel is drawn again,
+    // saying why the badge went. What the refusal said about the badge and the
+    // server is kept, above, and so is a note on the form, which refuses a
+    // press made before a redraw tells it. So is what the form would have been
+    // told on screen, not as words but as the way to word it (unsaidNotices),
+    // with whether it had the focus at the press and whether that refuses its
+    // image, and its image goes, as on screen, after a refusal of the image
+    // itself, so that a redraw that carries it held, after a post link's lookup
+    // into its thread say, or begun after this, Update or Back say, can say it
+    // then, worded for the form then drawn and the text and image it holds
+    // then, as it puts its values back into its own page (restoreDraft) or
+    // keeps that page when it will not load (render), whose picker it then
+    // switches off as on screen (blockRefusedPicker), as the form's next press
+    // does if it comes first, unless an image has been attached since (above).
+    if (!shown) {
+      const imageRefused = limitReached || uploadsOff;
       const fileField = form.querySelector("[data-file-field]");
-      if (fileField) {
-        blockFileField(fileField, UPLOADS_OFF_REASON);
+      if (imageRefused && fileField) {
+        clearFileField(fileField);
       }
-      redrawThreadCounts();
+      const word = (on, text, image) =>
+        imageRefused ? errorMessage(err, { hasText: text, imageOff }) : notice(imageOff, on, text, image);
+      if (!imageRefused) {
+        refusalNotices.set(form, { notice, replaced });
+      }
+      unsaidNotices.set(form, {
+        word,
+        focused,
+        badgeRefused,
+        imageRefused,
+        limitReached,
+      });
+      return;
     }
-    if (replacedBy) {
-      sayBadgeReplaced(replacedBy);
-    } else {
-      showNotice(errorMessage(err, { hasText: body.trim() !== "" }));
+    // A post sendWithCaptcha did not send from a form still on screen was
+    // stopped by the forget: before its first send, or before the second that
+    // a refused answer calls for, the forget heard while the first was on its
+    // way or while the second puzzle was solving. It says so rather than
+    // wording a refusal, and keeps its text for whoever presses again.
+    if (err.notSent) {
+      showNotice(imageTakenOff(FORGOTTEN_BEFORE_SENDING, imageOff, { hasText, isThread }));
+      return;
     }
-    button.disabled = false;
-    button.textContent = label;
+    // The cap was reached after this form was drawn, or the site stopped taking
+    // images: take the image off and switch the picker off, so the next press
+    // posts the text that is left (blockRefusedPicker).
+    if (limitReached || uploadsOff) {
+      blockRefusedPicker(form, limitReached);
+      showNotice(errorMessage(err, { hasText, imageOff }));
+      return;
+    }
+    const told = notice(imageOff);
+    refusalNotices.set(form, { notice, told, replaced });
+    showNotice(told);
   }
 });
 
@@ -4107,33 +5996,48 @@ el.main.addEventListener("submit", async (event) => {
 //
 // An answer belongs to the step it was sent from (sentFrom), and is dropped
 // when the reader has moved the page to another step while it was on its way:
-// no badge stored, no step set, nothing drawn or said. Forget this browser is
-// the button that can do that, and has to win: a badge stored after it would
-// stay for whoever uses the computer next, under a confirmation saying there
-// is none. The form's own other buttons — Keep my badge, Use a different
-// address — wait for the answer with the submit button, so a reader does not
-// give up a step whose badge the server may be issuing; a dropped badge is
-// one nobody holds, and verifying the same address again retires the old one.
-// Leaving the page is not a change of step: the answer is kept for when the
-// reader comes back (onVerifyPage). Coming back draws the step afresh, so the
-// wait is kept in verifyBusy as well as on the form's buttons, and the step is
-// drawn again waiting (verifyViewHTML); a second request from a step whose
-// first is out is never sent, since the page could then show the first one's
-// answer while the server acts on the second. A request from another step is
-// sent only once submitVerification is done with the one before it
-// (verifyRequest), so their answers set the pending-code cookie in the order
-// they were asked for and the newest one's is the cookie the browser keeps; if
-// the reader moves the page to yet another step while it waits, it is never
-// sent. That wait ends, because every request is given up once its time is out
-// (verifyDeadline): a Send code or Verify given up is refused as unreachable on
-// its own step and dropped on any other, and the GET renderVerify asks once a
-// badge is issued leaves the page with what it knew, that badge drawn
+// no badge stored, no step set, nothing drawn or said. Forget this browser,
+// pressed here or in another tab, is the button that can do that, and has to
+// win: a badge stored after it would stay for whoever uses the computer next,
+// under a confirmation saying there is none. The form's own other buttons —
+// Keep my badge, Use a different address — wait for the answer with the submit
+// button, so a reader does not give up a step whose badge the server may be
+// issuing; a dropped badge is one nobody holds, and verifying the same address
+// again retires the old one. Leaving the page is not a change of step: the
+// answer is kept for when the reader comes back (onVerifyPage). Coming back
+// draws the step afresh, so the wait is kept in verifyBusy as well as on the
+// form's buttons, and the step is drawn again waiting (verifyViewHTML); a
+// second request from a step whose first is out is never sent, since the page
+// could then show the first one's answer while the server acts on the second. A
+// request from another step is sent only once submitVerification is done with
+// the one before it (verifyRequest), so their answers set the pending-code
+// cookie in the order they were asked for and the newest one's is the cookie
+// the browser keeps; if the reader moves the page to yet another step while it
+// waits, it is never sent. That wait ends, because every request is given up
+// once its time is out (verifyDeadline), and a code request's puzzle gives up
+// too (solveCaptcha): a Send code or Verify given up is refused as unreachable
+// on its own step and dropped on any other, and the GET renderVerify asks once
+// a badge is issued leaves the page with what it knew, that badge drawn
 // (loadVerification). One whose answer never came once held every later
 // request, from any step, until a reload.
 //
+// A code request needs the captcha while it is on (sendWithCaptcha). It solves
+// its puzzle in its turn, so one request at a time holds across the puzzle: a
+// second press of the step meanwhile sends nothing, and a request from another
+// step waits for it. Send code says "Checking…" while the puzzle is solved
+// (VERIFY_SOLVING), here and in the step drawn again, and "Sending…" once the
+// request goes; its time is counted from then, not from the press. A request
+// whose form has left the screen by the time its puzzle is solved, the reader
+// gone to another page or /verify drawn again, is not sent, and its answer is
+// kept for the next press while it is still good and the page holds no other
+// (keepCaptcha); the step drawn again is let go. A forget moves the page to a
+// new step, so a request still waiting on its puzzle or its turn is not sent
+// either. The form's fields wait with its buttons (holdForm), so what it shows
+// meanwhile is what is sent.
+//
 // What an answer draws is brought into view clear of the sticky header — the
-// code box with the sentence above it, the badge now held
-// (revealClearOfHeader) — and focused without scrolling the page again.
+// code box with the sentence above it, the badge now held (revealClearOfHeader)
+// — and focused without scrolling the page again.
 async function submitVerification(form) {
   if (verifyBusy === verifyStep) return;
   const button = form.querySelector('button[type="submit"]');
@@ -4152,8 +6056,19 @@ async function submitVerification(form) {
     return;
   }
 
+  // The page the form is on, as for a post: the one noted as it was drawn
+  // (drawnFor), never a render begun since that has not drawn yet, after a link
+  // pressed just before say. A code request whose form has left it, or the
+  // screen, by the time its puzzle is solved is not sent (formOnScreen), and
+  // nor is one whose step the page has left meanwhile.
+  const route = drawnFor.route;
+  const onScreen = () => formOnScreen(form, route) && verifyStep === sentFrom;
+
   const buttons = [...form.querySelectorAll("button")];
   for (const b of buttons) b.disabled = true;
+  // The fields wait too, until the answer, so what the form shows meanwhile is
+  // what is sent: the address and the box, or the code (holdForm).
+  const unhold = holdForm(form);
   button.textContent = requesting ? VERIFY_SENDING : VERIFY_CHECKING;
   verifyBusy = sentFrom;
   clearNotice();
@@ -4168,12 +6083,31 @@ async function submitVerification(form) {
     await earlier;
     if (verifyStep !== sentFrom) return;
     if (requesting) {
-      const sent = await api("/api/verify/request", {
-        method: "POST",
-        signal: verifyDeadline(),
-        // adult is true here, because an unticked box stopped above.
-        body: JSON.stringify({ email: String(data.get("email") || ""), adult: adult.checked }),
-      });
+      // A code request always needs the captcha when it is on: no badge
+      // travels with it to skip one. The puzzle is solved in this request's
+      // turn, so a request from another step waits for it too.
+      const sent = await sendWithCaptcha(
+        () => state.site.captcha,
+        (answer) => {
+          // adult is true here, because an unticked box stopped above.
+          const request = { email: String(data.get("email") || ""), adult: adult.checked };
+          if (answer) {
+            request.captcha = answer;
+          }
+          // Its time is counted from here, as it is sent, not from the press:
+          // the puzzle before it is not the request's to wait for.
+          return api("/api/verify/request", {
+            method: "POST",
+            signal: verifyDeadline(),
+            body: JSON.stringify(request),
+          });
+        },
+        (solving) => {
+          sentFrom.solving = solving;
+          button.textContent = solving ? VERIFY_SOLVING : VERIFY_SENDING;
+        },
+        onScreen,
+      );
       if (verifyStep !== sentFrom) return;
       verifyStep = { step: "code", label: sent.label || "" };
       // A reader who has gone on to another page finds the code box when
@@ -4185,25 +6119,47 @@ async function submitVerification(form) {
     }
     // The one time the credential is ever handed out. It is kept here rather
     // than set as a cookie, so nothing sends it until a post asks for a badge.
-    const issued = await api("/api/verify/confirm", {
-      method: "POST",
-      signal: verifyDeadline(),
-      body: JSON.stringify({ code: String(data.get("code") || "") }),
-    });
+    // Until it is answered it is counted on the code step it confirms, so
+    // another tab's verification meanwhile leaves the step to this answer
+    // (codeSpentElsewhere), even once /verify is drawn again over this form.
+    sentFrom.confirming = (sentFrom.confirming || 0) + 1;
+    let issued;
+    try {
+      issued = await api("/api/verify/confirm", {
+        method: "POST",
+        signal: verifyDeadline(),
+        body: JSON.stringify({ code: String(data.get("code") || "") }),
+      });
+    } finally {
+      sentFrom.confirming -= 1;
+    }
     if (verifyStep !== sentFrom) return;
     storeCredential(issued.credential);
     // Read locally at once, so whatever is drawn next — this page, or the next
     // posting form for a reader who has gone on — shows the badge now held,
     // and so does a posting form already on screen for that reader, drawn
-    // offering the badge before (offerHeldBadge). On the Verify page there is
-    // no posting form, and nothing for it to do.
+    // offering the badge before, one that had it ticked noted to say so at its
+    // next press (offerHeldBadge). On the Verify page there is no posting
+    // form, and nothing for it to do. Drawing /verify again withdraws nothing
+    // if its GET /api/verify fails (loadVerification). The badge goes only
+    // when the server says the feature is off, when it runs out, and when it
+    // is refused on a post, forgotten or replaced, in this tab or in another
+    // (followCredentialStorage).
     state.verification.badge = readBadge();
     offerHeldBadge();
     verifyStep = { step: "email", label: "" };
     if (!onVerifyPage()) return;
     if (await renderVerify()) showHeldBadge();
   } catch (err) {
+    unhold(false);
     if (verifyStep !== sentFrom) return;
+    // A confirmation another tab's verification found on its way: refused,
+    // whatever the refusal said, its step goes now as it would have then, and
+    // /verify, showing it, is drawn again saying why (codeSpentElsewhere).
+    if (sentFrom.spentElsewhere) {
+      codeSpentElsewhere();
+      return;
+    }
     // Nothing is pending any more, so the code box goes: back to the address
     // step, still over a badge held here, which is kept until a new one is
     // confirmed, and saying in that step why the box went.
@@ -4225,6 +6181,27 @@ async function submitVerification(form) {
       if (input) input.focus({ preventScroll: true });
       return;
     }
+    // The form on screen is this one, or, for a reader who went to another
+    // page and came back while the answer was on its way, the same step drawn
+    // again, waiting as this one was, with its fields empty. Its buttons are
+    // live again either way. With neither on screen the step is still to be
+    // drawn for that reader: renderVerify draws it, its buttons live by then,
+    // and says the refusal as the step drawn again. It can do that after this
+    // form has said it, too: Verify in the header, pressed just before the
+    // answer came, leaves this form up while render() asks the server, then
+    // draws the step afresh.
+    const shown = form.isConnected ? form : el.main.querySelector("form[data-verify]");
+    // A code request not sent, its form gone from the screen by the time its
+    // puzzle was solved (sendWithCaptcha), is said nowhere: the reader was not
+    // there to see it go, and the step drawn again has nothing in it to send.
+    // That step is let go, and the answer kept for its press.
+    if (err.notSent) {
+      if (shown) {
+        for (const b of shown.querySelectorAll("button")) b.disabled = false;
+        shown.querySelector('button[type="submit"]').textContent = label;
+      }
+      return;
+    }
     // Any other refusal leaves the step as it is, and is said in its form,
     // under the field it is about (refuseVerification): a wrong code puts the
     // reader back in the code box with the code selected, to be typed again.
@@ -4243,16 +6220,6 @@ async function submitVerification(form) {
       invalid: err.status === 400,
       select: !requesting && err.status === 400,
     };
-    // The form on screen is this one, or, for a reader who went to another
-    // page and came back while the answer was on its way, the same step drawn
-    // again, waiting as this one was, with its fields empty. Its buttons are
-    // live again either way. With neither on screen the step is still to be
-    // drawn for that reader: renderVerify draws it, its buttons live by then,
-    // and says the refusal as the step drawn again. It can do that after this
-    // form has said it, too: Verify in the header, pressed just before the
-    // answer came, leaves this form up while render() asks the server, then
-    // draws the step afresh.
-    const shown = form.isConnected ? form : el.main.querySelector("form[data-verify]");
     if (!shown) return;
     for (const b of shown.querySelectorAll("button")) b.disabled = false;
     shown.querySelector('button[type="submit"]').textContent = label;
@@ -4283,13 +6250,18 @@ async function loadSite() {
     // The posting form needs to know whether to offer the badge checkbox, and a
     // failure here must not stop the board from loading.
     loadVerification(),
-    // And whether to offer an image at all, and how large. Like the board
-    // list it says nothing about the reader, and nothing about the reader is
-    // sent for it. Without an answer the forms stay as they always were.
+    // And whether to offer an image at all, how large, and whether posting
+    // needs the captcha. Like the board list it says nothing about the reader,
+    // and nothing about the reader is sent for it. Without an answer the forms
+    // stay as they always were.
     api("/api/site")
       .then((site) => {
         const max = Number(site.max_upload_bytes);
-        state.site = { uploads: site.uploads !== false, maxUploadBytes: max > 0 ? max : 0 };
+        state.site = {
+          uploads: site.uploads !== false,
+          maxUploadBytes: max > 0 ? max : 0,
+          captcha: site.captcha === true,
+        };
       })
       .catch(() => {}),
   ]);

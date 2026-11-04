@@ -142,6 +142,11 @@ type verifyRequestBody struct {
 	// 2.14). It is checked and then dropped: no column, no log field and no
 	// credential claim holds it, so the answer is recorded nowhere.
 	Adult bool `json:"adult"`
+	// Captcha is the answer to a captcha challenge. A code request always needs
+	// one when the captcha is on: no badge travels here to skip it, and once a
+	// real mail sender is attached this is the one endpoint that makes the
+	// server send something to an address somebody typed.
+	Captcha string `json:"captcha"`
 }
 
 // handleVerifyRequest checks a submitted address against the allowlist and
@@ -163,6 +168,16 @@ func (a *App) handleVerifyRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, adultRequired)
 		return
 	}
+	// Next the captcha, checked before the address is parsed and spent below,
+	// once a first check of both cooldowns has let the request through, so
+	// every request that gets as far as sending mail has cost a puzzle of its
+	// own. A request refused before the spend, for its address or a cooldown,
+	// keeps its answer; one the cooldowns refuse after it, when they check
+	// again as they start, has spent it.
+	ticket, ok := a.checkCaptcha(w, r, req.Captcha, false)
+	if !ok {
+		return
+	}
 
 	addr, err := parseEmail(req.Email)
 	if err != nil {
@@ -180,10 +195,26 @@ func (a *App) handleVerifyRequest(w http.ResponseWriter, r *http.Request) {
 	// a loop, and one client cannot walk a list of addresses.
 	emailHash := a.emailHash(addr.Key)
 	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
-	if !a.allowAction(w, "requesting codes", []cooldown{
+	cooldowns := []cooldown{
 		{limiter: a.verifyLimiter, key: "ip|" + clientKey},
 		{limiter: a.verifyLimiter, key: "email|" + hex.EncodeToString(emailHash)},
-	}) {
+	}
+	if !a.waitedOut(w, "requesting codes", cooldowns) {
+		return
+	}
+	// The cooldowns start once the answer is spent, as for a post, so a
+	// request refused as used starts none: one answer sent many times at once,
+	// each copy naming another email address, cannot hold all of those
+	// addresses out of codes. Starting them checks them again, in one step, so
+	// of a burst from one client, or for one address, that all passed the
+	// check above, at most one goes ahead, and a request is refused there only
+	// for a cooldown one that went ahead started. It can be none: requests
+	// from one client for two addresses are both refused when other clients'
+	// requests for those addresses went ahead first.
+	if !a.spendCaptcha(w, r, ticket) {
+		return
+	}
+	if !a.allowAction(w, "requesting codes", cooldowns) {
 		return
 	}
 

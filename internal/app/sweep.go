@@ -13,10 +13,11 @@ import (
 )
 
 // The sweeper deletes archived threads once their board's archive_days have
-// passed, media included. It runs as `educhan -sweep`, a one-shot mode Cloud
-// Scheduler starts as a Cloud Run Job: Cloud Run gives a service CPU only
-// while it answers a request, so an in-process timer would fire whenever it
-// happened to, and a Job leaves no sweep endpoint to protect.
+// passed, media included, and spent captcha answers once their day has passed.
+// It runs as `educhan -sweep`, a one-shot mode Cloud Scheduler starts as a
+// Cloud Run Job: Cloud Run gives a service CPU only while it answers a request,
+// so an in-process timer would fire whenever it happened to, and a Job leaves
+// no sweep endpoint to protect.
 //
 // Rows go first, and the storage keys of their files are queued in
 // media_deletions in the same transaction; the files go after, each key
@@ -26,24 +27,58 @@ import (
 // with a different backend, bucket, prefix or upload directory — finds the
 // files missing and fails, rather than deleting nothing and reporting success.
 //
-// Last, it deletes the codes that expired unconfirmed and rewrites the
-// verification tables (Store.RewriteCredentials), so that when it ends every
-// credential issued before the rewrite carries the sweep's transaction id
-// rather than its own, which would date its issuance against the posts
-// written around it, the tables' files hold no other version of any row,
-// pg_statistic's files hold none of the samples ANALYZE took of the tables
-// before 0015, and every last-scan time the statistics show for the tables is
-// the sweep's. A code still in flight as it ran keeps its row, with the time
-// it was asked for, in the table's file until the next sweep, whether a
-// confirmation or a delete has removed it by then or not; rows written after
-// the rewrite — a confirmation, a code requested, even while the sweep is
-// still vacuuming — keep their own transaction ids until the next sweep too;
-// and a backup taken meanwhile holds both (the README's "Transaction ids, and
-// the nightly rewrite").
+// After the files it deletes the codes that expired unconfirmed and rewrites
+// the verification tables (Store.RewriteCredentials), so that when it ends
+// every credential issued before the rewrite carries the sweep's transaction id
+// rather than its own, which would date its issuance against the posts written
+// around it, the tables' files hold no other version of any row, pg_statistic's
+// files hold none of the samples ANALYZE took of the tables before 0015, and
+// every last-scan time the statistics show for the tables is the sweep's. A
+// code still in flight as it ran keeps its row, with the time it was asked for,
+// in the table's file until the next sweep, whether a confirmation or a delete
+// has removed it by then or not; rows written after the rewrite — a
+// confirmation, a code requested, even while the sweep is still vacuuming —
+// keep their own transaction ids until the next sweep too; and a backup taken
+// meanwhile holds both (the README's "Transaction ids, and the nightly
+// rewrite"). Last it deletes the spent captcha answers past their day, which
+// the rewrite leaves alone (sweep says why).
 
 // sweepBatchSize bounds one sweep transaction: how many threads it deletes and
 // how long it holds their row locks.
 const sweepBatchSize = 100
+
+// spentPruneTimeout bounds the sweep's last step, the one DELETE of the spent
+// captcha answers past their day, which runs even on a sweep that was stopped.
+// Every spend prunes the table as it goes, so it holds a day or two of answers
+// and the DELETE, by an index, takes a fraction of a second; one that overran
+// the bound would roll back and fail the sweep, leaving the rows to the next.
+// The bound is for a stop: SIGTERM, which a Cloud Run Job gets at its task
+// timeout, is followed ten seconds later by SIGKILL. A stopped sweep finishes
+// the file in hand, or has PostgreSQL cancel the statement of the rewrite or
+// the vacuum it is in, and then takes this step, logs its record of counts,
+// and returns; the process writes its error and waits on its connections'
+// close for two seconds at most (runSweep in cmd/server). On a stopped sweep
+// the bound is counted from the stop rather than from the step's start, since
+// a cancel can take a while: with the database not answering, the statement
+// of the rewrite or the vacuum waits up to cancelGrace, three seconds, for an
+// answer to its cancel request, and the sweep up to as long again for pgx's
+// own (sweepConnection), and five seconds more for this step would bring the
+// exit past the ten. So even with the database not answering, this step is
+// over a little more than six seconds after the stop at most, and the process
+// writes its error and exits on its own inside the ten, as long as the stop
+// finds no file deletion in hand when the media store or the database stops
+// answering, since the file in hand is finished whatever the stop and that
+// waits on both.
+const spentPruneTimeout = 5 * time.Second
+
+// spentPruneBound is how long the sweep's prune may take: spentPruneTimeout,
+// unless a test has set a bound of its own.
+func (c Config) spentPruneBound() time.Duration {
+	if c.spentPruneWithin > 0 {
+		return c.spentPruneWithin
+	}
+	return spentPruneTimeout
+}
 
 // SweepReport is what a sweep did, in counts and nothing else: which boards or
 // threads went is not worth keeping in a log.
@@ -73,12 +108,37 @@ type SweepReport struct {
 	// ("verification issued"). Nothing finer — no label, no expiry —
 	// belongs here.
 	Credentials int
+	// SpentCaptchas is how many spent captcha answers past their day the
+	// sweep deleted: the ones no later post or code request came along to
+	// prune.
+	SpentCaptchas int
 }
 
 // Sweep deletes every archived thread that has outlived its board's
-// archive_days, in batches of sweepBatchSize, removes the files those threads
-// had, along with any an earlier sweep could not, and then rewrites the
-// verification tables.
+// archive_days, in batches of sweepBatchSize, then removes the files those
+// threads had, along with any an earlier sweep could not, then rewrites the
+// verification tables, and last deletes the spent captcha answers past their
+// day. A batch that fails leaves the files to the next sweep, and the rewrite
+// with them; so does a stop. The files' own failure, a stop or the database,
+// leaves the rewrite to the next sweep too, while files it found missing or
+// could not remove do not hold the rewrite up. The spent answers go whatever
+// failed before them, a stop included: a sweep whose ctx is cancelled before
+// its rewrite is over stops at the batch or the file it is on, in looking up
+// the next file, or in the rewrite, whose statement PostgreSQL is asked to
+// cancel and whose wait for the statistics ends at once, and prunes them all
+// the same, within spentPruneTimeout of the stop. Its error is then the stop,
+// joined to PostgreSQL's word that it cancelled a statement of the rewrite or
+// the vacuum when it did, with any file it found missing or could not remove
+// before it, and the prune's own failure beside them if the prune could not
+// finish, which the stop's wait for the file in hand or for the rewrite's
+// cancel can leave it no time to do; never a failure of the prune's on the
+// stopped context, which it runs past. A stop that comes once the rewrite is
+// over, while the spent answers go, finds nothing left to stop: the prune runs
+// past it, and the stop adds no error of its own, so the sweep ends as one
+// that was not stopped would, failing only if its pass failed. So does a stop
+// that comes once a failure, a batch's or the files' own, has left the rest
+// to the next sweep: its error is that failure, with the prune's beside it if
+// the prune could not finish.
 func (a *App) Sweep(ctx context.Context) (SweepReport, error) {
 	return a.sweep(ctx, time.Now(), sweepBatchSize)
 }
@@ -91,11 +151,15 @@ func (a *App) sweep(ctx context.Context, asOf time.Time, batch int) (SweepReport
 		return report, fmt.Errorf("sweep: the database has migrations this release does not know (%v); "+
 			"run the sweeper from the same release as the server", a.schemaAhead)
 	}
+	// When the sweep was stopped, for the prune's bound to count from then.
+	stopped := make(chan time.Time, 1)
+	defer context.AfterFunc(ctx, func() { stopped <- time.Now() })()
+	var archiveErr error
 	for {
 		swept, err := a.store.SweepArchived(ctx, asOf, batch)
 		if err != nil {
-			a.logSweep(report)
-			return report, fmt.Errorf("sweep archived threads: %w", err)
+			archiveErr = fmt.Errorf("sweep archived threads: %w", err)
+			break
 		}
 		report.Threads += swept.Threads
 		report.Posts += swept.Posts
@@ -107,32 +171,73 @@ func (a *App) sweep(ctx context.Context, asOf time.Time, batch int) (SweepReport
 		}
 	}
 
-	firstFailure, err := a.removeQueuedMedia(ctx, &report)
-	if err == nil {
-		// Whatever became of the files: the rewrite has nothing to do with
-		// them, and a storage outage should not keep credentials dated.
-		report.Credentials, err = a.store.RewriteCredentials(ctx)
-		if err != nil {
-			err = fmt.Errorf("sweep verification tables: %w", err)
+	// A batch that fails stops the files there too: every key queued so far,
+	// by the batches before it or by an earlier sweep, stays in media_deletions
+	// for the next sweep to remove.
+	var mediaErr, rewriteErr error
+	if archiveErr == nil {
+		firstFailure, err := a.removeQueuedMedia(ctx, &report)
+		// Every step that failed says so: a verification step that fails
+		// every night, for a role that may not vacuum pg_statistic, must not
+		// hide a media store that is not the server's, and a stop among the
+		// files does not hide the ones it found missing or could not remove.
+		var unremoved error
+		switch {
+		case report.BlobsMissing > 0:
+			unremoved = fmt.Errorf("sweep: %d of the files queued for removal are not in the media store; "+
+				"check that the sweeper has the server's media settings (EDUCHAN_MEDIA_BACKEND, "+
+				"EDUCHAN_GCS_BUCKET, EDUCHAN_GCS_PREFIX, EDUCHAN_UPLOAD_DIR); they stay queued in media_deletions",
+				report.BlobsMissing)
+		case report.BlobFailures > 0:
+			unremoved = fmt.Errorf("sweep: %d files could not be removed from the media store "+
+				"(the first: %s); they stay queued in media_deletions for the next sweep",
+				report.BlobFailures, firstFailure)
+		}
+		mediaErr = errors.Join(err, unremoved)
+		if err == nil {
+			// Whatever became of the files: the rewrite has nothing to do
+			// with them, and a storage outage should not keep credentials
+			// dated.
+			report.Credentials, err = a.store.RewriteCredentials(ctx)
+			if err != nil {
+				rewriteErr = fmt.Errorf("sweep verification tables: %w", err)
+			}
 		}
 	}
-	a.logSweep(report)
-	// Every step that failed says so: a verification step that fails every
-	// night, for a role that may not vacuum pg_statistic, must not hide a
-	// media store that is not the server's.
-	errs := []error{err}
-	switch {
-	case report.BlobsMissing > 0:
-		errs = append(errs, fmt.Errorf("sweep: %d of the files queued for removal are not in the media store; "+
-			"check that the sweeper has the server's media settings (EDUCHAN_MEDIA_BACKEND, "+
-			"EDUCHAN_GCS_BUCKET, EDUCHAN_GCS_PREFIX, EDUCHAN_UPLOAD_DIR); they stay queued in media_deletions",
-			report.BlobsMissing))
-	case report.BlobFailures > 0:
-		errs = append(errs, fmt.Errorf("sweep: %d files could not be removed from the media store "+
-			"(the first: %s); they stay queued in media_deletions for the next sweep",
-			report.BlobFailures, firstFailure))
+
+	// Spent captcha answers go last, whatever happened to the threads, the
+	// files and the verification tables: they have nothing to do with any of
+	// them, so no failure there holds them up, and a failure here never keeps
+	// deleted threads' images up or credentials dated. A stop is no
+	// exception. The DELETE runs past ctx, as the file in hand does, within
+	// spentPruneTimeout: on the stopped context it would fail at once, prune
+	// nothing, and add a failure of its own to the stop's. On a sweep stopped
+	// before this step, that time counts from the stop, so whatever the stop
+	// waited for first, the file in hand or the rewrite's cancel, leaves it
+	// less, or none (spentPruneTimeout says why). The rewrite leaves
+	// captcha_spent alone, and the sweep runs no vacuum on it, so a row this
+	// DELETE takes out stays in the table's file, transaction id and all,
+	// until its space there is written over. Paired by that id with the post
+	// or code request beside it, a row there, live or not, shows only that
+	// that request carried an answer, as every post without a badge and every
+	// code request does while the captcha is on (the README's "Captcha").
+	bound := a.cfg.spentPruneBound()
+	deadline := time.Now().Add(bound)
+	if ctx.Err() != nil {
+		if fromStop := (<-stopped).Add(bound); fromStop.Before(deadline) {
+			deadline = fromStop
+		}
 	}
-	return report, errors.Join(errs...)
+	pruneCtx, cancelPrune := context.WithDeadline(context.WithoutCancel(ctx), deadline)
+	spent, err := a.store.PruneSpentCaptchas(pruneCtx, asOf)
+	cancelPrune()
+	var pruneErr error
+	if err != nil {
+		pruneErr = fmt.Errorf("sweep spent captchas: %w", err)
+	}
+	report.SpentCaptchas = spent
+	a.logSweep(report)
+	return report, errors.Join(archiveErr, mediaErr, rewriteErr, pruneErr)
 }
 
 // removeQueuedMedia works through media_deletions once, removing each file and
@@ -140,15 +245,17 @@ func (a *App) sweep(ctx context.Context, asOf time.Time, batch int) (SweepReport
 // returns the first removal error, with the key taken out of it, for the
 // sweep's own error to carry.
 //
-// A cancelled sweep stops between files. The file in hand is finished, and its
-// key forgotten, whatever the context says: stopping half way would leave a
-// key whose file is gone, which every later sweep would report as missing.
+// A cancelled sweep stops between files, or in looking up the next, which has
+// no file in hand yet. The file in hand is finished, and its key forgotten,
+// whatever the context says: stopping half way would leave a key whose file is
+// gone, which every later sweep would report as missing. Either way the error
+// is the stop, as for a sweep stopped before it began.
 func (a *App) removeQueuedMedia(ctx context.Context, report *SweepReport) (string, error) {
 	work := context.WithoutCancel(ctx)
 	var firstFailure string
 	var after int64
 	for ctx.Err() == nil {
-		id, found, err := a.store.NextMediaDeletion(work, after, func(key string) bool {
+		id, found, err := a.store.NextMediaDeletion(ctx, after, func(key string) bool {
 			switch err := removeExisting(work, a.media, key); {
 			case err == nil:
 				report.BlobsRemoved++
@@ -163,10 +270,13 @@ func (a *App) removeQueuedMedia(ctx context.Context, report *SweepReport) (strin
 			}
 			return false
 		})
-		if err != nil {
+		switch {
+		case err != nil && !found && ctx.Err() != nil:
+			// The stop ended the lookup, with no file in hand.
+			return firstFailure, fmt.Errorf("sweep media: %w", ctx.Err())
+		case err != nil:
 			return firstFailure, fmt.Errorf("sweep media: %w", err)
-		}
-		if !found {
+		case !found:
 			return firstFailure, nil
 		}
 		after = id
@@ -211,5 +321,6 @@ func (a *App) logSweep(report SweepReport) {
 		"blobs_removed", report.BlobsRemoved,
 		"blob_failures", report.BlobFailures,
 		"blobs_missing", report.BlobsMissing,
-		"credentials_rewritten", report.Credentials)
+		"credentials_rewritten", report.Credentials,
+		"spent_captchas", report.SpentCaptchas)
 }
