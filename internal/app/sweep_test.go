@@ -622,10 +622,11 @@ func TestSweepStoppedWhileItPrunesEndsAsIfNotStopped(t *testing.T) {
 // The bound is the prune's alone, so it is timed from when the prune is seen
 // waiting, closely enough that half or twice the bound shows: the steps before
 // the prune, among them the credential rewrite and its vacuum, which tries
-// again while something older than the rewrite holds it off (a statement or
-// transaction in this database, or one anywhere on the instance that had
-// written something), take what they take; the prune has ten seconds to be seen
-// waiting, though, so each run keeps cmd/server's tests' transactions away
+// again while something older than the rewrite holds it off (a statement still
+// running in this database, a transaction there reading from one snapshot, or a
+// transaction anywhere on the instance that had written something), take what
+// they take; the prune has ten seconds to be seen waiting, though, so each run
+// keeps away cmd/server's tests that hold a transaction open for seconds
 // (keepOtherHoldersAway). The prune sets its deadline as it starts, just before
 // it is seen waiting, which is looked for every five milliseconds, so it gives
 // up a little under its bound after it is seen; the lower side, at three
@@ -3158,18 +3159,20 @@ func (h *harness) holdOpen(statement string) pgx.Tx {
 // package's tests whose outcome hangs on the oldest transaction in the
 // database, and cmd/server's that keep a transaction open there for seconds.
 // The two packages' tests share the database, and go test ./... runs the
-// packages at once. A transaction open there from before a sweep's credential
-// rewrite committed holds the vacuum off, as any statement or transaction in
-// the database does (vacuumTooSoon), and cmd/server's tests that stop a sweep
-// process whose database has stopped answering it keep theirs open for six or
-// seven seconds (TestStoppedSweepExitsWhenTheDatabaseStopsAnswering, for
-// example). A test here whose vacuum has a few seconds of patience or less, or
-// whose deadline after the vacuum is a few seconds, would fail for that, not
-// for what it checks. So each such test takes this lock exclusive
-// (keepOtherHoldersAway), and each of cmd/server's that keeps a transaction
-// open for more than a second takes it shared for as long as it does.
-// cmd/server's tests define the same value, as they define the migrations'
-// lock; were the two to differ, nothing would keep the tests apart.
+// packages at once. A statement still running there from before a sweep's
+// credential rewrite committed holds the vacuum off, as does a transaction
+// there reading from one snapshot taken by then, or a transaction anywhere on
+// the instance that had written something by then (vacuumTooSoon), and
+// cmd/server's tests that stop a sweep process whose database has stopped
+// answering it keep one of those open for six or seven seconds
+// (TestStoppedSweepExitsWhenTheDatabaseStopsAnswering, for example). A test
+// here whose vacuum has a few seconds of patience or less, or whose deadline
+// after the vacuum is a few seconds, would fail for that, not for what it
+// checks. So each such test takes this lock exclusive (keepOtherHoldersAway),
+// and each of cmd/server's that keeps a transaction open for more than a second
+// takes it shared for as long as it does. cmd/server's tests define the same
+// value, as they define the migrations' lock; were the two to differ, nothing
+// would keep the tests apart.
 const horizonLockID = 8125437190022
 
 // keepOtherHoldersAway takes horizonLockID exclusive for the rest of the test,

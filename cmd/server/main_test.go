@@ -109,15 +109,16 @@ func sweepEnv(t *testing.T) *pgxpool.Pool {
 // credential rewrite committed to read the verification tables a last time
 // (statsHandOver in internal/app). Its vacuum runs within that wait, trying
 // again for up to a minute (vacuumPatience) while something older than the
-// rewrite holds it off: a statement or transaction in this database, or one
-// anywhere on the instance that had written something, which can be another
-// test's, internal/app's run alongside included. A vacuum that gives up ends
-// the wait, so a sweep takes about 65 seconds of its own. The minute added is
-// slack, for an instance slowed by other tests, and a test that waits for a
-// sweep to exit gives it more again. The other way round, a test here that
-// keeps a transaction open in the database for seconds would hold off the
-// vacuum of an internal/app test with a few seconds of patience or less, so it
-// takes horizonLockID shared for as long as it does (holdingTheHorizon).
+// rewrite holds it off: a statement still running in this database, a
+// transaction there reading from one snapshot, or a transaction anywhere on the
+// instance that had written something, which can be another test's,
+// internal/app's run alongside included. A vacuum that gives up ends the wait,
+// so a sweep takes about 65 seconds of its own. The minute added is slack, for
+// an instance slowed by other tests, and a test that waits for a sweep to exit
+// gives it more again. The other way round, a test here that keeps a
+// transaction open in the database for seconds would hold off the vacuum of an
+// internal/app test with a few seconds of patience or less, so it takes
+// horizonLockID shared for as long as it does (holdingTheHorizon).
 const sweepsOwnTime = 65*time.Second + time.Minute
 
 // migrateSchema applies every migration to the schema sweepEnv set up, as the
@@ -864,7 +865,8 @@ const horizonLockID = 8125437190022
 // began, which would hold off the very vacuum the app's test is timing. A test
 // calls it before it opens what it holds and starts the sweep, so that the lock
 // is given back after the test's other cleanups have ended those, and once no
-// connection named appName, the sweep's, is left.
+// connection named appName, the sweep's, is left, or once ten seconds have gone
+// or asking whether one is left fails.
 func holdingTheHorizon(t *testing.T, db *pgxpool.Pool, appName string) {
 	t.Helper()
 	ctx := context.Background()
