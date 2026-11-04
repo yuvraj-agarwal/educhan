@@ -100,9 +100,9 @@ const UploadBudget int64 = 64 << 20
 //     all but two a row. Each colour is found in a frame's table in the same
 //     three steps (colourIndex), a tenth to a quarter slower than the hash it
 //     replaced over colours the hash spread out, which took ~3.5-4.5 s. Four
-//     5000×5000 frames of one table take ~3-3.5 s, and frames a pixel wide,
-//     whose rows the cap counts as 64 pixels each (gifRowPixels), a few
-//     tenths.
+//     5000×5000 frames of one table take ~3-3.5 s, and frames a pixel wide
+//     or of no width, whose rows the cap counts as 64 pixels each
+//     (gifRowPixels), a few tenths.
 //
 // Inflating a PNG's image data follows its size, not its shape: image/png
 // inflates the whole stream, and empty deflate blocks, each with codes that

@@ -1413,32 +1413,47 @@ func TestGIFFrameBudget(t *testing.T) {
 // where by their pixels alone 1,525 were admitted, and took 21 seconds of
 // CPU on one core to play. A frame 63 pixels wide is charged as one of 64,
 // and one 64 wide or wider by its pixels, as before (four canvases' worth of
-// 5000×5000 frames still come to the cap exactly, TestGIFFrameBudget).
+// 5000×5000 frames still come to the cap exactly, TestGIFFrameBudget). A
+// frame of no width is charged its rows too, interlaced or not: image/gif
+// goes through an interlaced one's rows one at a time whatever their width
+// (TestGIFFramesOfNoWidthAreChargedTheirRows).
 func TestGIFFrameRowsAreChargedAsAtLeastGIFRowPixels(t *testing.T) {
 	const h = 65535
 	for _, c := range []struct {
 		w, n            int
+		interlaced      bool
 		pixels, charged int64
 		admitted        bool
 	}{
-		{1, 23, 23 * h, 23 * 64 * h, true},
-		{1, 24, 0, 0, false},
-		{63, 23, 23 * 63 * h, 23 * 64 * h, true},
-		{64, 23, 23 * 64 * h, 23 * 64 * h, true},
-		{64, 24, 0, 0, false},
+		{1, 23, false, 23 * h, 23 * 64 * h, true},
+		{1, 24, false, 0, 0, false},
+		{63, 23, false, 23 * 63 * h, 23 * 64 * h, true},
+		{64, 23, false, 23 * 64 * h, 23 * 64 * h, true},
+		{64, 24, false, 0, 0, false},
+		{0, 23, false, 0, 23 * 64 * h, true},
+		{0, 24, false, 0, 0, false},
+		{0, 23, true, 0, 23 * 64 * h, true},
+		{0, 24, true, 0, 0, false},
+		{1, 23, true, 23 * h, 23 * 64 * h, true},
+		{1, 24, true, 0, 0, false},
 	} {
 		name := fmt.Sprintf("%d frames %d×%d", c.n, c.w, h)
+		var flags byte
+		if c.interlaced {
+			name, flags = name+" interlaced", 0x40
+		}
 		// Each frame's pixel data is one sub-block of nonsense the walk
-		// never looks at, as in TestGIFFrameBudget.
+		// never looks at, as in TestGIFFrameBudget. The canvas is a pixel
+		// wide at least, for frames of none.
 		data := []byte("GIF89a")
-		data = binary.LittleEndian.AppendUint16(data, uint16(c.w))
+		data = binary.LittleEndian.AppendUint16(data, uint16(max(c.w, 1)))
 		data = binary.LittleEndian.AppendUint16(data, h)
 		data = append(data, 0x80, 0, 0, 0, 0, 0, 255, 255, 255)
 		for i := 0; i < c.n; i++ {
 			data = append(data, 0x21, 0xF9, 4, 0, 10, 0, 0, 0, 0x2C, 0, 0, 0, 0)
 			data = binary.LittleEndian.AppendUint16(data, uint16(c.w))
 			data = binary.LittleEndian.AppendUint16(data, h)
-			data = append(data, 0, 2, 1, 0x44, 0)
+			data = append(data, flags, 2, 1, 0x44, 0)
 		}
 		data = append(data, 0x3B)
 		frames, err := gifFramePixels(data, maxGIFFramePixels)
@@ -1455,6 +1470,50 @@ func TestGIFFrameRowsAreChargedAsAtLeastGIFRowPixels(t *testing.T) {
 		if frames.pixels != c.pixels || frames.charged != c.charged {
 			t.Errorf("%s: pixels %d, charged %d; want %d and %d", name, frames.pixels, frames.charged, c.pixels, c.charged)
 		}
+	}
+}
+
+// A GIF of a 1×1 picture and then 15,963 interlaced frames of no width and
+// 65,535 rows, 191,591 bytes, was admitted when a frame of no width was
+// charged nothing for its rows (gifCharge), its frames' overhead alone coming
+// within the processing budget. image/gif puts an interlaced frame's rows in
+// order one at a time whatever their width, so decoding it went through a
+// billion empty rows, 2.5-2.8 s of CPU on one core, where the same frames
+// not interlaced took 0.14 s. Charged 64 pixels a row, it is refused from its
+// header at its 24th such frame, and the 23 the cap admits are decoded and
+// stored, in a few milliseconds.
+func TestGIFFramesOfNoWidthAreChargedTheirRows(t *testing.T) {
+	var picture bytes.Buffer
+	if err := gif.Encode(&picture, image.NewPaletted(image.Rect(0, 0, 1, 1), color.Palette{color.Black, color.White}), nil); err != nil {
+		t.Fatal(err)
+	}
+	head := bytes.TrimSuffix(picture.Bytes(), gifTrailer)
+	// A frame at the corner, 0×65,535, interlaced, with no table of its own
+	// (the 1×1 picture's is global) and no pixels: an LZW minimum code size
+	// of 2 and no sub-blocks.
+	frame := []byte{0x2C, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF, 0x40, 2, 0}
+	withFrames := func(n int) []byte {
+		data := append([]byte(nil), head...)
+		for i := 0; i < n; i++ {
+			data = append(data, frame...)
+		}
+		return append(data, gifTrailer...)
+	}
+	data := withFrames(15_963)
+	if len(data) != 191_591 {
+		t.Fatalf("the GIF is %d bytes, want 191,591", len(data))
+	}
+	if _, err := Inspect(data); !errors.Is(err, ErrImageTooCostly) {
+		t.Errorf("Inspect(15,963 interlaced frames 0×65,535) = %v, want ErrImageTooCostly", err)
+	}
+	if _, err := Process(context.Background(), data); !errors.Is(err, ErrImageTooCostly) {
+		t.Errorf("Process(15,963 interlaced frames 0×65,535) = %v, want ErrImageTooCostly", err)
+	}
+	if _, err := Inspect(withFrames(24)); !errors.Is(err, ErrImageTooCostly) {
+		t.Errorf("Inspect(24 interlaced frames 0×65,535) = %v, want ErrImageTooCostly", err)
+	}
+	if _, err := Process(context.Background(), withFrames(23)); err != nil {
+		t.Errorf("Process(23 interlaced frames 0×65,535) = %v, want it stored", err)
 	}
 }
 

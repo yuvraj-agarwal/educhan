@@ -865,6 +865,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   1,525 frames a pixel wide and 65,535 tall took 21 seconds of CPU to play
   (`TestGIFFrameRowsAreChargedAsAtLeastGIFRowPixels`,
   `TestGIFStoredFramesAreChargedByTheirRows`, `TestGIFWaysNotTakenAreChargedByTheirRows`).
+  A frame of no width is charged its rows as well, which image/gif goes through one at a
+  time when the frame is interlaced: charged nothing, 15,963 interlaced frames 0×65,535
+  after a 1×1 picture, 191,591 B, came within the processing budget on their overhead
+  alone and took 2.5-2.8 s of CPU to decode. They are refused from the header now, as is
+  any GIF admitted before whose frames of no width take it past the cap
+  (`TestGIFFramesOfNoWidthAreChargedTheirRows`).
   Both refusals are known only by playing the GIF: `Inspect` reads the header, where
   `gifFramePixels` holds the declared frames to `maxGIFFramePixels`, but the put-back,
   restore-chain and widened-clear work shows only as the frames are played, so a GIF the

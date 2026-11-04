@@ -174,13 +174,21 @@ const maxGIFFramePixels = 4 * MaxPixels
 // take about three. At 64 pixels a row a GIF has at most 1.56 million rows,
 // whose setting up comes to a few tenths of a second whatever the path, and
 // a frame at least 64 pixels wide is charged its pixels, as before.
+//
+// A frame of no width has rows as well, and is charged them: image/gif puts
+// an interlaced frame's rows in order one at a time whatever their width
+// (uninterlace). Charged nothing, 15,963 interlaced frames 0×65,535 after a
+// 1×1 picture came within the processing budget on their overhead alone,
+// and decoding them went through a billion empty rows, 2.5-2.8 s of CPU on
+// one core; at 64 pixels a row the cap admits 23 of them, a few
+// milliseconds' work.
 const gifRowPixels = 64
 
 // gifCharge is what a GIF's frame, or a rectangle playGIF stores or looks
 // at, of w×h pixels is charged against maxGIFFramePixels: its pixels, with
-// each row charged as at least gifRowPixels.
+// each row charged as at least gifRowPixels, a frame of no width included.
 func gifCharge(w, h int64) int64 {
-	if w <= 0 || h <= 0 {
+	if h <= 0 {
 		return 0
 	}
 	return max(w, gifRowPixels) * h
