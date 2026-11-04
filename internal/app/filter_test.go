@@ -3813,6 +3813,61 @@ func TestFilterNumbersAreReadForAnAnswerLast(t *testing.T) {
 	}
 }
 
+// TestFilterReadsAJoinThatEndsTheSentence holds the lab let-off to a
+// sentence that ends at "and then" or "and also", with nothing joined to the
+// lab: the word after them was read before it was checked to be there, and
+// the post was answered with a 500. With nothing joined, the post is the
+// student's own mishap, as "… and then fail" is.
+func TestFilterReadsAJoinThatEndsTheSentence(t *testing.T) {
+	for _, body := range []string{
+		"chem practical tomorrow, i'm gonna blow up the lab and then...",
+		"if I mix the wrong chemicals I'll blow up the whole lab and then",
+		"chem practical tomorrow, i'm gonna blow up the lab and then 😭",
+		"chem practical tomorrow, i'm gonna blow up the lab and then. wish me luck",
+		"chem practical tomorrow, i'm gonna blow up the lab and then\nwish me luck",
+		"chem practical tomorrow, i'm gonna blow up the lab and also",
+		"chem practical tomorrow, i'm gonna set the lab on fire and then...",
+		"chem practical tomorrow, i'm gonna blow up the lab, and then...",
+		">>48213907\nphysics practical tomorrow, wish me luck, i'm gonna blow up the lab and then",
+	} {
+		in := contentInput{Body: normalizeBody(body)}
+		for _, supportSeen := range []bool{false, true} {
+			if v := checkContent(in, supportSeen); v.Outcome != contentPublish {
+				t.Errorf("%q (support seen %v): want published, got %+v", body, supportSeen, v)
+			}
+		}
+	}
+}
+
+// FuzzCheckContent holds checkContent to two things for any body: it does
+// not panic, and it gives the same verdict when asked again. The searches'
+// own fuzz target, FuzzFilterSearches, cannot reach the readings after them.
+func FuzzCheckContent(f *testing.F) {
+	for _, body := range []string{
+		"", "a", "i will kill you at school tomorrow", "how many pills to die", "i want to die",
+		"chem practical tomorrow, i'm gonna blow up the lab and then",
+		"the school will explode tomorrow when they announce the results, the bomb's under the stage",
+		"you will pay tomorrow after school, i bought a present for her, enjoy your last day",
+		"class 8 students dm me for the trip form and tell your parents",
+		"i want to sh!\U0001f62d", "i sh'd not even like 2 days ago",
+		"\"you're dead after school\" got this again. taking it to the cops",
+	} {
+		f.Add(body)
+	}
+	f.Fuzz(func(t *testing.T, body string) {
+		if len(body) > maxBodyLen {
+			return
+		}
+		in := contentInput{Body: normalizeBody(body)}
+		for _, supportSeen := range []bool{false, true} {
+			a, b := checkContent(in, supportSeen), checkContent(in, supportSeen)
+			if a != b {
+				t.Fatalf("%q: two verdicts: %+v and %+v", body, a, b)
+			}
+		}
+	})
+}
+
 // TestAppFramesReuseTheirWords holds appFrame to the words it keeps from one
 // app's name to the next. A post can name an app in every other word, and
 // Snapchat's ghost before a short name ("👻Sc" over and over) is a name every

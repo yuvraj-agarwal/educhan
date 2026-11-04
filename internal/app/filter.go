@@ -7702,6 +7702,9 @@ func labOccupied(after []string) bool {
 			if is(after[j], "then") || is(after[j], "also") {
 				j++
 			}
+			if j >= len(after) {
+				break // "and then" ends the sentence: nothing is joined
+			}
 			np := readNoun(after[j:])
 			if j+1 < len(after) && is(after[j], "ma") && is(after[j+1], "am") {
 				np = nounPhrase{kind: nounPerson, head: "maam", n: 2} // "ma'am", split at the apostrophe
