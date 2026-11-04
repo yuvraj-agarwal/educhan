@@ -1886,3 +1886,17 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `app.sweep` with a small batch to cover the loop, and backdate `archived_at` with
   `archiveThread` rather than waiting. `cmd/server/main_test.go` runs the `-sweep` mode as
   a whole process against its own schema in the same database.
+  The two packages' tests share that database, and `go test ./...` runs the packages at
+  once, so each can hold off the other's vacuums: a statement or transaction in the
+  database that began before a sweep's rewrite committed, or one anywhere on the
+  instance that had written something by then, keeps the sweep's vacuum trying again.
+  `cmd/server`'s tests give each sweep 65 seconds and a minute of slack for that
+  (`sweepsOwnTime`). The other way round, the app package's tests whose vacuum has a few
+  seconds of patience or less, or whose deadline after the vacuum is a few seconds, take
+  the advisory lock `horizonLockID` exclusive (`keepOtherHoldersAway`), and
+  `cmd/server`'s tests that keep a transaction open in the database for more than a
+  second, as those that stop a sweep whose database has stopped answering it do, take it
+  shared for as long as they do (`holdingTheHorizon`). Both ask again and again
+  (`pg_try_advisory_lock`, or its shared form) rather than wait for the lock in a
+  statement, which would hold a snapshot itself; both packages' tests define the key,
+  which must stay the same in each.

@@ -581,6 +581,7 @@ func TestSweepStoppedDuringTheRewriteStillPrunesSpentCaptchas(t *testing.T) {
 func TestSweepStoppedWhileItPrunesEndsAsIfNotStopped(t *testing.T) {
 	var logs syncBuffer
 	h := testServerLogging(t, nil, &logs)
+	h.keepOtherHoldersAway()
 	h.addBoard("latestop")
 	h.exec(`UPDATE boards SET archive_days = 0 WHERE slug = 'latestop'`)
 	thread := h.createThread("latestop", "", "", "archived and due")
@@ -611,51 +612,71 @@ func TestSweepStoppedWhileItPrunesEndsAsIfNotStopped(t *testing.T) {
 // rows to the next sweep, and the sweep still logs its record of counts. That
 // is the sweep's part in a stopped Job writing its error and exiting before
 // Cloud Run kills it; the process's part, the close, is cmd/server's
-// (TestStoppedSweepExitsWhenTheDatabaseStopsAnswering).
+// (TestStoppedSweepExitsWhenTheDatabaseStopsAnswering). So the test runs both
+// ways. Unstopped, nothing cancels the sweep, and the prune still gives up at
+// its bound, as one bounded only once the sweep was stopped never would.
+// Stopped as the prune is seen waiting, the prune still waits out its bound: a
+// stop that comes during it does not end it there and then, as a prune on the
+// stopped context would.
 //
 // The bound is the prune's alone, so it is timed from when the prune is seen
 // waiting, closely enough that half or twice the bound shows: the steps before
 // the prune, among them the credential rewrite and its vacuum, which tries
-// again while something holds it off (a transaction older than the rewrite
-// anywhere on the instance, say), take what they take. The prune sets its
-// deadline as it starts, just before it is seen waiting, which is looked for
-// every five milliseconds, so it gives up a little under its bound after it is
-// seen; the lower side, at three quarters of the bound, leaves room for a look
-// that comes late.
+// again while something older than the rewrite holds it off (a statement or
+// transaction in this database, or one anywhere on the instance that had
+// written something), take what they take; the prune has ten seconds to be seen
+// waiting, though, so each run keeps cmd/server's tests' transactions away
+// (keepOtherHoldersAway). The prune sets its deadline as it starts, just before
+// it is seen waiting, which is looked for every five milliseconds, so it gives
+// up a little under its bound after it is seen; the lower side, at three
+// quarters of the bound, leaves room for a look that comes late.
 func TestSweepsPruneGivesUpAtItsBound(t *testing.T) {
-	var logs syncBuffer
 	const bound = time.Second
-	h := testServerLogging(t, func(cfg *Config) { cfg.spentPruneWithin = bound }, &logs)
-	spentKey := sha256.Sum256([]byte("an answer spent behind a lock that outlasts the prune"))
-	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
-		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
+	for _, tc := range []struct {
+		name    string
+		stopped bool
+	}{
+		{"unstopped", false},
+		{"stopped as it waits", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs syncBuffer
+			h := testServerLogging(t, func(cfg *Config) { cfg.spentPruneWithin = bound }, &logs)
+			h.keepOtherHoldersAway()
+			spentKey := sha256.Sum256([]byte("an answer spent behind a lock that outlasts the prune"))
+			h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+				spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
 
-	pid, release := h.holdThePrune()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	before := len(logs.String())
-	done := sweepInBackground(h, ctx)
-	h.waitForSpends(pid, 1)
-	seen := time.Now()
-	cancel()
-	report, err := sweepEnded(t, done, bound+5*time.Second)
-	waited := time.Since(seen)
-	release()
-	if !errors.Is(err, context.DeadlineExceeded) || !strings.HasPrefix(err.Error(), "sweep spent captchas: ") {
-		t.Errorf("a prune held past its bound returned %v, want the prune running out of time", err)
-	}
-	if waited < bound*3/4 || waited > bound+bound/2 {
-		t.Errorf("the prune gave up %v after it was seen waiting, want about its bound of %v", waited, bound)
-	}
-	if report != (SweepReport{}) {
-		t.Errorf("sweep report = %+v, want nothing done", report)
-	}
-	lines := strings.Split(strings.TrimSpace(logs.String()[before:]), "\n")
-	if len(lines) != 1 || !strings.Contains(lines[0], `"msg":"sweep"`) || !strings.Contains(lines[0], `"spent_captchas":0`) {
-		t.Errorf("the sweep whose prune ran out of time logged %q, want its one record of counts", lines)
-	}
-	if n := h.countRows("captcha_spent"); n != 1 {
-		t.Errorf("%d spent answers left by a prune that gave up, want the one, for the next sweep", n)
+			pid, release := h.holdThePrune()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			before := len(logs.String())
+			done := sweepInBackground(h, ctx)
+			h.waitForSpends(pid, 1)
+			seen := time.Now()
+			if tc.stopped {
+				cancel()
+			}
+			report, err := sweepEnded(t, done, bound+5*time.Second)
+			waited := time.Since(seen)
+			release()
+			if !errors.Is(err, context.DeadlineExceeded) || !strings.HasPrefix(err.Error(), "sweep spent captchas: ") {
+				t.Errorf("a prune held past its bound returned %v, want the prune running out of time", err)
+			}
+			if waited < bound*3/4 || waited > bound+bound/2 {
+				t.Errorf("the prune gave up %v after it was seen waiting, want about its bound of %v", waited, bound)
+			}
+			if report != (SweepReport{}) {
+				t.Errorf("sweep report = %+v, want nothing done", report)
+			}
+			lines := strings.Split(strings.TrimSpace(logs.String()[before:]), "\n")
+			if len(lines) != 1 || !strings.Contains(lines[0], `"msg":"sweep"`) || !strings.Contains(lines[0], `"spent_captchas":0`) {
+				t.Errorf("the sweep whose prune ran out of time logged %q, want its one record of counts", lines)
+			}
+			if n := h.countRows("captcha_spent"); n != 1 {
+				t.Errorf("%d spent answers left by a prune that gave up, want the one, for the next sweep", n)
+			}
+		})
 	}
 }
 
@@ -752,11 +773,12 @@ func TestSweepStoppedLateStillPrunesSpentCaptchas(t *testing.T) {
 
 // holdThePrune locks the table spent answers are kept in against every change,
 // the sweep's prune included, in a transaction it leaves open until release
-// ends it. pid is the open transaction's backend, which the prune waits on.
-// The lock is SHARE, which, unlike ACCESS EXCLUSIVE, takes no transaction id
-// (PostgreSQL logs an ACCESS EXCLUSIVE lock for its standbys under one), so
-// the open transaction is not older than the sweep's rewrite and does not hold
-// up the vacuum after it, which comes before the prune (vacuumTooSoon).
+// ends it. pid is the open transaction's backend, which the prune waits on. The
+// lock is SHARE, which, unlike ACCESS EXCLUSIVE, takes no transaction id
+// (PostgreSQL logs an ACCESS EXCLUSIVE lock for its standbys under one), and
+// between its statements the open transaction, at READ COMMITTED, holds no
+// snapshot either, so it holds nothing that keeps the vacuum after the sweep's
+// rewrite, which comes before the prune, from its job (vacuumTooSoon).
 func (h *harness) holdThePrune() (pid uint32, release func()) {
 	h.t.Helper()
 	return h.holdTable("captcha_spent", "SHARE")
@@ -2063,6 +2085,7 @@ func TestCredentialConfirmedDuringTheRewriteIsKeptOnce(t *testing.T) {
 func TestSweepFailsWhenTheVerificationTablesAreHeld(t *testing.T) {
 	var logs syncBuffer
 	h := testServerLogging(t, nil, &logs)
+	h.keepOtherHoldersAway()
 	h.app.store.vacuumPatience = time.Second
 	ctx := context.Background()
 	h.exec(`INSERT INTO verification_credentials (email_hash, credential_id_hash, label, expires_at)
@@ -2165,6 +2188,7 @@ func TestSweepFailsWhenTheVerificationTablesAreHeld(t *testing.T) {
 // sweep took.
 func TestSweepSaysHowLongItTriedToVacuum(t *testing.T) {
 	h := testServer(t, nil)
+	h.keepOtherHoldersAway()
 	h.app.store.vacuumPatience = 3 * time.Second
 	h.holdOpen(`SELECT count(*) FROM verification_pending`)
 
@@ -2256,6 +2280,7 @@ func TestSweepFailsWhileAnOlderTransactionCanReadTheOldRows(t *testing.T) {
 		t.Run(holder.name, func(t *testing.T) {
 			var logs syncBuffer
 			h := testServerLogging(t, nil, &logs)
+			h.keepOtherHoldersAway()
 			h.app.store.vacuumPatience = time.Second
 			ctx := context.Background()
 			h.issueDirectly(issued)
@@ -2503,6 +2528,7 @@ func TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile(t *testing.T) {
 // TestBadgedPostsDoNotQueueBehindVacuumsAnOlderSnapshotWouldSpoil.)
 func TestBadgedPostsDoNotQueueBehindTheSweepsVacuum(t *testing.T) {
 	h := verifyServer(t, nil)
+	h.keepOtherHoldersAway()
 	h.app.store.vacuumPatience = 3 * time.Second
 	h.addBoard("busy")
 	thread := h.createThread("busy", "", "", "posting through the sweep")
@@ -2583,6 +2609,7 @@ func TestBadgedPostsDoNotQueueBehindTheSweepsVacuum(t *testing.T) {
 // by default.
 func TestBadgedPostsDoNotQueueBehindVacuumsAnOlderSnapshotWouldSpoil(t *testing.T) {
 	h := verifyServer(t, func(cfg *Config) { cfg.DBMaxConns = defaultDBMaxConns })
+	h.keepOtherHoldersAway()
 	h.app.store.vacuumPatience = 2 * time.Second
 	h.addBoard("report")
 	thread := h.createThread("report", "", "", "posting through a long report")
@@ -2672,6 +2699,7 @@ func TestBadgedPostsDoNotQueueBehindVacuumsAnOlderSnapshotWouldSpoil(t *testing.
 // warnings whatever the pool's connections ask for.
 func TestSweepHearsVacuumsWarningsWhateverTheConnectionAsksFor(t *testing.T) {
 	h := testServer(t, func(cfg *Config) { cfg.DatabaseURL += "&client_min_messages=error" })
+	h.keepOtherHoldersAway()
 	ctx := context.Background()
 	h.exec(`INSERT INTO verification_credentials (email_hash, credential_id_hash, label, expires_at)
 		VALUES ('\x01', '\x02', 'Quiet College', date_trunc('day', now()) + interval '181 days')`)
@@ -3126,6 +3154,54 @@ func (h *harness) holdOpen(statement string) pgx.Tx {
 	return tx
 }
 
+// horizonLockID is an advisory lock that keeps two kinds of test apart: this
+// package's tests whose outcome hangs on the oldest transaction in the
+// database, and cmd/server's that keep a transaction open there for seconds.
+// The two packages' tests share the database, and go test ./... runs the
+// packages at once. A transaction open there from before a sweep's credential
+// rewrite committed holds the vacuum off, as any statement or transaction in
+// the database does (vacuumTooSoon), and cmd/server's tests that stop a sweep
+// process whose database has stopped answering it keep theirs open for six or
+// seven seconds (TestStoppedSweepExitsWhenTheDatabaseStopsAnswering, for
+// example). A test here whose vacuum has a few seconds of patience or less, or
+// whose deadline after the vacuum is a few seconds, would fail for that, not
+// for what it checks. So each such test takes this lock exclusive
+// (keepOtherHoldersAway), and each of cmd/server's that keeps a transaction
+// open for more than a second takes it shared for as long as it does.
+// cmd/server's tests define the same value, as they define the migrations'
+// lock; were the two to differ, nothing would keep the tests apart.
+const horizonLockID = 8125437190022
+
+// keepOtherHoldersAway takes horizonLockID exclusive for the rest of the test,
+// on a connection of its own, waiting while a cmd/server test holds it shared:
+// from then until the test ends, none of those keeps a transaction open in the
+// database. It asks again every 50 milliseconds, as cmd/server's side does,
+// rather than wait in pg_advisory_lock, since a statement that waits holds a
+// snapshot from when it began, which would hold a vacuum off itself. A test
+// calls it once its harness is up and before its first sweep; the connection's
+// close gives the lock back.
+func (h *harness) keepOtherHoldersAway() {
+	h.t.Helper()
+	ctx := context.Background()
+	conn, err := pgx.ConnectConfig(ctx, h.app.pool.Config().ConnConfig)
+	if err != nil {
+		h.t.Fatalf("connect for the horizon lock: %v", err)
+	}
+	h.t.Cleanup(func() { conn.Close(context.Background()) })
+	for deadline := time.Now().Add(5 * time.Minute); ; time.Sleep(50 * time.Millisecond) {
+		var took bool
+		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, horizonLockID).Scan(&took); err != nil {
+			h.t.Fatalf("take the horizon lock: %v", err)
+		}
+		if took {
+			return
+		}
+		if time.Now().After(deadline) {
+			h.t.Fatalf("cmd/server's tests held the horizon lock for five minutes")
+		}
+	}
+}
+
 // A VACUUM ends, unless it is told to skip it, with a step across the whole
 // database: in a transaction of its own, after its run on the table has
 // committed, it updates the database's row in pg_database, and since
@@ -3155,6 +3231,7 @@ func TestVacuumDoesNotWaitForTheDatabasesRow(t *testing.T) {
 	} {
 		t.Run(statistics.name, func(t *testing.T) {
 			h := testServer(t, nil)
+			h.keepOtherHoldersAway()
 			h.app.store.statisticsVacuumCommand = statistics.command
 			h.app.store.vacuumPatience = 5 * time.Second
 			var mu sync.Mutex

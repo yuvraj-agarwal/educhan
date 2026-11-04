@@ -104,16 +104,20 @@ func sweepEnv(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// sweepsOwnTime is what a whole sweep can take of its own, past anything a
-// test holds it up with: it waits until a minute and five seconds after its
+// sweepsOwnTime is what a whole sweep can take of its own, past anything a test
+// holds it up with: it waits until a minute and five seconds after its
 // credential rewrite committed to read the verification tables a last time
-// (statsHandOver in internal/app). Its vacuum, which tries again for up to a
-// minute (vacuumPatience) while something holds it off, such as a transaction
-// older than the rewrite, which another test's can be, anywhere on the
-// instance, runs within that wait, and one that gives up ends it, so a sweep
-// takes about 65 seconds of its own. The minute added is slack, for an
-// instance slowed by other tests, and a test that waits for a sweep to exit
-// gives it more again.
+// (statsHandOver in internal/app). Its vacuum runs within that wait, trying
+// again for up to a minute (vacuumPatience) while something older than the
+// rewrite holds it off: a statement or transaction in this database, or one
+// anywhere on the instance that had written something, which can be another
+// test's, internal/app's run alongside included. A vacuum that gives up ends
+// the wait, so a sweep takes about 65 seconds of its own. The minute added is
+// slack, for an instance slowed by other tests, and a test that waits for a
+// sweep to exit gives it more again. The other way round, a test here that
+// keeps a transaction open in the database for seconds would hold off the
+// vacuum of an internal/app test with a few seconds of patience or less, so it
+// takes horizonLockID shared for as long as it does (holdingTheHorizon).
 const sweepsOwnTime = 65*time.Second + time.Minute
 
 // migrateSchema applies every migration to the schema sweepEnv set up, as the
@@ -644,10 +648,14 @@ func TestSweepStoppedAsMigrateFinishesEndsThere(t *testing.T) {
 					t.Fatalf("spend an answer: %v", err)
 				}
 			}
+			appName := fmt.Sprintf("educhan_migrating_sweep_%d", time.Now().UnixNano())
+			// One whose COMMIT goes unanswered keeps its migration's
+			// transaction open, with its id, until the sweep's connection is
+			// ended.
+			holdingTheHorizon(t, db, appName)
 			databaseURL := os.Getenv("DATABASE_URL")
 			proxy := startStallingProxy(t, databaseURL)
 			fired := proxy.on(tc.statement, tc.hold)
-			appName := fmt.Sprintf("educhan_migrating_sweep_%d", time.Now().UnixNano())
 			t.Cleanup(func() {
 				if _, err := db.Exec(context.Background(), `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = $1`, appName); err != nil {
 					t.Errorf("end the sweep's connections: %v", err)
@@ -841,6 +849,57 @@ func locked(t *testing.T, db *pgxpool.Pool, appName string) bool {
 // the two to differ, the sweep would never wait on the test's.
 const migrateLockID = 8125437190021
 
+// horizonLockID is internal/app's tests' own, an advisory lock its comment
+// there explains: a test here that keeps a transaction open in the database for
+// more than a second takes it shared for as long as it does
+// (holdingTheHorizon), so that none of the app's tests whose outcome hangs on
+// the oldest transaction in the database runs meanwhile. Were the two to
+// differ, nothing would keep the tests apart.
+const horizonLockID = 8125437190022
+
+// holdingTheHorizon takes horizonLockID shared for the rest of the test, on a
+// connection of its own, waiting while an internal/app test holds it exclusive.
+// It asks again every 50 milliseconds rather than wait in
+// pg_advisory_lock_shared: a statement that waits holds a snapshot from when it
+// began, which would hold off the very vacuum the app's test is timing. A test
+// calls it before it opens what it holds and starts the sweep, so that the lock
+// is given back after the test's other cleanups have ended those, and once no
+// connection named appName, the sweep's, is left.
+func holdingTheHorizon(t *testing.T, db *pgxpool.Pool, appName string) {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := pgx.ConnectConfig(ctx, db.Config().ConnConfig)
+	if err != nil {
+		t.Fatalf("connect for the horizon lock: %v", err)
+	}
+	for deadline := time.Now().Add(5 * time.Minute); ; time.Sleep(50 * time.Millisecond) {
+		var took bool
+		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock_shared($1)`, horizonLockID).Scan(&took); err != nil {
+			conn.Close(ctx)
+			t.Fatalf("take the horizon lock: %v", err)
+		}
+		if took {
+			break
+		}
+		if time.Now().After(deadline) {
+			conn.Close(ctx)
+			t.Fatalf("internal/app's tests held the horizon lock for five minutes")
+		}
+	}
+	t.Cleanup(func() {
+		ctx := context.Background()
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			var left bool
+			if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT FROM pg_stat_activity
+				WHERE application_name = $1)`, appName).Scan(&left); err != nil || !left {
+				break
+			}
+		}
+		// The lock goes with the connection.
+		conn.Close(ctx)
+	})
+}
+
 // throughProxy is databaseURL with its host the proxy's, and with
 // application_name set to appName unless that is empty.
 func throughProxy(t *testing.T, databaseURL string, proxy *stallingProxy, appName string) string {
@@ -974,11 +1033,14 @@ func TestStoppedSweepExitsWhenTheDatabaseStopsAnswering(t *testing.T) {
 	// Migrated here, so the process below has nothing to change before it
 	// sweeps.
 	migrateSchema(t)
+	// Named, to find the process's connection in pg_stat_activity.
+	appName := fmt.Sprintf("educhan_stalled_sweep_%d", time.Now().UnixNano())
+	// The lock below, and the sweep's query waiting on it, keep a transaction
+	// open in the database for seconds.
+	holdingTheHorizon(t, db, appName)
 
 	databaseURL := os.Getenv("DATABASE_URL")
 	proxy := startStallingProxy(t, databaseURL)
-	// Named, to find the process's connection in pg_stat_activity.
-	appName := fmt.Sprintf("educhan_stalled_sweep_%d", time.Now().UnixNano())
 	sweepURL := throughProxy(t, databaseURL, proxy, appName)
 	t.Cleanup(func() {
 		if _, err := db.Exec(ctx, `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = $1`, appName); err != nil {
@@ -1082,10 +1144,13 @@ func TestStoppedRewriteExitsWhenTheDatabaseStopsAnswering(t *testing.T) {
 	db := sweepEnv(t)
 	ctx := context.Background()
 	migrateSchema(t)
+	appName := fmt.Sprintf("educhan_stalled_rewrite_%d", time.Now().UnixNano())
+	// The lock below, and the rewrite's lock waiting on it, keep a transaction
+	// open in the database for seconds.
+	holdingTheHorizon(t, db, appName)
 
 	databaseURL := os.Getenv("DATABASE_URL")
 	proxy := startStallingProxy(t, databaseURL)
-	appName := fmt.Sprintf("educhan_stalled_rewrite_%d", time.Now().UnixNano())
 	sweepURL := throughProxy(t, databaseURL, proxy, appName)
 	t.Cleanup(func() {
 		if _, err := db.Exec(ctx, `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = $1`, appName); err != nil {
