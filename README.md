@@ -1325,7 +1325,8 @@ the screen is told what it would have been told on screen, such as the refusal
 or, for a post that was not sent, that nothing was posted, by whatever redraw
 brings the form back to its page, begun before the answer or after it: that
 lookup, say, or Update, the same link again or Back to the thread, pressed
-during it. It is told once, ahead of any reason the thread did not load, with
+during it. It is told once, worded when it is told, for the form as it stands
+then, the text left in it say, ahead of any reason the thread did not load, with
 its button given the focus as after a refusal. A post pressed while a redraw
 that brings its form back loads, such as that lookup or the same post link
 pressed again, Update, or another page of the same board's index, before the

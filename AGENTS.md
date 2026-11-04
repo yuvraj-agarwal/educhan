@@ -464,10 +464,12 @@ properties and needs a browser check before the test changes.
   on the same terms, while one with an answer held already, or needing none, goes with
   the press. Sent or not, one whose form has left the screen is not navigated from and
   says nothing on the page the reader went to; a post that did go still empties and
-  releases its form, wherever it is. A post's form keeps instead what it would have been
-  told on screen (`unsaidNotices`), such as the refusal or, for a post not sent, that
-  nothing was posted (`errorMessage`, or `FORGOTTEN_BEFORE_SENDING` after a forget since
-  the press), with whether it had the focus at the press, until a redraw tells it or its
+  releases its form, wherever it is. A post's form keeps instead the way to word what it
+  would have been told on screen (`unsaidNotices`), such as the refusal or, for a post
+  not sent, that nothing was posted (`errorMessage`, or `FORGOTTEN_BEFORE_SENDING` when
+  a forget since the press had come by the time it was dropped), worded when a redraw
+  tells it (`restoreDraft`, `render`), for the form then drawn or kept and the text it
+  holds then, with whether it had the focus at the press, until a redraw tells it or its
   next press takes it out, one refused before anything is sent included, which after a
   refusal of the image itself first switches the picker off as below, unless an image
   has been attached since, which is left for the server to answer. Any redraw that
@@ -569,9 +571,10 @@ properties and needs a browser check before the test changes.
   in its place, but for the refusal of the image itself it has just said from
   `unsaidNotices`, which says so already: an image attached since then goes with nothing
   added, as on the page a failed redraw keeps, so the refusal is said once. Each notice
-  is worded for what the form still holds, its text read from the box after `release`
-  (`errorMessage`'s `hasText` and `imageOff`), so a post left with nothing is told to
-  write something instead, unless the thread takes no posts at all. A request that
+  is worded for what the form still holds when it is worded, its text read from the box
+  after `release`, or, for one a redraw tells or rewords, from the form it draws or
+  keeps (`errorMessage`'s `hasText` and `imageOff`), so a post left with nothing is told
+  to write something instead, unless the thread takes no posts at all. A request that
   succeeds keeps the answer it took; a refusal carrying `"captcha"` drops it and, while
   the form is on screen, sends once more with a fresh one, whose refusal says nothing
   was posted, or for a code request that no code was sent, and `"required"` also turns
@@ -748,34 +751,40 @@ properties and needs a browser check before the test changes.
   puzzle the post it goes on to needs: forgetting whatever was stored deleted a badge
   the server cannot hand out again. The refusal's notice tells a form on screen; one off
   the screen, while a post link's lookup loads say, is noted, starting nothing, and
-  keeps that notice: a redraw that carries it held, begun before the answer or after it
-  while the notice is still unsaid, says the notice as it puts the form's values back
-  into its own page, noting nothing on the form it draws and ticking no box there, not
-  even one ticked on the page kept meanwhile, or keeps that page, form and all, when it
+  keeps the way to word that notice: a redraw that carries it held, begun before the
+  answer or after it while the notice is still unsaid, words it and says it as it puts
+  the form's values back into its own page, noting nothing on the form it draws and
+  ticking its box there only for a box ticked since, on the page still in sight
+  meanwhile, for the badge that form offers, or keeps that page, form and all, when it
   will not load, dropping the note. A press before then drops the notice and is refused
   once by the note, unless it is refused before that, as empty say, and a redraw after
   such a press carries the note, so the form it draws refuses its next press once. When
-  storage holds another badge, verified since in this browser (in another tab, or in
-  this one by a confirmation answered after the reader left /verify), and the browser
-  was not forgotten since the press (a badge stored after a forget is someone else's),
-  the form on screen is told so in the page's own words rather than the server's "verify
-  again" (`badgeReplacedNotice`): its badge was replaced by one verified since in this
-  browser, so nothing was posted, and, unless release left the post with nothing in it
-  (the form is then told only what went and why, and, by `imageTakenOff`, to write
-  something instead), pressing again posts without a badge, and ticking the form's box,
-  which now offers the new one, posts with that one. It reads the badge held, the form's
-  box and the poster key when it is worded, which a redraw loading meanwhile can do
-  again for the form it draws (`restoreDraft`), the page it keeps on screen until then
-  still in the reader's hands, dropping a note left on that form since (a box ticked
-  since and taken out with its badge, say): with none held by then, forgotten since, it
-  ends with what pressing again does; with another, verified since, it names that one;
-  and with the new badge's box ticked since, it says that pressing again posts with that
-  badge. That notice is its one refusal for the badge, so a note left on it while the
-  post was on its way goes, whatever left it: a change of badge in another tab
-  (`followCredentialStorage`), a confirmation answered in this one
-  (`submitVerification`), another badged post's refusal in this one (`submit`),
-  `/verify` loading over the form (`loadVerification`), or a redraw that puts it back
-  (`restoreDraft`).
+  storage holds another badge at the answer, verified since in this browser (in another
+  tab, or in this one by a confirmation answered after the reader left /verify), and the
+  browser has not been forgotten since the press, at the answer or by the time the form
+  is told (a badge stored after a forget is someone else's, so the form is then told the
+  server's words), the form is told so in the page's own words rather than the server's
+  "verify again" (`badgeReplacedNotice`), on screen at the answer or, off it, when a
+  redraw tells it: its badge was replaced by one verified since in this browser, so
+  nothing was posted, and, unless the post is left with nothing in it when the notice is
+  worded (the form is then told only what went and why, and, by `imageTakenOff`, to
+  write something instead), pressing again posts without a badge, and ticking the form's
+  box, which now offers the new one, posts with that one. It reads the badge held, the
+  form's box, the poster key and whether the post holds text when it is worded, as it is
+  said: on screen at the answer; off it, by the redraw that tells it, for the form drawn
+  or kept then; and again by a redraw loading meanwhile that takes the image off, for
+  the form it draws and the text put back into it (`restoreDraft`), the page kept on
+  screen until then still in the reader's hands, that form then dropping a note left on
+  it since (a box ticked since and taken out with its badge, say). Each can change by
+  then: with no badge held, forgotten since, it ends with what pressing again does; with
+  another, verified since, it names that one; with the new badge's box ticked since, it
+  says that pressing again posts with that badge; and for a post whose text was erased
+  since, its image taken off, it says only what went. That notice is its one refusal for
+  the badge, so a note left on it while the post was on its way goes, whatever left it:
+  a change of badge in another tab (`followCredentialStorage`), a confirmation answered
+  in this one (`submitVerification`), another badged post's refusal in this one
+  (`submit`), `/verify` loading over the form (`loadVerification`), or a redraw that
+  puts it back (`restoreDraft`).
 - The poster key lives in `localStorage` under `educhan:poster-key`: 16 random bytes as
   22 characters of unpadded base64url, made by `posterKey()` on the first post rather
   than the first visit. `submit` sends it in `X-Educhan-Poster-Key` on thread-create and
