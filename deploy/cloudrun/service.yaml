@@ -10,6 +10,13 @@ metadata:
   name: educhan
   labels:
     cloud.googleapis.com/location: ${REGION}
+  # Once readers come in through a domain of your own and the run.app
+  # addresses are turned off (deploy/README.md section 2.10), keep them off
+  # here: applying this file without it turns them back on. Metadata takes
+  # one annotations: key, so if it has one already (section 2.6's
+  # invoker-iam-disabled, say), add the line under that one instead.
+  # annotations:
+  #   run.googleapis.com/default-url-disabled: "true"
 spec:
   template:
     metadata:
@@ -68,6 +75,32 @@ spec:
             #     secretKeyRef:
             #       name: educhan-verify-secret
             #       key: latest
+            # The educhan Pass is off too until it goes on sale. The five it
+            # needs go on together or not at all, or the server refuses to
+            # start; deploy/README.md section 2.10. Once it is on, keep them
+            # here: applying this file without them takes them off the service,
+            # which retires the Pass.
+            # - name: EDUCHAN_PASS_SECRET
+            #   valueFrom: {secretKeyRef: {name: educhan-pass-secret, key: latest}}
+            # - name: EDUCHAN_STRIPE_SECRET_KEY
+            #   valueFrom: {secretKeyRef: {name: educhan-stripe-secret-key, key: latest}}
+            # - name: EDUCHAN_STRIPE_WEBHOOK_SECRET
+            #   valueFrom: {secretKeyRef: {name: educhan-stripe-webhook-secret, key: latest}}
+            # - name: EDUCHAN_STRIPE_PRICE_ID
+            #   value: price_...
+            # - name: EDUCHAN_PUBLIC_URL
+            #   value: https://YOUR-ADDRESS
+            # Only with Stripe Tax switched on in the Stripe account, and the Price
+            # made with tax_behavior=inclusive (one without it is not sold while
+            # this is on):
+            # - name: EDUCHAN_STRIPE_AUTOMATIC_TAX
+            #   value: "1"
+            # To stop selling and keep what was sold working, add this one
+            # later, and keep it while sales are paused: applying this file
+            # without it opens them again. Retiring the Pass is a different
+            # step (section 2.10).
+            # - name: EDUCHAN_PASS_SALES
+            #   value: paused
 
             # Cloud Run's front end appends the caller's address to
             # X-Forwarded-For: exactly one hop. Raising this hands clients
