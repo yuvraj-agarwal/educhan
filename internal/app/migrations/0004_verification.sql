@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS verification_credentials (
 CREATE INDEX IF NOT EXISTS verification_credentials_expires_idx ON verification_credentials (expires_at);
 
 -- The badge a post was made with, copied from the credential at posting time.
--- It is a label, not a reference: many posters share one, and it points at no
--- row in either table above.
+-- It is a label, not a reference: it matches every stored row of its
+-- institution at once, and names a row only where its institution has no
+-- other.
 ALTER TABLE posts ADD COLUMN IF NOT EXISTS badge TEXT NOT NULL DEFAULT '';

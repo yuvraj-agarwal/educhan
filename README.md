@@ -52,11 +52,11 @@ switched off for the whole server unless `EDUCHAN_VERIFY_SECRET` is set.
   holds names that row on every post the badge is on. A code's own row
   holds the same HMAC and an expiry to the microsecond, the time it was
   asked for plus its lifetime, and stays in the table's file until the
-  first nightly sweep after the code is confirmed or expires. PostgreSQL's transaction ids date the
-  issuance more closely: the credential row's own until the nightly sweep
-  rewrites it, and the gaps the request and the confirmation leave among
-  the posts' for as long as those posts exist (see "Transaction ids, and
-  the nightly rewrite").
+  first nightly sweep after the code is confirmed or expires. PostgreSQL's
+  transaction ids date the issuance more closely: the credential row's own
+  until the nightly sweep rewrites it, and the gaps the request and the
+  confirmation leave among the posts' for as long as those posts exist
+  (see "Transaction ids, and the nightly rewrite").
 ```
 
 1. Submit an institutional address on `/verify`, ticking the box that confirms
@@ -260,9 +260,9 @@ PostgreSQL leaves all of these off by default; leave them off.
   no other credential its institution issued that day is still stored, however
   many were issued at other institutions; and, while the row still carries its
   own transaction id (until the next sweep, in a backup taken before it, and in
-  the write-ahead log), on any day no other credential of its institution was
-  issued between that row and the post, since that id dates the row to just
-  before the post.
+  the write-ahead log), on any day no other stored credential of its
+  institution carries a transaction id between that row's and the post's, since
+  that id dates the row to just before the post.
   The post brings the poster's other badged posts in its thread with it, by
   their shared poster ID. The posts' gaps keep that possible for as long as the
   posts are kept; the request log adds the second for as long as it is kept.
@@ -319,8 +319,8 @@ PostgreSQL leaves all of these off by default; leave them off.
   log's lines name an institution, but a badged post soon after an issuance
   does, and that ties the post to a single record on a day no other credential
   its institution issued that day is still stored, or, while the record still
-  carries its own transaction id, on any day no other credential of its
-  institution was issued between the two.
+  carries its own transaction id, on any day no other stored credential of its
+  institution carries one between the record's and the post's.
 - Group a poster's requests by their badge. The credential is sent only on
   badged submissions, the posts that display it and the attempts the server
   refused, so an operator watching the request layer sees it there and on

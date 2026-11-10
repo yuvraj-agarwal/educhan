@@ -603,8 +603,9 @@ func TestAcceptsGzip(t *testing.T) {
 // address. It is true of what educhan keeps, and the Verify page and the FAQ
 // say so, with its limits: whoever holds the server secret can test any address
 // they think of, timing can tie a badged post to its verification, a badge that
-// is its institution's only stored one names its row on every post, and every
-// badged post carries the credential, whose id finds the stored row. Words that
+// is its institution's only stored one names its row on the posts made under
+// it, and every badged post carries the credential, whose id finds the stored
+// row. Words that
 // say no one can make that link at all, or that the badge is not linked to its
 // poster, are a promise the code does not keep.
 var absoluteBadgePromise = regexp.MustCompile(`(?i)\b(?:server|operator) included\b|\bwork(?:s|ed)? back from\b|\btrac(?:e|ed|ing) back\b|\b(?:cannot|can't|can never) be (?:linked|traced|connected)\b|\bnot (?:linked|traceable|connected) to (?:this|the|its|a|any) (?:poster|post|address)\b|\bno one\b[^.]*\bcan (?:work|trace|link)\b`)
@@ -686,13 +687,16 @@ func TestForgettingTheBrowserIsSaidAsDone(t *testing.T) {
 // the browser forgot or that ran out, and a code request's row too, so the
 // copy may not say it finds only who "has a badge". The address checked is one
 // the operator brings: "an address they can list" reads as if the server could
-// list addresses. The timing match needs no other credential of the
-// institution from that day still stored, not one issuance or one address
-// that day: two confirmations from one address leave one row, and an address
-// that verifies again on a later day moves its row to a later expiry, so the
-// copy states no condition for it rather than one narrower than the rows. And
-// each stored row keeps its label, so a badge that is its institution's only
-// stored one names its row on every post, on any day: the copy says so.
+// list addresses. After a nightly sweep, the timing match needs no other
+// credential of the institution from that day still stored, not one issuance
+// or one address that day: two confirmations from one address leave one row,
+// and an address that verifies again on a later day moves its row to a later
+// expiry, so the copy states no condition for it rather than one narrower than
+// the rows. And each stored row keeps its label, so a badge that is its
+// institution's only stored one names its row on the posts made under it, on
+// any day, while that lasts: the copy says so, with a verb of its own and not
+// as "every post", since posts under a credential since deleted carry the same
+// label. The address check is said in one short sentence.
 func TestBadgeLimitsSayWhatTheServerDoes(t *testing.T) {
 	said := regexp.MustCompile(`\s+`).ReplaceAllString(appScript(t), " ")
 	for _, wrong := range []string{
@@ -703,6 +707,8 @@ func TestBadgeLimitsSayWhatTheServerDoes(t *testing.T) {
 		"address they can list",
 		"works on any day",
 		"only one address",
+		"so can every post",
+		"or a list of them",
 	} {
 		if strings.Contains(said, wrong) {
 			t.Errorf("app.js says %q", wrong)
@@ -717,10 +723,11 @@ func TestBadgeLimitsSayWhatTheServerDoes(t *testing.T) {
 	// The Verify page and the FAQ each state the limits once, in the same words
 	// apart from who runs the site.
 	for _, want := range []string{
-		"can check any address they think of, or a list of them, for a badge or a code request, even one since forgotten or expired, until it is cleared.",
+		"Whoever runs this server can check any address they think of for a badge or a code request, even one since forgotten or expired.",
+		"The people who run this site can check any address they think of for a badge or a code request, even one since forgotten or expired.",
 		"and your other badged posts in that thread, to you if they check your address.",
-		"If yours is the only badge from your institution the server keeps, so can every post you badge.",
-		"If yours is the only badge from your university or college the site keeps, so can every post you badge.",
+		"While yours is the only badge from your institution the server keeps, the posts you badge can be tied to you the same way.",
+		"While yours is the only badge from your university or college the site keeps, the posts you badge can be tied to you the same way.",
 	} {
 		if !strings.Contains(said, want) {
 			t.Errorf("app.js does not say %q", want)
