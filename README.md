@@ -1101,11 +1101,11 @@ cooldowns apply:
 
 Here and everywhere else in this README, a client address is an IPv4 address as
 it is or, for IPv6, the /64 network the address belongs to. Wherever the server
-keys on the client (the posting and upload cooldowns above, verification's
-code-request cooldown, and the poster ID of a post sent with no poster key) it
-cuts an IPv6 address to the first address of its /64, so
-`2001:db8:1:2:aaaa:bbbb:cccc:dddd` becomes `2001:db8:1:2::`, and that is all the
-key held in memory carries for an IPv6 client. A subscriber is normally handed
+keys on the client, such as the posting and upload cooldowns above, the
+per-client half of verification's code-request cooldown, and the poster ID of a
+post sent with no poster key, it cuts an IPv6 address to the first address of
+its /64, so `2001:db8:1:2:aaaa:bbbb:cccc:dddd` becomes `2001:db8:1:2::`, and
+that is all the key held in memory carries for an IPv6 client. A subscriber is normally handed
 at least a /64 and can use any address in it, so keyed on the whole address one
 client could take a fresh key with every request and no cooldown would ever
 apply. Everyone in one /64, such as a household or a campus subnet, shares those
