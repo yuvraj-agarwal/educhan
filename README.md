@@ -1001,7 +1001,7 @@ and pushed to **Artifact Registry**, tagged with the short commit SHA and
 
 ```bash
 make cloud-build    # gcloud builds submit --config cloudbuild.yaml
-make cloud-deploy   # roll that image onto the Cloud Run service
+make cloud-deploy   # roll that image onto the Cloud Run service (and the sweeper Job, once it exists)
 ```
 
 So building the image needs a Google Cloud project rather than a Docker daemon,
@@ -1367,17 +1367,22 @@ as a non-root user — `cloudbuild.yaml` is how that image is built and pushed, 
 # Build on Cloud Build, push to Artifact Registry as :<short SHA> and :latest
 make cloud-build
 
-# Roll it onto the existing service, keeping every other setting
+# Roll it onto the existing service (and the sweeper Job, once it exists),
+# keeping every other setting
 make cloud-deploy
 ```
 
-Both are thin wrappers, so the underlying commands are no secret:
+Both are thin wrappers, so the underlying commands are no secret. The third
+command below moves the archive sweeper Job onto the same image, so that the
+two never disagree about the schema; `make cloud-deploy` runs it only when
+that Job exists:
 
 ```bash
 gcloud builds submit --config cloudbuild.yaml \
   --substitutions "_REGION=$REGION,_REPOSITORY=educhan,_IMAGE=educhan,_TAG=$(git rev-parse --short HEAD)"
 
 gcloud run deploy educhan --image "$IMAGE" --region "$REGION"
+gcloud run jobs update educhan-sweep --image "$IMAGE" --region "$REGION"   # only once the sweeper Job exists
 ```
 
 The first deploy is longer, because it is what establishes the configuration that
@@ -1394,8 +1399,8 @@ gcloud run deploy educhan --image "$IMAGE" --region "$REGION" \
   --allow-unauthenticated
 ```
 
-One-time setup — enabling the Cloud Build and Artifact Registry APIs, creating
-the repository, and the roles the build service account needs to push — is in
+One-time project setup — enabling the APIs, creating the repository and the
+account the service runs as, and granting the first roles — is in
 [`deploy/README.md`](deploy/README.md#21-one-time-project-setup).
 
 Cloud Run mounts the Cloud SQL instance's Unix socket at
