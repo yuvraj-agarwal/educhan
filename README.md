@@ -19,10 +19,10 @@ educhan is a fast, high-signal imageboard designed for students, researchers, an
 - A deployment made with `deploy/first-deploy.sh` is text-only for now: the script leaves image uploads off because images are not yet scanned (see [Image attachments](#image-attachments)), and institutional verification off because there is no real mail sender yet (see [Email delivery](#email-delivery))
 
 The prototype in this repository implements the imageboard end to end: boards,
-anonymous posting with tripcodes and per-thread poster IDs, one image per post,
-a paginated board index, a catalog view, threads with quote links, optional
-institutional verification, and key-authenticated moderation. Janitor accounts,
-bans, and reports are not built yet.
+anonymous posting with tripcodes and per-thread poster IDs, one image per post
+(switched off by default), a paginated board index, a catalog view, threads with
+quote links, optional institutional verification, and key-authenticated
+moderation. Janitor accounts, bans, and reports are not built yet.
 
 ## Verified Anonymity
 
@@ -117,10 +117,12 @@ directions:
   call graph: the header is read in exactly one function, that function has
   exactly one caller (`postBadge`), and that caller has exactly two (the thread
   and reply handlers). A new handler that reaches for the credential fails here.
-- `TestCredentialHasNoEffectOffTheBadgePath` presents a valid credential to
-  every other endpoint and asserts the responses are byte-identical to the same
-  requests without it — including that an unbadged post carrying a credential
-  still gets no badge.
+- `TestCredentialHasNoEffectOffTheBadgePath` sends a valid credential with a
+  thread and a reply that do not ask for a badge and asserts neither gets one,
+  then sends it with a `GET` to each of ten read-only endpoints (verification
+  status, site settings, the board list, a board, its index, catalog and
+  archive, a thread, a post lookup and the health check) and asserts each
+  answers byte for byte as it does without it.
 
 `GET /api/verify` therefore reports only whether the feature is configured. It
 cannot answer "am I verified?", because answering would mean the credential
@@ -135,8 +137,11 @@ property above, and it is worth paying here:
 - **The page runs no inline script.** The CSP in `middleware.go` is
   same-origin with no `unsafe-inline` exception, so an injected `<script>`, a
   `style` attribute, or an inline handler is refused by the browser before it
-  runs. `TestWebAssetsHaveNoInlineStylesOrScripts` fails the build if any
-  appear in the shipped assets, so the exception is never quietly added.
+  runs. `TestWebAssetsHaveNoInlineStylesOrScripts` fails the build if a `style`
+  attribute, a `<style>` block or a `<script>` without `src` appears in
+  `index.html`, `app.js`, `app.css` or any other HTML, JavaScript or CSS file of
+  the front end's own (the vendored files under `web/lib/` are pinned by hash
+  instead), so the exception is never quietly added.
 - **A stolen credential is worth very little.** It lets its holder post under
   that institution's label until it expires, and under the poster ID the owner's
   badged posts have in each thread: in a thread the holder posts in with it, the
@@ -693,11 +698,15 @@ school marks its poster as a child at a findable place, and school mailboxes are
 often monitored and closed when a pupil leaves. That limits the badge, not who
 may use the site. The aim is that every badge names a university or college, but
 that is a goal, not a guarantee: `ac.uk` also admits sixth-form colleges, and no
-suffix maps exactly onto higher education. Suffixes shared with schools are
-either guarded by denials (`edu.au`, `kvs.ac.in`) or left out in favour of named
-universities (`edu.in`, `ac.jp`, `ac.th`, `edu.sg`, `edu.hk`), and `sch.uk` is
-not listed. Every suffix in the file is marked reviewed or not checked yet. No
-EU member-state suffixes are listed while the site does not target the EU.
+suffix maps exactly onto higher education. Suffixes known to be shared with
+schools are either guarded by denials (`edu.au`, and `ac.in` through
+`!kvs.ac.in`) or left out in favour of named universities (`edu.in`, `ac.jp`,
+`edu.sg`, `edu.hk`); `ac.th` is left out too, because it has not been checked;
+and `sch.uk` is not listed. Every suffix in the file is marked reviewed or not
+checked yet: 4 of its 34 suffixes are reviewed (`edu`, `ac.uk`, `ac.in` and
+`edu.au`), and the other 30 are not checked yet, which in the file's words means
+they were not checked and may still admit schools. No EU member-state suffixes
+are listed while the site does not target the EU.
 `EDUCHAN_VERIFY_DOMAINS` points at a file that **replaces** the
 built-in list rather than extending it, so a deployment sees exactly what it
 configured.
