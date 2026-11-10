@@ -5002,7 +5002,8 @@ func (f *scannedField) threatCheck(v *view, m []int) bool {
 	// "chem practical tomorrow, i'm gonna blow up the lab lol", as
 	// threatFrame reads it.
 	if (hasWord(ws, "blow") || hasWord(ws, "blowing") || hasWord(ws, "set") || hasWord(ws, "setting")) &&
-		labMishap(ws, wordsIn(sentence), nextWords(sentenceAfter(text, m[1]), 12)) {
+		labMishap(ws, wordsIn(sentence), nextWords(sentenceAfter(text, m[1]), 12), nextSentence(text, m[1]),
+			f.capitalsIn(v, m[1], m[1]+len(sentenceAfter(text, m[1])))) {
 		return false
 	}
 	switch {
@@ -6659,7 +6660,8 @@ func (f *scannedField) threatFrame(v *view, verb, after string, at int) (end int
 	// from end on read for what it is done with.
 	labJoke := func(np nounPhrase, start, end int) bool {
 		return labHeads[np.head] && labMishap(ws[start:min(np.n, len(ws))],
-			wordsIn(sentenceAround(v.text, at, at+len(after))), ws[min(end, len(ws)):])
+			wordsIn(sentenceAround(v.text, at, at+len(after))), ws[min(end, len(ws)):], nextSentence(v.text, at),
+			f.capitalsIn(v, at, at+len(after)))
 	}
 	switch verb {
 	case "kill", "murder", "massacre", "slaughter", "hurt", "injure", "harm", "maim", "attack", "assault", "jump":
@@ -7611,9 +7613,13 @@ var (
 // chemicals I'll blow up the whole lab". A fuel or harm named in the
 // sentence (fuelWords, explicitHarm), or people or another target in the
 // words after it (labOccupied: "with everyone in it", "with a pipe bomb",
-// "with Priya in it", "and then the whole school"), still counts, and so
-// does "blow up the chem lab tomorrow".
-func labMishap(named, sentence, after []string) bool {
+// "with Priya in it", "and then the whole school"), or harm or people in
+// the lab said in the sentence after it, the words later (labLater: ".
+// nobody will survive", ". the teacher will die"), still counts, and so
+// does "blow up the chem lab tomorrow". caps are the words after the lab
+// that the source writes with a capital (capitalsIn), which labOccupied
+// may read as a name.
+func labMishap(named, sentence, after, later []string, caps map[string]bool) bool {
 	if !anyIn(named, labHeads) || anyIn(sentence, fuelWords) || explicitHarm(sentence) {
 		return false
 	}
@@ -7631,7 +7637,64 @@ func labMishap(named, sentence, after []string) bool {
 	if !anyIn(sentence, experimentWords) && kit <= 0 {
 		return false
 	}
-	return !labOccupied(after)
+	return !labOccupied(after, caps) && !labLater(later)
+}
+
+// capitalsIn is the set of words in v.text[a:b] whose first letter the
+// source writes as a capital, as the view reads them, or nil when there are
+// none or when the source is all capitals there, which marks no word as a
+// name.
+func (f *scannedField) capitalsIn(v *view, a, b int) map[string]bool {
+	if b <= a || b > len(v.text) {
+		return nil
+	}
+	if sa, sb := v.span(a, b); strings.ToUpper(f.src[sa:sb]) == f.src[sa:sb] {
+		return nil
+	}
+	var caps map[string]bool
+	for i, w := range wordSpans(v.text[a:b]) {
+		if i == 16 {
+			break
+		}
+		sa, _ := v.span(a+w[0], a+w[0]+1)
+		if r, _ := utf8.DecodeRuneInString(f.src[sa:]); unicode.IsUpper(r) {
+			if caps == nil {
+				caps = map[string]bool{}
+			}
+			caps[v.text[a+w[0]:a+w[1]]] = true
+		}
+	}
+	return caps
+}
+
+// labLater reports, in the sentence after a lab blown up or set on fire,
+// harm named outright (explicitHarm: "nobody will survive") or people that
+// open it harmed or in the lab (labTrapped: "the teacher will die",
+// "everyone will be inside").
+func labLater(ws []string) bool {
+	if len(ws) == 0 {
+		return false
+	}
+	if explicitHarm(ws) {
+		return true
+	}
+	np := readNoun(ws)
+	return np.people(true) && labTrapped(ws[min(np.n, len(ws)):])
+}
+
+// nextSentence is the words of the sentence after the one that i is in,
+// found within 160 bytes of i, and read for 12 words and 64 bytes.
+func nextSentence(text string, i int) []string {
+	rest := text[i:min(len(text), i+160)]
+	j := strings.IndexAny(rest, ".!?\n")
+	if j < 0 {
+		return nil
+	}
+	k := i + j
+	for k < len(text) && strings.IndexByte(".!?\n ", text[k]) >= 0 {
+		k++
+	}
+	return nextWords(sentenceAfter(text, k), 12)
 }
 
 // labOccupied reports, in the words after a lab blown up or set on fire, a
@@ -7641,10 +7704,16 @@ func labMishap(named, sentence, after []string) bool {
 // Rahul is in there"); or another place or people joined to the lab by "and"
 // ("and then the whole school", "and the staffroom"), or people that go on
 // to be harmed or in the lab, or to do anything but answer the poster's
-// mishap ("and the teacher will be in it", "and the teacher is next"). "With
-// my terrible chemistry skills", "and fail the practical" and "and the
-// teacher will kill me" are none of these.
-func labOccupied(after []string) bool {
+// mishap ("and the teacher will be in it", "and the teacher is next"). The
+// "and" may come after a time, a laugh or "first" (labLeads: "tomorrow and
+// the teacher too", "lol and the staffroom", "first and then the
+// staffroom"), and a name after it may end the sentence when it is written
+// with a capital (caps: "and then Rahul") or followed by "too" ("and then
+// rahul too"); "with" may put a share of a class in the lab ("with all of
+// 10B in it"). "With my terrible chemistry skills", "and fail the
+// practical", "and then fail", "and then panic" and "and the teacher will
+// kill me" are none of these.
+func labOccupied(after []string, caps map[string]bool) bool {
 	// in reports the lab said to have someone in it, in the three words
 	// from i: "in it", "in there", "inside".
 	in := func(i int) bool {
@@ -7673,6 +7742,16 @@ func labOccupied(after []string) bool {
 		}
 		return 0
 	}
+	// lead reports that every word before k is one of labLeads or a clock
+	// time, so an "and" at k still joins what follows to the lab.
+	lead := func(k int) bool {
+		for _, w := range after[:k] {
+			if !labLeads[w] && (w == "" || w[0] < '0' || w[0] > '9') {
+				return false
+			}
+		}
+		return true
+	}
 	for k, w := range after {
 		switch {
 		case k+1 >= len(after):
@@ -7680,14 +7759,18 @@ func labOccupied(after []string) bool {
 			if np := readNoun(after[k+1:]); np.kind == nounFuel || np.kind == nounWeapon || np.people(true) {
 				return true
 			}
-			if n := someone(after[k+1:]); n > 0 && in(k+1+n) {
+			at := k + 1
+			if at+2 < len(after) && labShares[after[at]] && is(after[at+1], "of") {
+				at += 2 // "with all of 10B in it"
+			}
+			if n := someone(after[at:]); n > 0 && in(at+n) {
 				return true
 			}
 		case is(w, "while") && !labSelves[after[k+1]]:
 			if n := someone(after[k+1:]); n > 0 && in(k+1+n) {
 				return true
 			}
-		case k == 0 && is(w, "and"):
+		case is(w, "and") && lead(k):
 			// A place or people joined to the lab, where the phrase ends
 			// or goes on as a noun phrase does ("and the staffroom", "and
 			// the teacher in it"). People followed by a verb are the
@@ -7727,8 +7810,12 @@ func labOccupied(after []string) bool {
 					np, rest = own, rest[min(1+own.n, len(rest)):]
 				}
 			}
-			if !np.place() && !np.people(true) {
-				break
+			if !np.place() && !np.people(true) && !named && lowerName(after[j]) && !labNotNames[after[j]] &&
+				(j+1 >= len(after) && caps[after[j]] || j+1 < len(after) && labAlso[after[j+1]]) {
+				return true // "and then Rahul", "and rahul too"
+			}
+			if !np.place() && !np.people(true) || np.mine && labMates[np.head] && !labTrapped(rest) {
+				break // "and my partner too": the poster's side of the mishap
 			}
 			if np.people(true) && len(rest) > 2 && (is(rest[0], "in") || is(rest[0], "from") ||
 				is(rest[0], "of")) && !labInsides[rest[1]] {
@@ -7767,6 +7854,10 @@ func labTrapped(rest []string) bool {
 			next = rest[i+1]
 		}
 		switch {
+		case labHarmed[w] && strings.HasPrefix(w, "d") && dieIdiom(rest[i+1:]):
+			// "will die of shock", "will die laughing"
+		case labStuck[w] && labWatches[next] && i+2 < len(rest) && labSeen[rest[i+2]]:
+			// "will be inside watching me fail": an audience
 		case labHarmed[w] || labStuck[w]:
 			return true
 		case is(w, "in") && labInsides[next]:
@@ -7830,7 +7921,7 @@ func labReaction(rest []string) bool {
 			next = rest[i+1]
 		}
 		switch {
-		case labReactions[w], labPenalties[w] && !is(next, "to"),
+		case labReactions[w] && (!is(w, "screaming") || is(next, "at")), labPenalties[w] && !is(next, "to"),
 			(is(w, "me") || is(w, "us") || is(w, "my") || is(w, "our")) && i > 0,
 			is(w, "have") && is(next, "to") && i+2 < len(rest) && labChores[rest[i+2]],
 			is(w, "stay") && (is(next, "back") || is(next, "behind")), is(w, "new") && labHeads[next]:
@@ -7862,8 +7953,27 @@ var (
 	// their own after "and": "and they will laugh", "and they'll all have to
 	// suffer".
 	labPronouns = canonSetOf(`they he she`)
-	labTails    = canonSetOf(`ll re s d ve`)
-	labStuff    = canonSetOf(`water alcohol ethanol gas sodium potassium magnesium everything nothing smoke fire`)
+	// labLeads may come between the lab and an "and" that still joins what
+	// follows to it ("the lab tomorrow and the teacher too"), and labShares
+	// before "of" a class put in it ("with all of 10B in it"); labAlso
+	// may follow a name that ends what is joined ("and rahul too"), and
+	// labNotNames are the verbs that lowerName would take for a name there
+	// ("and then fail too", "and then Cry").
+	labLeads = canonSetOf(`tomorrow today tonight later first again lol lmao lmfao haha hahaha xd probably prob
+		literally accidentally totally completely ngl tbh fr during in at on the a my our this practical practicals
+		class experiment exam period lesson morning afternoon evening am pm monday tuesday wednesday thursday friday
+		saturday sunday next week`)
+	labShares = canonSetOf(`all half most some both`)
+	// labMates, after "my" or "our", share the poster's mishap rather than
+	// suffer it: "and my lab partner too".
+	labMates    = canonSetOf(`partner partners groupmate groupmates teammate teammates group team`)
+	labAlso     = canonSetOf(`too also as`)
+	labNotNames = canonSetOf(`fail flunk leave dip run go sleep cry die quit rest relax chill escape hide flee
+		disappear vanish dance celebrate pray cope explode panic faint scream laugh smile sob weep sigh shrug sulk
+		cringe nap apologise apologize explain regret suffer collapse rage resign repent retire graduate freeze
+		bounce yeet ghost dash bolt`)
+	labTails = canonSetOf(`ll re s d ve`)
+	labStuff = canonSetOf(`water alcohol ethanol gas sodium potassium magnesium everything nothing smoke fire`)
 	// labClauseVerbs are the nounEnds that are verbs, and after people
 	// joined to the lab by "and" open a clause of their own ("and the
 	// teacher will kill me"); labHarmed in that clause say the people are
@@ -7880,6 +7990,8 @@ var (
 	// "have to" do after it; labMenace, and labPays before "for" and
 	// labDeeds or a verb, menace them instead.
 	labStuck     = canonSetOf(`inside stuck trapped locked buried gone next pieces`)
+	labWatches   = canonSetOf(`watching laughing cheering filming recording clapping staring`)
+	labSeen      = canonSetOf(`me us at`)
 	labNegations = canonSetOf(`won't wont never can't cant not`)
 	labGoes      = canonSetOf(`go goes going went gone come comes coming came`)
 	labUps       = canonSetOf(`up down along`)
@@ -11684,11 +11796,22 @@ func explicitHarm(ws []string) bool {
 		switch {
 		case harmVerbs[w] && anyIn(rest[:min(len(rest), 2)], harmObjects):
 			return true
-		case (is(w, "nobody") || is(w, "noone") || is(w, "nobody's") || is(w, "no") && len(rest) > 0 &&
-			is(rest[0], "one")) && anyIn(rest, escapeWords):
-			return true
+		case is(w, "nobody") || is(w, "noone") || is(w, "nobody's") || is(w, "none") ||
+			is(w, "no") && len(rest) > 0 && (is(rest[0], "one") || is(rest[0], "one's")):
+			// "nobody will make it out", "no one's getting out", "none of
+			// you will get out": four words on, past "one" and "of you".
+			from := i + 1
+			if is(w, "no") {
+				from++
+			}
+			if is(w, "none") && from+1 < len(ws) && is(ws[from], "of") {
+				from += 2
+			}
+			if escapesHarm(ws[min(from, len(ws)):], 4) {
+				return true
+			}
 		case cantWords[w] && len(rest) > 0 && (escapeWords[rest[0]] || len(rest) > 1 && is(rest[0], "get") &&
-			is(rest[1], "out")):
+			is(rest[1], "out")) && escapesHarm(rest, 2):
 			return true
 		case is(w, "never") && len(rest) > 0 && is(rest[0], "know"):
 			return true
@@ -11699,7 +11822,47 @@ func explicitHarm(ws []string) bool {
 	return false
 }
 
+// escapesHarm reports one of escapeWords in the first n words of ws that is
+// not getting through an ordeal of school: "nobody will make it out", "none
+// of you will get out alive", "nobody will survive", but not "none of us
+// will get out of the write-up", "no one will make it out of that class with
+// a pass" or "nobody will survive the practical" (escapeOrdeal).
+func escapesHarm(ws []string, n int) bool {
+	for i, w := range ws[:min(len(ws), n)] {
+		if !escapeWords[w] {
+			continue
+		}
+		after := ws[i+1 : min(len(ws), i+8)]
+		switch {
+		case is(w, "out") && len(after) > 1 && is(after[0], "of") && !anyIn(after, escapeAlive) &&
+			(escapeOrdeal(after[1:]) || anyIn(after, escapeGrades)):
+		case strings.HasPrefix(w, "surviv") && !anyIn(after, escapeAlive) && escapeOrdeal(after):
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+// escapeOrdeal reports one of escapeOrdeals at the start of ws, past a
+// determiner, an owner or "doing", that no place follows: "the practical",
+// "doing the write-up", not "the exam hall".
+func escapeOrdeal(ws []string) bool {
+	k := 0
+	for k < len(ws) && k < 3 && (determiners[ws[k]] || ownerWord(ws[k]) || is(ws[k], "doing")) {
+		k++
+	}
+	return k < len(ws) && escapeOrdeals[ws[k]] && (k+1 >= len(ws) || headKind(ws[k+1]) != nounPlace)
+}
+
 var (
+	// escapeOrdeals are the school ordeals that no one getting out of or
+	// surviving is no harm, and escapeGrades what getting out of one with
+	// is not (escapesHarm), unless "alive" (escapeAlive) follows.
+	escapeOrdeals = canonSetOf(`practical practicals exam exams test tests lesson lessons lecture lectures write
+		writeup quiz quizzes viva vivas assignment assignments homework detention`)
+	escapeGrades   = canonSetOf(`pass passing marks grade grades`)
+	escapeAlive    = canonSetOf(`alive`)
 	lockedPurposes = canonSetOf(`test tests practical practicals revision revising meeting meetings photo photos
 		picture pictures fair marathon session sessions study studying lesson lessons review quiz quizzes class
 		classes extra rehearsal assembly`)
