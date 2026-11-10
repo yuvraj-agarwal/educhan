@@ -7349,7 +7349,14 @@ func (f *scannedField) strangerActedOn(v *view, at int) bool {
 		if lowerName(o) {
 			return true
 		}
-		if notANameTarget[o] || objectWords[o] || determiners[o] || headKind(o) != nounNone {
+		if determiners[o] || ownerWords[o] {
+			// "our principal", "the maths teacher", "my stepdad": a role or
+			// a relation, no part in the play ("the king" is one).
+			np := readNoun(wordsIn(rest[sp[k+1][0]:]))
+			return (np.kind == nounKin || np.kind == nounPerson && rolePeople[np.head]) &&
+				!castNames[np.head] && !castRoles[np.head]
+		}
+		if notANameTarget[o] || objectWords[o] || headKind(o) != nounNone {
 			return false
 		}
 		for _, r := range o {
@@ -7439,6 +7446,11 @@ func stagedIn(ws []string) bool {
 		if i+1 < len(ws) {
 			next = ws[i+1]
 		}
+		// "before the show", "after the performance": a time off the
+		// stage, not what is done on it, though "before the interval" is.
+		if wholeShows[w] && i > 0 && (beforeAfter[ws[i-1]] || i > 1 && determiners[ws[i-1]] && beforeAfter[ws[i-2]]) {
+			continue
+		}
 		switch {
 		case stagedWords[w]:
 			return true
@@ -7483,7 +7495,7 @@ func stagedIn(ws []string) bool {
 // Brutus in the school play. I stab Rahul tonight", "I stab Rahul after he
 // says one more word".
 func offStage(ws []string, staged, stranger bool, around []string) bool {
-	if !staged && clockTime(ws) {
+	if (!staged || stranger) && clockTime(ws) {
 		return true
 	}
 	count := func(ws []string, w string) int {
@@ -7509,7 +7521,7 @@ func offStage(ws []string, staged, stranger bool, around []string) bool {
 			}
 		case is(w, "real") && i > 0 && (is(ws[i-1], "for") || is(ws[i-1], "in")):
 			return true
-		case staged:
+		case staged && (!stranger || showNow[w]):
 		case (offStageTimes[w] || stranger && showNow[w]) && !playTime(ws, i):
 			return true
 		case is(w, "during"):
@@ -7721,6 +7733,7 @@ var (
 	// the lights, music and signals a cue is given by.
 	showParts    = canonSetOf(`climax half halves opening premiere finale`)
 	showNow      = canonSetOf(`tonight tonite 2nite today tday now rn`)
+	beforeAfter  = canonSetOf(`before after`)
 	timeLeads    = canonSetOf(`next this coming on the`)
 	stageSignals = canonSetOf(`lights light spotlight curtain curtains drums drum music signal cue applause`)
 	// castNames are parts in plays a school puts on, and castRoles parts
