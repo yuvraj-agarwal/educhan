@@ -122,7 +122,8 @@ directions:
   then sends it with a `GET` to each of ten read-only endpoints (verification
   status, site settings, the board list, a board, its index, catalog and
   archive, a thread, a post lookup and the health check) and asserts each
-  answers byte for byte as it does without it.
+  answers with the same status and the same body, byte for byte, as it does
+  without it.
 
 `GET /api/verify` therefore reports only whether the feature is configured. It
 cannot answer "am I verified?", because answering would mean the credential
@@ -254,8 +255,8 @@ PostgreSQL leaves all of these off by default; leave them off.
   after an issuance does name the institution, and its time is kept to the
   second too. So an issuance followed by a badged post ties that post to its
   stored record — the one row with that label and that expiry day — on any day
-  its institution issued only one credential, however many other institutions
-  issued that day; and, while the row still carries its own transaction id
+  only one address at its institution verified, however many verified at other
+  institutions that day; and, while the row still carries its own transaction id
   (until the next sweep, in a backup taken before it, and in the write-ahead
   log), on any day no other credential of its institution was issued between
   that row and the post, since that id dates the row to just before the post.
@@ -268,14 +269,18 @@ PostgreSQL leaves all of these off by default; leave them off.
   threads the same credential's IDs differ.
 - **Confirmation of a guess.** The email hash is keyed, not encrypted: holding
   the secret, an operator who suspects a particular address can recompute the
-  HMAC and check whether that person is verified. Nothing limits how many
-  addresses they try: with the secret and the database, any list they can draw
-  up — a class roster, a staff directory, a pattern of roll numbers — can be
-  hashed and matched offline. This is inherent to a uniqueness key and is the
-  sharpest edge of the design. It answers "is ana@iitb.ac.in verified?" and
-  "who on this list is verified?" — it does not answer "who is verified?" for
-  an address nobody thought to list, nor "which posts are theirs?" except for a
-  post tied to its record by the issuance times above.
+  HMAC and check whether that person is verified. The same hash keys the codes
+  in flight, so it also shows an address that asked for a code whose row has not
+  yet been deleted; and a credential's row is left by Forget in the browser and
+  outlasts its expiry, until a verification anyone completes after that deletes
+  it. Nothing limits how many addresses they try: with the secret and the
+  database, any list they can draw up — a class roster, a staff directory, a
+  pattern of roll numbers — can be hashed and matched offline. This is inherent
+  to a uniqueness key and is the sharpest edge of the design. It answers "is
+  you@iitb.ac.in verified?" and "who on this list is verified?" — it does not
+  answer "who is verified?" for an address nobody thought to list, nor "which
+  posts are theirs?" except for a post tied to its record by the issuance times
+  above.
 
 **What they cannot do**
 
@@ -295,16 +300,16 @@ PostgreSQL leaves all of these off by default; leave them off.
   above. Verification tables carry no `created_at`, and using a credential
   updates nothing, so there is no "last used" to line up against a post; the
   transaction id on a rewritten credential row dates the sweep that rewrote it,
-  not the issuance, and says of the issuance only that it came before the
-  sweep: of a credential issued on an earlier day, nothing its expiry does
-  not, and of one issued on the day the sweep ran in, which ends after it, that
-  it came in the 22 hours of that day before the sweep. But the issuance times
-  above are enough on some days:
-  neither the gaps among the posts' transaction ids nor the log's lines name an
-  institution, but a badged post soon after an issuance does, and that ties the
-  post to a single record on a day its institution issued only one credential,
-  or, while the record still carries its own transaction id, on any day no
-  other credential of its institution was issued between the two.
+  not the issuance, and says of the issuance only that it came before the sweep:
+  of a credential issued on an earlier day, nothing its expiry does not, and of
+  one issued on the day the sweep ran in, which ends after it, that it came in
+  the 22 hours of that day before the sweep. But the issuance times above are
+  enough on some days: neither the gaps among the posts' transaction ids nor the
+  log's lines name an institution, but a badged post soon after an issuance
+  does, and that ties the post to a single record on a day only one address at
+  its institution verified, or, while the record still carries its own
+  transaction id, on any day no other credential of its institution was issued
+  between the two.
 - Group a poster's requests by their badge. The credential is sent only on the
   posts that carry one, so an operator watching the request layer sees it on
   exactly the posts that already display it, and on nothing else. On those posts
@@ -317,11 +322,12 @@ PostgreSQL leaves all of these off by default; leave them off.
   the credential as the poster presents it; the database holds only that id's
   SHA-256, and no derivation from anything in the verification tables
   reproduces it (`TestBadgedPosterIDCannotBeRecomputedFromTheDatabase`).
-- Link two badged posts in different threads to each other. Their poster IDs
-  differ, and two posts showing the same institution say only that: an
-  institution with one verified user and one badged post is as anonymous as its
-  user base is large. **A badge narrows you to your institution — that is the
-  whole of what it discloses, and it is not nothing at a small one.**
+- Link two badged posts in different threads to each other, beyond the issuance
+  times above. Their poster IDs differ, and two posts showing the same
+  institution say only that: an institution with one verified user and one
+  badged post is as anonymous as its user base is large. **A badge narrows you
+  to your institution — that is the whole of what it discloses, and it is not
+  nothing at a small one.**
 
 Rotating `EDUCHAN_VERIFY_SECRET` invalidates every credential and orphans every
 uniqueness key, so everyone re-verifies and their old rows match nothing.
@@ -606,14 +612,14 @@ What that protects, exactly:
   between two posts as closely as its credential's own `xmin` did before the
   rewrite (`TestIssuanceLeavesGapsAmongThePostsTransactionIDs`). With the label
   of the first badged post after it and the expiry day, that still points at
-  the credential's row on a day its institution issued only one credential; on
-  a day with a single issuance, the expiry day alone does. Other writes leave
-  gaps too — a moderator's, a refused reply's, the sweep's, autovacuum's on
-  other tables, another database's on the same instance — so a gap alone proves
-  nothing; but a request's gap, a confirmation's within the code's lifetime
-  (fifteen minutes by default), then a badged post, is the shape of an
-  issuance, and on a quiet instance the gaps are exact. What the rewrite takes
-  away is the direct link from a credential row to a time, not the time.
+  the credential's row on a day only one address at its institution verified; on
+  a day only one address verified at all, the expiry day alone does. Other
+  writes leave gaps too — a moderator's, a refused reply's, the sweep's,
+  autovacuum's on other tables, another database's on the same instance — so a
+  gap alone proves nothing; but a request's gap, a confirmation's within the
+  code's lifetime (fifteen minutes by default), then a badged post, is the shape
+  of an issuance, and on a quiet instance the gaps are exact. What the rewrite
+  takes away is the direct link from a credential row to a time, not the time.
   Transaction ids belong to the whole PostgreSQL instance, so only verification
   tables on an instance of their own would close this.
 - **A credential issued since the last sweep** carries its own transaction id
@@ -880,7 +886,7 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Index | Paginated, newest bump first, showing each thread's opening post and last three replies |
 | Catalog | Every live thread on one page as excerpt tiles with thumbnails; an excerpt shows a spoiler as `[spoiler]`, never what it hides |
 | Attachments | One image per post and a per-board cap per thread, validated by magic bytes, thumbnailed at upload, served from `/media/…`; off unless switched on, and `GET /api/site` says which |
-| Verification | Optional institutional badge from a six-digit code handed to a mail sender. No mail is sent yet: the only sender in the repository is the development one, which prints the code and the address to the server's stdout and needs `EDUCHAN_MAIL_DEV=1`, and the deploy script leaves verification switched off. The address is never written to the database, only a keyed hash of it, and nothing stored with a post points to its verification record, though timing can tie the two: until the nightly sweep, in backups taken before it or in the write-ahead log, and afterwards on a day an institution issues a single credential ([The privacy property, exactly](#the-privacy-property-exactly)) |
+| Verification | Optional institutional badge from a six-digit code handed to a mail sender. No mail is sent yet: the only sender in the repository is the development one, which prints the code and the address to the server's stdout and needs `EDUCHAN_MAIL_DEV=1`, and the deploy script leaves verification switched off. The address is never written to the database, only a keyed hash of it, and nothing stored with a post points to its verification record, though timing can tie the two: until the nightly sweep, in backups taken before it or in the write-ahead log, and afterwards on a day only one address at an institution verifies ([The privacy property, exactly](#the-privacy-property-exactly)) |
 | Moderation | Sticky, lock, and delete a post or a whole thread, plus creating and reconfiguring boards, behind a shared moderation key |
 | Archive | Threads pushed past a board's thread limit are archived rather than deleted: they leave the index and the catalog, refuse replies, and still load by number |
 | Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed, then rewrites the verification credentials so that every credential issued before the sweep carries the sweep's transaction id rather than its own ([Transaction ids, and the nightly rewrite](#transaction-ids-and-the-nightly-rewrite)); per-client cooldowns limit new threads, replies, and uploads, and forget each address within a minute of its cooldown ending while the process has CPU between requests (see Flood control for an idle Cloud Run instance) |
