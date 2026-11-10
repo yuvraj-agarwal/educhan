@@ -8252,6 +8252,9 @@ var (
 			`~(?:`+words(`all`, `definitely`, `finally`, `really`, `literally`)+`~)?`+
 			words(`be`, `get`, `getting`, `be~getting`)+`~`+words(`hurt`, `harmed`, `injured`, `attacked`,
 			`jumped`, `beaten(?:~up)?`, `run~over`, `burn(?:ed|t)~alive`, `stabbed`, `shot`, `killed`, `murdered`),
+		// "whoever told sir gets hurt", "you all get beaten up on friday",
+		// "whoever snitched dies on friday": the present.
+		words(`gets`, `get`)+`~`+words(`hurt`, `beaten~up`, `killed`, `shot`, `stabbed`), `dies`,
 		// "the school will burn", "the car is going up in flames", "the
 		// auditorium blows up".
 		words(`will`, `'?ll`, `is~going~to`, `'?s~going~to`, `is~gonna`, `'?s~gonna`, `gonna`)+`~`+
@@ -9307,13 +9310,40 @@ func (f *scannedField) payCheck(v *view, m []int) bool {
 }
 
 // whoeverWronged reports a subject clause that picks out whoever wronged the
-// poster: "whoever broke my phone", "whoever snitched", "whoever stole my
-// bag", not "whoever wants a hoodie".
+// poster, by a verb of wrongVerbs in any tense after "whoever" and up to
+// three of wrongAux ("whoever broke my phone", "whoever snitched", "whoever
+// keeps stealing my lunch", "whoever has been bullying my sister",
+// "whoever's been stealing my food", "whoever told sir", "whoever signed the
+// complaint"), one of softWrongs said of the poster, or "did" this or that
+// ("whoever did this"), not "whoever wants a hoodie", "whoever keeps
+// borrowing my pen" or "whoever signed up".
 func whoeverWronged(ws []string) bool {
 	for len(ws) > 0 && subjectFillers[ws[0]] {
 		ws = ws[1:]
 	}
-	return len(ws) > 1 && (is(ws[0], "whoever") || is(ws[0], "whomever")) && anyIn(ws[1:min(len(ws), 3)], wrongVerbs)
+	if len(ws) < 2 || !is(ws[0], "whoever") && !is(ws[0], "whomever") && !is(ws[0], "whoever's") {
+		return false
+	}
+	for i := 1; i < min(len(ws), 5); i++ {
+		var next string
+		if i+1 < len(ws) {
+			next = ws[i+1]
+		}
+		switch w := ws[i]; {
+		case wrongVerbs[w]:
+			return !is(next, "up")
+		case softWrongs[w]:
+			// "whoever wrote that about me", "whoever posted my pic",
+			// "whoever spread that rumour", not "whoever wrote the best
+			// essay".
+			return anyIn(ws[i+1:min(len(ws), i+5)], softWrongTargets)
+		case is(w, "did"):
+			return is(next, "this") || is(next, "that") || is(next, "it")
+		case !wrongAux[w]:
+			return false
+		}
+	}
+	return false
 }
 
 var (
@@ -9341,8 +9371,18 @@ var (
 	// wrongVerbs, after "whoever", pick out whoever wronged the poster
 	// (whoeverWronged); prepWords, bought by the poster, are a threat's
 	// preparation besides a weapon (purchaseArmed).
-	wrongVerbs = canonSetOf(`broke smashed damaged cracked scratched stole took snitched ratted touched hit pushed
-		bullied hurt tripped`)
+	wrongVerbs = canonSetOf(`broke breaks breaking smashed smashes smashing damaged damages damaging cracked
+		scratched stole steals stealing stolen took snitched snitches snitching ratted rats ratting touched hit hits
+		hitting pushed pushes pushing bullied bullies bullying hurt hurts hurting tripped trips tripping reported
+		reports reporting told tells telling leaked leaks leaking exposed exposes exposing lied lies lying signed`)
+	// softWrongs are a wrong after "whoever" only of one of softWrongTargets
+	// after them: "whoever posted my pic", not "whoever posted the notes".
+	softWrongs       = canonSetOf(`wrote writes posted posts messed spread spreads shared`)
+	softWrongTargets = canonSetOf(`me my mine about rumour rumours rumor rumors lies`)
+	// wrongAux may come between "whoever" and its verb: "whoever keeps
+	// stealing", "whoever has been bullying", "whoever just hit".
+	wrongAux = canonSetOf(`keeps kept keep has have had been is was always just also even ever again still
+		really actually literally`)
 	prepWords = canonSetOf(`something somethin smth surprise revenge rope ropes lighter lighters poison bleach
 		balaclava zip zipties ziptie handcuffs cuffs chloroform mace`)
 	// plainPreps count as prepWords only with no ordinary use after them
@@ -9880,6 +9920,15 @@ func threatSubject(text string, i int) nounPhrase {
 	}
 	if len(ws) == 0 {
 		return nounPhrase{}
+	}
+	// "whoever told sir", "whoever snitched": whoever wronged the poster,
+	// picked out by it (whoeverWronged), not "whoever wants a hoodie" or
+	// "whoever touches the hot plate"; "you all", "y'all": every reader.
+	switch n := len(ws); {
+	case whoeverWronged(ws):
+		return nounPhrase{kind: nounPerson, head: ws[0], n: n, picked: true}
+	case n > 1 && secondPerson[ws[n-2]] && is(ws[n-1], "all"), is(ws[n-1], "yall"), is(ws[n-1], "y'all"):
+		return nounPhrase{kind: nounPerson, head: ws[n-1], n: n, quantified: true}
 	}
 	if np := readNoun(ws); np.kind != nounNone {
 		switch {
