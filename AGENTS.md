@@ -1039,7 +1039,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   reporting it paid again, and counting it as waiting or as a renewal under way, for
   example), so the prune only frees its row (`TestPassOrderPastItsKeepIsGone`). An unpaid
   order goes when Stripe reports its checkout expired or its payment failed
-  (`dropUnpaidPassOrder`), or reports it paid with a payment already refunded
+  (`dropUnpaidPassOrder`), or reports it paid with a payment already refunded or disputed
   (`markPassOrderPaid`); otherwise it is no longer waited for past its deadline, and goes
   at the next prune or at a claim from its own browser (`claimOne`), whichever comes
   first, a claim the Pass page sends while `GET /api/pass` counts the order as something

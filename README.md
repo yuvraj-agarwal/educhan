@@ -499,43 +499,44 @@ forget holds the cookie and is never dropped for it.
 
 An order nobody paid for is no longer waited for once its deadline has passed,
 and goes as soon as Stripe reports its checkout expired or its payment failed,
-or reports it paid with a payment already refunded. A checkout completed with a
-payment that takes days to clear, a bank debit say, is held for 30 days from
-when Stripe's report of it arrives, to the next midnight UTC. The claim cookie
-lasts that long when the report arrives as the checkout completes; one Stripe
-delivers late, on a retry, can hold the order past the cookie, by at most as
-long as it was late, rounded up to whole days, and its buyer then collects it
-with a reissue code. A payment confirmed after its order's deadline still counts
-while the unpaid order is there, until something deletes it, the next prune (a
-checkout or the daily sweep) or a claim from its own browser, say, which the
-Pass page sends while `GET /api/pass` counts the order as something to collect
-(above): at its next ask, if it is open there and collecting, or the next time
-it is opened there. It never counts once the order's own term has passed since
-its deadline, pruned yet or not, when a late report of a payment still clearing
-no longer holds it either. After that the "paid" event matches nothing, and the
-log warns that a paid Stripe checkout matched no open Pass order, without saying
-which. The same warning comes for a paid checkout of anything else sold on the
-same Stripe account, so the owner checks the payment against the receipt in
-Stripe before refunding it. A "paid" event delivered again after its Pass was
-collected, or for a payment already refunded, matches no order either and is not
-logged, unless that Pass has gone since (ended by a refund or dispute of another
-of its payments, or 30 days past its expiry), when the log warns the same way. A
-paid order nobody collected is kept for its own term past its deadline, by when
-a Pass bought with it would have run out, for the owner to reissue, and has gone
-from then on, pruned yet or not, as a Pass has 30 days past its expiry (below):
-a claim, a reissue code made or redeemed, or a refund, for example, finds no
-order, as does a "paid" event delivered again for it, which the log warns about
-the same way. Checkout and the daily sweep (`educhan -sweep`) prune what is past
-all that, along with reissue codes past their deadline, refunds remembered for
-their 30 days (below), and Passes 30 days past expiry. A Pass has gone from the
-moment it is 30 days past its expiry, counted to the instant (a midnight UTC, as
-the expiry is), pruned yet or not: every request treats it as deleted (a check
-of its code, a post with it, a renewal, a claim or a reissue code, for example),
-so it can no longer be renewed and is bought anew, and the prune deletes its
-rows when it next runs. The sweep needs no Pass setting to do it, since every
-order carries its own term. A renewal whose Pass was refunded or ran past those
-30 days while Stripe was opening the checkout is refused with `409`, and the
-checkout is left to expire unpaid.
+or reports it paid with a payment already refunded or disputed. A checkout
+completed with a payment that takes days to clear, a bank debit say, is held for
+30 days from when Stripe's report of it arrives, to the next midnight UTC. The
+claim cookie lasts that long when the report arrives as the checkout completes;
+one Stripe delivers late, on a retry, can hold the order past the cookie, by at
+most as long as it was late, rounded up to whole days, and its buyer then
+collects it with a reissue code. A payment confirmed after its order's deadline
+still counts while the unpaid order is there, until something deletes it, the
+next prune (a checkout or the daily sweep) or a claim from its own browser, say,
+which the Pass page sends while `GET /api/pass` counts the order as something to
+collect (above): at its next ask, if it is open there and collecting, or the
+next time it is opened there. It never counts once the order's own term has
+passed since its deadline, pruned yet or not, when a late report of a payment
+still clearing no longer holds it either. After that the "paid" event matches
+nothing, and the log warns that a paid Stripe checkout matched no open Pass
+order, without saying which. The same warning comes for a paid checkout of
+anything else sold on the same Stripe account, so the owner checks the payment
+against the receipt in Stripe before refunding it. A "paid" event delivered
+again after its Pass was collected, or for a payment already refunded or
+disputed, matches no order either and is not logged, unless that Pass has gone
+since (ended by a refund or dispute of another of its payments, or 30 days past
+its expiry), when the log warns the same way. A paid order nobody collected is
+kept for its own term past its deadline, by when a Pass bought with it would
+have run out, for the owner to reissue, and has gone from then on, pruned yet or
+not, as a Pass has 30 days past its expiry (below): a claim, a reissue code made
+or redeemed, or a refund, for example, finds no order, as does a "paid" event
+delivered again for it, which the log warns about the same way. Checkout and the
+daily sweep (`educhan -sweep`) prune what is past all that, along with reissue
+codes past their deadline, refunds remembered for their 30 days (below), and
+Passes 30 days past expiry. A Pass has gone from the moment it is 30 days past
+its expiry, counted to the instant (a midnight UTC, as the expiry is), pruned
+yet or not: every request treats it as deleted (a check of its code, a post with
+it, a renewal, a claim or a reissue code, for example), so it can no longer be
+renewed and is bought anew, and the prune deletes its rows when it next runs.
+The sweep needs no Pass setting to do it, since every order carries its own
+term. A renewal whose Pass was refunded or ran past those 30 days while Stripe
+was opening the checkout is refused with `409`, and the checkout is left to
+expire unpaid.
 
 **Pausing and retiring.** `EDUCHAN_PASS_SALES=paused` stops selling and
 honours what was sold. Checkout refuses a purchase and a renewal alike with
@@ -794,10 +795,10 @@ paid renewal nobody collected has gone, its own term past its deadline (above).
 An unpaid checkout goes unpaid once a payment Stripe reports for it would no
 longer count: when its order goes, as it does when Stripe reports the checkout
 expired or its payment failed, or reports it paid with a payment already
-refunded, or past its deadline when the daily sweep or the next checkout prunes
-it or a claim from its own browser deletes it, and once the order's own term has
-passed since that deadline, pruned yet or not (above). The purchase keeps its
-own right whatever renewal is under way.
+refunded or disputed, or past its deadline when the daily sweep or the next
+checkout prunes it or a claim from its own browser deletes it, and once the
+order's own term has passed since that deadline, pruned yet or not (above). The
+purchase keeps its own right whatever renewal is under way.
 
 **Setting it up.** In Stripe: a one-time Price for the Pass with a fixed amount
 in one currency alone, with no currency options for others

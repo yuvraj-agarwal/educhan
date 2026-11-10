@@ -1407,8 +1407,8 @@ func (a *App) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 			// payments). Nothing here can tell which, and none should become a
 			// Pass; the owner checks the payment against the receipt before
 			// refunding it. A repeated delivery while its order or the Pass it
-			// bought is still there, or one for a payment refunded first, is no
-			// news, and is not logged.
+			// bought is still there, or one for a payment refunded or disputed
+			// first, is no news, and is not logged.
 			a.log.Warn("a paid Stripe checkout matched no open Pass order")
 		}
 	case stripeCheckoutExpired, stripeCheckoutAsyncFailure:
@@ -1563,16 +1563,17 @@ const (
 // collected, while it is kept (passOrderKept), and after, when the payment is
 // found on its Pass instead, while that Pass has not gone (passCutoff); once
 // either has gone, a delivery again finds nothing, as once it is pruned. A
-// payment already refunded is refused, since Stripe may deliver a refund before
-// a retried "paid", and its order, which can never be paid now, is deleted, so
-// the browser that started it stops waiting for it. An unpaid order past its
-// claim deadline is still marked until something deletes it, the next prune or
-// a claim from its own browser (claimOne), say: the money has been taken, and a
-// paid order waits to be collected or reissued for its own term past that
-// deadline (prunePasses). Once that term has passed too, the order would be
-// gone for every purpose the moment it was marked (passOrderKept), so it is not
-// marked, pruned yet or not (passOrderPayable): the event finds nothing, as
-// once it is pruned, and the owner is warned the same way.
+// payment already refunded or disputed is refused, since Stripe may deliver a
+// refund or a dispute before a retried "paid", and its order, which can never
+// be paid now, is deleted, so the browser that started it stops waiting for it.
+// An unpaid order past its claim deadline is still marked until something
+// deletes it, the next prune or a claim from its own browser (claimOne), say:
+// the money has been taken, and a paid order waits to be collected or reissued
+// for its own term past that deadline (prunePasses). Once that term has passed
+// too, the order would be gone for every purpose the moment it was marked
+// (passOrderKept), so it is not marked, pruned yet or not (passOrderPayable):
+// the event finds nothing, as once it is pruned, and the owner is warned the
+// same way.
 func (s *Store) markPassOrderPaid(ctx context.Context, sessionHash, paymentHash []byte, now time.Time) (paidOutcome, error) {
 	var outcome paidOutcome
 	err := s.passTx(ctx, func(tx pgx.Tx) error {
