@@ -11424,11 +11424,16 @@ type matchCheck func(v *view, m []int) bool
 // as quotationAround, and each sentence that starts within threatWindow after
 // a quotation it reads as received (ownedAfter, readerAdvised); menace's hints
 // readReach words each way; gameNamed 64 before the sentence; purchasePaid
-// threatWindow past the promise's sentence, for payMenace; and privateCue the
-// sentence after a visit as well as the one round it. Each is a constant per
-// check, so the count stays linear in the post, but a counted step stands for
-// more time in a body whose matches take those checks (TestFilterCostIsBounded
-// says how much).
+// the promise's sentence for threatWindow, up to 32 bytes on to the end of a
+// cut word, and threatWindow past it, for payMenace; privateCue the sentence
+// after a visit as well as the one round it; playedPart 160 back from an act
+// and as far again before that sentence; explodeRest, after "will explode" or
+// "on fire", the rest of the sentence and the next one, threatWindow each;
+// nextSentence 160 after a lab's mishap; pupilsSought 120 after an ask;
+// strangerActedOn 80 after an act; and hitHard the clause after the hit's
+// own. Each is a constant per check, so the count stays linear in the post,
+// but a counted step stands for more time in a body whose matches take those
+// checks (TestFilterCostIsBounded says how much).
 const checkWork = 2 * 64
 
 // checked puts match m to check, counting it in the view's work.
