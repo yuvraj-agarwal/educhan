@@ -931,8 +931,8 @@ func TestPassRunOutIsJudgedByTheServersClock(t *testing.T) {
 // Remove or Forget has been pressed since its request went, or while one is
 // on its way (passForgotten): a code typed into an empty browser is not
 // stored again after Forget this browser. A checkout answered once the Pass
-// held has changed, or once the reader has moved on, is not followed to
-// Stripe either, and its claim is dropped at once by its order's name.
+// held has changed, or while the reader is on another page, is not followed
+// to Stripe either, and its claim is dropped at once by its order's name.
 func TestPassAnswerAboutAPassThatLeftIsDropped(t *testing.T) {
 	script := appScript(t)
 	if still := withoutComments(jsFunction(t, script, "passStillHeld")); !strings.Contains(still, "const now = storedPass();") ||
@@ -1048,13 +1048,21 @@ func TestPassAnswerAboutAPassThatLeftIsDropped(t *testing.T) {
 	// the button that waited its focus back, rather than leaving it on the top
 	// of the document; so does a checkout not followed because the Pass held
 	// changed meanwhile, which says so on the Pass page, in words for what the
-	// page offers now, noted as a held notice (pinned below).
+	// page offers now, noted as a held notice (pinned below). Its cookie has
+	// taken the place of the claim the page was drawn with, if it was drawn
+	// with one, a checkout set aside or one being collected, so that drawing is
+	// drawn again without it, keeping focus where it was, and the collection it
+	// started ends (passVisit).
 	if !strings.Contains(withoutComments(jsFunction(t, script, "submitPass")),
 		"if (calledOff || dropped || passForgotten(forgets) || !passStillHeld(held)) {\n    button.disabled = false;\n    button.textContent = label;\n"+
-			"    if (passPageShown()) {\n      refocus(button);\n      if (unfollowed) {\n        showPassNotice(passChangedText());\n"+
+			"    if (passPageShown()) {\n"+
+			"      if (unfollowed && lastPassInfo.claim === true && el.main.querySelector(\"[data-pass-page]\")) {\n"+
+			"        passVisit += 1;\n        redrawPass({ ...lastPassInfo, claim: false }, \"form[data-pass] input\");\n      }\n"+
+			"      refocus(button);\n      if (unfollowed) {\n        showPassNotice(passChangedText());\n"+
 			"        notePassHeld();\n      }\n    }\n    return;\n  }") {
 		t.Error("submitPass drops an answer for a forget, or a checkout called off, and leaves focus on the top of the document, " +
-			"or no longer says why a checkout answered after the Pass held changed was not opened")
+			"or no longer says why a checkout answered after the Pass held changed was not opened, or leaves the claim its " +
+			"cookie took the place of drawn, and collected, on the Pass page")
 	}
 	if !strings.Contains(withoutComments(jsFunction(t, script, "checkHeldPass")),
 		"if (passForgotten(forgets) || !passStillHeld(held)) {\n    button.disabled = false;\n"+
@@ -1094,22 +1102,39 @@ func TestPassAnswerAboutAPassThatLeftIsDropped(t *testing.T) {
 		t.Error("a checkout answered after a forget pressed since it went keeps the claim it set, or is followed to Stripe")
 	}
 	// Nor is a checkout followed that was answered once the Pass held had
-	// changed, here or in another tab, or once the reader had moved on to
-	// another page: nobody can pay it, since the Stripe page it named is thrown
-	// away, so its claim is dropped at once by the order its answer names, with
-	// the cause that words what is said if educhan cannot be reached. One
-	// dropped for a forget is not dropped twice, and one called off has no
-	// answer to name its order by. It is not set aside (passStartedAgain): it
-	// leaves nothing behind, and a claim the page found later, one set by a
-	// checkout opened in another tab, say, would be drawn as a checkout left
-	// here, with Buy offered again beside it. Only the forget's checkout is set
-	// aside, and only the followed one clears that, as it leaves for Stripe.
+	// changed, here or in another tab, or while the reader was on another page:
+	// nobody can pay it, since the Stripe page it named is thrown away, so its
+	// claim is dropped at once by the order its answer names, with the cause
+	// that words what is said if educhan cannot be reached. One dropped for a
+	// forget is not dropped twice, and one called off has no answer to name its
+	// order by. It is not set aside (passStartedAgain), and it ends a checkout
+	// set aside before it, whose claim its cookie has taken the place of, as
+	// the one followed to Stripe does: set aside, or left so, a claim the page
+	// found later, one set by a checkout opened in another tab, say, would be
+	// drawn as a checkout left here, with Buy offered again beside it. Only the
+	// forget's checkout is set aside.
 	unfollowed := strings.Index(checkout, "  const unfollowed = Boolean(res) && kind !== \"activate\" && !dropped && "+
 		"!(passStillHeld(held) && passPageShown());\n  if (unfollowed) {\n"+
-		"    forgetPassOrder(res.order, passPageShown() ? \"changed\" : \"left\");\n  }\n")
-	if unfollowed < late || guard < unfollowed || strings.Count(checkout, "unfollowed") != 3 {
-		t.Error("a checkout answered after the Pass held changed, or after the reader moved on, keeps a claim nobody can pay, " +
-			"or is dropped for a forget twice")
+		"    forgetPassOrder(res.order, passPageShown() ? \"changed\" : \"left\");\n    passStartedAgain = false;\n  }\n")
+	if unfollowed < late || guard < unfollowed || strings.Count(checkout, "unfollowed") != 4 {
+		t.Error("a checkout answered after the Pass held changed, or while the reader was on another page, keeps a claim " +
+			"nobody can pay, or leaves an earlier checkout set aside, or is dropped for a forget twice")
+	}
+	// An answer whose body could not be read, cut off once its headers were in,
+	// comes back from api as nothing, with nothing thrown; it is told as a
+	// failure of its own, said as any failure is, before anything reads what
+	// failed, and the button comes back. A checkout's such answer names no
+	// order, so its claim is left, and it neither sets nor clears
+	// passStartedAgain (the count below).
+	cut := strings.Index(checkout, "  if (!res && !failed) {\n    failed = new Error(kind === \"activate\" ? "+
+		"PASS_ANSWER_CUT_OFF.activate : PASS_ANSWER_CUT_OFF.checkout);\n  }\n")
+	if cut < asked || late < cut || strings.Count(checkout, "PASS_ANSWER_CUT_OFF") != 2 ||
+		!strings.Contains(script, "\nconst PASS_ANSWER_CUT_OFF = {\n"+
+			"  activate: \"The answer from educhan didn't come through in full. Check your connection and try again.\",\n"+
+			"  checkout:\n    \"The answer from educhan didn't come through in full, so Stripe wasn't opened and nothing was charged. "+
+			"Check your connection and try again.\",\n};\n") {
+		t.Error("an answer to a code typed in, or to Buy or Renew, whose body could not be read leaves the button waiting " +
+			"and says nothing, or no longer says Stripe was not opened and nothing was charged")
 	}
 	// On the Pass page it says why, calmly: the Pass here changed while the
 	// checkout was being set up, Stripe was not opened and nothing was charged,
@@ -1124,10 +1149,11 @@ func TestPassAnswerAboutAPassThatLeftIsDropped(t *testing.T) {
 		t.Errorf("a checkout not opened because the Pass held changed no longer says so, that nothing was charged, and what "+
 			"the page offers to press now:\n%s", got)
 	}
-	if strings.Count(checkout, "passStartedAgain = ") != 2 || strings.Count(checkout, "passStartedAgain = true;") != 1 ||
+	if strings.Count(checkout, "passStartedAgain = ") != 3 || strings.Count(checkout, "passStartedAgain = true;") != 1 ||
 		!strings.Contains(checkout, "passStartedAgain = false;\n    window.location.assign(res.url);") {
 		t.Error("a checkout not followed to Stripe is set aside other than when a forget answered it, " +
-			"or the one followed leaves an earlier checkout set aside")
+			"or the one followed, or one answered once the Pass held changed or while the reader was on another page, " +
+			"leaves an earlier checkout set aside")
 	}
 	// The answer's headers are noted as they arrive, before its body is read:
 	// a checkout is called off only until then, and once they are in, the
@@ -1242,7 +1268,7 @@ func TestPassAnswerAboutAPassThatLeftIsDropped(t *testing.T) {
 	}
 	if strings.Count(code, "forgetPassOrder(") != 3 || strings.Count(code, ".order") != 2 {
 		t.Error("a checkout's order is read, or forgotten by name, other than where a checkout answered after a forget, " +
-			"or after the Pass held changed or the reader moved on, is dropped")
+			"or after the Pass held changed or while the reader was on another page, is dropped")
 	}
 	// What it says when educhan cannot be reached names why the checkout was
 	// not followed, and how to drop the claim once back online. After a forget
@@ -1379,8 +1405,9 @@ func TestPassAnswersDrawOnlyOnThePassPage(t *testing.T) {
 	}
 	// Each of those two claim notices asks the reader for a step, so it is said
 	// on whatever page this tab is on: the reader who pressed the forget in
-	// another tab was told it was done, and the reader who pressed Remove here
-	// may have moved on before educhan failed to answer. That notice is all
+	// another tab was told it was done, one whose checkout was not followed was
+	// told nothing of its claim, and the reader who pressed Remove here may
+	// have moved on before educhan failed to answer. That notice is all
 	// forgetPassOrder draws, and all Remove draws once its forget is answered,
 	// unless this tab has learned that nothing is left to collect since its
 	// forget went (TestPassNoticeGoesWithWhatItSaid). On the Pass page it
@@ -1427,14 +1454,14 @@ func TestPassAnswersDrawOnlyOnThePassPage(t *testing.T) {
 			t.Errorf("%s no longer asks, at its own level and after its last wait, whether the reader is still on the Pass page", name)
 		}
 	}
-	// A checkout opened that the reader is not then sent to, because they
-	// moved on or the Pass held changed, has its claim dropped at once and is
-	// said nothing of off the Pass page unless that drop fails (forgetPassOrder,
-	// above); on the Pass page it says why it was not opened, inside the gate.
-	// One answered after a forget is set aside, as if they had left Stripe
-	// without paying, so a drawing before its drop lands offers the forms
-	// rather than a payment Stripe has yet to confirm (both pinned in
-	// TestPassAnswerAboutAPassThatLeftIsDropped).
+	// A checkout opened that the reader is not then sent to, because they are
+	// on another page as it answers or the Pass held changed, has its claim
+	// dropped at once and is said nothing of off the Pass page unless that drop
+	// fails (forgetPassOrder, above); on the Pass page it says why it was not
+	// opened, inside the gate. One answered after a forget is set aside, as if
+	// they had left Stripe without paying, so a drawing before its drop lands
+	// offers the forms rather than a payment Stripe has yet to confirm (both
+	// pinned in TestPassAnswerAboutAPassThatLeftIsDropped).
 	guarded := strings.Index(submit, "if (calledOff || dropped || passForgotten(forgets) || !passStillHeld(held)) {")
 	changed := strings.Index(submit, "showPassNotice(passChangedText());")
 	if left := strings.Index(submit, "  if (dropped) {\n    passStartedAgain = true;\n  }"); left < 0 || guarded < left || changed < guarded ||
@@ -1639,9 +1666,10 @@ func TestPassBackFromStripeAndStartAgain(t *testing.T) {
 		"    passStartedAgain = true;\n    drawPass(lastPassInfo);\n    passFocus(\"form[data-pass] input\");" {
 		t.Errorf("Start again no longer just offers the forms back, with collecting going on underneath:\n%s", restart)
 	}
-	if n := strings.Count(code, "passStartedAgain = "); n != 6 {
+	if n := strings.Count(code, "passStartedAgain = "); n != 7 {
 		t.Errorf("passStartedAgain is set %d times; want its declaration, back from Stripe, a checkout answered after a "+
-			"forget, one followed to Stripe, a Stop that finished and Start again", n)
+			"forget, one followed to Stripe, one answered once the Pass held changed or while the reader was on another page, "+
+			"a Stop that finished and Start again", n)
 	}
 }
 

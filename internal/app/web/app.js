@@ -2317,6 +2317,14 @@ const PASS_STOPPED_MEANWHILE = "Nothing was sent: this browser stopped collectin
 // reader has gone. A page brought back from the back-forward cache is drawn
 // afresh (the pageshow listener), with the button ready.
 const PASS_LEFT_MEANWHILE = "left";
+// Said for an answer to a code typed in, or to Buy or Renew, that came without
+// a body the page could read, cut off once its headers were in, say, which api
+// gives back as nothing at all (submitPass).
+const PASS_ANSWER_CUT_OFF = {
+  activate: "The answer from educhan didn't come through in full. Check your connection and try again.",
+  checkout:
+    "The answer from educhan didn't come through in full, so Stripe wasn't opened and nothing was charged. Check your connection and try again.",
+};
 // Said when the browser will not keep a Pass: its storage for the site is
 // blocked or full, which the page cannot tell apart, so the Pass cannot ride
 // on the next post.
@@ -2349,7 +2357,9 @@ let passLost = "";
 
 // passVisit counts the times the Pass page has been drawn from the server's
 // answer, so that a collection started for one drawing stops once another has
-// replaced it, or once this browser stops collecting (forgetPassClaim).
+// replaced it, once this browser stops collecting (forgetPassClaim), or once a
+// checkout the page does not follow to Stripe has set its claim in place of the
+// one that drawing shows, and the page is drawn again without it (submitPass).
 let passVisit = 0;
 
 // passAsked is set by Check now for the drawing it asks for, which takes it
@@ -2462,12 +2472,14 @@ const passCheckouts = new Set();
 // set aside in the same way, though it leaves nothing to collect, since its
 // claim is dropped too (forgetPassClaim, forgetPassOrder), so a drawing that
 // asks before that drop has landed offers the forms again rather than a
-// purchase being collected (submitPass). One answered once the reader has left
-// the Pass page, or once the Pass held has changed, in another tab say, is not
+// purchase being collected (submitPass). One answered while the reader is on
+// another page, or once the Pass held has changed, in another tab say, is not
 // sent to Stripe either, and is not set aside: its claim is dropped at once,
 // and nothing is left behind (submitPass). A checkout gives the browser a new
 // claim, and the earlier one is no longer collected here (passCollectingHTML
-// says so).
+// says so), so one followed to Stripe ends a checkout set aside before it, and
+// so does one of those whose claim is dropped at once; one whose answer was cut
+// off before it named its order leaves this as it was (submitPass).
 let passStartedAgain = false;
 
 // passCodeTyped is what is in the Pass page's code box, a Pass code or a
@@ -2788,24 +2800,24 @@ function forgetPassClaim(pressed, at) {
 // pressed in another tab, whose request may have gone too soon to see the
 // claim, and that claim would otherwise outlive the forget, for the next person
 // at the computer to find being collected; or it was answered once the Pass
-// held had changed, here or in another tab, or once the reader had moved on to
-// another page here, and the Stripe page it named is thrown away, so nobody can
-// pay it, and collecting it would only ask educhan for nothing until Stripe
-// expires it. A forget pressed in this tab needs none: it calls off a checkout
-// not yet answered, and goes after the cookie of one answered
-// (callOffPassCheckouts). That claim and no other: a checkout started since,
-// here or in another tab, may have set its own by now, which a forget of the
-// browser's claims would take, so this reads no cookie and clears none, and the
-// cookie it set can stay, with nothing under it, until another checkout
-// replaces it, Remove the Pass, Forget this browser or Stop collecting it here
-// clears it, or it runs out. The name is sent once, here, and kept nowhere. It
-// needs no mark and stops nothing, since it reaches no other claim. A server
-// that gave no name is asked nothing: a forget without one is a forget of every
-// claim. What it says when educhan cannot be reached is worded for why the
-// checkout was not followed (cause; PASS_ORDER_KEPT): the forget pressed in the
-// other tab, from its mark, the Pass held changing, or the reader leaving the
-// Pass page; and it is a claim notice said for this drop (at, when it went),
-// put up and taken off by the rules for those (noteClaimNotice, Pass notices).
+// held had changed, here or in another tab, or while the reader was on another
+// page here, and the Stripe page it named is thrown away, so nobody can pay it,
+// and collecting it would only ask educhan for nothing until Stripe expires it.
+// A forget pressed in this tab needs none: it calls off a checkout not yet
+// answered, and goes after the cookie of one answered (callOffPassCheckouts).
+// That claim and no other: a checkout started since, here or in another tab,
+// may have set its own by now, which a forget of the browser's claims would
+// take, so this reads no cookie and clears none, and the cookie it set can
+// stay, with nothing under it, until another checkout replaces it, Remove the
+// Pass, Forget this browser or Stop collecting it here clears it, or it runs
+// out. The name is sent once, here, and kept nowhere. It needs no mark and
+// stops nothing, since it reaches no other claim. A server that gave no name is
+// asked nothing: a forget without one is a forget of every claim. What it says
+// when educhan cannot be reached is worded for why the checkout was not
+// followed (cause; PASS_ORDER_KEPT): the forget pressed in the other tab, from
+// its mark, the Pass held changing, or the reader being on another page; and it
+// is a claim notice said for this drop (at, when it went), put up and taken off
+// by the rules for those (noteClaimNotice, Pass notices).
 function forgetPassOrder(order, cause) {
   if (typeof order !== "string" || !order) {
     return;
@@ -2816,14 +2828,15 @@ function forgetPassOrder(order, cause) {
     // and the Pass page offers to stop collecting it once it is drawn again.
     // Said on whatever page this tab is on, as every claim notice but Stop's
     // is, since the reader who pressed a forget in another tab was told it was
-    // done, and the one who moved on was told nothing; but not once this tab
-    // has learned that nothing is left to collect since this drop went
-    // (passClaimGone): a forget pressed after it, here or in another tab, which
-    // went after this claim's cookie, answered with the claim dropped, say. One
-    // pressed since and not yet answered leaves it to be said, and takes it off
-    // if its answer drops the claim. On the Pass page it answers this tab's own
-    // Buy or Renew, pressed there, so it is brought into view (showPassNotice)
-    // like any other answer to a press there, in place of what that press said.
+    // done, and one whose checkout was not followed was told nothing of its
+    // claim; but not once this tab has learned that nothing is left to collect
+    // since this drop went (passClaimGone): a forget pressed after it, here or
+    // in another tab, which went after this claim's cookie, answered with the
+    // claim dropped, say. One pressed since and not yet answered leaves it to
+    // be said, and takes it off if its answer drops the claim. On the Pass page
+    // it answers this tab's own Buy or Renew, pressed there, so it is brought
+    // into view (showPassNotice) like any other answer to a press there, in
+    // place of what that press said.
     if (err.status !== 403 && passClaimGone <= at) {
       const notice = PASS_ORDER_KEPT[cause] || PASS_ORDER_KEPT.browser;
       if (passPageShown()) {
@@ -2844,11 +2857,11 @@ function forgetPassOrder(order, cause) {
 // Remove to press, it is Stop collecting it here, which the Pass page offers
 // while a claim is collected, and which keeps the poster key, the name and any
 // badge, as Remove did. After the Pass held changed while the checkout was on
-// its way, or the reader left the Pass page, nothing was pressed to forget
-// anything, and it is Stop collecting it here too, which drops it and leaves
-// the Pass, the poster key, the name and any badge. The checkout was never
-// followed to Stripe, so the Pass page, which collects as soon as it is opened,
-// finds nothing paid under it.
+// its way, or its answer came while the reader was on another page, nothing was
+// pressed to forget anything, and it is Stop collecting it here too, which
+// drops it and leaves the Pass, the poster key, the name and any badge. The
+// checkout was never followed to Stripe, so the Pass page, which collects as
+// soon as it is opened, finds nothing paid under it.
 const PASS_ORDER_KEPT = {
   stop:
     "educhan couldn't be reached to drop the checkout that was still opening when Stop collecting it here was pressed, so this browser may still be collecting it. Open the Pass page when you're back online and press Stop collecting it here again.",
@@ -3220,15 +3233,15 @@ async function passForgetsSettled(checkout = false) {
   return claims !== passForgets ? PASS_STOPPED_MEANWHILE : "";
 }
 
-// passPageShown says whether the reader is still on the Pass page, which
-// every drawing of it after a wait asks first: an answer that arrives once
-// they have moved on, to a board or the Verify page, stores what it is still
+// passPageShown says whether the reader is still on the Pass page, which every
+// drawing of it after a wait asks first: an answer that arrives while they are
+// on another page, a board or the Verify page, say, stores what it is still
 // right to store, and draws, focuses and says nothing over the page they are
 // on. The Pass page shows what was stored when they come back. Two claim
 // notices are the exception, said on whatever page they are on, since they ask
 // for a step (Pass notices): Remove's, when educhan could not be reached for
-// its forget, and forgetPassOrder's. Stop collecting it here's, the Pass
-// page's other claim notice, is said only there.
+// its forget, and forgetPassOrder's. Stop collecting it here's, the Pass page's
+// other claim notice, is said only there.
 function passPageShown() {
   return state.route.view === "pass";
 }
@@ -5184,14 +5197,17 @@ function passChangedText() {
 // starts a checkout. A checkout opened before a forget that came after the
 // press, Stop's included, has its claim dropped too, and is set aside
 // (passStartedAgain); one answered once the Pass held has changed has its claim
-// dropped at once, by its order's name (forgetPassOrder), and the reader is
-// told why if they are still on the Pass page. A checkout still on its way when
-// a forget is pressed in this tab, or the tab leaves the document, is called
-// off (callOffPassCheckouts). An answer that arrives after the reader left the
-// Pass page stores what it is still right to store, and draws nothing, and
-// starts no checkout either: one it opened has its claim dropped at once, by
-// its order's name, and says nothing unless that drop fails. What a press comes
-// to is said in view (showPassNotice).
+// dropped at once, by its order's name (forgetPassOrder), and ends a checkout
+// set aside before it, as one followed to Stripe does; the reader is told why
+// if they are still on the Pass page. A checkout still on its way when a forget
+// is pressed in this tab, or the tab leaves the document, is called off
+// (callOffPassCheckouts). An answer that arrives while the reader is on another
+// page stores what it is still right to store, and draws nothing, and starts no
+// checkout either: one it opened has its claim dropped at once, by its order's
+// name, and says nothing unless that drop fails. An answer cut off before its
+// body could be read is told as a failure (PASS_ANSWER_CUT_OFF), and the claim
+// a checkout's such answer set is left, since it named no order to drop it by.
+// What a press comes to is said in view (showPassNotice).
 async function submitPass(form) {
   const button = form.querySelector('button[type="submit"]');
   const label = button.textContent;
@@ -5292,6 +5308,20 @@ async function submitPass(form) {
   if (checkout) {
     closePassCheckout(checkout);
   }
+  // An answer that came without a body the page could read, cut off once its
+  // headers were in, say, comes back from api as nothing, with nothing thrown;
+  // here it is a failure of its own, told as any failure is
+  // (PASS_ANSWER_CUT_OFF). A checkout's such answer has set the claim cookie
+  // its headers carried, but named no order to drop that claim by, so the claim
+  // is left: a forget of every claim (forgetPassClaim) could take one that a
+  // checkout in another tab has set since. Nobody can pay it, since its Stripe
+  // page never reached this one, and it goes as any claim does: with the next
+  // checkout, whose cookie takes its place, with Stop collecting it here,
+  // Remove the Pass or Forget this browser, or once Stripe expires its checkout
+  // unpaid.
+  if (!res && !failed) {
+    failed = new Error(kind === "activate" ? PASS_ANSWER_CUT_OFF.activate : PASS_ANSWER_CUT_OFF.checkout);
+  }
   // A checkout answered after Remove the Pass, Forget this browser or Stop
   // collecting it here was pressed, here or in another tab, is not followed to
   // Stripe, and the claim it set does not outlive that forget. Pressed here,
@@ -5313,38 +5343,52 @@ async function submitPass(form) {
     passStartedAgain = true;
   }
   // Nor is a checkout followed that was answered once the Pass held had
-  // changed, here or in another tab (passStillHeld), or once the reader had
-  // moved on to another page here (passPageShown). The Stripe page it named is
-  // thrown away, so nobody can ever pay that checkout, and collecting it would
-  // only ask educhan for nothing until Stripe expires it, so its claim is
+  // changed, here or in another tab (passStillHeld), or while the reader was on
+  // another page here (passPageShown, asked as the answer comes, so one who
+  // went and came back meanwhile is sent to Stripe). The Stripe page it named
+  // is thrown away, so nobody can ever pay that checkout, and collecting it
+  // would only ask educhan for nothing until Stripe expires it, so its claim is
   // dropped at once by its order's name too (forgetPassOrder), and what that
   // says if educhan cannot be reached names why the checkout was not followed.
-  // It is not set aside: nothing is left behind, and set aside, a claim the
-  // page finds later, one a checkout opened in another tab set, say, would be
-  // drawn as a checkout left here, with Buy offered again beside it. A checkout
-  // called off is not dropped here, since no answer came to follow or to name
-  // its order by: called off by a forget pressed here, it has its claim dropped
-  // by that forget's own request, which goes after any cookie it set
+  // It is not set aside, and it ends a checkout set aside before it, whose
+  // claim its cookie has taken the place of, as a checkout followed to Stripe
+  // does: nothing is left behind, and set aside, a claim the page finds later,
+  // one a checkout opened in another tab set, say, would be drawn as a checkout
+  // left here, with Buy offered again beside it. A checkout called off is not
+  // dropped here, since no answer came to follow or to name its order by:
+  // called off by a forget pressed here, it has its claim dropped by that
+  // forget's own request, which goes after any cookie it set
   // (callOffPassCheckouts), and called off as the tab leaves the document
   // (pagehide), its page is going away, and is drawn afresh if it comes back
   // from the back-forward cache.
   const unfollowed = Boolean(res) && kind !== "activate" && !dropped && !(passStillHeld(held) && passPageShown());
   if (unfollowed) {
     forgetPassOrder(res.order, passPageShown() ? "changed" : "left");
+    passStartedAgain = false;
   }
   // The forget that dropped it, or called it off, draws the page again once it
   // is settled, and a page left and brought back from the back-forward cache is
   // drawn afresh (the pageshow listener); what changed the Pass held has drawn
   // it already, another tab's change (followPassStorage) or this tab's own
-  // answer that made it, to a code or a reissue code typed in, say. The button
-  // that waited has focus back, if nothing else took it and the reader is still
-  // on the Pass page, where a checkout not followed because the Pass held
-  // changed says so, in words for what the page offers now, a held notice since
-  // those words go with what this browser holds (passChangedText).
+  // answer that made it, to a code or a reissue code typed in, say. A checkout
+  // not followed because the Pass held changed leaves that drawing showing the
+  // claim it was drawn with, if it had one, a checkout set aside or one being
+  // collected, which this checkout's cookie has taken the place of: it is drawn
+  // again without it, and the collection it started ends (passVisit), so that
+  // claim's answer, if one is on its way, does not draw it back unless it
+  // brings something (collectPass). The button that waited has focus back, if
+  // nothing else took it and the reader is still on the Pass page, where such a
+  // checkout says why it was not opened, in words for what the page offers now,
+  // a held notice since those words go with what this browser holds
+  // (passChangedText).
   if (calledOff || dropped || passForgotten(forgets) || !passStillHeld(held)) {
     button.disabled = false;
     button.textContent = label;
     if (passPageShown()) {
+      if (unfollowed && lastPassInfo.claim === true && el.main.querySelector("[data-pass-page]")) {
+        passVisit += 1;
+        redrawPass({ ...lastPassInfo, claim: false }, "form[data-pass] input");
+      }
       refocus(button);
       if (unfollowed) {
         showPassNotice(passChangedText());
@@ -5371,10 +5415,11 @@ async function submitPass(form) {
     forgetInvalidCode(held.code);
     passLost = `The Pass in this browser can no longer be renewed, so it has been removed. ${PASS_GONE_REASONS}`;
   }
-  // Moved on meanwhile, to a board or the Verify page: what the answer said is
-  // stored, and nothing is drawn over that page or opened in its place; a
-  // checkout's claim has been dropped above, saying nothing there unless that
-  // drop fails.
+  // On another page as the answer comes, a board or the Verify page, say: what
+  // the answer said is stored, and nothing is drawn over that page or opened in
+  // its place; a checkout's claim has been dropped above, saying nothing there
+  // unless that drop fails, and one whose answer was cut off is left, saying
+  // nothing either.
   if (!passPageShown()) {
     button.disabled = false;
     button.textContent = label;

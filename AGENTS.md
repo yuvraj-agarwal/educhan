@@ -566,22 +566,30 @@ has changed one of those properties and needs a browser check before the test ch
   alone, since it sets no mark, moves no counter and clears no cookie, so a checkout
   started after the forget, in any tab, keeps its claim. A checkout answered once the Pass
   held has changed (`passStillHeld`: removed, replaced or stored where there was none,
-  here or in another tab) or once the reader has moved on (`passPageShown`) is not
-  followed either, and nobody can pay it, since the Stripe page it named is thrown away,
-  so its claim is dropped the same way at once (`unfollowed`, cause `changed` or `left`).
-  It is not set aside: it leaves nothing behind, and set aside, a claim the page found
-  later, one a checkout in another tab set, say, would be drawn as a checkout left here,
-  with Buy beside it. A reader still on the Pass page is told why it was not opened, that
-  nothing was charged and what the page offers to press now (`passChangedText`, a held
-  notice); one who moved on is told nothing unless the drop fails. A checkout called off
-  has no answer to name its order by: a forget pressed here goes after its cookie, and
-  leaving the document takes the page away. The dropped claim's cookie can stay with
-  nothing under it, and a drop that cannot reach educhan says so on whatever page the tab
-  is on, as every claim notice but Stop's is (below), in words for why the checkout was
-  not followed (`PASS_ORDER_KEPT`, by the cause `forgetPassOrder` is given): after a
-  forget pressed in the other tab, by what its mark holds (`passForgetHeardLast`), words
-  that drop the claim with no more than it did, Stop collecting it here again after a
-  Stop, Stop collecting it here after Remove, which leaves no Pass to remove, and Forget
+  here or in another tab) or while the reader is on another page (`passPageShown`, asked
+  as the answer comes) is not followed either, and nobody can pay it, since the Stripe
+  page it named is thrown away, so its claim is dropped the same way at once
+  (`unfollowed`, cause `changed` or `left`). It is not set aside, and, as a checkout
+  followed to Stripe does, it ends one set aside before it, whose claim its cookie took
+  the place of (`passStartedAgain = false`): it leaves nothing behind, and set aside, a
+  claim the page found later, one a checkout in another tab set, say, would be drawn as a
+  checkout left here, with Buy beside it. A reader still on the Pass page sees a drawing
+  that showed a claim drawn again without it, its collection ended (`passVisit`), and is
+  told why the checkout was not opened, that nothing was charged and what to press now if
+  the page offers Buy or Renew (`passChangedText`, a held notice); one on another page is
+  told nothing unless the drop fails. An answer cut off before its body could be read,
+  which `api` gives back as `null` with nothing thrown, is a failure of its own
+  (`PASS_ANSWER_CUT_OFF`): a checkout's such answer has set its claim but named no order,
+  so that claim is left, since a forget of every claim could take one that a checkout in
+  another tab has set since, and `passStartedAgain` is neither set nor cleared for it. A
+  checkout called off has no answer to name its order by: a forget pressed here goes after
+  its cookie, and leaving the document takes the page away. The dropped claim's cookie can
+  stay with nothing under it, and a drop that cannot reach educhan says so on whatever
+  page the tab is on, as every claim notice but Stop's is (below), in words for why the
+  checkout was not followed (`PASS_ORDER_KEPT`, by the cause `forgetPassOrder` is given):
+  after a forget pressed in the other tab, by what its mark holds (`passForgetHeardLast`),
+  words that drop the claim with no more than it did, Stop collecting it here again after
+  a Stop, Stop collecting it here after Remove, which leaves no Pass to remove, and Forget
   this browser again after Forget; after the Pass held changed or the Pass page was left,
   Stop collecting it here on the Pass page. It is not said once this tab has learned that
   nothing is left to collect as of a time after the drop went (`passClaimGone`), and,
