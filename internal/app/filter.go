@@ -5185,6 +5185,13 @@ func threatExcused(text string, m []int, cm string, ws, next []string, sentence 
 				schoolHyperbole(sws),
 			destroyed && !anyIn(before, threatPlaceWords),
 			destroyed && is(last, "fire") && anyIn(sws, stageWords),
+			// "our class is getting bombed with assignments": swamped with
+			// them, not with what harms ("bombed with grenades").
+			is(last, "bombed") && len(next) > 1 && is(next[0], "with") && bombedFlooded(next[1:]),
+			// "the hall will be on fire at the farewell": hype for an
+			// occasion named after it, set alight by no one, with no fuel,
+			// harm or people kept inside named.
+			destroyed && is(last, "fire") && !hasWord(ws, "set") && onFireHype(wordsIn(explodeRest(text, m[1]))),
 			is(first, "gets") && !relative && !anyIn(next[:min(len(next), 4)], soonWords):
 			return true
 		}
@@ -5252,6 +5259,61 @@ func threatExcused(text string, m []int, cm string, ws, next []string, sentence 
 	}
 	return false
 }
+
+// bombedFlooded reports what a place is "getting bombed with" (ws, the
+// words after "with") as what swamps it (bombedFloods: "assignments",
+// "parent complaints", "water balloons", "students"), within its first three
+// words, with no weapon, device, fuel or thing thrown (bombedArms) and no one
+// kept in it or harmed (onFireHeld): not "with grenades", "with a drone",
+// "with everyone inside" or "with students in it".
+func bombedFlooded(ws []string) bool {
+	if anyIn(ws, weaponHeads) || anyIn(ws, bombedArms) || onFireHeld(ws) {
+		return false
+	}
+	for i := 0; i+1 < len(ws); i++ {
+		if is(ws[i], "in") && (is(ws[i+1], "it") || is(ws[i+1], "there")) {
+			return false
+		}
+	}
+	return anyIn(ws[:min(len(ws), 3)], bombedFloods)
+}
+
+// onFireHype reports, in the rest of the sentence and the next one ws
+// (explodeRest) after a place that "will be on fire", an occasion: a show, a
+// band, a farewell, sports day, a win or a food day ("it's biryani day"),
+// with nothing onFireHeld finds. A meal is only a time ("at lunch").
+func onFireHype(ws []string) bool {
+	return (anyIn(ws, hypeWords) || anyIn(ws, festivalWords) || anyIn(ws, onFireOccasions)) && !onFireHeld(ws)
+}
+
+// onFireHeld reports, in words ws after a place said to be on fire or bombed,
+// what no occasion excuses: fuel, a device, harm or people taken by it
+// (explodeHarmAfter), people kept inside ("everyone inside", "trapped"), or
+// a warning that it is meant ("you know who you are").
+func onFireHeld(ws []string) bool {
+	if anyIn(ws, fuelWords) || anyIn(ws, explodeDevices) || anyIn(ws, onFireInside) || explodeHarmAfter(ws) {
+		return true
+	}
+	for i := 0; i+2 < len(ws); i++ {
+		if is(ws[i], "know") && is(ws[i+1], "who") && secondPerson[ws[i+2]] {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	bombedArms = canonSetOf(`stone stones rock rocks brick bricks missile missiles rocket rockets molotov
+		molotovs bullets fire drone drones ied ieds`)
+	bombedFloods = canonSetOf(`homework assignments assignment tests exams worksheets projects practicals
+		inspections work notes notifications messages texts emails mails calls complaints questions requests
+		orders applications chants mosquitoes flies insects bugs rain balloons planes confetti colours colors
+		memes spam students visitors`)
+	onFireOccasions = canonSetOf(`annual farewell freshers band bands sports relay race marathon tournament
+		holiday holidays vacation win wins won winning celebration celebrations biryani maggi paneer pizza
+		momos chole samosa samosas`)
+	onFireInside = canonSetOf(`inside trapped locked`)
+)
 
 // hindiGameNamed reports a game in a sentence with the Hinglish "in" or "at"
 // after it: "cricket mein", "match pe", "carrom mein". "match ke baad",
