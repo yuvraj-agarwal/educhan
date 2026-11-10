@@ -28,7 +28,8 @@ and no container: `make db-up` starts a user-owned PostgreSQL cluster on
 PostgreSQL is not installed it stops and says so; on Debian or Ubuntu,
 `bash .cursor/scripts/install.sh` installs it (if the packaged PostgreSQL
 service then holds port 5432, stop it with `sudo systemctl stop postgresql`
-before `make db-up`).
+before `make db-up`; that lasts until the next boot, when the package may
+start it again).
 
 ```bash
 make db-up                                        # PostgreSQL on localhost:5432

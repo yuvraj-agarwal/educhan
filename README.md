@@ -1001,7 +1001,7 @@ and pushed to **Artifact Registry**, tagged with the short commit SHA and
 
 ```bash
 make cloud-build    # gcloud builds submit --config cloudbuild.yaml
-make cloud-deploy   # roll that image onto the Cloud Run service
+make cloud-deploy   # roll that image onto the Cloud Run service (and the sweeper Job, once it exists)
 ```
 
 So building the image needs a Google Cloud project rather than a Docker daemon,
