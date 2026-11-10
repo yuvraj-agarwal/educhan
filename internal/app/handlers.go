@@ -393,8 +393,8 @@ func (a *App) createPost(reserveCtx context.Context, w http.ResponseWriter, r *h
 // Each refusal counts against the client's refusal budget, and a client that
 // has spent it is answered 429 without its post being checked, because a
 // refusal costs no cooldown and checking is the expensive part of turning a
-// post away. The budget is keyed on the address for the reason the cooldowns
-// are (postCooldowns), and counts across every board.
+// post away. The budget is keyed on the client address for the reason the
+// cooldowns are (postCooldowns), and counts across every board.
 func (a *App) refuseContent(w http.ResponseWriter, clientKey string, in contentInput, supportSeen bool) (contentVerdict, bool) {
 	if wait := a.refusals.peek(clientKey); wait > 0 {
 		tooQuickly(w, "posting", wait)
