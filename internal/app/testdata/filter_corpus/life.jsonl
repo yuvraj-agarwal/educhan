@@ -537,6 +537,10 @@
 {"id": "life-771", "body": "i cut myself while my parents were at work", "subject": "", "name": "", "expect": "support", "why": "someone else's clause names no accident (r5p-ACCIDENT-SUPPORT guard)"}
 {"id": "life-772", "body": "i burn myself every time my parents fight", "subject": "", "name": "", "expect": "support", "why": "\"every time\" sets the harm in a fight, not an activity (r5p-ACCIDENT-SUPPORT guard)"}
 {"id": "life-773", "body": "i cut myself with a razor when i'm stressed", "subject": "", "name": "", "expect": "support", "why": "a tool and a feeling, no activity (r5p-ACCIDENT-SUPPORT guard)"}
+{"id": "life-774", "body": "i want to sh!😭", "subject": "", "name": "", "expect": "support", "why": "an emoji after \"sh!\" makes no masked swear (r5cc-SHELLAFTER-UTF8-BYTE)"}
+{"id": "life-775", "body": "i need to sh!💔", "subject": "", "name": "", "expect": "support", "why": "an emoji after \"sh!\" makes no masked swear (r5cc-SHELLAFTER-UTF8-BYTE)"}
+{"id": "life-776", "body": "i sh'd not even like 2 days ago", "subject": "", "name": "", "expect": "support", "why": "\"sh'd not\" before a time past fillers is self-harm, not \"should not\" (r5cc-SHD-NOT-FOLD)"}
+{"id": "life-777", "body": "i sh'd not because i wanted to but because i had to", "subject": "", "name": "", "expect": "support", "why": "\"sh'd not because\" is self-harm, not \"should not\" (r5cc-SHD-NOT-FOLD)"}
 {"id": "life-784", "body": "I always burn myself when I cook, any tips?", "subject": "", "name": "", "expect": "publish", "why": "burnt while cooking, a finite verb in the when-clause (r5p-ACCIDENT-SUPPORT)"}
 {"id": "life-785", "body": "i keep cutting myself when i chop onions lol", "subject": "", "name": "", "expect": "publish", "why": "cut while chopping onions (r5p-ACCIDENT-SUPPORT)"}
 {"id": "life-786", "body": "I hurt myself every time I play football, my ankles are weak", "subject": "", "name": "", "expect": "publish", "why": "hurt at football, \"every time\" before the activity (r5p-ACCIDENT-SUPPORT)"}

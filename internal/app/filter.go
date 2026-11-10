@@ -714,18 +714,20 @@ var spellingFolds = map[string]string{
 }
 
 // shouldWords, after "sh'd", make it "should": "sh'd have", "sh'd not go".
-// "Not" before a stretch of time does not ("i sh'd not long ago",
-// notLongAgo).
+// "Not" before a stretch of time or a reason does not ("i sh'd not long
+// ago", "sh'd not because i wanted to", notLongAgo).
 var shouldWords = map[string]bool{"have": true, "hav": true, "ve": true, "been": true, "be": true, "not": true,
 	"never": true, "of": true}
 
 // notLongAgo reports, in s after "sh'd not", a stretch of time: "long", or
 // "too", "that" or "so" before it ("not long ago", "not that long ago", "not
 // long after the fight"), or "ago" within four words, a number counted as
-// one ("not even a week ago", "not even 2 days ago").
+// one and fillers (notFillers) not counted ("not even a week ago", "not even
+// like 2 days ago", "not even a couple of days ago"); or a reason, one of
+// notReasons first: "not because i wanted to", "not once but twice".
 func notLongAgo(s string) bool {
 	var ws []string
-	for i := 0; i < len(s) && len(ws) < 4; {
+	for i, read := 0, 0; i < len(s) && len(ws) < 4 && read < 8; read++ {
 		for i < len(s) && s[i] == ' ' {
 			i++
 		}
@@ -736,10 +738,14 @@ func notLongAgo(s string) bool {
 		if j == i {
 			break
 		}
-		ws = append(ws, s[i:j])
+		if !notFillers[s[i:j]] {
+			ws = append(ws, s[i:j])
+		}
 		i = j
 	}
 	switch {
+	case len(ws) > 0 && notReasons[ws[0]]:
+		return true
 	case len(ws) > 0 && ws[0] == "long":
 		return true
 	case len(ws) > 1 && ws[1] == "long" && (ws[0] == "too" || ws[0] == "that" || ws[0] == "so"):
@@ -747,6 +753,13 @@ func notLongAgo(s string) bool {
 	}
 	return slices.Contains(ws, "ago")
 }
+
+var (
+	notFillers = map[string]bool{"even": true, "like": true, "just": true, "only": true, "a": true, "couple": true,
+		"of": true, "few": true}
+	notReasons = map[string]bool{"because": true, "cause": true, "cuz": true, "coz": true, "bc": true, "once": true,
+		"twice": true}
+)
 
 // foldSpellings reads v's words of spellingFolds as what they stand for. A
 // word is a run of ASCII letters, joined by an apostrophe or a hyphen with a
@@ -17197,7 +17210,8 @@ func searchedMethod(w string, next []string) bool {
 // character and a letter after it, which is how swearing is censored: "sh*t",
 // "sh!t", "sh#t".
 func shellAfter(text string, end int, next []string) bool {
-	if end+1 < len(text) && strings.IndexByte("-./_*!#@$%", text[end]) >= 0 && unicode.IsLetter(rune(text[end+1])) {
+	if end+1 < len(text) && strings.IndexByte("-./_*!#@$%", text[end]) >= 0 && text[end+1] < utf8.RuneSelf &&
+		unicode.IsLetter(rune(text[end+1])) {
 		return true
 	}
 	return len(next) > 0 && shellWords[next[0]] || anyIn(next, canonSetOf(`sh bash zsh ssh`))
