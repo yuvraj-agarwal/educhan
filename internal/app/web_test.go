@@ -603,9 +603,9 @@ func TestAcceptsGzip(t *testing.T) {
 // address. It is true of what educhan keeps, and the Verify page and the FAQ
 // say so, with its limits: whoever holds the server secret can test any address
 // they can list, timing can tie a badged post to its verification (on any day
-// until the nightly sweep, and after it on a day its institution issued one
-// badge), and every badged post carries the credential, whose id finds the
-// stored row. Words that say no one can make that link at all, or that the
+// until a nightly sweep, if the server runs one, and after it on a day only one
+// address at its institution verified), and every badged post carries the
+// credential, whose id finds the stored row. Words that say no one can make that link at all, or that the
 // badge is not linked to its poster, are a promise the code does not keep.
 var absoluteBadgePromise = regexp.MustCompile(`(?i)\b(?:server|operator) included\b|\bwork(?:s|ed)? back from\b|\btrac(?:e|ed|ing) back\b|\b(?:cannot|can't|can never) be (?:linked|traced|connected)\b|\bnot (?:linked|traceable|connected) to (?:this|the|its|a|any) (?:poster|post|address)\b|\bno one\b[^.]*\bcan (?:work|trace|link)\b`)
 
@@ -675,5 +675,47 @@ func TestForgettingTheBrowserIsSaidAsDone(t *testing.T) {
 	said := jsString(t, appScript(t), "BROWSER_FORGOTTEN")
 	if !strings.HasPrefix(said, "This browser was forgotten") || strings.Contains(said, "no longer holds") {
 		t.Errorf("BROWSER_FORGOTTEN is %q; want what was forgotten, not what the browser holds now", said)
+	}
+}
+
+// The limits the Verify page and the FAQ state have to be true of a server
+// that runs only what this repository runs by itself. The nightly clean-up is
+// educhan -sweep, a separate process someone has to schedule, so the copy may
+// mention it only as something the server might run, never as "the next" one.
+// The check on a guessed address finds a stored row, which outlives a badge
+// the browser forgot or that ran out, and a code request's row too, so the
+// copy may not say it finds only who "has a badge". And after a clean-up the
+// timing match needs one address, not one issuance, at the institution that
+// day: two confirmations from one address leave one row.
+func TestBadgeLimitsSayWhatTheServerDoes(t *testing.T) {
+	said := regexp.MustCompile(`\s+`).ReplaceAllString(appScript(t), " ")
+	for _, wrong := range []string{
+		"the next nightly clean-up",
+		"has a badge.",
+		"the only badge issued",
+	} {
+		if strings.Contains(said, wrong) {
+			t.Errorf("app.js says %q", wrong)
+		}
+	}
+	cleanUp := regexp.MustCompile(`(\S+ \S+ \S+) nightly clean-up`)
+	found := cleanUp.FindAllStringSubmatch(said, -1)
+	// The Verify page and the FAQ each state the limits once.
+	if len(found) != 2 {
+		t.Fatalf("app.js mentions a nightly clean-up %d times, want 2 (the Verify page and the FAQ)", len(found))
+	}
+	for _, m := range found {
+		if !strings.HasSuffix(m[1], "runs a") {
+			t.Errorf("app.js says %q, which assumes the server runs a nightly clean-up", m[0])
+		}
+	}
+	for _, want := range []string{
+		"got a badge or asked for a code, even a badge since forgotten or expired, until the server clears it.",
+		"the only one at your institution to get a badge",
+		"the only one at your university or college to get a badge",
+	} {
+		if !strings.Contains(said, want) {
+			t.Errorf("app.js does not say %q", want)
+		}
 	}
 }

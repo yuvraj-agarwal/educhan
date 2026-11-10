@@ -2312,14 +2312,14 @@ const VERIFY_INTRO = `
     so nothing kept with a post points to your address. The random number is
     what keeps your ID the same within a thread on the posts you badge. It is
     not made from your address. There are limits: whoever runs this server can
-    check whether any address they can list, such as every address at your
-    institution they can find, has a badge. Timing could match a post you badge
-    soon after verifying, with your other badged posts in that thread, to your
-    verification, and so to you if they check your address. That works until
-    the next nightly clean-up and for a while after it, in the server's own
-    recovery records and in copies of the database made before or soon after
-    it; later, only on a day when yours is the only badge issued for your
-    institution. All of this is a promise about what is kept, not about someone
+    check whether an address they can list got a badge or asked for a code,
+    even a badge since forgotten or expired, until the server clears it. Timing
+    can also tie a post you badge soon after verifying to your verification,
+    and so to you if they check your address; your other badged posts in that
+    thread go with it. Unless the server runs a nightly clean-up, that keeps
+    working; a while after one, it works only on a day when you are the only
+    one at your institution to get a badge, except in older copies of the
+    database. All of this is a promise about what is kept, not about someone
     who changes the server or records what is sent to it.
   </p>
   <p class="verify-note muted">
@@ -2774,15 +2774,15 @@ const FAQ_SECTIONS = [
         or to the posts you make without the badge &mdash; unless you give both the same name or tripcode,
         which would show they're yours. That's why the Name field empties when you tick the
         badge.</p>
-      <p>This has limits. The people who run this site can check whether any address they can
-        list, such as every address at your university or college they can find, has a badge.
-        Timing could match a badged post you make soon after verifying, with your other
-        badged posts in that thread, to your verification, and so to you if they check your
-        address. That works until the next nightly clean-up and for a while after it, in the
-        server's own recovery records and in copies of the database made before or soon after
-        it; later, only on a day when yours is the only badge issued for your university or
-        college. All of this is a promise about what is kept, not about someone who changes
-        the server or records what is sent to it.</p>
+      <p>This has limits: the people who run this site can check whether any address they can
+        list got a badge or asked for a code, even a badge since forgotten or expired, until
+        the server clears it. Timing can also tie a badged post you make soon after verifying
+        to your verification, and so to you if they check your address; your other badged
+        posts in that thread go with it. Unless the site runs a nightly clean-up, that keeps
+        working; a while after one, it works only on a day when you are the only one at your
+        university or college to get a badge, except in older copies of the database. All of
+        this is a promise about what is kept, not about someone who changes the server or
+        records what is sent to it.</p>
       <p>On a shared computer, use <strong>Forget this browser</strong> on the
         <a href="/verify#forget-browser">Verify</a> page before you leave. The badge stays in
         that browser for whoever uses it next, and so do the key your IDs are made from and
