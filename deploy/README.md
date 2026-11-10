@@ -27,7 +27,7 @@ and no container: `make db-up` starts a user-owned PostgreSQL cluster on
 `.cursor/scripts/start.sh`, it is idempotent, and it is safe to re-run. Where
 PostgreSQL is not installed it stops and says so; on Debian or Ubuntu,
 `bash .cursor/scripts/install.sh` installs it (if the packaged PostgreSQL
-service then holds port 5432, stop it with `sudo systemctl stop postgresql`
+service then holds port 5432, stop it with `sudo service postgresql stop`
 before `make db-up`; that lasts until the next boot, when the package may
 start it again).
 

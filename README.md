@@ -1353,7 +1353,8 @@ as a non-root user — `cloudbuild.yaml` is how that image is built and pushed, 
 # Build on Cloud Build, push to Artifact Registry as :<short SHA> and :latest
 make cloud-build
 
-# Roll it onto the existing service, keeping every other setting
+# Roll it onto the existing service (and the sweeper Job, once it exists),
+# keeping every other setting
 make cloud-deploy
 ```
 
