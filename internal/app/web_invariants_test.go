@@ -768,10 +768,11 @@ func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 	}
 	// Forget this browser takes the badge out of every form too, but starts
 	// no request: a forget sends nothing. Not in the tab it was pressed in
-	// or in a tab that hears its message (forgetOnThisPage), and not in a tab
-	// that hears the badge go from storage first, which no browser rules
-	// out: the credential is emptied before it is removed, and an emptied
-	// credential takes the badge out of a form without starting the puzzle.
+	// or in a tab that hears it (forgetOnThisPage), and a tab hears it from
+	// storage as the credential emptied, which the pressing tab does before
+	// it removes it: there the tab forgets, and returns before it reads the
+	// badge again and brings the forms into line with it, which is what
+	// starts the puzzle for a badge that went any other way.
 	if forget := withoutComments(jsFunction(t, script, "forgetOnThisPage") + jsFunction(t, script, "forgetForm")); strings.Contains(forget, "prepareCaptcha") ||
 		strings.Contains(forget, "withdrawBadgeOption") {
 		t.Error("forgetOnThisPage starts a puzzle for the forms it takes the badge out of")
@@ -779,13 +780,17 @@ func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 	follow := squash(withoutComments(jsFunction(t, script, "followCredentialStorage")))
 	offer := squash(withoutComments(jsFunction(t, script, "offerHeldBadge")))
 	inOrder(t, "forgetBrowser", squash(withoutComments(jsFunction(t, script, "forgetBrowser"))),
-		"forgetOnThisPage();", `storageSet(CREDENTIAL_STORAGE_KEY, "");`, "forgetCredential();")
-	if !strings.Contains(follow, `offerHeldBadge(event.key === CREDENTIAL_STORAGE_KEY && event.newValue === "");`) ||
-		offer != `function offerHeldBadge(startNothing = false, except = null) { for (const form of el.main.querySelectorAll("form[data-kind]")) { `+
-			`if (form !== except) withdrawBadgeOption(form, startNothing); } }` ||
-		strings.Count(code, `storageSet(CREDENTIAL_STORAGE_KEY, "")`) != 1 || strings.Count(code, `event.newValue === ""`) != 1 {
-		t.Error("a tab that hears the badge go as an emptied credential, the browser forgotten in another tab, " +
-			"may start a puzzle for it, or the credential is emptied somewhere besides forgetBrowser")
+		"forgetOnThisPage();", "const emptied = emptyCredential();", "forgetCredential();")
+	inOrder(t, "followCredentialStorage", follow,
+		`if (event.key === CREDENTIAL_STORAGE_KEY && event.newValue === "") { forgottenElsewhere(true); return; }`,
+		"if (!readStoredBadge()) { return; }", "offerHeldBadge();")
+	if offer != `function offerHeldBadge(startNothing = false, except = null) { for (const form of el.main.querySelectorAll("form[data-kind]")) { `+
+		`if (form !== except) withdrawBadgeOption(form, startNothing); } }` ||
+		!strings.Contains(withoutComments(jsFunction(t, script, "emptyCredential")), `localStorage.setItem(CREDENTIAL_STORAGE_KEY, "");`) ||
+		strings.Count(code, `localStorage.setItem(CREDENTIAL_STORAGE_KEY, "")`) != 1 || strings.Count(code, "emptyCredential(") != 2 ||
+		strings.Count(code, `event.newValue === ""`) != 1 {
+		t.Error("a tab that hears the browser forgotten in another tab, as the credential emptied, may start a " +
+			"puzzle for it, or the credential is emptied somewhere besides forgetBrowser")
 	}
 	// Nor does /verify, drawn over a posting form whose badge went as it
 	// loads (switched off, or run out): that is drawing a page. The form,
@@ -1661,56 +1666,110 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 }
 
 // "Forget this browser" pressed in one tab reaches every other educhan tab
-// open in the browser, where it has BroadcastChannel: each cancels what it has
-// on its way and drops what it holds itself, as the tab it was pressed in
-// does, and draws /verify again if it shows it. Storage is shared, and was
-// cleared by the tab it was pressed in before it told the others, but a tab
-// that handled a confirmation or a post in between may have written the
-// badge, the poster key or the name back before it heard. So each tab notes
-// what it stores of those three, and on hearing removes each that storage
-// still holds as it stored it, and touches nothing else: not a badge
-// confirmed or a key made in another tab since the forget, however late it
-// hears. The one message is a constant that says nothing about anyone, only
-// forgetBrowser sends it, and a tab acts on nothing else that arrives. It
-// empties the credential before it removes it, so a tab that hears storage
-// before the message, which no browser rules out, knows the badge went with a
-// forget (TestCaptchaIsAskedForOnlyWhenSomeoneWrites).
+// open in the browser: each cancels what it has on its way and drops what it
+// holds itself, as the tab it was pressed in does, and draws /verify again if
+// it shows it. A tab hears each forget once. It hears it from storage, as the
+// credential emptied, which the pressing tab does last of what it clears and
+// before it removes the credential: a tab's view of storage has, by the time
+// it is told of a change, every change made before it, so at the emptying it
+// has the forget whole. That matters because a tab that handled a
+// confirmation or a post before it heard may have written the badge, the
+// poster key or the name back. So each tab notes what it stores of those
+// three, and on hearing removes each that its view of storage still holds as
+// it stored it, and touches nothing else: not what it stored before the
+// forget, and not a badge confirmed or a key made in another tab since,
+// however late it hears. The message on the forget's channel can reach a tab
+// before its view of storage has the forget, when what the view shows as the
+// tab's own may have gone from storage, a badge verified or a key made since in
+// its place: a tab that compared at the message removed it. So the message is
+// the hearing only for a tab that storage tells nothing, and nothing is
+// compared at it: a tab that cannot read storage acts on FORGET_MESSAGE, and
+// every tab on FORGET_UNSTORED, which the pressing tab sends in its place when
+// storage would not take the emptying. Both are constants that say nothing
+// about anyone, only forgetBrowser sends them, one for each forget, and a tab
+// acts on nothing else that arrives. No test here runs two tabs: what a
+// browser's storage tells a tab, and when, is measured in the browser
+// (the pull request's test plan).
 func TestForgettingTheBrowserReachesEveryTab(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
 	if !regexp.MustCompile(`\nconst FORGET_CHANNEL = "educhan:[a-z-]+";\n`).MatchString(code) ||
-		!regexp.MustCompile(`\nconst FORGET_MESSAGE = "[a-z-]+";\n`).MatchString(code) {
-		t.Error("the forget channel's name or its message is no longer a constant")
+		!regexp.MustCompile(`\nconst FORGET_MESSAGE = "[a-z-]+";\n`).MatchString(code) ||
+		!regexp.MustCompile(`\nconst FORGET_UNSTORED = "[a-z-]+";\n`).MatchString(code) ||
+		jsString(t, script, "FORGET_MESSAGE") == jsString(t, script, "FORGET_UNSTORED") {
+		t.Error("the forget channel's name or one of its two messages is no longer a constant, or the two are the same")
 	}
-	// One channel, opened once, listening for that message and nothing else.
+	// One channel, opened once. Its listener acts on the two messages and
+	// nothing else, and on FORGET_MESSAGE only where the tab cannot read
+	// storage: a tab that can hears the forget from storage, and acting on the
+	// message too would forget twice, the second time over what was done
+	// since the first. It compares nothing at either.
 	open := squash(withoutComments(jsFunction(t, script, "openForgetChannel")))
 	if strings.Count(code, "new BroadcastChannel(") != 1 || !strings.Contains(code, "\nconst forgetChannel = openForgetChannel();\n") ||
 		!strings.Contains(open, `if (typeof BroadcastChannel !== "function") { return null; } try { `+
 			`const channel = new BroadcastChannel(FORGET_CHANNEL); channel.addEventListener("message", (event) => { `+
-			`if (event.data === FORGET_MESSAGE) { forgottenElsewhere(); } }); return channel; } catch { return null; }`) {
-		t.Error("openForgetChannel no longer opens the one channel, where there is one, and acts only on FORGET_MESSAGE")
+			`if (event.data === FORGET_UNSTORED || (event.data === FORGET_MESSAGE && !storageAnswers())) { `+
+			`forgottenElsewhere(false); } }); return channel; } catch { return null; }`) {
+		t.Error("openForgetChannel no longer opens the one channel, where there is one, or a tab acts on a message " +
+			"where storage tells it of the forget, on something else that arrives, or compares what it stored at one")
 	}
-	// Posted on in one place, forgetBrowser, after its own work, with the
-	// constant: the only other postMessage in app.js gives the captcha's
-	// worker its puzzle.
+	answers := squash(withoutComments(jsFunction(t, script, "storageAnswers")))
+	if answers != "function storageAnswers() { try { localStorage.getItem(CREDENTIAL_STORAGE_KEY); return true; } catch { return false; } }" ||
+		strings.Count(code, "storageAnswers(") != 2 {
+		t.Errorf("storageAnswers no longer says whether this tab can read storage, or is asked somewhere besides "+
+			"the channel's listener: %s", answers)
+	}
+	// forgetBrowser, whole: what the page holds, then the key and the name out
+	// of storage, then the credential emptied, the last of the three and what
+	// the other tabs hear, before it is removed, then the message, which says
+	// whether storage took the emptying. Emptied first, a tab would hear with
+	// the key and the name still in its view of storage, find them as it
+	// stored them, and remove a key made or a name stored in another tab
+	// since. The only other postMessage in app.js gives the captcha's worker
+	// its puzzle.
 	forget := squash(withoutComments(jsFunction(t, script, "forgetBrowser")))
-	inOrder(t, "forgetBrowser", forget,
-		"forgetOnThisPage();", `storageSet(CREDENTIAL_STORAGE_KEY, "");`, "forgetCredential();", "localStorage.removeItem(key);",
-		"if (forgetChannel) { forgetChannel.postMessage(FORGET_MESSAGE); } }")
+	if forget != "function forgetBrowser() { forgetOnThisPage(); "+
+		"for (const key of [POSTER_KEY_STORAGE_KEY, NAME_STORAGE_KEY]) { try { localStorage.removeItem(key); } catch { } } "+
+		"const emptied = emptyCredential(); forgetCredential(); "+
+		"if (forgetChannel) { forgetChannel.postMessage(emptied ? FORGET_MESSAGE : FORGET_UNSTORED); } }" {
+		t.Errorf("forgetBrowser no longer removes the key and the name, then empties the credential before it removes "+
+			"it, then posts the message that says whether storage took the emptying: %s", forget)
+	}
+	// The emptying is a change, so that storage tells the other tabs of it: a
+	// credential emptied already is removed first.
+	empty := squash(withoutComments(jsFunction(t, script, "emptyCredential")))
+	if empty != `function emptyCredential() { try { if (localStorage.getItem(CREDENTIAL_STORAGE_KEY) === "") { `+
+		`localStorage.removeItem(CREDENTIAL_STORAGE_KEY); } localStorage.setItem(CREDENTIAL_STORAGE_KEY, ""); return true; } `+
+		`catch { return false; } }` {
+		t.Errorf("emptyCredential no longer empties the credential, removing one emptied already first, "+
+			"and says whether storage took it: %s", empty)
+	}
 	if strings.Count(code, ".postMessage(") != 2 || strings.Count(code, "forgetChannel.postMessage(") != 1 ||
 		strings.Count(withoutComments(jsFunction(t, script, "runCaptchaWorkers")), "worker.postMessage({") != 1 ||
 		strings.Count(code, "forgetChannel") != 3 {
 		t.Error("something besides forgetBrowser posts on the forget channel, or uses it")
 	}
-	// A tab that hears it removes what it stored itself, only where storage
-	// still holds it as stored, and then forgets what it holds.
+	// A tab that hears it from storage removes what it stored itself, only
+	// where its view of storage still holds it as stored; one that hears it
+	// from the message compares nothing. Either then forgets what it holds.
 	elsewhere := squash(withoutComments(jsFunction(t, script, "forgottenElsewhere")))
-	if elsewhere != `function forgottenElsewhere() { for (const [key, value] of storedHere) { `+
-		`if (storageGet(key) === value) { storageRemove(key); } } forgetOnThisPage(); `+
+	if elsewhere != `function forgottenElsewhere(byStorage) { if (byStorage) { for (const [key, value] of storedHere) { `+
+		`if (storageGet(key) === value) { storageRemove(key); } } } forgetOnThisPage(); `+
 		`if (onVerifyPage() && ageStatus() === "ok") { renderVerify().then((drawn) => { `+
 		`if (drawn) { showNotice(BROWSER_FORGOTTEN_ELSEWHERE); } }); } }` {
-		t.Errorf("a tab that hears the forget no longer removes only what it stored and storage still holds, "+
-			"forgets what it holds, or draws /verify again: %s", elsewhere)
+		t.Errorf("a tab that hears the forget no longer removes only what it stored and its view of storage still "+
+			"holds, and only when it hears from storage, forgets what it holds, or draws /verify again: %s", elsewhere)
+	}
+	// It is heard from storage in one place, the credential emptied, where the
+	// tab stops before it treats the emptying as a change of badge, and from
+	// the message in one, above.
+	if !strings.Contains(squash(withoutComments(jsFunction(t, script, "followCredentialStorage"))),
+		`{ return; } if (event.key === CREDENTIAL_STORAGE_KEY && event.newValue === "") { forgottenElsewhere(true); return; } `+
+			`if (!readStoredBadge()) {`) ||
+		strings.Count(code, "forgottenElsewhere(true)") != 1 || strings.Count(code, "forgottenElsewhere(false)") != 1 ||
+		strings.Count(code, "storageRemove(") != 2 {
+		t.Error("a tab no longer hears the forget from storage at the credential emptied, and only there, " +
+			"or removes from storage somewhere besides what it stored itself")
 	}
 	// What it says on /verify is what happened, and that what the browser held
 	// then is gone, not what the browser holds: a badge or a key stored since
@@ -1755,7 +1814,7 @@ func TestForgettingTheBrowserReachesEveryTab(t *testing.T) {
 		strings.Count(code, "storedHere") != 6 || strings.Count(code, "of storedHere)") != 1 || strings.Count(code, "storedHere.clear();") != 1 {
 		t.Error("storedHere is written, read or cleared somewhere besides where the three are stored, forgottenElsewhere and forgetOnThisPage")
 	}
-	if strings.Count(code, "forgottenElsewhere(") != 2 || strings.Count(code, "forgetOnThisPage(") != 3 {
+	if strings.Count(code, "forgottenElsewhere(") != 3 || strings.Count(code, "forgetOnThisPage(") != 3 {
 		t.Error("forgetOnThisPage or forgottenElsewhere is called from somewhere besides a forget")
 	}
 }
@@ -1789,7 +1848,9 @@ func TestForgettingTheBrowserReachesEveryTab(t *testing.T) {
 // verified an address and the code here no longer works, and not that the one
 // is why. A code request still on its way is not a code step yet, and keeps its
 // own. It acts on the credential's key, and on storage cleared, and on nothing
-// else.
+// else; the credential emptied is not a change of badge but the browser
+// forgotten in another tab, heard there
+// (TestForgettingTheBrowserReachesEveryTab).
 func TestForgettingTheBadgeReachesEveryTab(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -1800,7 +1861,8 @@ func TestForgettingTheBadgeReachesEveryTab(t *testing.T) {
 	}
 	follow := squash(withoutComments(jsFunction(t, script, "followCredentialStorage")))
 	if follow != `function followCredentialStorage(event) { if (event.key !== CREDENTIAL_STORAGE_KEY && event.key !== null) { return; } `+
-		`if (!readStoredBadge()) { return; } offerHeldBadge(event.key === CREDENTIAL_STORAGE_KEY && event.newValue === ""); `+
+		`if (event.key === CREDENTIAL_STORAGE_KEY && event.newValue === "") { forgottenElsewhere(true); return; } `+
+		`if (!readStoredBadge()) { return; } offerHeldBadge(); `+
 		panelRedrawn+" }" {
 		t.Errorf("a tab no longer reads the badge again when another changes it, or no longer draws the option to post "+
 			"with it again, or draws /verify again in some other case: %s", follow)
@@ -3945,13 +4007,16 @@ func TestOnlyKnownPlacesTellWhetherABadgeIsHeld(t *testing.T) {
 		"function badgeNumber(token) {":                        5,
 		// What else the browser keeps: the age answer, the post key, and
 		// forgetting the browser, which empties the credential before it
-		// removes it, so that every other tab hears the badge go as the browser
-		// forgotten (followCredentialStorage).
+		// removes it, the emptying being what every other tab hears the forget
+		// by (emptyCredential, followCredentialStorage), and whether this tab
+		// can read storage, asked at a forget's message (storageAnswers).
 		"function storageGet(key) {":        1,
 		"function storageSet(key, value) {": 1,
 		"function storageRemove(key) {":     1,
 		"function posterKey() {":            2,
-		"function forgetBrowser() {":        2,
+		"function forgetBrowser() {":        1,
+		"function emptyCredential() {":      6,
+		"function storageAnswers() {":       2,
 		// The badge the server put on a post, which says nothing of the one
 		// held here.
 		"function postHTML(post, context) {": 2,

@@ -856,9 +856,9 @@ properties and needs a browser check before the test changes.
   a badge was lost (`browserForgets` for a post, and for a Verify request the new step
   the forget moves the page to, `TestForgettingTheBrowserCancelsWhatIsOnItsWay`). That
   covers what every educhan tab open in the browser has on its way, not only the tab it
-  was pressed in: `forgetBrowser` posts `FORGET_MESSAGE` on `FORGET_CHANNEL`, a
-  `BroadcastChannel`, and every other tab answers with `forgottenElsewhere`, which runs
-  the same `forgetOnThisPage` as the pressing tab (what is on its way, a redraw's draft
+  was pressed in: every other tab hears the forget, once, from storage or from a
+  message, as set out below, and answers it with `forgottenElsewhere`, which runs the
+  same `forgetOnThisPage` as the pressing tab (what is on its way, a redraw's draft
   included, the badge and the poster key the page holds, the code step, the note, and
   the Name and the badge option of every posting form on screen, whose note on the
   anti-spam check then says what a form without the option says: `drawBadgeOption`,
@@ -871,24 +871,37 @@ properties and needs a browser check before the test changes.
   Name, the one forgotten, is not restored. A forget that reached it on screen, its page
   kept while Update loads say, is not done again (`forgottenAt`, which `forgetForm`
   notes), so a Name typed after it, which a post pressed since may be going out under,
-  is left as it is. The message is one constant that says nothing about anyone. The
-  pressing tab clears storage before it posts the message, emptying the credential
-  before it removes it: a tab that hears storage first, which no browser rules out,
-  takes the badge option out of its forms as for any badge gone but starts no puzzle for
-  them (`followCredentialStorage`), since a forget sends nothing. Because storage is
-  cleared first, another tab can store the credential, the poster key or the name again,
-  for a post or a confirmation it handles before it hears; each tab notes what it stores
-  of those three (`storedHere`), and on hearing removes each only while storage still
-  holds it as that tab stored it: never a badge confirmed or a key made in another tab
-  since, however late it hears (a name is compared by its text, so the same name stored
-  since goes too). So the notice a tab on `/verify` says when it hears says what was
-  done, and that what the browser held then is gone, not what the browser holds
+  is left as it is. A tab hears the forget from storage, as the credential emptied
+  (`followCredentialStorage`): the pressing tab removes the poster key and the name,
+  then empties the credential, then removes it (`forgetBrowser`, `emptyCredential`), and
+  a tab's view of storage has, by the time it is told of a change, every change made
+  before it, so at the emptying it has the forget whole. It starts no puzzle there,
+  since a forget sends nothing, and the credential's removal after it, and a badge
+  verified since, come as changes of badge like any other. Another tab can store the
+  credential, the poster key or the name again, for a post or a confirmation it handles
+  before it hears; each tab notes what it stores of those three (`storedHere`), and on
+  hearing from storage removes each only while its view of storage still holds it as
+  that tab stored it: never what it stored before the forget, and never a badge
+  confirmed or a key made in another tab since, however late it hears (a name is
+  compared by its text, so the same name stored since goes too). Storage has no removal
+  that looks first, which leaves one case: a value another tab stores over what this tab
+  wrote back, before this tab's view shows it, goes with the removal, which forgets more
+  than it needs to, never less. Never compare at the message on `FORGET_CHANNEL`, a
+  `BroadcastChannel`: it can reach a tab before its view of storage has the forget, when
+  what the view shows as the tab's own may have gone from storage, a badge verified or a
+  key made since in its place, and the removal takes it, as it did in Chromium for a tab
+  kept busy meanwhile. The message is the hearing only for a tab that storage tells
+  nothing, which compares nothing: one that cannot read storage acts on `FORGET_MESSAGE`
+  (`storageAnswers`), and every tab on `FORGET_UNSTORED`, sent in its place when storage
+  would not take the emptying. Both are constants that say nothing about anyone. So a
+  tab hears each forget once, and a second hearing never undoes what it did after the
+  first. The notice a tab on `/verify` says when it hears says what was done, and that
+  what the browser held then is gone, not what the browser holds
   (`BROWSER_FORGOTTEN_ELSEWHERE`): the page drawn under it may show the panel of a badge
-  stored since. In a browser without `BroadcastChannel` a forget covers the tab it was
-  pressed in, and the other tabs drop only the badge, as they do for Forget this
-  credential (`TestForgettingTheBrowserReachesEveryTab`). It is what the FAQ's
-  shared-computer advice points to: the key left behind would give the next person at
-  the computer the same IDs in the same threads.
+  stored since. In a browser without `BroadcastChannel`, a tab that storage tells
+  nothing does not hear it (`TestForgettingTheBrowserReachesEveryTab`). It is what the
+  FAQ's shared-computer advice points to: the key left behind would give the next person
+  at the computer the same IDs in the same threads.
 - The Verify page's steps (`verifyViewHTML`, `verifyStep`): the code step comes first
   and is decided on `verifyStep.step` alone, so a pending code's box shows whether or
   not a badge is held, since a badge is replaced only once the new one is confirmed

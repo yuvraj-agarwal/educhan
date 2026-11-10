@@ -1592,15 +1592,14 @@ const badgeWithdrawn = new WeakMap();
 // box drawn again unticked, in a form with some of the post in it, also starts
 // the puzzle the form now needs, as the reader's own untick would
 // (captchaBadgeToggled), so the press after the one the note refuses usually
-// finds it solved; but not with startNothing: when the badge went with the
-// browser forgotten in another tab, which starts nothing here, or as /verify is
-// drawn over the form (loadVerification), or a redraw puts a held form back
-// (restoreDraft), since drawing a page starts nothing, or as the form's own
-// badged post is refused while the form is off the screen, where nobody is
-// writing in it (submit). A form noted then starts it at the press the note
-// refuses (submit). A box drawn again for another badge or none, ticked or not,
-// has a refusal the form was told worded again for it while that is still the
-// notice on screen (rewordRefusal).
+// finds it solved; but not with startNothing: as /verify is drawn over the form
+// (loadVerification), or a redraw puts a held form back (restoreDraft), since
+// drawing a page starts nothing, or as the form's own badged post is refused
+// while the form is off the screen, where nobody is writing in it (submit). A
+// form noted then starts it at the press the note refuses (submit). A box drawn
+// again for another badge or none, ticked or not, has a refusal the form was
+// told worded again for it while that is still the notice on screen
+// (rewordRefusal).
 function withdrawBadgeOption(form, startNothing) {
   const offered = badgeOffered(form);
   const key = storageGet(POSTER_KEY_STORAGE_KEY) || "";
@@ -1647,8 +1646,9 @@ function badgeWithdrawnNotice(form, { key }) {
 // badge does: it posts without one. A reply then goes out under the same ID as
 // the reader's posts in the thread without a badge while storage holds key, the
 // poster key it held when the badge went, the key that ID is made from: a
-// forget in another tab that this one hears of only as the badge going, in a
-// browser without BroadcastChannel, takes the key away too, and a new thread
+// forget in another tab that this one hears of only as the badge going, as a
+// tab does where storage would not take the emptying and the browser has no
+// BroadcastChannel (FORGET_CHANNEL), takes the key away too, and a new thread
 // has no posts yet to share an ID with.
 function pressedWithoutBadge(form, key) {
   const sameID = form.dataset.kind === "reply" && key !== "" && key === storageGet(POSTER_KEY_STORAGE_KEY);
@@ -2307,19 +2307,28 @@ let badgeLost = "";
 
 const CREDENTIAL_FORGOTTEN = "This browser no longer holds a badge.";
 
-// How many times "Forget this browser" has been pressed, on this page or, where
-// the browser has BroadcastChannel, on any other educhan page open in it. A
-// request notes it at the press: one still waiting on its puzzle after another
-// press is not sent, and an answer that arrives after one keeps nothing.
-// Forgetting has to cover what was already on its way.
+// How many times "Forget this browser" has been pressed, on this page or on any
+// other educhan page open in the browser that this one heard it from
+// (forgottenElsewhere). A request notes it at the press: one still waiting on
+// its puzzle after another press is not sent, and an answer that arrives after
+// one keeps nothing. Forgetting has to cover what was already on its way.
 let browserForgets = 0;
 
-// Every open educhan tab hears "Forget this browser" pressed in any other on
-// FORGET_CHANNEL, so a forget covers what the others hold and have on their
-// way, as it does its own. The one message is FORGET_MESSAGE, a constant: it
-// says nothing about anyone, only that the browser was forgotten.
+// How the other open educhan tabs hear "Forget this browser" pressed in one, so
+// that a forget covers what they hold and have on their way, as it does its
+// own. A tab hears each forget once. Where storage tells it of changes, it
+// hears the forget from storage, as the credential emptied there
+// (followCredentialStorage): by then its own view of storage has everything the
+// pressing tab cleared, which is what lets it tell what it stored itself since
+// (storedHere). A message on FORGET_CHANNEL, a BroadcastChannel, can reach a
+// tab before its view of storage has caught up, so the message is the hearing
+// only for a tab that storage tells nothing: FORGET_MESSAGE for one that cannot
+// read storage, and FORGET_UNSTORED for every tab, when storage would not take
+// the emptying in the tab the button was pressed in. Both are constants: they
+// say nothing about anyone, only that the browser was forgotten.
 const FORGET_CHANNEL = "educhan:forget-browser";
 const FORGET_MESSAGE = "forget";
+const FORGET_UNSTORED = "forget-unstored";
 // What a posting form says when the browser was forgotten before its post went
 // through, which stops it going: while it waited on its puzzle for its first
 // send or, once the first had gone, before the second that the server's
@@ -2329,13 +2338,14 @@ const FORGOTTEN_BEFORE_SENDING = "This browser was forgotten before the post wen
 
 // What this tab has itself written to storage of what a forget removes, by
 // storage key: the credential, the poster key and the remembered name, each as
-// it was last written here. The tab a forget is pressed in removes all three
-// and then tells the others, so a tab that handled a confirmation or a post in
-// between may have written one back before it heard; when it hears, it removes
-// each that storage still holds as this tab wrote it (forgottenElsewhere). A
-// badge confirmed or a key made in another tab since the forget is never one,
-// however late it hears, since both are random; a name is compared by its
-// text, so the same name stored since by another tab goes too.
+// it was last written here. The tab a forget is pressed in removes all three,
+// and a tab that handled a confirmation or a post before it heard may have
+// written one back since; when it hears from storage, it removes each that its
+// view of storage still holds as this tab wrote it (forgottenElsewhere). That
+// view has the forget by then, so what this tab stored before the forget is
+// never one, and nor is a badge confirmed or a key made in another tab since,
+// however late it hears, since both are random; a name is compared by its text,
+// so the same name stored since by another tab goes too.
 const storedHere = new Map();
 
 // localStorage throws rather than degrading in some privacy modes, so every
@@ -2380,20 +2390,14 @@ function forgetCredential() {
 // threads, and see which posts there were yours — and the remembered name,
 // with its tripcode secret. The age answer stays: it says nothing about any
 // post. Like forgetting the badge, it is entirely local.
-// It also cancels what is on its way (forgetOnThisPage), here and, through
-// FORGET_CHANNEL, in every other open tab that hears it: a code request or a
-// post still waiting on its puzzle is not sent, and a code request, a
+// It also cancels what is on its way (forgetOnThisPage), here and in every
+// other open tab, each as it hears the forget (FORGET_CHANNEL): a code request
+// or a post still waiting on its puzzle is not sent, and a code request, a
 // confirmation or a post sent before it keeps nothing when its answer comes
 // back after it, neither the badge the server issued nor the code step nor the
 // name, nor a note that a badge was lost.
 function forgetBrowser() {
   forgetOnThisPage();
-  // Emptied before it is removed, so that every other tab hears the badge go
-  // as the browser forgotten, in the order storage keeps, whether this
-  // forget's message on FORGET_CHANNEL reaches it before the storage event or
-  // after, which no browser promises either way (followCredentialStorage).
-  storageSet(CREDENTIAL_STORAGE_KEY, "");
-  forgetCredential();
   for (const key of [POSTER_KEY_STORAGE_KEY, NAME_STORAGE_KEY]) {
     try {
       localStorage.removeItem(key);
@@ -2401,12 +2405,35 @@ function forgetBrowser() {
       // Nothing was stored, so nothing needs removing.
     }
   }
-  // Storage is shared, and has been cleared here, so the other tabs remove
-  // only what storage still holds as they last wrote it themselves
-  // (storedHere): what they wrote back before they heard, or a name stored
-  // since in the same words.
+  // The credential goes last, and is emptied before it is removed. The emptying
+  // is what the other tabs hear the forget by (followCredentialStorage), and a
+  // tab's view of storage has, by the time it is told of a change, every change
+  // made before it: the key and the name are gone from the view too, so what a
+  // tab finds there as it stored it, it wrote back since (storedHere).
+  const emptied = emptyCredential();
+  forgetCredential();
+  // Posted either way. A tab that storage tells of the emptying leaves
+  // FORGET_MESSAGE alone; one that storage tells nothing hears the forget by
+  // it, as every tab does by FORGET_UNSTORED.
   if (forgetChannel) {
-    forgetChannel.postMessage(FORGET_MESSAGE);
+    forgetChannel.postMessage(emptied ? FORGET_MESSAGE : FORGET_UNSTORED);
+  }
+}
+
+// emptyCredential empties the stored credential, which is how the other tabs
+// hear a forget (followCredentialStorage), and says whether storage took it.
+// Storage tells the other tabs of a change only, so a credential it holds
+// emptied already, left so by a forget cut short before the removal, is removed
+// first.
+function emptyCredential() {
+  try {
+    if (localStorage.getItem(CREDENTIAL_STORAGE_KEY) === "") {
+      localStorage.removeItem(CREDENTIAL_STORAGE_KEY);
+    }
+    localStorage.setItem(CREDENTIAL_STORAGE_KEY, "");
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -2468,23 +2495,37 @@ function forgetForm(form) {
 const forgottenAt = new WeakMap();
 
 // forgottenElsewhere is a tab's answer to Forget this browser pressed in
-// another: what this tab wrote back to storage since that tab cleared it goes
-// (storedHere), and what the page holds goes, as it did there, and /verify,
-// when it is on screen here, is drawn again without the badge or the code step,
-// unless the reader has drawn another step there by the time the page has asked
-// the server (renderVerify). Its notice says why, at the top of the page: the
-// reader was not at the button that would say it below
-// (confirmBrowserForgotten). A badge or a key storage holds that this tab did
-// not write stays, whenever this tab hears: it was stored since the forget, by
-// someone else. So the notice says what was done, and that what the browser
-// held then is gone, not what the browser holds (BROWSER_FORGOTTEN_ELSEWHERE):
-// /verify drawn again shows such a badge's panel under it. A name stored since
-// in the words this tab last wrote goes too, which forgets more than it needs
-// to, never less.
-function forgottenElsewhere() {
-  for (const [key, value] of storedHere) {
-    if (storageGet(key) === value) {
-      storageRemove(key);
+// another, run once for each forget, where the tab hears it (FORGET_CHANNEL):
+// at the credential emptied in storage (byStorage), or at the message, in a tab
+// that storage tells nothing. Heard from storage, what this tab wrote back
+// since that tab cleared it goes first (storedHere): the tab's view of storage
+// has the forget by then, so one of the three that it still holds as this tab
+// stored it was stored after the forget, before this tab heard. Heard from the
+// message, nothing is compared: a tab's view of storage can be behind the
+// message, and what it then shows as this tab's own may have gone from storage,
+// a badge confirmed or a key made in another tab since in its place, which the
+// removal would take. Storage has no removal that looks first, so the look and
+// the removal are two steps here too: if another tab stores over what this tab
+// wrote back, and this tab hears the forget before its view shows that, the
+// removal takes the other tab's value, which forgets more than it needs to,
+// never less. Then what the page holds goes, as it did in the tab the button
+// was pressed in, and /verify, when it is on screen here, is drawn again
+// without the badge or the code step, unless the reader has drawn another step
+// there by the time the page has asked the server (renderVerify). Its notice
+// says why, at the top of the page: the reader was not at the button that would
+// say it below (confirmBrowserForgotten). A badge or a key storage holds that
+// this tab did not write stays, whenever this tab hears: it was stored since
+// the forget, by someone else. So the notice says what was done, and that what
+// the browser held then is gone, not what the browser holds
+// (BROWSER_FORGOTTEN_ELSEWHERE): /verify drawn again shows such a badge's panel
+// under it. A name stored since in the words this tab last wrote goes too,
+// which again forgets more than it needs to.
+function forgottenElsewhere(byStorage) {
+  if (byStorage) {
+    for (const [key, value] of storedHere) {
+      if (storageGet(key) === value) {
+        storageRemove(key);
+      }
     }
   }
   forgetOnThisPage();
@@ -2499,9 +2540,8 @@ function forgottenElsewhere() {
 
 // forgetChannel is this tab's end of FORGET_CHANNEL, opened once at start-up,
 // or null in a browser without BroadcastChannel, or one that will not open it:
-// there a forget covers the tab it was pressed in, and the other tabs drop
-// only the badge, as they do for Forget this credential
-// (followCredentialStorage).
+// there the tabs hear a forget from storage alone, and a tab that storage tells
+// nothing does not hear it.
 const forgetChannel = openForgetChannel();
 
 function openForgetChannel() {
@@ -2511,13 +2551,24 @@ function openForgetChannel() {
   try {
     const channel = new BroadcastChannel(FORGET_CHANNEL);
     channel.addEventListener("message", (event) => {
-      if (event.data === FORGET_MESSAGE) {
-        forgottenElsewhere();
+      if (event.data === FORGET_UNSTORED || (event.data === FORGET_MESSAGE && !storageAnswers())) {
+        forgottenElsewhere(false);
       }
     });
     return channel;
   } catch {
     return null;
+  }
+}
+
+// storageAnswers says whether this tab can read storage. One that cannot is
+// told nothing by it, a forget in another tab included.
+function storageAnswers() {
+  try {
+    localStorage.getItem(CREDENTIAL_STORAGE_KEY);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -2541,17 +2592,22 @@ function openForgetChannel() {
 // this tab (CREDENTIAL_FORGOTTEN in that step, BROWSER_FORGOTTEN under its
 // button) stays as it was said. So is a code step, unless the badge read in is
 // one newly verified there (codeSpentElsewhere). An emptied credential is the
-// browser forgotten in another tab (forgetBrowser): the forms change as for any
-// badge gone, before or after its message on FORGET_CHANNEL is heard here, but
-// start no puzzle, since a forget starts nothing.
+// browser forgotten in another tab (forgetBrowser), and where this tab hears
+// the forget (forgottenElsewhere) in place of all this, which starts no puzzle,
+// since a forget starts nothing. The credential's removal after it, and a badge
+// verified since, are changes of badge like any other.
 function followCredentialStorage(event) {
   if (event.key !== CREDENTIAL_STORAGE_KEY && event.key !== null) {
+    return;
+  }
+  if (event.key === CREDENTIAL_STORAGE_KEY && event.newValue === "") {
+    forgottenElsewhere(true);
     return;
   }
   if (!readStoredBadge()) {
     return;
   }
-  offerHeldBadge(event.key === CREDENTIAL_STORAGE_KEY && event.newValue === "");
+  offerHeldBadge();
   const panel = el.main.querySelector('[data-action="forget-verification"]');
   if (onVerifyPage() && ageStatus() === "ok" && panel) {
     renderVerify();
@@ -4820,7 +4876,7 @@ document.addEventListener("click", (event) => {
   // (forgetOnThisPage), so a badge still on its way from Verify is dropped when
   // it lands (submitVerification) rather than stored after the browser was
   // forgotten, and a code request still waiting on its puzzle or its turn is
-  // not sent. The other tabs hear it on FORGET_CHANNEL (forgetBrowser).
+  // not sent. The other tabs hear it too (forgetBrowser).
   if (event.target.closest('[data-action="forget-browser"]')) {
     event.preventDefault();
     clearNotice();
