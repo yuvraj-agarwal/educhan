@@ -1357,16 +1357,17 @@ make cloud-build
 make cloud-deploy
 ```
 
-Both are thin wrappers, so the underlying commands are no secret. The last one
-moves the archive sweeper Job onto the same image; `make cloud-deploy` runs it
-once that Job exists, so that the two never disagree about the schema:
+Both are thin wrappers, so the underlying commands are no secret. The third
+command below moves the archive sweeper Job onto the same image, so that the
+two never disagree about the schema; `make cloud-deploy` runs it only when
+that Job exists:
 
 ```bash
 gcloud builds submit --config cloudbuild.yaml \
   --substitutions "_REGION=$REGION,_REPOSITORY=educhan,_IMAGE=educhan,_TAG=$(git rev-parse --short HEAD)"
 
 gcloud run deploy educhan --image "$IMAGE" --region "$REGION"
-gcloud run jobs update educhan-sweep --image "$IMAGE" --region "$REGION"
+gcloud run jobs update educhan-sweep --image "$IMAGE" --region "$REGION"   # only once the sweeper Job exists
 ```
 
 The first deploy is longer, because it is what establishes the configuration that

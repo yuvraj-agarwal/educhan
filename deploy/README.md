@@ -26,7 +26,9 @@ and no container: `make db-up` starts a user-owned PostgreSQL cluster on
 `localhost:5432` and ensures the `educhan` role and database exist. It is
 `.cursor/scripts/start.sh`, it is idempotent, and it is safe to re-run. Where
 PostgreSQL is not installed it stops and says so; on Debian or Ubuntu,
-`bash .cursor/scripts/install.sh` installs it.
+`bash .cursor/scripts/install.sh` installs it (if the packaged PostgreSQL
+service then holds port 5432, stop it with `sudo systemctl stop postgresql`
+before `make db-up`).
 
 ```bash
 make db-up                                        # PostgreSQL on localhost:5432
@@ -103,11 +105,14 @@ export PROJECT_ID=your-project
 export REGION=asia-south1
 
 gcloud config set project "$PROJECT_ID"
-# Two of these are less obvious. logging.googleapis.com is for the exclusion in
-# section 2.8. containerscanning.googleapis.com has Artifact Analysis scan each
-# image pushed to the repository for known vulnerabilities and list what it
-# finds beside the image in Artifact Registry; Google bills for each image
-# scanned, so leave that line out to go without the scan.
+# Two of these are less obvious. logging.googleapis.com is for build logs, the
+# exclusion in section 2.8, and the `gcloud logging read` checks in this guide.
+# containerscanning.googleapis.com has Artifact Analysis scan each image pushed
+# to the repository for known vulnerabilities and list what it finds beside the
+# image in Artifact Registry, and Google bills for each image scanned.
+# first-deploy.sh enables it on every run. To go without the scan, take that
+# line out here and out of the script, and where it is already on, turn it off:
+#   gcloud services disable containerscanning.googleapis.com
 gcloud services enable \
   cloudbuild.googleapis.com \
   artifactregistry.googleapis.com \
@@ -712,7 +717,7 @@ reserved for Cloud SQL's own superuser:
 | --- | --- |
 | Service: `maxScale` 4 × `EDUCHAN_DB_MAX_CONNS` 3 | 12 |
 | A rollout's new revision starting while the old one drains | up to 12 more briefly, usually far fewer |
-| The archive sweeper Job (section 2.9), or another one-off Cloud Run Job, at the same cap | 3 |
+| The archive sweeper Job (section 2.9), or any one-off Cloud Run Job, at the same cap | 3 |
 | You in Cloud SQL Studio or `psql` | 1–2 |
 
 Raising either `maxScale` or the pool size means doing this sum again, or
