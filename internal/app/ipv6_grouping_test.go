@@ -116,13 +116,13 @@ func TestCodeRequestCooldownCoversAnIPv6Clients64(t *testing.T) {
 
 	var out verifyResponse
 	if status := h.postFrom(sameNetworkFirst, path,
-		map[string]any{"email": "ana@iitb.ac.in", "adult": true}, &out); status != http.StatusAccepted {
+		map[string]any{"email": "madeup.ana@iitb.ac.in", "adult": true}, &out); status != http.StatusAccepted {
 		t.Fatalf("first code request: status %d (%s)", status, out.Error)
 	}
 	refusedForFlooding(t, h.client, "a code request from the same /64",
-		h.postFrom(sameNetworkLast, path, map[string]any{"email": "bo@iitb.ac.in", "adult": true}, &out))
+		h.postFrom(sameNetworkLast, path, map[string]any{"email": "madeup.bo@iitb.ac.in", "adult": true}, &out))
 	if status := h.postFrom(nextNetwork, path,
-		map[string]any{"email": "cy@iitb.ac.in", "adult": true}, &out); status != http.StatusAccepted {
+		map[string]any{"email": "madeup.cy@iitb.ac.in", "adult": true}, &out); status != http.StatusAccepted {
 		t.Errorf("code request from the neighbouring /64: status %d (%s), want 202", status, out.Error)
 	}
 	if got := h.mail.count(); got != 2 {
