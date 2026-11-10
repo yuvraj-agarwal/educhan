@@ -1001,7 +1001,7 @@ Accept-Encoding`; the fonts are compressed already. JSON from the API is not com
 
 - **Backend**: Go 1.22 standard library HTTP server, `pgx` for PostgreSQL
 - **Database**: PostgreSQL 16, versioned SQL migrations applied on startup
-- **Front end**: HTML/CSS/JS with no framework and no build step, served from the Go binary; highlight.js and KaTeX are vendored for code and maths
+- **Front end**: HTML/CSS/JS with no framework and no build step, served from the Go binary; highlight.js and KaTeX are vendored for code and maths, and ALTCHA's PBKDF2 worker for the captcha
 - **Deployment**: multi-stage Docker build onto a distroless base, built by Cloud Build into Artifact Registry; Cloud Run with Cloud SQL and Cloud Storage (see [Deployment](#deployment))
 - **Planned**: Gemini API + Cloud Vision for moderation, Cloud CDN + Cloud Armor
 
