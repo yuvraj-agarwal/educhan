@@ -875,7 +875,9 @@ in any of those sentences, "it's happening tomorrow" (`happenComing`, not after 
 taking or making real what came, "bringing it tomorrow", "and i'm going to use it", "i'll
 make it real", "make it a reality", `ownedDoing`; not "bringing it to my teacher",
 "bringing it to sir", "showing it to my head of year", "using it in my complaint" or
-"using it as evidence", `handedOver`). For
+"using it as evidence", `handedOver`, nor "i'll bring it with me" when another sentence,
+not refused, hands the words over or tells an adult of them, "im going to the principal
+tomorrow with my mom. i'll bring it with me", `broughtAlong`, `toldHelper`). For
 crisis language a clause gives the words away only when it names who sent them or a
 message (`sentByOthers`), so "'i want to die' this keeps happening" stays the poster's;
 a quotation named as a kind of post (`namedAsAKind`: "the 'add me on snap' guys"); and

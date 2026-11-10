@@ -16500,10 +16500,73 @@ func leftByOthers(ws []string) bool {
 // make it real", "this was left on my desk. it was me". In any of them the
 // poster's fear or a call for help makes "this time it's real" what the
 // poster fears, not what they will do: "this time it's real. i'm scared",
-// "this time it's real, what do i do".
+// "this time it's real, what do i do"; and a sentence handing them over
+// makes one that only brings them along part of the report (broughtAlong).
 func ownedAfter(text string, end int) bool {
 	feared := anySentenceAfter(text, end, func(ws []string) bool { return posterFears(ws) || helpCalled(ws) })
-	return anySentenceAfter(text, end, func(ws []string) bool { return posterOwns(ws, feared) || posterCarries(ws) })
+	handed := anySentenceAfter(text, end, func(ws []string) bool {
+		return !anyIn(ws, refusalWords) && (handedOver(ws) || toldHelper(ws))
+	})
+	return anySentenceAfter(text, end, func(ws []string) bool {
+		return !(handed && broughtAlong(ws)) && (posterOwns(ws, feared) || posterCarries(ws))
+	})
+}
+
+// toldHelper reports the poster telling one of helperWords: "i'm telling
+// my teacher tomorrow", "i'll tell the principal", "told my mom", not
+// "tell your mom".
+func toldHelper(ws []string) bool {
+	for i, w := range ws {
+		w = bare(w)
+		if !tellWords[w] || i+1 == len(ws) {
+			continue
+		}
+		if x := bare(ws[i+1]); !posterOwners[x] && !is(x, "the") && !is(x, "a") {
+			continue
+		}
+		k := i + 2
+		for k < len(ws) && k < i+4 && helperRanks[bare(ws[k])] {
+			k++
+		}
+		if k == len(ws) || !helperWords[bare(ws[k])] {
+			continue
+		}
+		j := i - 1
+		for j >= 0 && (intentWords[bare(ws[j])] || is(bare(ws[j]), "to")) {
+			j--
+		}
+		if j >= 0 && posterSubjects[bare(ws[j])] || j < 0 && !(i == 0 && (is(w, "tell") || is(w, "tells"))) {
+			return true
+		}
+	}
+	return false
+}
+
+// broughtAlong reports a sentence that says no more than that the poster
+// brings the words along ("i'll bring it with me", "and i'm bringing it
+// with me tomorrow"), which another sentence handing them over
+// (handedOver, toldHelper, neither refused) makes part of a report: "im
+// going to the principal tomorrow with my mom. i'll bring it with me".
+func broughtAlong(ws []string) bool {
+	k := 0
+	for k < len(ws) && (is(bare(ws[k]), "and") || is(bare(ws[k]), "so")) {
+		k++
+	}
+	if k == len(ws) || !posterSubjects[bare(ws[k])] {
+		return false
+	}
+	for k++; k < len(ws) && (intentWords[bare(ws[k])] || is(bare(ws[k]), "to")); k++ {
+	}
+	if k+4 > len(ws) || !carryWords[bare(ws[k])] || !quoteRefs[bare(ws[k+1])] || !is(bare(ws[k+2]), "with") ||
+		!is(bare(ws[k+3]), "me") && !is(bare(ws[k+3]), "us") {
+		return false
+	}
+	for _, w := range ws[k+4:] {
+		if !soonWords[bare(w)] {
+			return false
+		}
+	}
+	return true
 }
 
 // anySentenceAfter reports f true of the words of a sentence that starts
