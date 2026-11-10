@@ -350,6 +350,21 @@ needs a browser check before the test changes.
   reads both and fails when they differ). Cross-board links in post text use the same
   list, so a link to a reserved word stays text. `/{board}/post/{no}` resolves through
   `GET /api/boards/{slug}/posts/{no}` and replaces its own history entry with the thread.
+- **A link followed starts at the top of the page.** `navigate()` (an internal link
+  clicked, and the move to the thread once a post is made) is a new visit, as on a site of
+  separate pages, a link to the page on screen included: it passes `visit` down its one
+  `render()` call, and each place that writes `<main>` for that render — the age screen,
+  the skeleton in `beginLoading`, each view, the not-found and could-not-load messages,
+  the Verify step in `renderVerify` — calls `startVisit`, which puts the window at the
+  top in the same turn, so no frame shows the new page or the skeleton at the old offset,
+  nor the old page moved while it waits. Each view writes `<main>` once, after its last
+  wait, for that to hold. `focusHash()` then moves the page to the post or heading the
+  fragment names; one that names nothing leaves it at the top. `visit` is never kept
+  where another render could find it: a post number hands it on to the thread it
+  resolves to, and Back and Forward (`popstate`, left to the browser's own scroll
+  restoration), the thread's Update, the age screen's answer and the first load render
+  without it, as does a link that changes only the fragment, which is the browser's jump
+  and `focusHash()` (`TestALinkFollowedStartsAtTheTopOfThePage`).
 - `formHTML` takes the thread it replies to and follows its state: an archived thread
   gets an explanation instead of a form, a locked one a note. A refusal that arrives
   after the form was drawn (`thread is archived`, say) is a notice from `errorMessage`
@@ -556,8 +571,8 @@ needs a browser check before the test changes.
   run on what it drew (`focusHash` in `render()`, `showHeldBadge` after Verify,
   `confirmBrowserForgotten` after Forget this browser), what `renderVerify` and the
   requests it waits on run once their answers are in, since an answer can draw the box
-  while it is still asking (the rest of `api()`, `loadVerification`'s `readBadge`, and
-  `announce`), and every top-level function those call, however far down
+  while it is still asking (the rest of `api()`, `loadVerification`'s `readBadge`,
+  `announce` and `startVisit`), and every top-level function those call, however far down
   (`revealClearOfHeader`, `refuseVerification` and the helpers the code step's template
   interpolates). The test finds that set by following the calls rather than from a
   list, and holds each function in it whole, so a function new to the path fails it
