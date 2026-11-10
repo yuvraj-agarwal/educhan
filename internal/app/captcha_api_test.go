@@ -73,9 +73,12 @@ func expectCaptchaRefusal(t *testing.T, what string, status int, got captchaRefu
 }
 
 // fakeCaptcha stands in for the verifier: it issues placeholder challenges,
-// noting the difficulty each was asked at, and answers every check with err.
+// noting the difficulty each was asked at, and answers every check with err,
+// or, with none, with a ticket that runs out at expires, or captchaTTL after
+// the check where expires is not set.
 type fakeCaptcha struct {
-	err error
+	err     error
+	expires time.Time
 
 	mu     sync.Mutex
 	scales []int
@@ -93,7 +96,11 @@ func (f *fakeCaptcha) check(payload string, now time.Time) (captchaTicket, error
 		return captchaTicket{}, f.err
 	}
 	key := sha256.Sum256([]byte(payload))
-	return captchaTicket{key: key[:], expires: now.Add(captchaTTL)}, nil
+	expires := f.expires
+	if expires.IsZero() {
+		expires = now.Add(captchaTTL)
+	}
+	return captchaTicket{key: key[:], expires: expires}, nil
 }
 
 func (f *fakeCaptcha) issued() []int {
@@ -1148,7 +1155,9 @@ func TestCaptchaChallengesPerAddress(t *testing.T) {
 		cfg.captcha = fake
 		cfg.TrustedProxyHops = 1
 	})
-	now := time.Unix(1_800_000_000, 0).Add(15 * time.Second)
+	// Part of the way through a second, so the wait left in the window is not a
+	// whole number of seconds, and the 45 below is that wait rounded up.
+	now := time.Unix(1_800_000_000, 0).Add(15*time.Second + 400*time.Millisecond)
 	meterAt(h.app.captchaMeter, &now)
 
 	var out map[string]any
@@ -1169,7 +1178,7 @@ func TestCaptchaChallengesPerAddress(t *testing.T) {
 	}
 	status, header := from("203.0.113.9")
 	if status != http.StatusTooManyRequests || header.Get("Retry-After") != "45" || out["retry_after"] != 45.0 {
-		t.Errorf("challenge past the limit: status %d, Retry-After %q, retry_after %v, want 429 after the 45s left",
+		t.Errorf("challenge past the limit: status %d, Retry-After %q, retry_after %v, want 429 and 45, the 44.6s left rounded up",
 			status, header.Get("Retry-After"), out["retry_after"])
 	}
 	if status, _ := from("198.51.100.4"); status != http.StatusOK {
@@ -1332,6 +1341,46 @@ func TestASpendDoesNotWaitOnAnotherSpendsPruning(t *testing.T) {
 	}
 	if !held || free {
 		t.Errorf("after the spend: held row kept %t, free row kept %t; want the held one left to its holder and the free one pruned", held, free)
+	}
+}
+
+// A request spends its answer with two times, the challenge's expiry and the
+// server's clock, and each goes where the store wants it: the row is dated by
+// the challenge's expiry (spentCaptchaExpiry), and the spend prunes only the
+// rows the clock is past. Both are times, so only a test tells them apart in
+// the call. The challenge here runs out two days on, so they differ at any
+// hour: the clock in the expiry's place would date the row by the day of the
+// spend, and the expiry in the clock's would prune a row not yet past its day.
+func TestARequestSpendsItsAnswerByItsExpiryAndTheClock(t *testing.T) {
+	fake := &fakeCaptcha{expires: time.Now().Add(48 * time.Hour)}
+	h := testServer(t, func(cfg *Config) { cfg.captcha = fake })
+	h.addBoard("general")
+	key := func(s string) []byte { k := sha256.Sum256([]byte(s)); return k[:] }
+	expiry := func(answer string) (at time.Time, found bool) {
+		t.Helper()
+		err := h.app.pool.QueryRow(context.Background(),
+			`SELECT expires_at FROM captcha_spent WHERE signature_hash = $1`, key(answer)).Scan(&at)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatalf("read the spent answer %q: %v", answer, err)
+		}
+		return at, err == nil
+	}
+
+	// An answer spent earlier today: its row runs out at the coming midnight.
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		key("earlier today"), spentCaptchaExpiry(time.Now()))
+
+	var created createdPost
+	if status := h.post("/api/boards/general/threads", map[string]any{"body": "answered", "captcha": "an answer"}, &created); status != http.StatusCreated {
+		t.Fatalf("thread with an answer: status %d (%s)", status, created.Error)
+	}
+	want := spentCaptchaExpiry(fake.expires)
+	if at, found := expiry("an answer"); !found || !at.Equal(want) {
+		t.Errorf("the answer's row: found %t, expiring %s; want it to expire %s, the midnight after its challenge runs out",
+			found, at.UTC(), want)
+	}
+	if _, found := expiry("earlier today"); !found {
+		t.Error("the spend pruned a row that is not yet past its day")
 	}
 }
 

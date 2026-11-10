@@ -42,11 +42,12 @@ type cooldownLimiter struct {
 
 	mu   sync.Mutex
 	seen map[string]time.Time
-	// sweepAt is how many keys record lets the map hold before it sweeps: twice
-	// what the last sweep left, and never fewer than cooldownSweepThreshold. A
-	// map of live cooldowns, which a sweep cannot shrink, is then swept once
-	// each time it doubles rather than on every record, so a record costs a
-	// few map operations on average, inside admission as anywhere.
+	// sweepAt is twice what the last sweep left, and 0 until there has been
+	// one: record sweeps once the map holds that many keys, or
+	// cooldownSweepThreshold if that is more. A map of live cooldowns, which a
+	// sweep cannot shrink, is then swept once each time it doubles rather than
+	// on every record, so a record costs a few map operations on average,
+	// inside admission as anywhere.
 	sweepAt int
 }
 
@@ -153,8 +154,9 @@ func (l *cooldownLimiter) record(key string) {
 	l.seen[key] = now
 }
 
-// sweep drops entries whose cooldown has elapsed, and sets the size at which
-// record sweeps next. Callers must hold the mutex.
+// sweep drops entries whose cooldown has elapsed, and notes twice what it left
+// (sweepAt), which record weighs against cooldownSweepThreshold to tell when to
+// sweep next. Callers must hold the mutex.
 func (l *cooldownLimiter) sweep(now time.Time) {
 	for key, last := range l.seen {
 		if now.Sub(last) >= l.interval {

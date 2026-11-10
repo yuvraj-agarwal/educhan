@@ -216,10 +216,11 @@ func newMediaStore(ctx context.Context, cfg Config) (media.Store, error) {
 	case MediaBackendGCS:
 		// ctx bounds the check that the bucket answers, as it bounds the rest
 		// of startup (New), so a sweep's stop or cmd/server's startup bound
-		// ends New there too. The client, which outlives startup, is built on
-		// a context that is not cancelled with it (NewGCSStore): one whose
-		// credentials could not refresh past the bound would fail its first
-		// upload half a minute in.
+		// ends New there too. The client, which outlives startup, is built on a
+		// context that is not cancelled with it (NewGCSStore): one whose
+		// credentials could get no new token once startup's context was done
+		// would fail every request to the bucket made after the token startup
+		// fetched ran out.
 		return media.NewGCSStore(ctx, cfg.GCSBucket, cfg.GCSPrefix)
 	case MediaBackendLocal, "":
 		// Empty means local as well, so a Config built in code — the tests do —

@@ -95,13 +95,16 @@ func run(args []string, logs io.Writer) error {
 	// ends with it, and New looks at it after the rest, among them a
 	// migration's COMMIT and the migrations' lock given back, which migrate
 	// waits on whatever the stop, both for two seconds at most after it, and
-	// the domain file's read, which it does not cut short. So the error is
-	// written at once, or once that answer or that read comes, unless the
-	// database stops answering while the sweep is connected to it: New gives
-	// up the connection before it returns, which pgx allows fifteen seconds,
-	// seventeen after a commit or an unlock left unanswered, longer than Cloud
-	// Run waits. The server listens for signals only once it serves (serve),
-	// and its startup ends at startupTimeout wherever it is, the same way.
+	// the domain file's read, which it does not cut short, any more than a
+	// Cloud Storage client's credentials, found and asked for their first token
+	// on the auth library's terms (media.NewGCSStore). So the error is written
+	// at once, or once that answer, that read or those credentials come, unless
+	// the database stops answering while the sweep is connected to it: New
+	// gives up the connection before it returns, which pgx allows fifteen
+	// seconds, seventeen after a commit or an unlock left unanswered, longer
+	// than Cloud Run waits. The server listens for signals only once it serves
+	// (serve), and its startup ends at startupTimeout wherever it is, the same
+	// way.
 	base := context.Background()
 	if *sweep {
 		var stop context.CancelFunc

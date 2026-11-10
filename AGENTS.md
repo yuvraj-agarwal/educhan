@@ -1337,14 +1337,14 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   so a stop while the sweep is still starting up ends `New` with the stop as its error,
   which is written, and the process exits 1 with nothing deleted, the spent answers
   included: while it connects, waits for or runs migrations, or checks a Cloud Storage
-  bucket, which `NewGCSStore` does on the context it is given while its client is built
-  on one that outlives it (`TestSweepStoppedWhileStartingUpWritesItsError`, connecting
-  to a proxy that answers nothing, waiting on the migrations' lock, and checking a
-  bucket that never answers), and while `migrate` waits for the two answers it waits for
-  whatever the stop, both within `migrateAnswerTimeout` (two seconds) of the stop: a
-  migration's COMMIT once sent, so a stop as it commits leaves the migration applied and
-  recorded and the next not begun, rather than reported as failed, and the migrations'
-  lock given back, which also has two seconds at most from when it is sent
+  bucket, which `NewGCSStore` does on the context it is given
+  (`TestSweepStoppedWhileStartingUpWritesItsError`, connecting to a proxy that answers
+  nothing, waiting on the migrations' lock, and checking a bucket that never answers),
+  and while `migrate` waits for the two answers it waits for whatever the stop, both
+  within `migrateAnswerTimeout` (two seconds) of the stop: a migration's COMMIT once
+  sent, so a stop as it commits leaves the migration applied and recorded and the next
+  not begun, rather than reported as failed, and the migrations' lock given back, which
+  also has two seconds at most from when it is sent
   (`TestAnUnansweredUnlockIsGivenUpWithoutAStop`: an unlock never answered, with no
   stop, is given up two seconds after it is sent, and the sweep goes on and exits 0). A
   commit no stop has come to is not cut short, its two seconds starting at the stop or
@@ -1358,11 +1358,16 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   (`TestSweepStoppedWhileStartingUpWritesItsError`, a domain file that is a FIFO written
   to only after the stop); and after the media store, for one that answers just as the
   stop comes, which no test reaches: making the local upload directory does not wait,
-  and a bucket check the stop lands in ends with it. The error is written at once, or
-  once that answer or the domain file's read comes, unless the database stops answering
-  while the sweep is connected to it, when `New` first gives up the connection, which
-  pgx allows fifteen seconds, seventeen after a commit or an unlock left unanswered.
-  Every error `run` ends on is written once, as `msg=fatal`
+  and a bucket check the stop lands in ends with it. What the stop does not cut short
+  there is the Cloud Storage client's credentials: the client is built on a context that
+  outlives the one `NewGCSStore` is given, so that credentials that refresh on it still
+  can once that one is done, and finding them, and fetching the token the bucket check
+  goes out with, are the auth library's to bound. No test reaches those, since the
+  emulator the tests use takes no credentials. The error is written at once, or once
+  that answer, the domain file's read or those credentials come, unless the database
+  stops answering while the sweep is connected to it, when `New` first gives up the
+  connection, which pgx allows fifteen seconds, seventeen after a commit or an unlock
+  left unanswered. Every error `run` ends on is written once, as `msg=fatal`
   (`TestSweepModeFailsWithoutADatabase`, `TestServingFailsWhenTheAddressIsTaken` and the
   stopped sweeps above), and a flag or a setting it cannot read is then the only line
   written: the flag set writes nothing of its own, and the usage only for `-h`

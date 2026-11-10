@@ -1848,12 +1848,14 @@ seconds at most as well, and never past two seconds after the stop, so a stop as
 a migration commits waits two seconds at most for the two together. The domain
 file is read to the end whatever the stop, and the stop is looked at once it has
 been. So the error is written at once, or once that commit, the lock's release
-or the file's read is done, unless the database stops answering while the sweep
-is connected to it: then the error waits until the connection is given up,
-fifteen seconds later, or seventeen if what went unanswered was a commit or the
-lock's release, which is longer than Cloud Run waits. A commit left unanswered
-is reported as failed, though the database may have applied it: the next start
-finds it recorded, or applies it.
+or the file's read is done, or, where the media store is Cloud Storage, once its
+client's credentials have been found and have fetched the token the bucket check
+goes out with, which is the auth library's to bound and not the stop's, unless
+the database stops answering while the sweep is connected to it: then the error
+waits until the connection is given up, fifteen seconds later, or seventeen if
+what went unanswered was a commit or the lock's release, which is longer than
+Cloud Run waits. A commit left unanswered is reported as failed, though the
+database may have applied it: the next start finds it recorded, or applies it.
 
 It logs one line of counts (threads, posts, attachments, files removed, failed,
 and missing, credentials rewritten, and spent captchas deleted) and nothing

@@ -49,8 +49,12 @@ var _ Store = (*GCSStore)(nil)
 //
 // ctx bounds the check that the bucket answers, and nothing after it: the
 // client outlives the call, so it is built on a context that is not cancelled
-// with ctx, since credentials that refresh on a cancelled context would fail
-// the first request made once ctx is done.
+// with ctx. Credentials that refresh on the context their client was built on,
+// such as a user's own from gcloud auth application-default login, could
+// otherwise get no new token once ctx was done: the client would work on with
+// the token the check fetched, and fail every request made after that token ran
+// out. What ctx cuts short is the request that asks for the bucket; a token the
+// credentials are fetching on the way to it is theirs to bound.
 //
 // The caller owns the returned store and must Close it.
 func NewGCSStore(ctx context.Context, bucket, prefix string, opts ...option.ClientOption) (*GCSStore, error) {
