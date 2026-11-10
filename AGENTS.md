@@ -541,8 +541,8 @@ has changed one of those properties and needs a browser check before the test ch
   pause that grows while it is open (`collectPass`). A reissue code's answer or a
   claim's that says `"claim"` draws the same and starts collecting too, unless a
   collection already asks for that drawing: every collection starts through
-  `collectFor`, one for each drawing (`passVisit`) at most (`passCollecting`), and none
-  for the answer to a request sent before a forget, here or in another tab
+  `collectFor`, one asking at a time for each drawing (`passVisit`, `passCollecting`),
+  and none for the answer to a request sent before a forget, here or in another tab
   (`passForgets`). Anything new that draws `"claim"` from an answer says the page keeps
   checking, so it goes through `collectFor` too. Each checkout's claim holds its own
   order and no other, so starting another stops this browser collecting the one before;
