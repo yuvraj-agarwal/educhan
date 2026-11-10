@@ -4973,7 +4973,8 @@ var (
 		olympiad assessment semester sem`)
 	messageWords = canonSetOf(`message msg text txt email mail dm pm note notes line pic photo picture video link links
 		reply invite snap call ping pdf pdfs slides slide doc docs file files answers solutions screenshot
-		screenshots ss list details reminder update invite info sheet form`)
+		screenshots ss list details reminder update invite info sheet form meme memes reel reels gif gifs
+		sticker stickers`)
 	// noEventExcuse is what no event makes harmless: an event straight
 	// after "shoot up the school" or "bring a gun to school" is when it
 	// happens, not what is meant.
@@ -6910,7 +6911,8 @@ func (f *scannedField) threatFrame(v *view, verb, after string, at int) (end int
 					break
 				}
 			}
-			if anyIn(wordsIn(sentenceAround(v.text, at, at+len(after))), hitMeUp) && !hitHard(after, sp, np.n) {
+			if anyIn(wordsIn(sentenceAround(v.text, at, at+len(after))), hitMeUp) &&
+				!hitHard(v.text, at, after, sp, np.n) {
 				return 0, false, false
 			}
 			return act(np.n)
@@ -7220,24 +7222,67 @@ var (
 var hitMeUp = canonSetOf(`hmu`)
 
 // hitHard reports force or an injury in the clause of after from its word n
-// (sp are after's words), which makes a hit a blow whatever message is near:
-// "I'll hit you so hard tomorrow after school you won't walk", "hit you till
-// you bleed", "hit you in the face"; not "hit you after school, so hard to
-// find time otherwise".
-func hitHard(after string, sp [][2]int, n int) bool {
+// (sp are after's words, and at is where after starts in text), or an injury
+// in the clause or sentence after it, which makes a hit a blow whatever
+// message is near: "I'll hit you so hard tomorrow after school you won't
+// walk", "hit you till you bleed", "hit you in the face", "hit u after school
+// so many times", "and you won't be able to walk", "till u pass out", ". you'll
+// end up in hospital"; not "hit you after school, so hard to find time
+// otherwise".
+func hitHard(text string, at int, after string, sp [][2]int, n int) bool {
+	ws := make([]string, len(sp))
+	for k, s := range sp {
+		ws[k] = after[s[0]:s[1]]
+	}
 	for k := n; k < len(sp); k++ {
 		if k > 0 && strings.ContainsAny(after[sp[k-1][1]:sp[k][0]], ".!?\n,;:") {
 			return false
 		}
-		w := after[sp[k][0]:sp[k][1]]
+		switch w := ws[k]; {
+		case hitForce[w], is(w, "many") && k+1 < len(ws) && is(ws[k+1], "times"):
+			return true
+		case is(w, "in") && k+2 < len(ws) && (determiners[ws[k+1]] || ownerWord(ws[k+1])) && bodyHeads[ws[k+2]]:
+			return true
+		}
+	}
+	if hitInjured(ws[min(n, len(ws)):]) {
+		return true
+	}
+	j := at + len(after)
+	for j < len(text) && strings.IndexByte(".!?\n,;: ", text[j]) >= 0 {
+		j++
+	}
+	return hitInjured(wordsIn(clauseAfter(text, j)))
+}
+
+// hitInjured reports an injury from a blow in ws: one of hitInjuries ("until
+// ur nose breaks"), passing out, the reader taken to one of hitPlaces ("u'll
+// need a doctor", "you'll end up in hospital", not "once ur done at the
+// doctor" or "mum's in hospital"), or the reader and one of cantWords and
+// what someone hit will not do, with "be able to" or not between ("you won't
+// walk", "u won't be able to stand"); none once the poster is named ("i'm at
+// the doctor till 3", "we can pass out the flyers", "before my doctor
+// appointment", "i can't walk home alone").
+func hitInjured(ws []string) bool {
+	reader := false
+	for k, w := range ws {
 		switch {
-		case hitForce[w]:
+		case firstPerson[w]:
+			return false
+		case secondPerson[w] || is(w, "you'll") || is(w, "u'll") || is(w, "youll"):
+			reader = true
+		case hitPlaces[w] && reader && !(k > 1 && is(ws[k-2], "at") && determiners[ws[k-1]]):
 			return true
-		case cantWords[w] && k+1 < len(sp) && hitCant[after[sp[k+1][0]:sp[k+1][1]]]:
+		case hitInjuries[w], is(w, "pass") && k+1 < len(ws) && is(ws[k+1], "out"):
 			return true
-		case is(w, "in") && k+2 < len(sp) && (determiners[after[sp[k+1][0]:sp[k+1][1]]] ||
-			ownerWord(after[sp[k+1][0]:sp[k+1][1]])) && bodyHeads[after[sp[k+2][0]:sp[k+2][1]]]:
-			return true
+		case cantWords[w] && k > 0 && secondPerson[ws[k-1]]:
+			k++
+			if k+2 < len(ws) && is(ws[k], "be") && is(ws[k+1], "able") && is(ws[k+2], "to") {
+				k += 3
+			}
+			if k < len(ws) && hitCant[ws[k]] {
+				return true
+			}
 		}
 	}
 	return false
@@ -7245,9 +7290,12 @@ func hitHard(after string, sp [][2]int, n int) bool {
 
 var (
 	// hitForce are a blow's force or what it does: "so hard", "till you
-	// bleed", "beat senseless".
+	// bleed", "beat senseless"; hitInjuries and hitPlaces are what it does
+	// read a clause or a sentence on as well: "you'll end up in hospital".
 	hitForce = canonSetOf(`hard harder hardest senseless unconscious bleed bleeding bloody cry crying scream screaming
 		faint`)
+	hitInjuries = canonSetOf(`unconscious bleed bleeding bleeds bloody faint broken breaks`)
+	hitPlaces   = canonSetOf(`hospital doctor ambulance icu`)
 	// hitCant, after cantWords, are what someone hit will not do again:
 	// "you won't walk".
 	hitCant = canonSetOf(`walk stand breathe see talk remember wake`)
