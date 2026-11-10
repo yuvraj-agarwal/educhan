@@ -1170,10 +1170,10 @@ unbadged posts are filtered alike (`TestBadgedPostsAreFilteredAlike`).
 is no "post held" or "post refused" log line, but `requestLogger`'s line (method, path,
 status, duration) is written for these requests as for every other, so a `422` or `202`
 on a posting route does show that a post there was refused or held; a refusal also
-counts against the address in `refusalBudget`, in memory. A held post is stored with
-`posts.held_at` and `posts.held_reason` (the rule's name), and a held opening post sets
-`threads.held_at` too; nothing else the filter matched is stored, and approval is logged
-like every moderation action.
+counts against the client address in `refusalBudget`, in memory. A held post is stored
+with `posts.held_at` and `posts.held_reason` (the rule's name), and a held opening post
+sets `threads.held_at` too; nothing else the filter matched is stored, and approval is
+logged like every moderation action.
 `TestTheFilterLogsNothingItRead` pins exactly those records and their keys, so a new
 field on either is a decision; the README says the same, and has to change with it.
 
