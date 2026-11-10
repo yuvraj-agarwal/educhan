@@ -16401,29 +16401,63 @@ func readerCared(ws []string) bool {
 // poster as who left the words: "i dare you", "see what happens", "or
 // else", "go ahead", "if you", "and you'll", "no one will", "nobody can
 // help", "won't help", "you won't be", "you'll regret it", "snitch", "i put
-// it there", "i wrote it".
+// it there", "i wrote it", "me", "it's from me"; or menace or a laugh after the care, which
+// makes it mock care: "lol", "better watch your back", "see you after
+// school", "enjoy your last day", "i'll be waiting at the gate", "it's real
+// btw", "they can't protect you", "it won't change anything", "you won't
+// though". Advice is no dare: "if you feel unsafe", "no one deserves this",
+// "lol that's so creepy", "tell sir, it's real this time".
 func readerDared(ws []string) bool {
+	if len(ws) == 1 && posterLabels[bare(ws[0])] {
+		return true // "i know who did it. me"
+	}
 	for j, w := range ws {
 		w = bare(w)
-		var next string
+		var next, third string
 		if j+1 < len(ws) {
 			next = bare(ws[j+1])
 		}
+		if j+2 < len(ws) {
+			third = bare(ws[j+2])
+		}
 		switch {
+		case (is(w, "nobody") || is(w, "noone")) && careAfterNobody[next],
+			is(w, "no") && (is(next, "one") || is(next, "1")) && careAfterNobody[third]:
+			// "no one deserves this", "nobody should go through this"
+		case laughs[w] && (j > 0 && careStates[bare(ws[j-1])] || allLaughs(ws)):
+			return true // "are you ok? lol", "you ok hehe", not "lol that's so creepy"
 		case dareWords[w],
 			is(w, "see") && (is(next, "what") || is(next, "wat")),
+			is(w, "see") && youWords[next] && (soonWords[third] || is(third, "after") || is(third, "at") ||
+				is(third, "soon")),
+			is(w, "watch") && readerOwners[next] && is(third, "back"),
+			is(w, "last") && (is(next, "day") || is(next, "week") || is(next, "night")),
+			is(w, "waiting") && (is(next, "at") || is(next, "for") || is(next, "outside")),
+			is(w, "from") && posterLabels[next] && !is(next, "i"),
+			(is(w, "it's") || is(w, "its")) && is(next, "real") && !anyIn(ws, helpTells),
+			cantWords[w] && (is(next, "protect") || is(next, "save") || is(next, "stop")),
 			is(w, "or") && is(next, "else"),
 			is(w, "go") && is(next, "ahead"),
-			is(w, "if") && youWords[next],
+			is(w, "if") && youWords[next] && !conditionalCare[third],
 			is(w, "and") && secondSubjects[next],
 			is(w, "no") && (is(next, "one") || is(next, "1")),
 			(is(w, "won't") || is(w, "wont")) && (is(next, "help") || is(next, "save") || is(next, "matter") ||
-				is(next, "be")),
+				is(next, "be") || is(next, "change") || is(next, "though")),
 			posterSubjects[w] && (leftWords[next] || is(next, "wrote") || is(next, "did")):
 			return true
 		}
 	}
 	return false
+}
+
+// allLaughs reports ws all laughs ("lol", "haha lol").
+func allLaughs(ws []string) bool {
+	for _, w := range ws {
+		if !laughs[bare(w)] {
+			return false
+		}
+	}
+	return len(ws) > 0
 }
 
 // posterOwns reports, in the words after a quotation, the words owned: aimed
@@ -16451,20 +16485,31 @@ func posterOwns(ws []string, feared bool) bool {
 		if j+2 < len(ws) {
 			third = bare(ws[j+2])
 		}
+		var prev string
+		if j > 0 {
+			prev = bare(ws[j-1])
+		}
 		switch {
-		case is(w, "for") && ownedFor[next] && !(j > 0 && forFeelings[bare(ws[j-1])]),
+		case is(w, "for") && ownedFor[next] && !forFeelings[prev] && !(forWaits[prev] && is(third, "to")) &&
+			!(forAdvice[prev] && anyIn(ws, adviceActs)),
 			(is(w, "meant") || is(w, "mean")) && (is(next, "it") || is(next, "every")) && ownedDoing(ws, j),
-			is(w, "if") && (is(next, "anyone") || is(next, "anybody")) && is(third, "asks"),
+			is(w, "if") && (is(next, "anyone") || is(next, "anybody")) && is(third, "asks") &&
+				!anyIn(ws[j+3:], passOnVerbs),
 			quoteRefs[w] && (weaponHeads[next] || bluntHeads[next] || fuelHeads[next]),
 			quoteRefs[w] && (is(next, "was") || is(next, "is")) && posterLabels[third] && !is(third, "i") &&
-				!(j+3 < len(ws) && relativeWords[bare(ws[j+3])] && passedOn(ws[j+4:])),
+				!(j+3 < len(ws) && (relativeWords[bare(ws[j+3])] && passedOn(ws[j+4:]) || sayersAfterIf[bare(ws[j+3])])),
+			(quoteRefs[w] || is(w, "those") || is(w, "they") || is(w, "words")) && (is(next, "are") || is(next, "were")) &&
+				(is(third, "mine") || posterOwners[third] && j+3 < len(ws) && is(bare(ws[j+3]), "words")),
+			(is(w, "they're") || is(w, "theyre")) && (is(next, "mine") || posterOwners[next] && is(third, "words")),
+			(is(w, "that's") || is(w, "thats")) && is(next, "mine"),
 			is(w, "by") && (posterLabels[next] && !is(next, "i") || is(next, "yours") && is(third, "truly")),
 			is(w, "time") && (is(next, "it's") || is(next, "its")) && madeTrue(ws[j+2:]) &&
 				!anyIn(ws[max(0, j-3):j], realDoubts) && !feared,
-			(is(w, "it's") || is(w, "its")) && is(next, "happening") && (third == "" || soonWords[third]),
-			(is(w, "agree") || is(w, "agreed")) && j > 0 && posterSubjects[bare(ws[j-1])] &&
-				(next == "" || agreeTails[next] || is(next, "with") && quoteRefs[third]):
-			return true // "it was me", "by me", "this time it's real", "and i agree"
+			happenComing(ws, j) && !anyIn(ws[max(0, j-3):j], happenDoubts) && !feared:
+			return true // "it was me", "these are my words", "by me", "this time it's real", "it's going to happen"
+		case (is(w, "agree") || is(w, "agreed")) && posterSubjects[prev] &&
+			(next == "" || agreeTails[next] || is(next, "with") && quoteRefs[third]):
+			return true // "and i agree"
 		case posterSubjects[w]:
 			// "and i'm bringing it", "so i'm doing it tomorrow", "and i'll do
 			// it"; not "should i do it", a question.
@@ -16480,13 +16525,76 @@ func posterOwns(ws []string, feared bool) bool {
 					break // "i'm not going to do it"
 				}
 				intent = intent || intentWords[x]
-				if intent && (is(x, "do") || is(x, "doing")) && quoteRefs[bare(ws[k+1])] {
+				if intent && carriedOut(ws, k) {
+					return true // "i'll do it", "i'll do what it says", "i'll go through with it"
+				}
+				// "i wrote it", "i'm the one who sent it", not "i wrote it down",
+				// "i sent it to my mum" or "i know who sent it".
+				lead := k == j+1 || k == j+4 && is(bare(ws[j+1]), "the") && is(bare(ws[j+2]), "one") &&
+					(is(bare(ws[j+3]), "who") || is(bare(ws[j+3]), "that"))
+				if lead && authorWords[x] && quoteRefs[bare(ws[k+1])] && (k+2 == len(ws) || agreeTails[bare(ws[k+2])]) {
 					return true
 				}
 			}
 		}
 	}
 	return false
+}
+
+// carriedOut reports, at ws[k] after the poster's intent ("i'll", "i'm going
+// to"), the words carried out: "do it", "do what it says", "do exactly
+// that", "go through with it", "go ahead with it", "follow through", "see it
+// through", "act on it", not "do what my teacher says" or "follow up with
+// the principal".
+func carriedOut(ws []string, k int) bool {
+	at := func(i int) string {
+		if k+i < len(ws) {
+			return bare(ws[k+i])
+		}
+		return ""
+	}
+	x := bare(ws[k])
+	switch {
+	case is(x, "do") || is(x, "doing"):
+		return quoteRefs[at(1)] || (is(at(1), "what") || is(at(1), "exactly")) && quoteRefs[at(2)]
+	case is(x, "go") || is(x, "going"):
+		return (is(at(1), "through") || is(at(1), "ahead")) && is(at(2), "with") && quoteRefs[at(3)]
+	case is(x, "follow"):
+		return is(at(1), "through") && (at(2) == "" || soonWords[at(2)] || is(at(2), "with") && quoteRefs[at(3)])
+	case is(x, "see"):
+		return quoteRefs[at(1)] && is(at(2), "through")
+	case is(x, "act"):
+		return is(at(1), "on") && quoteRefs[at(2)]
+	}
+	return false
+}
+
+// happenComing reports, at ws[j], the words said to be coming with nothing
+// after but a time or "for real": "it's happening", "it's happening
+// tomorrow", "it's going to happen", "it's gonna happen for real", "it will
+// happen", not "it's happening again" or "is it going to happen".
+func happenComing(ws []string, j int) bool {
+	at := func(i int) string {
+		if j+i < len(ws) {
+			return bare(ws[j+i])
+		}
+		return ""
+	}
+	w, k := bare(ws[j]), 0
+	switch {
+	case (is(w, "it's") || is(w, "its")) && is(at(1), "happening"):
+		k = 2
+	case (is(w, "it's") || is(w, "its")) && is(at(1), "going") && is(at(2), "to") && is(at(3), "happen"):
+		k = 4
+	case (is(w, "it's") || is(w, "its")) && is(at(1), "gonna") && is(at(2), "happen"),
+		is(w, "it") && is(at(1), "will") && is(at(2), "happen"):
+		k = 3
+	case is(w, "it'll") && is(at(1), "happen"):
+		k = 2
+	default:
+		return false
+	}
+	return at(k) == "" || soonWords[at(k)] || is(at(k), "for") && is(at(k+1), "real")
 }
 
 // posterCarries reports, in the words of the sentence after a quotation,
@@ -16566,7 +16674,15 @@ func handedOver(ws []string) bool {
 			break
 		}
 		x := bare(ws[k])
-		if is(w, "to") && (helperWords[x] || k+1 < len(ws) && helperRanks[x] && helperWords[bare(ws[k+1])]) ||
+		// "to the vice principal", "to the school counsellor", "to the
+		// anti-bullying committee", "to the head of year".
+		h := k
+		for h < len(ws) && h < k+2 && helperRanks[bare(ws[h])] {
+			h++
+		}
+		helper := h < len(ws) && helperWords[bare(ws[h])] ||
+			is(x, "head") && h == k+1 && h+1 < len(ws) && is(bare(ws[h]), "of") && headsOf[bare(ws[h+1])]
+		if is(w, "to") && helper ||
 			reportUses[x] || is(x, "warn") && k+1 < len(ws) && warnedPeople[bare(ws[k+1])] {
 			return true
 		}
@@ -16659,6 +16775,11 @@ func helpAsked(ws []string) bool {
 // ("what do i do", "what should we do", "i need help"), not "what do i
 // bring".
 func helpCalled(ws []string) bool {
+	for j := 0; j+2 < len(ws); j++ {
+		if is(bare(ws[j]), "should") && posterSubjects[bare(ws[j+1])] && helpTells[bare(ws[j+2])] {
+			return true // "should i tell someone", "should i report it"
+		}
+	}
 	if !helpWanted(ws) {
 		return false
 	}
@@ -16708,14 +16829,19 @@ var (
 	sayersAfterIf = canonSetOf(`someone somebody anyone anybody people they he she ppl`)
 	// passOnVerbs pass the words on to one of helperWords, someone who can
 	// help, or somewhere staff are: "i'll show this text to my mum",
-	// "bringing it to sir", "taking it to the office"; one of helperRanks
-	// may come before them ("the class teacher", "the vice principal").
+	// "bringing it to sir", "taking it to the office"; one or two of
+	// helperRanks may come before them ("the class teacher", "the vice
+	// principal", "my older sister", "the anti-bullying committee"), and
+	// "head of" one of headsOf is one ("the head of year").
 	passOnVerbs = canonSetOf(`show showed showing forward forwarded forwarding report reported reporting screenshot
 		screenshotted screenshotting`)
 	helperWords = canonSetOf(`teacher teachers mum mom mummy dad daddy parents parent principal mods mod moderator
 		moderators police counsellor counselor admin admins sir maam ma'am mam hod warden coordinator headmaster
-		headmistress office staffroom`)
-	helperRanks = canonSetOf(`class vice head deputy assistant house`)
+		headmistress office staffroom mother father brother sister aunt uncle grandma grandpa cops cop coach tutor
+		dean vp hm hoy headteacher therapist council committee rep adult nurse lead cell`)
+	helperRanks = canonSetOf(`class vice head deputy assistant house school guidance form student trusted cyber
+		anti bullying antibullying safeguarding older elder big younger little`)
+	headsOf = canonSetOf(`year house department school`)
 	// reportUses, after "to", "for" or "in", put what the poster uses to a
 	// report: "using it in my complaint"; warnedPeople, after "to warn",
 	// are told of it for their own sake: "to warn others".
@@ -16754,6 +16880,15 @@ var (
 	forFeelings = canonSetOf(`here there pray praying prayed prayers sorry bad scared worried afraid happy proud
 		rooting hoping`)
 	tellWords = canonSetOf(`tell tells telling told`)
+	// forWaits, before "for" and one of ownedFor, wait or ask for someone
+	// ("wait for them to notice"); forAdvice there with one of adviceActs
+	// in the sentence pass on a tip ("a tip for you all: report it").
+	forWaits   = canonSetOf(`wait waits waiting waited look looking looked ask asking asked`)
+	forAdvice  = canonSetOf(`tip tips warning warnings psa reminder advice heads`)
+	adviceActs = canonSetOf(`report block ignore mute`)
+	// authorWords, after the poster, write or send the words: "i wrote
+	// it".
+	authorWords = canonSetOf(`wrote typed sent made posted`)
 	// receiptSenders, after "from" or "by", send words as people do;
 	// gotWords are the holdVerbs of getting, which a place can follow ("got
 	// this in my dms"), where "i have this in my notebook" is the poster's.
@@ -16788,7 +16923,9 @@ var (
 	// going to use it", "i'll make it real"; so do takeWords before them and
 	// somewhere, someone or a time ("taking it to school tomorrow"); and
 	// fearWords after the poster as their subject make "this time it's real"
-	// what the poster fears (posterFears). readerOwners own a place as the
+	// what the poster fears (posterFears), and happenDoubts before "it's
+	// happening" make it a question ("what if it's happening tomorrow").
+	// readerOwners own a place as the
 	// reader's: "on your desk" is where the words were left for the reader.
 	// doerPrepositions before someone make them no subject: "from my uncle".
 	doerPrepositions = canonSetOf(`from by to with for of at`)
@@ -16797,6 +16934,7 @@ var (
 	madeReal         = canonSetOf(`real true happen reality`)
 	fearWords        = canonSetOf(`scared afraid worried terrified frightened nervous`)
 	realDoubts       = canonSetOf(`is if whether maybe think thinks scared afraid worried hope`)
+	happenDoubts     = canonSetOf(`if whether maybe think thinks wonder`)
 	readerOwners     = canonSetOf(`your ur yours`)
 	// careStates, after the reader ("are you ok"), ask after them;
 	// reportAsks before the reader ask whether they have told ("did you
@@ -16811,6 +16949,11 @@ var (
 	clauseStarts = canonSetOf(`please pls plz plss just go and so then`)
 	dareWords    = canonSetOf(`dare dares dared snitch snitches snitching regret nobody noone`)
 	stepWords    = canonSetOf(`next first then afterwards`)
+	// careAfterNobody, after "nobody" or "no one", is advice, not a dare:
+	// "no one deserves this"; conditionalCare after "if you" is: "if you
+	// feel unsafe", "if you need help".
+	careAfterNobody = canonSetOf(`deserves deserve should has`)
+	conditionalCare = canonSetOf(`feel feeling need needs ever`)
 	// intentWords, between the poster and "do it", make it what the poster
 	// means to do: "i'm going to do it", "i will do it".
 	intentWords = canonSetOf(`will going gonna wanna am`)

@@ -863,15 +863,19 @@ out ("got this again", `elidedReceipts`), a clause with the words as its subject
 my locker"), or someone else leaving them (`leftByOthers`: "someone left this in my
 locker"), unless the place is the reader's ("this was left on your desk",
 `readerOwners`) with no care for the reader after it (`readerAdvised`: "are you ok? tell
-a teacher", "did you report it?", not with a dare, "tell a teacher, i dare you") or a
-sentence after them that starts within `threatWindow` owns them, each read whole
-(`ownedAfter`; `posterOwns`: "for you", not "here for you", a weapon, "and i'm bringing
-it", "and i'll do it", "it was me", "by me", "this time it's real" or "for real", not
-with the poster's fear or a call for help in any of those sentences, "it's happening",
-"and i agree"; `posterCarries`: the poster, or no one named, carrying, using, taking or
-making real what came, "bringing it tomorrow", "and i'm going to use it", "i'll make it
-real", "make it a reality", `ownedDoing`; not "bringing it to my teacher", "bringing it
-to sir", "using it in my complaint" or "using it as evidence", `handedOver`). For
+a teacher", "did you report it?", not with a dare or menace, `readerDared`: "tell a
+teacher, i dare you", "see what happens", "watch your back", a laugh after the care, "i
+know who did it. me") or a sentence after them that starts within `threatWindow` owns
+them, each read whole (`ownedAfter`; `posterOwns`: "for you", not "here for you" or
+"waiting for you to", a weapon, "and i'm bringing it", "and i'll do it", "i'm going
+through with it" (`carriedOut`), "it was me", "by me", "i wrote this", "those words are
+mine", "this time it's real" or "for real", not with the poster's fear or a call for help
+in any of those sentences, "it's happening tomorrow" (`happenComing`, not after "if" or
+"maybe"), "and i agree"; `posterCarries`: the poster, or no one named, carrying, using,
+taking or making real what came, "bringing it tomorrow", "and i'm going to use it", "i'll
+make it real", "make it a reality", `ownedDoing`; not "bringing it to my teacher",
+"bringing it to sir", "showing it to my head of year", "using it in my complaint" or
+"using it as evidence", `handedOver`). For
 crisis language a clause gives the words away only when it names who sent them or a
 message (`sentByOthers`), so "'i want to die' this keeps happening" stays the poster's;
 a quotation named as a kind of post (`namedAsAKind`: "the 'add me on snap' guys"); and
