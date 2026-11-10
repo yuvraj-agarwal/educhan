@@ -6,7 +6,7 @@ educhan is a fast, high-signal imageboard designed for students, researchers, an
 
 ## Core Features
 
-- **Verified Anonymity** — Students aged 18 and over can optionally verify institutional email domains (`.ac.in`, `.edu`, etc.) to receive a badge naming the institution, never the person
+- **Verified Anonymity** — Students aged 18 and over can optionally verify institutional email domains (`.ac.in`, `.edu`, etc.) to receive a badge naming the institution, never the person. No mail is sent yet: the only mail sender in the repository is a development one, which prints the code and the address to the server's stdout and needs `EDUCHAN_MAIL_DEV=1`, and the deploy script leaves verification switched off
 - **Imageboard-native experience** — Fast, ephemeral threads on topic boards, with no accounts
 - **One image per post** — JPEG, PNG, WebP or GIF; uploads are off unless a server switches them on
 - **Archive** — Threads that fall off a board stay readable in its archive for a while, then are deleted
@@ -35,7 +35,7 @@ switched off for the whole server unless `EDUCHAN_VERIFY_SECRET` is set.
   you@iitb.ac.in   + "I confirm I am 18 or over"
        │   refused unless ticked; then checked against the domain allowlist
        ▼
-  six-digit code, emailed — stored hashed, expires in 15 minutes
+  six-digit code, to the mail sender — stored hashed, expires in 15 minutes
        │   confirmed
        ▼
   signed credential, returned to the client: { label, expiry, random id }
@@ -62,7 +62,12 @@ switched off for the whole server unless `EDUCHAN_VERIFY_SECRET` is set.
    refuses any request that does not carry `"adult": true`.
 2. The domain is checked against the allowlist, which decides both whether it
    counts as academic and what the badge will say.
-3. A six-digit code is emailed. It is stored hashed and expires in 15 minutes.
+3. A six-digit code is handed to the mail sender. No mail is sent yet: the only
+   sender in the repository is the development one, which prints the code and
+   the address to the server's stdout and needs `EDUCHAN_MAIL_DEV=1`, and the
+   deploy script leaves verification switched off (see [Email
+   delivery](#email-delivery)). The code is stored hashed and expires in 15
+   minutes.
 4. Submitting the code exchanges it for a signed, opaque credential, returned in
    the response body and kept by the client in `localStorage`.
 5. The posting form grows a **post with [Verified: …]** checkbox. Tick it per
@@ -700,9 +705,10 @@ configured.
 ### Email delivery
 
 Delivery goes through `internal/mailer.Sender`, the same way blob storage goes
-through `internal/media.Store`. With no provider configured the development
-sender prints the code to stdout, so the feature is usable and testable out of
-the box:
+through `internal/media.Store`. No mail is sent yet: the only sender in the
+repository is the development one, which prints the code and the address to the
+server's stdout instead of sending them, so the feature is usable and testable
+locally once `EDUCHAN_MAIL_DEV=1` is set:
 
 ```
 [educhan] verification code for ana@iitb.ac.in: 481920 (valid for 15m0s)
@@ -711,9 +717,10 @@ the box:
 That sender prints the address, which makes it a development tool only — it is
 the one place in educhan an address is rendered at all. So the server refuses to
 start with `EDUCHAN_VERIFY_SECRET` set and no real sender unless
-`EDUCHAN_MAIL_DEV=1` says the development sender is meant. Adding SMTP or Google
-Workspace means writing another `Sender` and assigning it to `Config.Sender`;
-no handler and no SQL changes.
+`EDUCHAN_MAIL_DEV=1` says the development sender is meant, and the deploy script
+leaves verification switched off. Adding a real one, for a dedicated
+transactional mail provider, means writing another `Sender` and assigning it to
+`Config.Sender`; no handler and no SQL changes.
 
 ### Anti-abuse
 
@@ -846,7 +853,7 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Index | Paginated, newest bump first, showing each thread's opening post and last three replies |
 | Catalog | Every live thread on one page as excerpt tiles with thumbnails; an excerpt shows a spoiler as `[spoiler]`, never what it hides |
 | Attachments | One image per post and a per-board cap per thread, validated by magic bytes, thumbnailed at upload, served from `/media/…`; off unless switched on, and `GET /api/site` says which |
-| Verification | Optional institutional badge from an emailed code; the address is never stored and the badge cannot be linked to a post |
+| Verification | Optional institutional badge from a six-digit code handed to a mail sender. No mail is sent yet: the only sender in the repository is the development one, which prints the code and the address to the server's stdout and needs `EDUCHAN_MAIL_DEV=1`, and the deploy script leaves verification switched off. The address is never written to the database, only a keyed hash of it, and nothing stored with a post points to its verification record, though timing can tie the two on a day an institution issues a single credential ([The privacy property, exactly](#the-privacy-property-exactly)) |
 | Moderation | Sticky, lock, and delete a post or a whole thread, plus creating and reconfiguring boards, behind a shared moderation key |
 | Archive | Threads pushed past a board's thread limit are archived rather than deleted: they leave the index and the catalog, refuse replies, and still load by number |
 | Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed, then rewrites the verification credentials so that every credential issued before the sweep carries the sweep's transaction id rather than its own ([Transaction ids, and the nightly rewrite](#transaction-ids-and-the-nightly-rewrite)); per-client cooldowns limit new threads, replies, and uploads, and forget each address within a minute of its cooldown ending while the process has CPU between requests (see Flood control for an idle Cloud Run instance) |
@@ -1055,7 +1062,7 @@ the build needs, and the rest of the walkthrough.
 | `EDUCHAN_UPLOADS_ENABLED` | off | Accept image attachments. Off refuses any post carrying an image with `403`, reading no more of it than a text post may be, and `GET /api/site` reports which |
 | `EDUCHAN_MOD_KEY` | empty | Shared secret for the moderation and board management endpoints; unset means they refuse every request |
 | `EDUCHAN_VERIFY_SECRET` | empty | Keys institutional verification: the address hash, the pending code hash, and the credential signature. **Unset switches the whole feature off**; rotating it revokes every credential |
-| `EDUCHAN_VERIFY_CODE_TTL` | `15m` | How long an emailed code stays usable |
+| `EDUCHAN_VERIFY_CODE_TTL` | `15m` | How long a code stays usable |
 | `EDUCHAN_VERIFY_CREDENTIAL_TTL` | `4320h` (180 days) | How long a badge lasts before the holder verifies again. Changing it splits the credential day it is deployed in, dating the credentials issued that day before and after the deploy apart ("What that protects, exactly"): deploy a change soon after 05:00 UTC, before anyone has verified that day |
 | `EDUCHAN_VERIFY_COOLDOWN` | `60` (seconds) | Minimum interval between code requests, per client and per address |
 | `EDUCHAN_VERIFY_DOMAINS` | embedded list | Path to an allowlist file replacing the built-in one |
@@ -1262,10 +1269,16 @@ curl -s -X POST localhost:8080/api/boards/career/threads \
   -H 'Content-Type: application/json' \
   -d '{"subject":"placement season","name":"ana#trip","body":"how did yours go?"}'
 
-# Verification, end to end. "adult": true says you are 18 or over; without
-# it the request is refused. With no mail provider configured the code is
-# printed to the server's stdout. Confirming returns the credential; hold on
-# to it, because the server will not show it again.
+# Verification, end to end. No mail is sent: the only sender in the
+# repository is the development one, which prints the code and the address to
+# the server's stdout, and the deploy script leaves verification switched off.
+# So start the server with both settings, as in
+#   EDUCHAN_VERIFY_SECRET=dev-verify-secret EDUCHAN_MAIL_DEV=1 make run
+# and use the code it prints in place of 481920. Without the secret these
+# requests answer 403, and with it but without EDUCHAN_MAIL_DEV the server
+# refuses to start. "adult": true says you are 18 or over; without it the
+# request is refused. Confirming returns the credential; hold on to it,
+# because the server will not show it again.
 curl -s -c jar -X POST localhost:8080/api/verify/request \
   -H 'Content-Type: application/json' -d '{"email":"you@iitb.ac.in","adult":true}'
 CRED=$(curl -s -b jar -c jar -X POST localhost:8080/api/verify/confirm \
