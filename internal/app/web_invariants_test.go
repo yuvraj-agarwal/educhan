@@ -894,7 +894,7 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 		}},
 		{"verifiedBadgeHTML", []string{
 			"function verifiedBadgeHTML(label) {",
-			"return `<span class=\"badge verified\" title=\"Institutional email verified; not linked to this poster\">" +
+			"return `<span class=\"badge verified\" title=\"Institutional email verified; the address is not kept with the post\">" +
 				"Verified: ${esc(label)}</span>`;",
 			"}",
 		}},

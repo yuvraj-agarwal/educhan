@@ -1229,7 +1229,7 @@ function revealImageSpoiler(button) {
 // where the poster is, and deliberately nothing else: two posts carrying the
 // same badge are no more linked to each other than any two posts.
 function verifiedBadgeHTML(label) {
-  return `<span class="badge verified" title="Institutional email verified; not linked to this poster">Verified: ${esc(label)}</span>`;
+  return `<span class="badge verified" title="Institutional email verified; the address is not kept with the post">Verified: ${esc(label)}</span>`;
 }
 
 // The image limit badge marks a thread that has filled up. On a board whose
@@ -2312,11 +2312,15 @@ const VERIFY_INTRO = `
     so nothing kept with a post points to your address. The random number is
     what keeps your ID the same within a thread on the posts you badge. It is
     not made from your address. There are limits: whoever runs this server can
-    check whether an address they already suspect has a badge. On a day when
-    yours is the only badge issued for your institution, a post you badge soon
-    after verifying could be matched to your verification by its timing, and so
-    to you, if they already suspect your address. None of this holds against
-    someone who changes the server or records what is sent to it.
+    check whether any address they can list, such as every address at your
+    institution they can find, has a badge. A post you badge soon after
+    verifying could be matched to your verification by its timing, and with it
+    your other badged posts in that thread, and so to you if your address is
+    among those they check. That works until the next nightly clean-up, or in a
+    copy of the database made before it; after that, still on a day when yours
+    is the only badge issued for your institution. All of this is a promise about
+    what is kept, not about someone who changes the server or records what is
+    sent to it.
   </p>
   <p class="verify-note muted">
     The badge is off by default on every post, and is sent to the server only
@@ -2770,12 +2774,14 @@ const FAQ_SECTIONS = [
         or to the posts you make without the badge &mdash; unless you give both the same name or tripcode,
         which would show they're yours. That's why the Name field empties when you tick the
         badge.</p>
-      <p>This has limits. The people who run this site can check whether an address they
-        already suspect has a badge. On a day when yours is the only badge issued for your
-        university or college, a badged post you make soon after verifying could be matched to
-        your verification by its timing, and so to you, if they already suspect your address.
-        None of this holds against someone who changes the server or records what is sent to
-        it.</p>
+      <p>This has limits. The people who run this site can check whether any address they can
+        list, such as every address at your university or college they can find, has a badge.
+        A badged post you make soon after verifying could be matched to your verification by
+        its timing, and with it your other badged posts in that thread, and so to you if your
+        address is among those they check. That works until the next nightly clean-up, or in
+        a copy of the database made before it; after that, still on a day when yours is the
+        only badge issued for your university or college. All of this is a promise about what
+        is kept, not about someone who changes the server or records what is sent to it.</p>
       <p>On a shared computer, use <strong>Forget this browser</strong> on the
         <a href="/verify#forget-browser">Verify</a> page before you leave. The badge stays in
         that browser for whoever uses it next, and so do the key your IDs are made from and
@@ -3768,7 +3774,9 @@ document.addEventListener("click", (event) => {
     event.preventDefault();
     clearNotice();
     // replacing shows the address form over a badge that is still held and
-    // still usable — it is retired by the new one, not by asking for one.
+    // still usable — it is replaced in this browser by the new one (and
+    // cancelled on the server only if the new one is for the same address),
+    // not by asking for one.
     verifyStep = { step: "email", label: "", replacing: true };
     drawVerifyStep();
     showVerifyField("f-email");
@@ -4126,8 +4134,8 @@ el.main.addEventListener("submit", async (event) => {
 // when the reader has moved the page to another step while it was on its way:
 // no badge stored, no step set, nothing drawn or said. Forget this browser is
 // the button that can do that, and has to win: a badge stored after it would
-// stay for whoever uses the computer next, under a confirmation saying there
-// is none. The form's own other buttons — Keep my badge, Use a different
+// stay for whoever uses the computer next, after the page has said the browser
+// was forgotten. The form's own other buttons — Keep my badge, Use a different
 // address — wait for the answer with the submit button, so a reader does not
 // give up a step whose badge the server may be issuing; a dropped badge is
 // one nobody holds, and verifying the same address again retires the old one.

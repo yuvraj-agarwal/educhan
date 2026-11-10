@@ -601,12 +601,13 @@ func TestAcceptsGzip(t *testing.T) {
 // absoluteBadgePromise is the promise the site must not make about the badge:
 // that nobody, the server included, can get from a badged post back to an
 // address. It is true of what educhan keeps, and the Verify page and the FAQ
-// say so, with its limits: whoever holds the server secret can test an address
-// they already suspect, timing can tie a badged post to its verification on a
-// day its institution issued one badge, and every badged post carries the
-// credential, whose id finds the stored row. Words that say no one can make
-// that link at all are a promise the code does not keep.
-var absoluteBadgePromise = regexp.MustCompile(`(?i)\b(?:server|operator) included\b|\bwork(?:s|ed)? back from\b|\btrac(?:e|ed|ing) back\b|\b(?:cannot|can't|can never) be (?:linked|traced|connected)\b|\bno one\b[^.]*\bcan (?:work|trace|link)\b`)
+// say so, with its limits: whoever holds the server secret can test any address
+// they can list, timing can tie a badged post to its verification (on any day
+// until the nightly sweep, and after it on a day its institution issued one
+// badge), and every badged post carries the credential, whose id finds the
+// stored row. Words that say no one can make that link at all, or that the
+// badge is not linked to its poster, are a promise the code does not keep.
+var absoluteBadgePromise = regexp.MustCompile(`(?i)\b(?:server|operator) included\b|\bwork(?:s|ed)? back from\b|\btrac(?:e|ed|ing) back\b|\b(?:cannot|can't|can never) be (?:linked|traced|connected)\b|\bnot (?:linked|traceable|connected) to (?:this|the|its|a|any) (?:poster|post|address)\b|\bno one\b[^.]*\bcan (?:work|trace|link)\b`)
 
 func TestSiteNeverPromisesTheBadgeCannotBeTraced(t *testing.T) {
 	// The pattern has to catch the wording it exists for, and the wording the
@@ -616,6 +617,8 @@ func TestSiteNeverPromisesTheBadgeCannotBeTraced(t *testing.T) {
 		"It is not made from your address, and cannot be traced back to it.",
 		"the badge cannot be linked to a post",
 		"no one, the operator included, can link a badge to an address",
+		"Institutional email verified; not linked to this poster",
+		"the badge is not linked to the post",
 	} {
 		if !absoluteBadgePromise.MatchString(phrase) {
 			t.Fatalf("absoluteBadgePromise does not match %q", phrase)
@@ -625,6 +628,7 @@ func TestSiteNeverPromisesTheBadgeCannotBeTraced(t *testing.T) {
 		"so nothing kept with a post points to your address",
 		"So nothing stored with a badged post points to your email address",
 		"school students included",
+		"Institutional email verified; the address is not kept with the post",
 	} {
 		if absoluteBadgePromise.MatchString(fine) {
 			t.Fatalf("absoluteBadgePromise matches %q, which promises only what is kept", fine)
@@ -647,12 +651,17 @@ func TestSiteNeverPromisesTheBadgeCannotBeTraced(t *testing.T) {
 	}
 	// A scan of the wrong files, or of none, would pass for the wrong reason:
 	// the copy that makes the promise has to be among what was read.
-	for name, want := range map[string]string{
-		"app.js":     "so nothing kept with a post points to your address",
-		"index.html": "The address itself is never stored.",
+	for name, wants := range map[string][]string{
+		"app.js": {
+			"so nothing kept with a post points to your address",
+			`title="Institutional email verified; the address is not kept with the post"`,
+		},
+		"index.html": {"The address itself is never stored."},
 	} {
-		if !strings.Contains(read[name], want) {
-			t.Errorf("%s was read without %q, which this test expects to find there", name, want)
+		for _, want := range wants {
+			if !strings.Contains(read[name], want) {
+				t.Errorf("%s was read without %q, which this test expects to find there", name, want)
+			}
 		}
 	}
 }
