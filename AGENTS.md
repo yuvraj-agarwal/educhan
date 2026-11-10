@@ -1364,10 +1364,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   catch it in every run. `TestPNGDecodeIsChargedTheInflatersTables` holds it in every
   PNG's decode phase, and holds `compress/flate` to making the tables a block at a time,
   which is what the term is for.
-  `TestProcessingCostCoversWhatIsHeld` is the package's slowest test, about five minutes
-  under `-race`. A change to a decode path, to `orient`, to the stored buffer or to the
-  thumbnail changes `cost.go` in the same commit. A CMYK JPEG is turned into RGBA where it
-  lies (`rgbaOfCMYK`), not into a second picture. Tests narrow the budget with
+  `TestProcessingCostCoversWhatIsHeld` is the package's slowest test: under `-race` it
+  took 1.7 to 3.2 minutes in CI over eight runs, before the fixture `PNG of costly empty
+  blocks`, which takes about 22 seconds of it under `-race`, and 3.3 to 5 minutes on a
+  busy shared machine. A change to a decode path, to `orient`, to the stored buffer or
+  to the thumbnail changes `cost.go` in the same commit. A CMYK JPEG is turned into RGBA
+  where it lies (`rgbaOfCMYK`), not into a second picture. Tests narrow the budget with
   `narrowBudget`. x/image's VP8L decoder allocates its Huffman groups — a 167.5 MiB
   backing array at most (one `hGroup` per meta-image index, `vp8lGroupBacking`), plus a
   node slice per tree — from counts deep inside the compressed bitstream that no header or
