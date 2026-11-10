@@ -21,15 +21,16 @@ development — the container is a deployment artifact, not a development tool.
 ## 1. Locally, with no container at all
 
 Local development runs the server natively against a real PostgreSQL. It needs
-Go 1.22+ and PostgreSQL's own programs (`pg_ctl`, `initdb`, `psql`) installed,
-and no container: `make db-up` starts a user-owned PostgreSQL cluster on
-`localhost:5432` and ensures the `educhan` role and database exist. It is
-`.cursor/scripts/start.sh`, it is idempotent, and it is safe to re-run. Where
-PostgreSQL is not installed it stops and says so; on Debian or Ubuntu,
-`bash .cursor/scripts/install.sh` installs it (if the packaged PostgreSQL
-service then holds port 5432, stop it with `sudo service postgresql stop`
-before `make db-up`; that lasts until the next boot, when the package may
-start it again).
+Go 1.22+ and no container. `make db-up` starts a user-owned PostgreSQL cluster
+on `localhost:5432` and ensures the `educhan` role and database exist, for
+which it needs PostgreSQL's own programs (`pg_ctl`, `initdb`, `psql`)
+installed. It is `.cursor/scripts/start.sh`, it is idempotent, and it is safe
+to re-run. Where PostgreSQL is not installed it stops and says so; on Debian
+or Ubuntu, `bash .cursor/scripts/install.sh` installs it (if the packaged
+PostgreSQL service then holds port 5432, stop it with
+`sudo service postgresql stop` before `make db-up`; that lasts until the next
+boot or the next upgrade of the PostgreSQL packages, either of which may start
+it again).
 
 ```bash
 make db-up                                        # PostgreSQL on localhost:5432
@@ -114,6 +115,9 @@ gcloud config set project "$PROJECT_ID"
 # first-deploy.sh enables it on every run. To go without the scan, take that
 # line out here and out of the script, and where it is already on, turn it off:
 #   gcloud services disable containerscanning.googleapis.com
+# Google can refuse that for an API used in the last 30 days or enabled in the
+# last 3, and gcloud then says to add --force, which also turns off any enabled
+# service that depends on this one.
 gcloud services enable \
   cloudbuild.googleapis.com \
   artifactregistry.googleapis.com \
