@@ -401,16 +401,24 @@ func greyQuadrants(w, h int) *image.Gray {
 // thumbnail is a pixel wide and the scaler's buffer is 32 bytes for every one
 // of its rows as well, which only reading the orientation charges. The 16-bit
 // RGBA strip, a row of 1048576 pixels, is decoded through two rows of the
-// file of 8 MiB each beside its picture (pngRowBytes). Two more JPEGs of
-// YCbCr samples, both turned on their side, are converted to RGB, a copy of 4
-// bytes a pixel that the turn copies again whole, by segments image/jpeg
-// reads where a walk that stopped at the first scan would not see them: the
-// progressive 4:2:0 file, without its JFIF APP0, with an Adobe segment of
-// transform 0 after its last scan, and a baseline 4:2:0 one whose JFIF APP0
-// is followed by another APP0, which clears what the first said, so that the
-// Adobe segment after it counts. Those marked "o6" carry an EXIF orientation
-// of 6, so they are turned on their side too, and "o3" one of 3, turned
-// around.
+// file of 8 MiB each beside its picture (pngRowBytes). The PNG of a pixel has
+// image data of 8 MiB, the default size limit, of blocks that hold nothing but
+// codes compress/flate builds tables for afresh (costlyStream), which it makes
+// and drops at every block: what it holds as it decodes is those tables, as
+// many as a collection running while they are made marks live
+// (pngInflateChurn). That comes to a few megabytes: left out, the term failed
+// this fixture in four runs of five without -race and in neither of two with
+// it, so the fixture does not catch it in every run, and
+// TestPNGDecodeIsChargedTheInflatersTables holds it in the model as well. Two
+// more JPEGs of YCbCr samples, both turned on their side, are converted to
+// RGB, a copy of 4 bytes a pixel that the turn copies again whole, by segments
+// image/jpeg reads where a walk that stopped at the first scan would not see
+// them: the progressive 4:2:0 file, without its JFIF APP0, with an Adobe
+// segment of transform 0 after its last scan, and a baseline 4:2:0 one whose
+// JFIF APP0 is followed by another APP0, which clears what the first said, so
+// that the Adobe segment after it counts. Those marked "o6" carry an EXIF
+// orientation of 6, so they are turned on their side too, and "o3" one of 3,
+// turned around.
 func costFixtures(t *testing.T) map[string][]byte {
 	t.Helper()
 	turned := func(jpg []byte, o uint16) []byte {
@@ -445,6 +453,7 @@ func costFixtures(t *testing.T) map[string][]byte {
 		"PNG strip o6": withPNGChunks(rawPNG(t, 1<<19, 4, 0, 8, false, false),
 			pngChunk("eXIf", orientationTIFF(binary.BigEndian, 6))),
 		"PNG RGBA 16-bit strip":        rawPNG(t, 1<<20, 1, 6, 16, false, false),
+		"PNG of costly empty blocks":   costlyPNG(8 << 20),
 		"GIF of four frames":           gifOfFrames(t, w, h, 4),
 		"GIF of two interlaced frames": interlaced(t, gifOfFrames(t, large, tall, 2)),
 		"GIF past its canvas":          interlaced(t, gifPastCanvas(t, large, tall)),
@@ -1121,7 +1130,11 @@ func TestPNGDecoderRowsAreCharged(t *testing.T) {
 			t.Fatalf("%s: inspect = %v, want it admitted", name, err)
 		}
 		cfg := image.Config{Width: w, Height: k.h}
-		charged := decodingPhases(in.format, data, cfg, in.frames)[0].alloc
+		// The phase is charged as well for the tables the inflater makes
+		// and drops at every block (pngInflateChurn), which a blank
+		// picture's few blocks make next to none of, so they are left out
+		// of what its rows are held to.
+		charged := decodingPhases(in.format, data, cfg, in.frames)[0].alloc - pngInflateChurn
 
 		runtime.GC()
 		before := heapAllocs()
@@ -1139,6 +1152,80 @@ func TestPNGDecoderRowsAreCharged(t *testing.T) {
 			if onePair := pictures + 2*pngRowBytes(data, int64(w)); allocated <= onePair+processingSlack {
 				t.Errorf("%s: decoding allocated %d bytes, within processingSlack of the %d one pair of rows charges: the strip does not show the passes' rows", name, allocated, onePair)
 			}
+		}
+	}
+}
+
+// costlyPNG is a PNG of one grey pixel whose image data is at least size
+// bytes of blocks that hold nothing but codes compress/flate builds tables for
+// afresh, before the pixel's row (costlyStream).
+func costlyPNG(size int) []byte {
+	data := append(pngHeader(1, 1, 0, 8, false), pngChunk("IDAT", costlyStream(size, []byte{0, 0x80}))...)
+	return append(data, pngChunk("IEND", nil)...)
+}
+
+// For every block of a PNG's image data whose codes run past nine bits,
+// compress/flate makes tables for them afresh and lets them go at the block's
+// end, so image data of blocks that hold nothing but such codes makes hundreds
+// of times its bytes of them: a collection that runs while they are made marks
+// megabytes of them live, as many as it lasts, and every PNG's decode phase is
+// charged pngInflateChurn for them, interlaced or not, turned or not, whatever
+// its picture. What a collection marks depends on how long it runs, which
+// depends on the machine: the PNG of a pixel and 8 MiB of such blocks
+// (TestProcessingCostCoversWhatIsHeld) measured 1.7 to 4.8 MiB held as it
+// decoded, and under -race, as CI runs it, at most 3.2 MiB, so left out the
+// term failed that fixture in four runs of five without -race and in neither
+// of two with it. It is held here as well: on top of each kind's picture and
+// rows, its decode phase is charged enough that with processingSlack the
+// decode of a pixel comes to 2 MiB more than the most such a decode was
+// measured to hold, 4.9 MiB, from 31 MiB of such blocks on a busy machine.
+// What the inflater allocates is the same on every run: held to at least a
+// hundred and twenty-eight times the image data's bytes, it says the tables
+// are still made a block at a time, which if they ever were not would leave
+// the term with nothing to charge for.
+func TestPNGDecodeIsChargedTheInflatersTables(t *testing.T) {
+	const size = 1 << 20
+	data := costlyPNG(size)
+	runtime.GC()
+	before := heapAllocs()
+	if _, err := png.Decode(bytes.NewReader(data)); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	allocated := heapAllocs() - before
+	t.Logf("inflating %d bytes of costly blocks allocated %.1f MiB", size, float64(allocated)/(1<<20))
+	if allocated < 128*size {
+		t.Errorf("inflating %d bytes of costly blocks allocated %d bytes, under 128 times as many: compress/flate no longer makes their tables afresh at every block", size, allocated)
+	}
+
+	const mostHeld, spare = 49 << 20 / 10, 2 << 20
+	for _, k := range []struct {
+		name          string
+		w, h          int
+		colour, depth byte
+		interlaced    bool
+		turned        bool
+	}{
+		{"a pixel", 1, 1, 0, 8, false, false},
+		{"interlaced", 1200, 900, 6, 8, true, false},
+		{"16-bit RGBA", 1200, 900, 6, 16, false, false},
+		{"turned", 1200, 900, 2, 8, false, true},
+	} {
+		data := pngHeader(k.w, k.h, k.colour, k.depth, k.interlaced)
+		if k.turned {
+			data = append(data, pngChunk("eXIf", orientationTIFF(binary.BigEndian, 6))...)
+		}
+		w, h := int64(k.w), int64(k.h)
+		d := pngBytesPerPixel(data) * w * h
+		rows := 2 * pngRowBytes(data, w)
+		if k.interlaced {
+			d, rows = 2*d, pngPassRows(data, w, h)
+		}
+		phases := decodingPhases(FormatPNG, data, image.Config{Width: k.w, Height: k.h}, gifFrames{})
+		if k.turned != (len(phases) == 2) {
+			t.Errorf("%s: %d decoding phases, want the decode and, turned, the turn", k.name, len(phases))
+		}
+		if extra := phases[0].alloc - d - rows; extra+processingSlack < mostHeld+spare {
+			t.Errorf("%s: the decode phase is charged %d beyond its picture and rows, which with processingSlack is %d, under the %d a decode of costly blocks was measured to hold and %d to spare", k.name, extra, extra+processingSlack, int64(mostHeld), int64(spare))
 		}
 	}
 }

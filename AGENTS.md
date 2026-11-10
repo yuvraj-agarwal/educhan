@@ -1352,6 +1352,18 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   every test still passes. So they guard against a term left out, not against every
   under-estimate, as the comment at the top of `cost.go` says, and a new term needs a
   fixture where it is megabytes over the slack, as the comment on `costFixtures` sets out.
+  Garbage a phase makes and drops while a collection runs is marked live with it, which
+  the slack covers for most phases, but not for a PNG's decode: `compress/flate` makes
+  tables afresh for every block of the image data, 242 MiB of them for a MiB of blocks
+  that hold nothing but codes, so a picture of one pixel padded with such blocks,
+  charged nothing for them, measured up to 4.9 MiB held as it decoded, over the 4 MiB of
+  slack, and the decode is charged `pngInflateChurn` (4 MiB) for them now. How much of
+  them a collection marks follows how long it runs: left out, the term failed their
+  fixture (`PNG of costly empty blocks`) in four runs of five without `-race` on one
+  machine and in neither of two under it, as CI runs the tests, so the fixture does not
+  catch it in every run. `TestPNGDecodeIsChargedTheInflatersTables` holds it in every
+  PNG's decode phase, and holds `compress/flate` to making the tables a block at a time,
+  which is what the term is for.
   `TestProcessingCostCoversWhatIsHeld` is the package's slowest test, about five minutes
   under `-race`. A change to a decode path, to `orient`, to the stored buffer or to the
   thumbnail changes `cost.go` in the same commit. A CMYK JPEG is turned into RGBA where it
