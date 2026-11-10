@@ -942,7 +942,7 @@ It runs in-process, sends nothing anywhere, and takes time linear in the
 length of the post. On one core of a shared Intel Xeon at 2.8 GHz, with the
 machine's load at about 4 to 6, an ordinary 500-character post took about
 1 ms, an ordinary post of the maximum length about 8 to 9 ms, and the slowest
-of the 29,397 posts built to be slow, and of the 153 that
+of the 29,397 posts built to be slow, and of the 155 that
 `TestFilterCostIsBounded` runs, about 28 to 33 ms; one sentence repeated to
 the maximum length took about 4.7 to 5.3 ms, since the same words over and
 over give the rules less to read. That sentence is the yardstick: the

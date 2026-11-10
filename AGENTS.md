@@ -941,7 +941,7 @@ slowest take about 29–33 ms: a weapon emoji and a mark or a letter over and ov
 "a🪓", "9🔪"; each emoji is a hint of a threat, read for the sentence round it and for
 whose words it is), a weapon named over and over beside a day ("gun gun 10k gun gun gun
 gun sunday "), and method questions stacked before an app's tagged name.
-`TestFilterCostIsBounded`'s 153 bodies take about 0.9 to 31 ms at the best of 11, the
+`TestFilterCostIsBounded`'s 155 bodies take about 0.9 to 31 ms at the best of 11, the
 most "stacked method questions" and then Snapchat's ghost before a short name, about
 25 ms (about 47 ms before `appFrame` kept its words). Before the searches were planned
 the typical post, the repeated sentence and a post of `㏂`, which folds to
