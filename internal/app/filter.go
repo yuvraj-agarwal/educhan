@@ -3908,6 +3908,16 @@ var supportRules = []rule{bothViews(`\b` + words(
 	// year after it, and no school work.
 	`(?:i~)?`+words(`don'?t`, `dont`, `do~not`)+`~think~i~`+words(`'?ll`, `will`, `wil`)+`~`+words(`make~it`, `live`,
 		`survive`, `last`)+`~`+words(`to`, `till`, `until`, `past`),
+	// The same doubt in other words, read the same way: "i won't make it
+	// to 18", "i'll never make it to my birthday", "i'm not going to make
+	// it to 18", "i doubt i'll make it to 18", "i can't see myself making
+	// it to 18", "i don't see myself living past 18"; and "i won't be alive
+	// tomorrow", "by friday".
+	`i~`+words(`won'?t`, `wont`, `wil?l~n(?:ot|ever)`, `'?ll~n(?:ot|ever)`, `(?:'?m|am)~not~(?:going~to|gonna)`,
+		`doubt~i~(?:'?ll|will)`, `(?:can'?t|cant|don'?t)~see~myself`, `don'?t~think~i~(?:'?ll|will)`)+`~`+
+		words(`(?:ever~)?`+words(`make~it`, `making~it`, `live`, `living`, `survive`, `surviving`, `last`,
+			`lasting`)+`~`+words(`to`, `till`, `until`, `past`),
+			`be~alive~`+words(`tomorrow`, `tonight`, `by`, `next`, `much~longer`, `for~(?:much~)?long`, `this~time`)),
 	// "this is my last post", with goodbyes round it (supportCheck).
 	`this~`+words(`is`, `will~be`)+`~my~last~`+words(`post`, `message`, `thread`),
 	// "I have a plan and a date", with nothing after it.
@@ -13321,7 +13331,8 @@ func (f *scannedField) supportPhrasing(text string, m []int, ws, next []string) 
 			anyIn(next[1:min(len(next), 4)], medicineNames), true
 	case is(last, "myself") && (is(ws[len(ws)-2], "top") || is(ws[len(ws)-2], "topping")):
 		return !(len(next) > 0 && is(next[0], "up")), true
-	case hasWord(ws, "think") && (is(last, "to") || is(last, "till") || is(last, "until") || is(last, "past")):
+	case (hasWord(ws, "think") || anyIn(ws, reachDoubts) && anyIn(ws, reachVerbs)) &&
+		(is(last, "to") || is(last, "till") || is(last, "until") || is(last, "past")):
 		sentence := wordsIn(sentenceAround(text, m[0], m[1]))
 		if anyIn(sentence, schoolWorkWords) || anyIn(sentence, hindiStudyWords) || len(next) == 0 {
 			return false, true
@@ -13331,7 +13342,19 @@ func (f *scannedField) supportPhrasing(text string, m []int, ws, next []string) 
 		n, err := strconv.Atoi(next[0])
 		age := err == nil && n >= 13 && n <= 30 && !(len(next) > 1 && (clockWords[next[1]] || countNouns[next[1]])) &&
 			!clockAfter(text, m[1])
-		return age || ageMarks[next[0]] || len(next) > 1 && is(next[0], "my") && ageMarks[next[1]], true
+		mine := len(next) > 1 && is(next[0], "my") && (ageMarks[next[1]] ||
+			len(next) > 2 && is(next[1], "next") && ageMarks[next[2]]) // "my birthday", "my next birthday"
+		if !hasWord(ws, "think") && !age {
+			// "won't make it to" is as often missing a day as a life: not
+			// "to graduation, we're moving" or "to christmas dinner".
+			mark := next[len(next)-1]
+			return (ageMarks[next[0]] || mine) && ageMarks[mark] && !looseAgeMarks[mark], true
+		}
+		return age || ageMarks[next[0]] || mine, true
+	case len(ws) > 3 && (is(ws[len(ws)-2], "alive") || is(ws[len(ws)-3], "alive")):
+		// "i won't be alive by friday", not with school work: "by friday
+		// with this much homework lol".
+		return !anyIn(wordsIn(sentenceAround(text, m[0], m[1])), schoolWorkWords), true
 	case is(last, "post") || is(last, "message") || is(last, "thread"):
 		// "my last post on this thread" leaves a thread, not the board.
 		if anyIn(next[:min(len(next), 3)], threadWords) {
@@ -13420,6 +13443,13 @@ var (
 	// ageMarks are an age or a time of life: "make it to 18", "to my birthday".
 	ageMarks = canonSetOf(`eighteen sixteen seventeen twenty adulthood birthday 18th 16th 17th 21st 20s graduation
 		christmas summer`)
+	// reachDoubts and reachVerbs doubt reaching an age in other words than
+	// "i don't think i'll make it": "won't make it", "never live", "doubt
+	// i'll last".
+	reachDoubts = canonSetOf(`won't wont never not gonna doubt can't cant don't dont`)
+	reachVerbs  = canonSetOf(`make making live living survive surviving last lasting`)
+	// looseAgeMarks are days as often missed as lived to.
+	looseAgeMarks = canonSetOf(`graduation christmas summer`)
 	// farewellWords and breakWords: "this is my last post" among goodbyes,
 	// letters and thanks, not before a break.
 	farewellWords = canonSetOf(`letters letter goodbye goodbyes bye thank thanks sorry forgive love`)
