@@ -7,17 +7,16 @@ educhan is a fast, high-signal imageboard designed for students, researchers, an
 ## Core Features
 
 - **Verified Anonymity** — Students aged 18 and over can optionally verify institutional email domains (`.ac.in`, `.edu`, etc.) to receive a badge naming the institution, never the person
-- **Imageboard-native experience** — Fast, ephemeral, image-first discussion
-- **One image per post** — JPEG, PNG, WebP or GIF
+- **Imageboard-native experience** — Fast, ephemeral threads on topic boards, with no accounts
+- **One image per post** — JPEG, PNG, WebP or GIF; uploads are off unless a server switches them on
 - **Archive** — Threads that fall off a board stay readable in its archive for a while, then are deleted
 - **Google Cloud native** — Built for scalability and low operational overhead
 
 ## Current Status
 
-- Domain: [educhan.org](https://educhan.org)
-- Stage: Technology Concept (TRL 2)
-- Architecture and product design completed
-- Prototype under development
+- Stage: working prototype; not launched yet
+- Domain: educhan.org (the site is not live there yet)
+- A deployment made with `deploy/first-deploy.sh` is text-only for now: the script leaves image uploads off because images are not yet scanned (see [Image attachments](#image-attachments)), and institutional verification off because there is no real mail sender yet (see [Email delivery](#email-delivery))
 
 The prototype in this repository implements the imageboard end to end: boards,
 anonymous posting with tripcodes and per-thread poster IDs, one image per post,
@@ -1381,28 +1380,26 @@ server that would refuse what it sends.
   The posts of one client hold at most half the upload budget at once, so a client cannot
   take all of it with a few connections that declare large bodies and send nothing; its
   next image post past that answers `429`, with a `Retry-After` of 10 seconds and no
-  cooldown started. A client here is one address, as flood control counts them, except
-  that the addresses of one IPv6 /64 network count as one client, since a host can
-  usually take any address in its /64: the people on one such network share that half, as
-  those behind one IPv4 address do, while flood control still counts each of their
-  addresses apart. A body takes no room until its first bytes arrive, and
-  one that sends none within 5 seconds answers `400` as below, having held none; it then
-  takes room for what it has sent, a little ahead of it, until an eighth of it has
-  arrived, and only then, in one go, as much as it says it is and that eighth again, which
-  is in memory twice until the form has been read, so a body that stops holds at most
-  twice what it has sent or, if that is more, 4 KiB. A post waits for room in either
-  budget for about ten seconds at most, and a client has one image post waiting for room
-  for its body at a time: its next that finds none answers `429` at once, as one past its
-  share does. The posts waiting for more room hold no more of the upload budget between
-  them than leaves room for the largest body there may be (55 MiB of the 64 at the default
-  limit), so that the first of them always gets its room once the bodies being read have
-  been answered; a post that holds room and would wait past that answers `503` at once.
-  Its body has 30 seconds to arrive from its first bytes, the time it waits for room
-  aside, at an even pace with up to 5 seconds to spare — a body that falls further behind
-  the pace that would bring it all in by then, sending nothing or a trickle, is cut off
-  then and its room given back — and once it has arrived its image has 25 seconds to be
-  processed and stored. A post that cannot be taken in time — no room within the wait, or
-  its image not stored within those 25 seconds — answers `503` (see [Flood
+  cooldown started. A client here is one client address, the same key flood control uses
+  (see [Flood control](#flood-control)), so the people on one IPv6 /64 network share that
+  half, as those behind one IPv4 address do. A body takes no room until its first bytes
+  arrive, and one that sends none within 5 seconds answers `400` as below, having held
+  none; it then takes room for what it has sent, a little ahead of it, until an eighth of
+  it has arrived, and only then, in one go, as much as it says it is and that eighth
+  again, which is in memory twice until the form has been read, so a body that stops holds
+  at most twice what it has sent or, if that is more, 4 KiB. A post waits for room in
+  either budget for about ten seconds at most, and a client has one image post waiting for
+  room for its body at a time: its next that finds none answers `429` at once, as one past
+  its share does. The posts waiting for more room hold no more of the upload budget
+  between them than leaves room for the largest body there may be (55 MiB of the 64 at the
+  default limit), so that the first of them always gets its room once the bodies being
+  read have been answered; a post that holds room and would wait past that answers `503`
+  at once. Its body has 30 seconds to arrive from its first bytes, the time it waits for
+  room aside, at an even pace with up to 5 seconds to spare — a body that falls further
+  behind the pace that would bring it all in by then, sending nothing or a trickle, is cut
+  off then and its room given back — and once it has arrived its image has 25 seconds to
+  be processed and stored. A post that cannot be taken in time — no room within the wait,
+  or its image not stored within those 25 seconds — answers `503` (see [Flood
   control](#flood-control)) with nothing stored, rather than being made after its answer
   could no longer be sent. A body that takes longer than its 30 seconds, or falls behind
   its pace, is the connection's doing, not the server's, and answers `400` with
@@ -1634,9 +1631,9 @@ Accept-Encoding`; the fonts are compressed already. JSON from the API is not com
 
 - **Backend**: Go 1.22 standard library HTTP server, `pgx` for PostgreSQL
 - **Database**: PostgreSQL 16, versioned SQL migrations applied on startup
-- **Front end**: dependency-free HTML/CSS/JS served from the Go binary
-- **Deployment**: multi-stage Docker build onto a distroless base, built by Cloud Build into Artifact Registry; Cloud Run with Cloud SQL (see [Deployment](#deployment))
-- **Planned**: Google Cloud Storage, Gemini API + Cloud Vision for moderation, Cloud CDN + Cloud Armor
+- **Front end**: HTML/CSS/JS with no framework and no build step, served from the Go binary; highlight.js and KaTeX are vendored for code and maths
+- **Deployment**: multi-stage Docker build onto a distroless base, built by Cloud Build into Artifact Registry; Cloud Run with Cloud SQL and Cloud Storage (see [Deployment](#deployment))
+- **Planned**: Gemini API + Cloud Vision for moderation, Cloud CDN + Cloud Armor
 
 ## Running locally
 
@@ -1769,6 +1766,20 @@ cooldowns and a refusal budget apply:
 | Attaching an image | `EDUCHAN_UPLOAD_COOLDOWN` | client, across every board |
 | Being sent back by the content rules | `EDUCHAN_REFUSAL_LIMIT` a minute | client, across every board |
 
+Here and everywhere else in this README, a client address is an IPv4 address as
+it is or, for IPv6, the /64 network the address belongs to. Wherever the server
+keys on the client, such as the posting and upload cooldowns above, the
+per-client half of verification's code-request cooldown, and the poster ID of a
+post sent with no poster key, it cuts an IPv6 address to the first address of
+its /64, so `2001:db8:1:2:aaaa:bbbb:cccc:dddd` becomes `2001:db8:1:2::`, and
+that is all the key held in memory carries for an IPv6 client. A subscriber is
+normally handed at least a /64 and can use any address in it, so keyed on the
+whole address one client could take a fresh key with every request and no
+cooldown would ever apply. Everyone in one /64, such as a household or a campus
+subnet, shares those cooldowns and that poster ID, as everyone behind one IPv4
+NAT address always has. A client that holds a shorter prefix, a /56 or a /48,
+still has many /64s and so many keys; nothing in the server stops that.
+
 Posting is counted per board so one client can follow a conversation on two
 boards at once. Uploads are counted across the whole server instead, because
 decoding, thumbnailing, and storing an image costs the same wherever the post
@@ -1818,25 +1829,24 @@ the limit is there because reading a post is the expensive part of refusing
 it. `0` switches it off.
 
 The cooldowns and the refusal budget are keyed on client addresses, and so are the upload
-shares (see **Memory** under [Image attachments](#image-attachments)), by the address or,
-for IPv6, by its /64 network; those are the only places the server holds one. A client's
-share is held only while its image posts hold room for their bodies, from when their first
-bytes arrive until they are answered, and it is dropped as soon as the last of them is,
-with no sweep to wait for: the post's deadlines bound that to about a minute (some ten
-seconds' wait for room, 30 seconds for the body and 25 for the image) besides the time the
-database takes to store the post. A sweep runs once a minute and drops every cooldown and
-refusal count that has run out, so **an address is held in memory no longer than the
-longest cooldown that applies to it plus one minute**, counted from its last post (or code
-request, for verification's cooldown; or, for the refusal budget, from the first refusal
-of its minute, so two minutes), whether or not anyone else posts in the meantime, **as
-long as the process has CPU between requests**. A host that gives it CPU only while it
-answers a request, which is Cloud Run's default (request-based billing), holds the sweep's
-timer back while an instance is idle. The first request to arrive after a sweep fell due
-runs it before it is handled, but until one arrives, or the instance is shut down, an idle
-instance's memory still holds the addresses it last saw. On Cloud Run the one-minute bound
-needs CPU allocated for the instance's whole life, which is also how it is then billed:
-`run.googleapis.com/cpu-throttling: "false"` on the revision, or `--no-cpu-throttling` on
-`gcloud run deploy`.
+shares (see **Memory** under [Image attachments](#image-attachments)); those are the only
+places the server holds one. A client's share is held only while its image posts hold room
+for their bodies, from when their first bytes arrive until they are answered, and it is
+dropped as soon as the last of them is, with no sweep to wait for: the post's deadlines
+bound that to about a minute (some ten seconds' wait for room, 30 seconds for the body and
+25 for the image) besides the time the database takes to store the post. A sweep runs once
+a minute and drops every cooldown and refusal count that has run out, so **an address is
+held in memory no longer than the longest cooldown that applies to it plus one minute**,
+counted from its last post (or code request, for verification's cooldown; or, for the
+refusal budget, from the first refusal of its minute, so two minutes), whether or not
+anyone else posts in the meantime, **as long as the process has CPU between requests**. A
+host that gives it CPU only while it answers a request, which is Cloud Run's default
+(request-based billing), holds the sweep's timer back while an instance is idle. The first
+request to arrive after a sweep fell due runs it before it is handled, but until one
+arrives, or the instance is shut down, an idle instance's memory still holds the addresses
+it last saw. On Cloud Run the one-minute bound needs CPU allocated for the instance's
+whole life, which is also how it is then billed: `run.googleapis.com/cpu-throttling:
+"false"` on the revision, or `--no-cpu-throttling` on `gcloud run deploy`.
 
 The address itself is never written to the database or the logs. A post from a
 client that sends no poster key does store a poster ID derived from it (see
@@ -2352,7 +2362,7 @@ short commit SHA.
 
 ## Contributing
 
-This project is in early stages. Contribution guidelines will be added once the initial prototype is ready.
+The prototype is built and still changing quickly. Contribution guidelines have not been written yet; `AGENTS.md` describes the conventions the code follows, and `make check` runs the formatting check, `go vet` and the tests.
 
 ## License
 

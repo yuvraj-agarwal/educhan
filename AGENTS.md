@@ -1743,16 +1743,15 @@ posting form (see **The content rules' answers** under Front end conventions).
   post away `503`, and were charged nothing. Now `reserveUpload` takes from the client's
   share first (`clientUploadShare`, half the budget and room for the largest body
   `maxUploadLimit` allows, which `TestConfigFromEnvRejectsInvalidValues` holds; counted in
-  `uploadShares` per `clientIP`, but per /64 for an IPv6 address (`shareKey`), since its
-  host can usually take any address in its /64 and counted per address the share would
-  bound nothing, while flood control stays per address, its cooldowns being a wait a whole
-  network would feel), and a post past it is read to its end unkept and answered `429`
-  (`errUploadShare`, `busyRetryAfter` to wait, nothing charged) without waiting, or `400`
-  `upload too slow` if its body falls behind on the way (`turnAway`); and `pacedBody`
-  holds the body to an even pace through its read window, moving the read deadline before
-  every read to a grace past when what has arrived would have at the pace that brings it
-  all in by the window's end, so a body that sends nothing or a trickle is answered `400`
-  and gives its room back after the grace, not at the window's end
+  `uploadShares` per client address, the same key flood control uses (`clientIP`, an IPv6
+  client being its /64: see the flood-control bullet), so the people on one /64 share it
+  as those behind one IPv4 address do), and a post past it is read to its end unkept and
+  answered `429` (`errUploadShare`, `busyRetryAfter` to wait, nothing charged) without
+  waiting, or `400` `upload too slow` if its body falls behind on the way (`turnAway`);
+  and `pacedBody` holds the body to an even pace through its read window, moving the read
+  deadline before every read to a grace past when what has arrived would have at the pace
+  that brings it all in by the window's end, so a body that sends nothing or a trickle is
+  answered `400` and gives its room back after the grace, not at the window's end
   (`TestIdleUploadsCannotHoldTheUploadBudget`). That still let sixteen addresses, each
   within its share with three connections that declared the largest body and sent none of
   it, keep the budget full and its queue for room long, each body holding its room for the
@@ -2178,6 +2177,10 @@ posting form (see **The content rules' answers** under Front end conventions).
   - Flood control stays on `clientIP`. The key is client-chosen, so a limit keyed on it
     is one any client can step around; for the same reason a poster ID is a courtesy for
     following a thread, not proof of anything.
+  - A post with no poster key takes its ID from the client address, which for an IPv6
+    client is its /64 (see the flood-control bullet), so everyone in one /64 who posts in
+    a thread without a key shares one ID there, as everyone behind one IPv4 NAT address
+    does.
   - A badged post's ID comes from the raw credential id as presented, never from
     `credential_id_hash` or any other stored value: an ID derived from stored data could
     be recomputed by anyone holding the database and the salt, for every credential in
@@ -2251,9 +2254,26 @@ posting form (see **The content rules' answers** under Front end conventions).
   would refuse is answered by `notCoolingDown` (the same check, recording nothing) before
   the rules read it (see **API contract** under Content rules). State is per process and
   in memory — a shared backend means replacing `cooldownLimiter` and `refusalBudget`,
-  which nothing else depends on. The keys carry client addresses, so the limiters are also
-  a privacy surface: `New` builds a `cooldownSweep` over all four limiters and the refusal
-  budget (anything `expiring`) and starts its timer, which drops every expired entry each
+  which nothing else depends on.
+  The client is whatever `clientIP` returns, and that is what "client address" means
+  everywhere in the code and the docs: an IPv4 address as it is, or an IPv6 address cut by
+  `addressKey` in `middleware.go` to the first address of its /64 (`2001:db8:1:2::`),
+  which is all an in-memory key holds for an IPv6 client. Every limit that takes
+  `clientIP` is keyed on it (today the posting and upload cooldowns, a client's share of
+  the upload budget and the one image post a client may have waiting for room in it, and
+  the per-client half of the code-request cooldown, whose other half is keyed on the
+  email's hash), and so is the poster ID of a post with no poster key. A subscriber is
+  normally handed at least a /64 and can use any address in it, so keyed on the whole
+  address one client could take a fresh key with every request. Everyone in one /64 shares
+  those keys, as everyone behind one IPv4 NAT address does (`TestClientIP`, and through
+  the handlers `ipv6_grouping_test.go`). The forwarded entry and the peer both go through
+  `addressKey`; a path into `clientIP` that skipped it would give an IPv6 client a fresh
+  key per request again. A holder of a shorter prefix, a /56 or a /48, still has many
+  /64s, and so many keys: a known limit, stated in the README, that the code does not
+  close.
+  The keys carry client addresses, so the limiters are also a privacy surface: `New`
+  builds a `cooldownSweep` over all four limiters and the refusal budget (anything
+  `expiring`) and starts its timer, which drops every expired entry each
   `cooldownSweepInterval` (one minute), and `Close` stops it. **While the process has CPU,
   an address is held in memory no longer than the longest cooldown that applies to it plus
   one minute**, counted from its last action that started one (for the refusal budget,
@@ -2273,14 +2293,14 @@ posting form (see **The content rules' answers** under Front end conventions).
   `TestFloodControlForgetsAddressesBeforeTheNextRequest`, which shorten the period through
   `Config.cooldownSweepEvery`). The record-time sweep past `cooldownSweepThreshold` only
   bounds a burst between two ticks. The upload shares (`uploadShares`) are keyed on client
-  addresses too, by `shareKey` (the address, or an IPv6 address's /64), and need no sweep:
-  a client's entry is taken by `reserveUpload` once a multipart post's first bytes have
-  arrived, given back by `submission.release` when the post is answered, and deleted once
-  it holds nothing (`TestUploadSharesForgetAClientOnceItHoldsNothing`), so it is held for
-  about a minute at most, the wait for room, `uploadReadTimeout` and `processContext`
-  together, besides the time the database takes to store the post. The README's Flood
-  control section says so; a share kept past its post, or keyed on anything that outlives
-  it, would hold an address beyond that.
+  addresses too, by `clientIP` as the cooldowns are, and need no sweep: a client's entry
+  is taken by `reserveUpload` once a multipart post's first bytes have arrived, given back
+  by `submission.release` when the post is answered, and deleted once it holds nothing
+  (`TestUploadSharesForgetAClientOnceItHoldsNothing`), so it is held for about a minute at
+  most, the wait for room, `uploadReadTimeout` and `processContext` together, besides the
+  time the database takes to store the post. The README's Flood control section says so; a
+  share kept past its post, or keyed on anything that outlives it, would hold an address
+  beyond that.
 - `EDUCHAN_TRUST_PROXY` is a hop count, not a boolean (`true` still means 1). `clientIP`
   in `middleware.go` reads the Nth `X-Forwarded-For` entry **from the right**, because each
   proxy appends and everything to the left is client-supplied; a chain shorter than the

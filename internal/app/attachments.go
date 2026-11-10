@@ -8,7 +8,6 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
-	"net/netip"
 	"os"
 	"path"
 	"strconv"
@@ -47,11 +46,13 @@ const clientUploadShare = media.UploadBudget / 2
 var errUploadShare = errors.New("too many images uploading at once from this client")
 
 // uploadShares counts what each client's posts hold of the upload budget,
-// keyed on shareKey, so that none holds more than clientUploadShare, and which
-// clients have a post waiting for room in it, so that none has more than one,
-// and what the posts waiting hold of the budget between them, so that it is
-// never more than waitingRoom (reserveUpload). A client's entries go once it
-// holds nothing and has nothing waiting.
+// keyed on the client address, the same key flood control uses (clientIP; an
+// IPv6 client is its /64), so that none holds more than clientUploadShare, and
+// which clients have a post waiting for room in it, so that none has more than
+// one, and what the posts waiting hold of the budget between them, so that it
+// is never more than waitingRoom (reserveUpload). So the people on one /64
+// have one share between them, as those behind one IPv4 address do. A client's
+// entries go once it holds nothing and has nothing waiting.
 type uploadShares struct {
 	mu       sync.Mutex
 	held     map[string]int64
@@ -114,27 +115,6 @@ func (s *uploadShares) wait(client string, held, limit int64) (func(), error) {
 			s.waitHeld -= held
 		})
 	}, nil
-}
-
-// shareKey is the client a post's share of the upload budget is counted
-// under: its address as flood control counts it (clientIP), except that an
-// IPv6 address counts as its /64 network. A host on IPv6 can usually take any
-// address in its /64, so counted per address the share would bound nothing:
-// a few addresses would hold the whole budget. The people on one /64, a
-// campus network's say, have one share between them, as those behind one IPv4
-// address do. Flood control is not grouped so: its cooldowns are a wait after
-// each post, which a whole network would feel, where a share is room for a
-// few uploads at once.
-func shareKey(client string) string {
-	addr, err := netip.ParseAddr(client)
-	if err != nil || !addr.Is6() || addr.Is4In6() {
-		return client
-	}
-	network, err := addr.WithZone("").Prefix(64)
-	if err != nil {
-		return client
-	}
-	return network.String()
 }
 
 // of reports what client's posts hold, for tests.
@@ -672,7 +652,7 @@ func (a *App) parseSubmission(ctx context.Context, w http.ResponseWriter, r *htt
 
 // reserveUpload takes room for a multipart post's body, which holds held bytes
 // of the upload budget already: n bytes of its client's share first
-// (clientUploadShare, the client as shareKey counts it), refused at once with
+// (clientUploadShare, the client as clientIP returns it), refused at once with
 // errUploadShare when the client's other posts and what this one holds already
 // hold it, and then n bytes of the upload budget itself and, in the same ask,
 // extra bytes more of it, for the room a body's start takes a second time
@@ -703,7 +683,7 @@ func (a *App) parseSubmission(ctx context.Context, w http.ResponseWriter, r *htt
 // either give their room back in time or come to wait in turn, so the first
 // post in the queue gets its room, and then the next.
 func (a *App) reserveUpload(ctx context.Context, r *http.Request, held, n, extra int64) (give, giveExtra func(), err error) {
-	client := shareKey(clientIP(r, a.cfg.TrustedProxyHops))
+	client := clientIP(r, a.cfg.TrustedProxyHops)
 	share, ok := a.uploadShares.take(client, n)
 	if !ok {
 		return nil, nil, errUploadShare
