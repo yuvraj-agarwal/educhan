@@ -1407,8 +1407,8 @@ to 60 a minute at the base work, then twice the work for each further 60, to at
 most eight times the base, and past 300 in a minute `GET /api/captcha` answers
 `429`, which the page reports as too many checks started from the reader's
 network, with the wait, rather than as a post's cooldown. The count is kept per
-client address, an IPv6 address counted by its `/64` (the block one connection
-is usually given), in one-minute windows, in each instance's memory like flood
+client address, which for an IPv6 address is its `/64`, as everywhere else in
+this README, in one-minute windows, in each instance's memory like flood
 control, and swept with the cooldowns (see [Flood control](#flood-control));
 behind several instances an address can ask each of them for that many. A
 challenge is not tied to the address that fetched it, which would fail a phone

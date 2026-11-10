@@ -15,7 +15,6 @@ import (
 	"math"
 	"math/big"
 	"net/http"
-	"net/netip"
 	"strconv"
 	"sync"
 	"time"
@@ -438,23 +437,6 @@ func (m *captchaMeter) take(key string) (scale int, retryAfter time.Duration, ok
 	return captchaScale(c.n), 0, true
 }
 
-// captchaMeterKey is the address a challenge is counted against: the client
-// address, except that an IPv6 address counts as its /64, the block one
-// subscriber is usually given whole, so a client cannot start a fresh count by
-// moving to the next address in its own block. An address that does not parse
-// is counted as it is.
-func captchaMeterKey(ip string) string {
-	addr, err := netip.ParseAddr(ip)
-	if err != nil || !addr.Is6() || addr.Is4In6() {
-		return ip
-	}
-	prefix, err := addr.WithZone("").Prefix(64)
-	if err != nil {
-		return ip
-	}
-	return prefix.String()
-}
-
 // captchaScale is the difficulty for the nth challenge an address has asked
 // for in a window: the base for the first captchaFreeChallenges, then double
 // for each further captchaFreeChallenges, up to captchaMaxScale.
@@ -498,7 +480,7 @@ func (a *App) handleCaptcha(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "the captcha is not switched on here")
 		return
 	}
-	scale, wait, ok := a.captchaMeter.take(captchaMeterKey(clientIP(r, a.cfg.TrustedProxyHops)))
+	scale, wait, ok := a.captchaMeter.take(clientIP(r, a.cfg.TrustedProxyHops))
 	if !ok {
 		seconds := int(math.Ceil(wait.Seconds()))
 		w.Header().Set("Retry-After", strconv.Itoa(seconds))

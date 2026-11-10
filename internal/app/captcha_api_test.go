@@ -1198,9 +1198,9 @@ func TestCaptchaChallengesPerAddress(t *testing.T) {
 		t.Errorf("another address's first challenge at scale %d, want 1", last)
 	}
 
-	// An IPv6 client is counted by its /64, the block one connection is
-	// usually given: a second address in it carries on the first's count, and
-	// an address in the next block starts its own.
+	// The count is kept on the key clientIP makes, so an IPv6 client is
+	// counted by its /64: a second address in it carries on the first's count,
+	// and an address in the next block starts its own.
 	for range captchaFreeChallenges {
 		from("2001:db8:1:2::1")
 	}

@@ -489,24 +489,6 @@ func TestCaptchaMeterSweepsWhenFull(t *testing.T) {
 	}
 }
 
-// An IPv6 client is counted by its /64, so moving to another address in the
-// block it was given does not start a fresh count.
-func TestCaptchaMeterKey(t *testing.T) {
-	for ip, want := range map[string]string{
-		"203.0.113.7":                    "203.0.113.7",
-		"2001:db8:1:2:3:4:5:6":           "2001:db8:1:2::/64",
-		"2001:db8:1:2:ffff:ffff:ffff:ff": "2001:db8:1:2::/64",
-		"2001:db8:1:3::1":                "2001:db8:1:3::/64",
-		"fe80::1%eth0":                   "fe80::/64",
-		"::ffff:203.0.113.7":             "::ffff:203.0.113.7",
-		"not an address":                 "not an address",
-	} {
-		if got := captchaMeterKey(ip); got != want {
-			t.Errorf("captchaMeterKey(%q) = %q, want %q", ip, got, want)
-		}
-	}
-}
-
 func TestCaptchaConfig(t *testing.T) {
 	t.Run("defaults", func(t *testing.T) {
 		t.Setenv("EDUCHAN_CAPTCHA_SECRET", "")
