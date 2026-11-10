@@ -537,19 +537,19 @@ properties and needs a browser check before the test changes.
   fails to load keeps it with the error after it; it says nothing when those words no
   longer hold, something written since an empty press say, taking the notice off. One
   the reader has dismissed, or that another notice has taken the place of, is said no
-  more, and a redraw that draws another page, a page with no form or an error in the
-  page's place takes it off while it is still up, the form it speaks of having gone. A
-  draft, held or not, is keyed by the page on screen (`drawnFor` in `captureDraft`),
-  never by a render begun since that has not drawn yet, so the second of a double click
-  neither carries the form into the page it goes to nor keeps the page on screen under
-  that page's address. A redraw that fails to load leaves the kept page on screen, held
-  form and all, with the address bar, `renderedPath`, `state.route` and `state.thread`
-  put back as that page was drawn for them (`drawnFor`, noted by the render that drew
-  it, however many redraws of it have failed since) and the error in a notice. The
-  address bar goes back (`history.replaceState`) by replacing the history entry the
-  reader is on when the redraw fails, so after a link, with nothing pressed while the
-  redraw loads, the history holds the kept page twice and the first Back stays on it
-  (`popstate` finds `renderedPath` and only moves to the fragment), and a Back or
+  more, and a redraw that draws another page, a page with no form, the age screen or an
+  error in the page's place takes it off while it is still up, the form it speaks of
+  having gone. A draft, held or not, is keyed by the page on screen (`drawnFor` in
+  `captureDraft`), never by a render begun since that has not drawn yet, so the second
+  of a double click neither carries the form into the page it goes to nor keeps the page
+  on screen under that page's address. A redraw that fails to load leaves the kept page
+  on screen, held form and all, with the address bar, `renderedPath`, `state.route` and
+  `state.thread` put back as that page was drawn for them (`drawnFor`, noted by the
+  render that drew it, however many redraws of it have failed since) and the error in a
+  notice. The address bar goes back (`history.replaceState`) by replacing the history
+  entry the reader is on when the redraw fails, so after a link, with nothing pressed
+  while the redraw loads, the history holds the kept page twice and the first Back stays
+  on it (`popstate` finds `renderedPath` and only moves to the fragment), and a Back or
   Forward that will not load leaves the entry it went to holding the kept page. A link
   pressed while a redraw for another address loads, the same one again or a jump within
   the page, adds an entry, and that is the one replaced, so the entry for the page that
@@ -816,16 +816,17 @@ properties and needs a browser check before the test changes.
   refusals of the image itself, and a post the forget stopped, say nothing of a badge
   held, its box or the poster key, and what the last says of the forget that stopped it
   stays so, so no such change makes them untrue, and they are kept for none of this. A
-  change that takes away the badge of a ticked box notes the form all the same, under
-  any of them and under any other refusal whose words come out the same, the server's
-  flood control say, so its next press with something to post is refused once by the
-  note, which says why (`badgeWithdrawn`): only a notice worded again as that of a
-  replaced badge takes the note off. That notice is its one refusal for the badge, so a
-  note left on it while the post was on its way goes, whatever left it: a change of
+  change of badge that takes away the badge of a ticked box notes the form all the same,
+  under any of them and under any other refusal whose words come out the same, the
+  server's flood control say, so its next press with something to post is refused once
+  by the note, which says why (`badgeWithdrawn`): only a notice worded again as that of
+  a replaced badge takes the note off. That notice is its one refusal for the badge, so
+  a note left on it while the post was on its way goes, whatever left it: a change of
   badge in another tab (`followCredentialStorage`), a confirmation answered in this one
   (`submitVerification`), another badged post's refusal in this one (`submit`),
   `/verify` loading over the form (`loadVerification`), or a redraw that puts it back
-  (`restoreDraft`).
+  (`restoreDraft`). Forget this browser notes no form: it takes the box out and drops a
+  note it finds (`forgetForm`).
 - The poster key lives in `localStorage` under `educhan:poster-key`: 16 random bytes as
   22 characters of unpadded base64url, made by `posterKey()` on the first post rather
   than the first visit. `submit` sends it in `X-Educhan-Poster-Key` on thread-create and
@@ -880,8 +881,11 @@ properties and needs a browser check before the test changes.
   of those three (`storedHere`), and on hearing removes each only while storage still
   holds it as that tab stored it: never a badge confirmed or a key made in another tab
   since, however late it hears (a name is compared by its text, so the same name stored
-  since goes too). In a browser without `BroadcastChannel` a forget covers the tab it
-  was pressed in, and the other tabs drop only the badge, as they do for Forget this
+  since goes too). So the notice a tab on `/verify` says when it hears says what was
+  done, and that what the browser held then is gone, not what the browser holds
+  (`BROWSER_FORGOTTEN_ELSEWHERE`): the page drawn under it may show the panel of a badge
+  stored since. In a browser without `BroadcastChannel` a forget covers the tab it was
+  pressed in, and the other tabs drop only the badge, as they do for Forget this
   credential (`TestForgettingTheBrowserReachesEveryTab`). It is what the FAQ's
   shared-computer advice points to: the key left behind would give the next person at
   the computer the same IDs in the same threads.
@@ -999,45 +1003,46 @@ properties and needs a browser check before the test changes.
   gate on a held badge in any of them, or in `renderVerify`, hides a pending code's box
   with every other check passing. So does one in what runs on the box once it is drawn:
   `drawVerifyStep`, `showVerifyField`, `sayVerifyRefusal`, what `renderVerify`'s callers
-  run on what it drew (`focusHash` in `render()`, `showHeldBadge` after Verify,
-  `confirmBrowserForgotten` after Forget this browser, `showNotice` after a forget or a
-  verification heard from another tab), what `renderVerify` and the requests it waits on
-  run once their answers are in, since an answer can draw the box while it is still
-  asking (the rest of `api()`, `loadVerification`'s `readBadge` and `offerHeldBadge`,
-  and `announce`), and every top-level function those call, however far down
-  (`revealClearOfHeader`, `refuseVerification` and the helpers the code step's template
-  interpolates). The test finds that set by following the calls rather than from a list,
-  and holds each function in it whole, so a function new to the path fails it until it
-  is held too: holding the answer alone left `showVerifyField` and `revealClearOfHeader`
-  checked for a few words, and a gate in either took the code form out of the page.
-  Following calls down does not reach what runs once each call that drew the box
-  returns, so that is held line for line too, up to where the browser takes over: the
-  page's submit listener to the end of its Verify branch (the one listener a Verify
-  form's submit reaches), the forget buttons' callbacks, and `render()` from its
-  `finally` on, which leaves the Verify page with at most `focusHash` run on it, not the
-  posts and drafts every other page gets; `beginLoading`, whose `finish` that `finally`
-  calls, and `navigate`, which waits on `render()`, are held whole, and every other call
-  of either is a statement nothing waits on. A gate in the submit listener after
-  `submitVerification`, in what `render()` ran once it had drawn the page for a badge
-  holder coming back to it, or in `announce`, took the box away with every function
-  check passing. What runs on the box with no call from any of that is not followed: the
-  page's listeners (a click into the code box runs the click listener and
-  `isInternalLink`, a scroll runs `hideQuotePreview`, and keys, changes, pointers,
-  hovers and drags have theirs), its timers, and the answers to requests sent from other
-  pages. Down their calls lie `render()` and every page, more than a test can hold
-  whole, and a gate on a held badge in `hideQuotePreview` or `isInternalLink` took the
-  box away with every check passing. So what can tell whether a badge is held — the
-  verification state or a badge, read as a property (`state.verification`, a `.badge`
-  off anything), destructured or bound under its own name (`{ verification: { badge } }
-  = state`), or named in a string; `loadVerification`, which returns the state,
-  `readBadge`, `storedCredential`, `localStorage` and the credential's key; and the
-  markup only a held badge draws (Keep my badge, `#verify-badge`, a posting form's badge
-  box and its number) — is named only in the places
-  `TestOnlyKnownPlacesTellWhetherABadgeIsHeld` lists, top-level block by block. It
-  counts names in the code alone, not in the copy every page shows (`jsCodeText`), so a
-  gate on a held badge that names any of them fails it wherever it is put, a listener
-  included; counting property reads alone, it let a destructured read in
-  `hideQuotePreview` take the box away. A name made at run time — `state[k]` for a
+  run on what it drew (in `render()`, the take-off of a refusal said before anything was
+  sent, `carriedDraft`, `unsentOnScreen` and `clearNotice`, and then `focusHash`;
+  `showHeldBadge` after Verify, `confirmBrowserForgotten` after Forget this browser,
+  `showNotice` after a forget or a verification heard from another tab), what
+  `renderVerify` and the requests it waits on run once their answers are in, since an
+  answer can draw the box while it is still asking (the rest of `api()`,
+  `loadVerification`'s `readBadge` and `offerHeldBadge`, and `announce`), and every
+  top-level function those call, however far down (`revealClearOfHeader`,
+  `refuseVerification` and the helpers the code step's template interpolates). The test
+  finds that set by following the calls rather than from a list, and holds each function
+  in it whole, so a function new to the path fails it until it is held too: holding the
+  answer alone left `showVerifyField` and `revealClearOfHeader` checked for a few words,
+  and a gate in either took the code form out of the page. Following calls down does not
+  reach what runs once each call that drew the box returns, so that is held line for
+  line too, up to where the browser takes over: the page's submit listener to the end of
+  its Verify branch (the one listener a Verify form's submit reaches), the forget
+  buttons' callbacks, and `render()` from its `finally` on, which leaves the Verify page
+  with at most that take-off and `focusHash` run on it, not the posts and drafts every
+  other page gets; `beginLoading`, whose `finish` that `finally` calls, and `navigate`,
+  which waits on `render()`, are held whole, and every other call of either is a
+  statement nothing waits on. A gate in the submit listener after `submitVerification`,
+  in what `render()` ran once it had drawn the page for a badge holder coming back to
+  it, or in `announce`, took the box away with every function check passing. What runs
+  on the box with no call from any of that is not followed: the page's listeners (a
+  click into the code box runs the click listener and `isInternalLink`, a scroll runs
+  `hideQuotePreview`, and keys, changes, pointers, hovers and drags have theirs), its
+  timers, and the answers to requests sent from other pages. Down their calls lie
+  `render()` and every page, more than a test can hold whole, and a gate on a held badge
+  in `hideQuotePreview` or `isInternalLink` took the box away with every check passing.
+  So what can tell whether a badge is held — the verification state or a badge, read as
+  a property (`state.verification`, a `.badge` off anything), destructured or bound
+  under its own name (`{ verification: { badge } } = state`), or named in a string;
+  `loadVerification`, which returns the state, `readBadge`, `storedCredential`,
+  `localStorage` and the credential's key; and the markup only a held badge draws (Keep
+  my badge, `#verify-badge`, a posting form's badge box and its number) — is named only
+  in the places `TestOnlyKnownPlacesTellWhetherABadgeIsHeld` lists, top-level block by
+  block. It counts names in the code alone, not in the copy every page shows
+  (`jsCodeText`), so a gate on a held badge that names any of them fails it wherever it
+  is put, a listener included; counting property reads alone, it let a destructured read
+  in `hideQuotePreview` take the box away. A name made at run time — `state[k]` for a
   computed `k`, or the page's text read back for its wording — is past what counting
   names can see, and is for review to catch. `replacing` puts the badge panel away for
   "Verify another address", and both steps then offer "Keep my badge" back to it

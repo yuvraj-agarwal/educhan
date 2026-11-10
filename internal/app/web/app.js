@@ -2476,8 +2476,11 @@ const forgottenAt = new WeakMap();
 // reader was not at the button that would say it below
 // (confirmBrowserForgotten). A badge or a key storage holds that this tab did
 // not write stays, whenever this tab hears: it was stored since the forget, by
-// someone else. A name stored since in the words this tab last wrote goes too,
-// which forgets more than it needs to, never less.
+// someone else. So the notice says what was done, and that what the browser
+// held then is gone, not what the browser holds (BROWSER_FORGOTTEN_ELSEWHERE):
+// /verify drawn again shows such a badge's panel under it. A name stored since
+// in the words this tab last wrote goes too, which forgets more than it needs
+// to, never less.
 function forgottenElsewhere() {
   for (const [key, value] of storedHere) {
     if (storageGet(key) === value) {
@@ -2488,7 +2491,7 @@ function forgottenElsewhere() {
   if (onVerifyPage() && ageStatus() === "ok") {
     renderVerify().then((drawn) => {
       if (drawn) {
-        showNotice(BROWSER_FORGOTTEN);
+        showNotice(BROWSER_FORGOTTEN_ELSEWHERE);
       }
     });
   }
@@ -2534,7 +2537,9 @@ function openForgetChannel() {
 // unless the reader has drawn another step there by the time the page has asked
 // the server (renderVerify). /verify showing the address step is left as it is,
 // whatever badge it was drawn over, so a reader filling it in, or waiting on a
-// code request, loses nothing. So is a code step, unless the badge read in is
+// code request, loses nothing, and what the page said there of a forget done in
+// this tab (CREDENTIAL_FORGOTTEN in that step, BROWSER_FORGOTTEN under its
+// button) stays as it was said. So is a code step, unless the badge read in is
 // one newly verified there (codeSpentElsewhere). An emptied credential is the
 // browser forgotten in another tab (forgetBrowser): the forms change as for any
 // badge gone, before or after its message on FORGET_CHANNEL is heard here, but
@@ -2638,6 +2643,16 @@ function forgetBrowserHTML() {
 }
 
 const BROWSER_FORGOTTEN = "This browser no longer holds your post key, your name or a badge.";
+
+// What /verify says in a tab that hears Forget this browser from another
+// (forgottenElsewhere). It is worded as what happened, like
+// CODE_SPENT_ELSEWHERE, so it is so whenever the tab hears and whatever is
+// stored afterwards: a tab can hear late, over a badge or a key stored since
+// the forget, which stays, and a badge can be verified in another tab while the
+// notice is up. The tab the button was pressed in says BROWSER_FORGOTTEN under
+// it (confirmBrowserForgotten).
+const BROWSER_FORGOTTEN_ELSEWHERE =
+  "This browser was forgotten in another tab, and whatever post key, name and badge it held then are gone.";
 
 // revealClearOfHeader scrolls the page just far enough to bring el into view
 // clear of the sticky header. focus() and scrollIntoView() do not know about
@@ -3941,10 +3956,13 @@ async function render({ draft = captureDraft() } = {}) {
   hideQuotePreview();
 
   // Until the age screen has its answer, nothing of the site is shown or even
-  // fetched, apart from the two pages that say what answering means.
+  // fetched, apart from the two pages that say what answering means. The screen
+  // takes the page's place, and a refusal left up above for the page this
+  // render would have kept goes with it: it speaks of a form that has gone.
   const age = ageStatus();
   const ungated = UNGATED_VIEWS.has(route.view);
   if (age !== "ok" && !ungated) {
+    clearNotice();
     leavePage();
     renderAgeGate(age);
     return;
@@ -4109,16 +4127,25 @@ async function render({ draft = captureDraft() } = {}) {
   }
 
   // The Verify page has no posts to finish and no posting form to give a draft
-  // back to, so once it is drawn the jump to a fragment is all that runs on it:
-  // the FAQ links to /verify#forget-browser. A render a newer one overtook
-  // while it loaded drew nothing (renderVerify), and runs nothing either, as on
-  // every other page (below): the jump would move the page the reader went to.
+  // back to, so once it is drawn two things run on it. A refusal said before
+  // anything was sent at a press of the form the draft carries, made while the
+  // page loaded with the old one still in sight, is taken off while it is still
+  // the notice on screen (unsentOnScreen), as a page drawn for another address
+  // takes it off (restoreDraft): it speaks of a form that has gone. Then the
+  // jump to a fragment: the FAQ links to /verify#forget-browser. A render a
+  // newer one overtook while it loaded drew nothing (renderVerify), and runs
+  // neither, as on every other page (below): the notice is the newer render's
+  // to leave or take off, and the jump would move the page the reader went to.
   // What runs on a pending code's box once it is drawn is held whole
   // (TestVerifyCodeBoxShowsWhileACodeIsPending), and the rest of render()
   // serves every page: a gate on a held badge there could take the box away
   // from a badge holder coming back to the page with every check passing.
   if (route.view === "verify") {
     if (!overtaken(route)) {
+      const carried = carriedDraft(draft);
+      if (carried && unsentOnScreen(carried.held)) {
+        clearNotice();
+      }
       focusHash();
     }
     return;
@@ -5592,13 +5619,14 @@ const redrawnPickers = new WeakMap();
 // does a post the forget stopped (FORGOTTEN_BEFORE_SENDING): none of them
 // speaks of a badge held, its box or the poster key, and what the last says of
 // the forget that stopped it stays so, so no change of badge and no forget
-// since makes what they say of the post untrue. A change that takes away the
-// badge of a ticked box notes the form all the same, whatever notice is up, so
-// its next press with something to post is refused once by the note, which says
-// why (badgeWithdrawn), unless the notice on screen is worded again as that of
-// a replaced badge, which takes the note off (rewordRefusal). Every press of
-// the form takes its entry out (submit), so a refusal is worded again only for
-// the press it answers.
+// since makes what they say of the post untrue. A change of badge that takes
+// away the badge of a ticked box notes the form all the same, whatever notice
+// is up, so its next press with something to post is refused once by the note,
+// which says why (badgeWithdrawn), unless the notice on screen is worded again
+// as that of a replaced badge, which takes the note off (rewordRefusal); a
+// forget takes the box out and leaves the form with no note (forgetForm). Every
+// press of the form takes its entry out (submit), so a refusal is worded again
+// only for the press it answers.
 const refusalNotices = new WeakMap();
 
 // What each posting form would have been told when its post was answered, or
@@ -5797,10 +5825,11 @@ el.main.addEventListener("focusin", (event) => {
 // press gave having gone with the old form (restoreDraft), so the press is
 // answered on its form as a post the server answered is; if the page is kept,
 // its redraw failing to load, the refusal stays with the error after it
-// (render). A redraw that draws another page, a thread with no form or an error
-// in the page's place takes the refusal off and says nothing of it, the form it
-// speaks of being gone (unsentOnScreen). Until the next press, the refusal is
-// worded again in place while it is the notice on screen (rewordRefusal).
+// (render). A redraw that draws another page, a thread with no form, the age
+// screen or an error in the page's place takes the refusal off and says nothing
+// of it, the form it speaks of being gone (unsentOnScreen). Until the next
+// press, the refusal is worded again in place while it is the notice on screen
+// (rewordRefusal).
 function refuseUnsent(form, words, text, image) {
   const notice = (off, on, hasText, hasImage) => {
     const said = words(on, hasText, hasImage);

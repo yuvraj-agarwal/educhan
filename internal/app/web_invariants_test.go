@@ -1708,9 +1708,25 @@ func TestForgettingTheBrowserReachesEveryTab(t *testing.T) {
 	if elsewhere != `function forgottenElsewhere() { for (const [key, value] of storedHere) { `+
 		`if (storageGet(key) === value) { storageRemove(key); } } forgetOnThisPage(); `+
 		`if (onVerifyPage() && ageStatus() === "ok") { renderVerify().then((drawn) => { `+
-		`if (drawn) { showNotice(BROWSER_FORGOTTEN); } }); } }` {
+		`if (drawn) { showNotice(BROWSER_FORGOTTEN_ELSEWHERE); } }); } }` {
 		t.Errorf("a tab that hears the forget no longer removes only what it stored and storage still holds, "+
 			"forgets what it holds, or draws /verify again: %s", elsewhere)
+	}
+	// What it says on /verify is what happened, and that what the browser held
+	// then is gone, not what the browser holds: a badge or a key stored since
+	// the forget stays, whenever the tab hears, and the page drawn may show
+	// that badge's panel under the notice. The words that say what the browser
+	// holds are said only under the button, in the tab it was pressed in.
+	said := regexp.MustCompile(`\nconst BROWSER_FORGOTTEN_ELSEWHERE =\s+"([^"\\]*)";\n`).FindStringSubmatch(code)
+	if said == nil || !strings.Contains(said[1], "forgotten in another tab") || !strings.Contains(said[1], "held then") ||
+		strings.Contains(said[1], "no longer holds") || strings.Contains(said[1], "holds no") {
+		t.Errorf("BROWSER_FORGOTTEN_ELSEWHERE is %q; want it to say the browser was forgotten in another tab and that "+
+			"what it held then is gone, and not what it holds: a badge stored since the forget stays", said)
+	}
+	if n := len(regexp.MustCompile(`\bBROWSER_FORGOTTEN\b`).FindAllString(code, -1)); n != 2 ||
+		!strings.Contains(code, "done.textContent = BROWSER_FORGOTTEN;") {
+		t.Errorf("app.js names BROWSER_FORGOTTEN %d times; want twice, the words and confirmBrowserForgotten, which "+
+			"says them under the button: said in a tab that hears the forget, they can be untrue of a badge stored since", n)
 	}
 	if fn := withoutComments(jsFunction(t, script, "forgetOnThisPage")); strings.Contains(strings.ToLower(fn), "storage") ||
 		strings.Contains(fn, "Credential(") {
@@ -2427,11 +2443,11 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 		t.Errorf("carriedDraft no longer carries held a form pressed since its values were read: %s", carried)
 	}
 	if code := withoutComments(script); !strings.Contains(code, "\nconst presses = new WeakMap();\n") ||
-		strings.Count(code, "presses") != 5 || strings.Count(code, "carriedDraft(") != 5 ||
+		strings.Count(code, "presses") != 5 || strings.Count(code, "carriedDraft(") != 6 ||
 		!strings.Contains(squash(withoutComments(submitHandler(t, script))), "presses.set(form, (presses.get(form) ?? 0) + 1);") {
 		t.Error("presses is no longer counted at every press and read only by captureDraft and carriedDraft, or carriedDraft " +
-			"is called somewhere besides render's keepPage, the notice it keeps as it begins, its failed load and its " +
-			"restoreDraft")
+			"is called somewhere besides render's keepPage, the notice it keeps as it begins, its failed load, its " +
+			"Verify page and its restoreDraft")
 	}
 	// The held form goes into the new page's <details>, which another page of
 	// the index draws closed, so that is opened: a form on its way is never
@@ -2612,7 +2628,7 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 	squashed := squash(code)
 	for _, call := range []string{
 		`forgetOnThisPage(); if (onVerifyPage() && ageStatus() === "ok") { ` +
-			"renderVerify().then((drawn) => { if (drawn) { showNotice(BROWSER_FORGOTTEN); } }); }",
+			"renderVerify().then((drawn) => { if (drawn) { showNotice(BROWSER_FORGOTTEN_ELSEWHERE); } }); }",
 		`const step = el.main.querySelector('form[data-verify="confirm"]'); if (onVerifyPage() && ageStatus() === "ok" && step) { ` +
 			"renderVerify().then((drawn) => { if (drawn) { showNotice(CODE_SPENT_ELSEWHERE); } }); }",
 		`verifyStep = { step: "email", label: "" }; renderVerify().then((drawn) => { const lost = drawn && document.getElementById("badge-lost");`,
@@ -2935,11 +2951,12 @@ func TestARefusalOnScreenIsWordedAgainForWhatChanges(t *testing.T) {
 // not ticked having been ticked since, the form noted afresh for another badge,
 // or the browser forgotten since. One the reader has dismissed, or that another
 // notice has taken the place of, is said no more. A page drawn for another
-// address, a page drawn with no form and an error drawn in the page's place
-// take it off while it is still the notice on screen, the form it speaks of
-// having gone, and every press takes out what the one before kept, so a refusal
-// is said only on its own form, for the press it answers. A page kept for the
-// form whose redraw will not load keeps it with the error after it (render).
+// address, the Verify page among them, a page drawn with no form, and the age
+// screen or an error drawn in the page's place take it off while it is still
+// the notice on screen, the form it speaks of having gone, and every press
+// takes out what the one before kept, so a refusal is said only on its own
+// form, for the press it answers. A page kept for the form whose redraw will
+// not load keeps it with the error after it (render).
 func TestAPressRefusedBeforeSendingIsSaidOnTheFormDrawn(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -2988,17 +3005,21 @@ func TestAPressRefusedBeforeSendingIsSaidOnTheFormDrawn(t *testing.T) {
 			"notice on screen: %s", on)
 	}
 	// A render that keeps the page on screen for the form leaves it up as it
-	// begins, and every other begins without it; an error drawn in the page's
-	// place, a page drawn for another address and a page drawn with no form
-	// take it off, the form it speaks of having gone.
+	// begins, and every other begins without it; the age screen and an error
+	// drawn in the page's place and the Verify page (render), and a page drawn
+	// for another address and one drawn with no form (restoreDraft), take it
+	// off, the form it speaks of having gone.
 	render := squash(withoutComments(jsFunction(t, script, "render")))
 	inOrder(t, "render", render,
 		"renderNav(route); if (!(keepPage() && unsentOnScreen(carriedDraft(draft).held))) { clearNotice(); } verifyRefusal = null;",
+		`if (age !== "ok" && !ungated) { clearNotice(); leavePage(); renderAgeGate(age); return; }`,
 		"if (draft && unsentOnScreen(draft.held)) { clearNotice(); } leavePage(); el.main.innerHTML = emptyStateHTML(message, board);",
+		`if (route.view === "verify") { if (!overtaken(route)) { const carried = carriedDraft(draft); `+
+			"if (carried && unsentOnScreen(carried.held)) { clearNotice(); } focusHash(); } return; }",
 	)
-	if strings.Count(code, "unsentOnScreen(") != 5 {
-		t.Error("a refusal said before sending is read as on screen somewhere besides render's start and its error, and " +
-			"restoreDraft's page for another address and page with no form")
+	if strings.Count(code, "unsentOnScreen(") != 6 {
+		t.Error("a refusal said before sending is read as on screen somewhere besides render's start, its error and its " +
+			"Verify page, and restoreDraft's page for another address and page with no form")
 	}
 	// restoreDraft words it again for the form a press during the redraw
 	// carried (answeredForm) while it is still the notice on screen, as any
@@ -3290,30 +3311,31 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 
 	// And what runs on the code box from the moment it is drawn is held whole,
 	// however far down it calls. Holding the answer statement for statement
-	// left the two functions it runs on the box just drawn, showVerifyField
-	// and revealClearOfHeader under it, checked for a line and a few words: a
-	// gate on a held badge in either took the code form out of the page, and a
-	// badge holder who sent a code had nowhere to type it, with every check
-	// here passing. The box is drawn in two places. The answer to Send code
-	// draws it with drawVerifyStep (of verifyViewHTML, only the part up to the
-	// code step's return runs) and shows it with showVerifyField. renderVerify
-	// draws whichever step the page is on by the time the server has answered,
-	// for a reader arriving (render()) among others, and gives it its refusal
-	// with sayVerifyRefusal (one for a wrong code, say); what its callers run
-	// on what it drew is followed too: focusHash in render(), showHeldBadge
-	// after Verify, confirmBrowserForgotten after Forget this browser, and
-	// showNotice after a forget, or a code step spent, heard from another tab.
-	// And the box can be drawn while renderVerify is still asking: the answer
-	// to Send code, landing while render() asks for a badge holder who then
-	// pressed Verify in the header. What renderVerify waits on then runs on
-	// the box once its answer is in: the rest of api() after its fetch, of
-	// loadVerification, which reads the badge again (readBadge), and of
-	// renderVerify, which titles the page (announce). A gate on a held badge
-	// in announce took the box away with every check here passing.
-	// Every top-level function those reach is found by following the calls
-	// down, not listed by hand, and each is held whole, here or by the test
-	// named, so a function new to that path fails here until it is held too.
-	// What runs on the box with no call from any of these — the page's
+	// left the two functions it runs on the box just drawn, showVerifyField and
+	// revealClearOfHeader under it, checked for a line and a few words: a gate
+	// on a held badge in either took the code form out of the page, and a badge
+	// holder who sent a code had nowhere to type it, with every check here
+	// passing. The box is drawn in two places. The answer to Send code draws it
+	// with drawVerifyStep (of verifyViewHTML, only the part up to the code
+	// step's return runs) and shows it with showVerifyField. renderVerify draws
+	// whichever step the page is on by the time the server has answered, for a
+	// reader arriving (render()) among others, and gives it its refusal with
+	// sayVerifyRefusal (one for a wrong code, say); what its callers run on
+	// what it drew is followed too: in render(), the take-off of a refusal said
+	// before anything was sent (carriedDraft, unsentOnScreen, clearNotice) and
+	// focusHash; showHeldBadge after Verify, confirmBrowserForgotten after
+	// Forget this browser, and showNotice after a forget, or a code step spent,
+	// heard from another tab. And the box can be drawn while renderVerify is
+	// still asking: the answer to Send code, landing while render() asks for a
+	// badge holder who then pressed Verify in the header. What renderVerify
+	// waits on then runs on the box once its answer is in: the rest of api()
+	// after its fetch, of loadVerification, which reads the badge again
+	// (readBadge), and of renderVerify, which titles the page (announce). A
+	// gate on a held badge in announce took the box away with every check here
+	// passing. Every top-level function those reach is found by following the
+	// calls down, not listed by hand, and each is held whole, here or by the
+	// test named, so a function new to that path fails here until it is held
+	// too. What runs on the box with no call from any of these — the page's
 	// listeners and timers, and the answers to other requests — is not
 	// followed; TestOnlyKnownPlacesTellWhetherABadgeIsHeld holds every place
 	// that names what can tell whether a badge is held instead.
@@ -3371,9 +3393,11 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 		"noticeSaid":              "TestARefusalOnScreenIsWordedAgainForWhatChanges",
 		"formHolds":               "TestARefusalOnScreenIsWordedAgainForWhatChanges",
 		"clearNotice":             "this test",
+		"carriedDraft":            "TestAPressRefusedBeforeSendingIsSaidOnTheFormDrawn",
+		"unsentOnScreen":          "TestAPressRefusedBeforeSendingIsSaidOnTheFormDrawn",
 	}
-	roots := []string{"drawVerifyStep", "showVerifyField", "sayVerifyRefusal", "focusHash", "showHeldBadge",
-		"confirmBrowserForgotten", "showNotice"}
+	roots := []string{"drawVerifyStep", "showVerifyField", "sayVerifyRefusal", "carriedDraft", "unsentOnScreen",
+		"clearNotice", "focusHash", "showHeldBadge", "confirmBrowserForgotten", "showNotice"}
 	for _, f := range []struct{ name, resumes string }{
 		{"api", "res = await fetch(path, init);"},
 		{"loadVerification", `answer = await api("/api/verify", { signal: verifyDeadline() });`},
@@ -3671,7 +3695,7 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 	for _, then := range []string{
 		"renderVerify().then((drawn) => {\n" +
 			"      if (drawn) {\n" +
-			"        showNotice(BROWSER_FORGOTTEN);\n" +
+			"        showNotice(BROWSER_FORGOTTEN_ELSEWHERE);\n" +
 			"      }\n" +
 			"    });\n" +
 			"  }\n" +
@@ -3701,18 +3725,23 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 		}
 	}
 
-	// render() leaves the Verify page once it is drawn, with focusHash alone
-	// run on it, and only when no newer render has overtaken it, after finish,
-	// which beginLoading hands it; both are held whole, and so is the
-	// skeleton's timer beginLoading sets, which can fire once the page is
-	// drawn: it draws nothing over a page drawn since the load began, and asks
-	// render's skeleton (whether a held form keeps the page) only of the page
-	// that was there then. What finish runs, endLoading, is held whole by
-	// TestAHeldFormSurvivesARedrawOfItsPage. What render() runs after drawing
-	// any other page — enhancePosts, restoreDraft and what they reach — serves
-	// every page, so it is not run on this one. An overtaken render drew
-	// nothing, and its jump to a fragment would move the page the reader went
-	// to.
+	// render() leaves the Verify page once it is drawn, with two things run on
+	// it, and only when no newer render has overtaken it, after finish, which
+	// beginLoading hands it: a refusal said before anything was sent, at a
+	// press made while the page loaded, is taken off while it is still the
+	// notice on screen, as a page drawn for another address takes it off
+	// (carriedDraft, unsentOnScreen and clearNotice, which read no badge and
+	// change only the notice), and focusHash jumps to a fragment. Each of those
+	// and finish is held whole, and so is the skeleton's timer beginLoading
+	// sets, which can fire once the page is drawn: it draws nothing over a page
+	// drawn since the load began, and asks render's skeleton (whether a held
+	// form keeps the page) only of the page that was there then. What finish
+	// runs, endLoading, is held whole by TestAHeldFormSurvivesARedrawOfItsPage.
+	// What render() runs after drawing any other page — enhancePosts,
+	// restoreDraft and what they reach — serves every page, so it is not run on
+	// this one. An overtaken render drew nothing: the notice is the newer
+	// render's to leave or take off, and its jump to a fragment would move the
+	// page the reader went to.
 	renderLines := jsLines(jsFunction(t, script, "render"))
 	holdLines(t, "render() once the Verify page is drawn", renderLines, "} finally {", "if (resolved !== null) {",
 		[]string{
@@ -3720,6 +3749,10 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 			"}",
 			`if (route.view === "verify") {`,
 			"if (!overtaken(route)) {",
+			"const carried = carriedDraft(draft);",
+			"if (carried && unsentOnScreen(carried.held)) {",
+			"clearNotice();",
+			"}",
 			"focusHash();",
 			"}",
 			"return;",
