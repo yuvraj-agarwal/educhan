@@ -83,12 +83,15 @@ claim in the credential or anything the browser keeps: the answer itself is
 recorded nowhere (`TestAdultAttestationIsNeverKept`, and
 `TestBadgeAttestationIsNeverPreselectedOrKept` for the page's unticked box).
 Why adult-only: the badge is the one feature that keeps something tied to a
-person, a keyed hash of an address for up to 180 days. Keeping it to adults
-keeps that record out of the rules for under-18s' data, such as India's
-parental-consent requirement from 13 May 2027 (build plan 2.14,
-design-recommendations §3.3 and §4.4). It is a tick-box and nothing more: a
-17-year-old who ticks it gets a badge, which is one more reason the badge says
-so little — an institution, an expiry, and a random number.
+person, a keyed hash of an address. The row that holds it is kept for the
+credential's lifetime (180 days by default), counted from the end of the day
+the credential was issued, and is then deleted by the next verification anyone
+completes, not at the moment it expires: with no later verification it stays.
+Keeping it to adults keeps that record out of the rules for under-18s' data,
+such as India's parental-consent requirement from 13 May 2027. It is a tick-box
+and nothing more: a 17-year-old who ticks it gets a badge, which is one more
+reason the badge says so little — an institution, an expiry, and a random
+number.
 
 ### The credential travels only when it is used
 
@@ -129,12 +132,15 @@ property above, and it is worth paying here:
   `style` attribute, or an inline handler is refused by the browser before it
   runs. `TestWebAssetsHaveNoInlineStylesOrScripts` fails the build if any
   appear in the shipped assets, so the exception is never quietly added.
-- **A stolen credential is worth very little.** It grants exactly one thing:
-  the ability to post under that institution's label until it expires. There is
-  no account behind it, no posting history reachable through it, no settings, no
-  contact details, and no way to get from it to the address that earned it —
-  it contains a label, a timestamp, and a random number. Compare it to a session
-  cookie, which is what the alternative would effectively have been.
+- **A stolen credential is worth very little.** It lets its holder post under
+  that institution's label until it expires, and under the poster ID the owner's
+  badged posts have in each thread: in a thread the holder posts in with it, the
+  holder's badged posts look like the owner's, and the holder can tell which
+  badged posts there are the owner's. There is no account behind it, no list of
+  the owner's posts, no settings, no contact details, and no way to get from it
+  to the address that earned it — it contains a label, a timestamp, and a random
+  number. Compare it to a session cookie, which is what the alternative would
+  effectively have been.
 
 Sending the badge in a header rather than a cookie also removes the CSRF
 question from posting entirely: a cross-site form submission carries no header a
@@ -167,11 +173,14 @@ the remembered name (see below), which are what would otherwise let the next
 person at a shared computer post under the same IDs and tripcode.
 
 A badge is a weak thing to inherit: it grants posting under an institution's
-label and nothing else, with no account, no history, and no route back to the
-address that earned it — and the remembered posting name already sat in
-`localStorage` beside it. But it is not nothing, and the honest framing is a
-trade: a persistent credential that makes the TTL real, against a browser that
-now holds something worth forgetting on the way out.
+label and under the poster ID the owner's badged posts have in each thread, so
+that in a thread the next user posts in with it, their badged posts look like
+the owner's and show them which badged posts there are the owner's. There is no
+account, no list of the owner's posts, and no route back to the address that
+earned it — and the remembered posting name already sat in `localStorage` beside
+it. But it is not nothing, and the honest framing is a trade: a persistent
+credential that makes the TTL real, against a browser that now holds something
+worth forgetting on the way out.
 
 ### The privacy property, exactly
 
@@ -179,6 +188,15 @@ The design goal is that **no one — the operator included — can link a badge 
 an email address or to a poster's other posts.** Concretely, this is what an
 operator with full database access, root on the machine, and the server secret
 can and cannot work out.
+
+Everything below is about what educhan keeps (its database, its files, its
+backups and its logs) and what can be worked out from them. It is not a promise
+about an operator, or an intruder, who changes the server or records requests as
+they arrive: a code request carries the address, and every badged post carries
+the credential, whose random id is the key (as its SHA-256) of the stored row
+that also holds the address's keyed hash. Whoever records that header can tie
+each badged post they see to that row, test a guessed address against it and,
+with the poster-ID salt, find that credential's badged posts in every thread.
 
 **What they can see**
 
@@ -237,13 +255,17 @@ can and cannot work out.
 **What they cannot do**
 
 - Recover an address from the database. It is never written, in any table, at
-  any point in the flow — not even transiently, and not in the logs. A test
-  (`TestNoEmailAddressReachesTheDatabase`) verifies the whole flow and then
-  searches every column of every table for it, with positive controls so it
-  cannot pass by failing to look.
-- Link a credential to a post. The credential carries a label, an expiry, and a
-  random identifier — nothing derived from the address. Posts store the badge
-  as text and hold no reference to the record it came from.
+  any point in the flow — not even transiently — and the application's log lines
+  never carry it. The one exception is the development mail sender, the only
+  sender so far, which prints the address and the code to the server's stdout
+  (see [Email delivery](#email-delivery)); where stdout is collected, as on
+  Cloud Run, that is a log. A test (`TestNoEmailAddressReachesTheDatabase`)
+  verifies the whole flow and then searches every column of every table for it,
+  with positive controls so it cannot pass by failing to look.
+- Link a credential to a post from anything stored. The credential carries a
+  label, an expiry, and a random identifier — nothing derived from the address.
+  Posts store the badge as text and hold no reference to the record it came
+  from.
 - Link a post to a verification record by timing, beyond the issuance times
   above. Verification tables carry no `created_at`, and using a credential
   updates nothing, so there is no "last used" to line up against a post; the
@@ -258,7 +280,8 @@ can and cannot work out.
   post to a single record on a day its institution issued only one credential.
 - Group a poster's requests by their badge. The credential is sent only on the
   posts that carry one, so an operator watching the request layer sees it on
-  exactly the posts that already display it, and on nothing else.
+  exactly the posts that already display it, and on nothing else. On those posts
+  it does identify the credential's stored row.
 - Join the two. There is no foreign key and no shared column between the
   verification tables and `posts` or `threads`; `TestVerificationTablesCannotBeJoinedToPosts`
   asserts the exact column list of both tables so a future migration cannot
