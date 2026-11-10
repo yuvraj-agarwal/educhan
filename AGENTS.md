@@ -549,9 +549,9 @@ has changed one of those properties and needs a browser check before the test ch
   Start again and the open-checkout note say so, and that a payment made on the earlier
   one after all is still the buyer's, by a reissue code asked for at the support address
   on Stripe's receipt, and the forms drawn again over a checkout left behind
-  (`passStartedAgain`: Start again, Stripe's cancel link, or a checkout answered after the
-  reader left the Pass page or after the Pass held changed meanwhile, in another tab say,
-  which `submitPass` marks before it declines to follow it) keep Stop collecting it here
+  (`passStartedAgain`: Start again, Stripe's cancel link, or a checkout answered after a
+  forget, which `submitPass` marks as it declines to follow it, so a drawing that asks
+  before its claim is dropped offers the forms) keep Stop collecting it here
   (`passEarlierCheckoutHTML`). A checkout still on its way when Remove, Forget or Stop is
   pressed, here or in another tab, is not followed either, and the claim it set does not
   outlive that forget. Pressed in its own tab, the forget calls it off first
@@ -564,52 +564,64 @@ has changed one of those properties and needs a browser check before the test ch
   order (`forgetPassOrder`, `{"forget": true, "order"}`; the claim's hash, signed by the
   server with the Pass secret, so a copy of `pass_orders` makes no name): that claim
   alone, since it sets no mark, moves no counter and clears no cookie, so a checkout
-  started after the forget, in any tab, keeps its claim. The dropped claim's cookie can
-  stay with nothing under it, and a drop that cannot reach educhan says so on whatever
-  page the tab is on, as every claim notice but Stop's is (below), in words for the
-  forget pressed in the other tab (`PASS_ORDER_KEPT`, by what its mark holds,
-  `passForgetHeardLast`) that drop the claim with no more than it did: Stop collecting
-  it here again after a Stop, Stop collecting it here after Remove, which leaves no Pass
-  to remove, and Forget this browser again after Forget. It is not said once this tab has
-  learned that nothing is left to collect as of a time after the drop went
-  (`passClaimGone`), and, said, it stays until then, besides what takes any notice off
-  (the reader dismissing it, moving to another page or a later notice put in its place,
-  say), as every claim notice does (below). Checkouts go one at a time, since each
-  answer's cookie takes the place of the one before, whichever started first: each keeps a
-  mark while its request is on its way (`openPassCheckout`, under `educhan:pass-checkout:`
-  and a random token, holding the time), and a checkout waits in `passForgetsSettled`
-  until no other's mark is left (`passCheckoutLeft`, each for at most
-  `PASS_FORGET_WAIT_MS`), so one pressed after a forget is never overtaken by one the
-  forget overtook. Leaving the document (`pagehide`) calls off a checkout not yet answered
-  too, and moves `passLeft`, so a press still waiting in `passForgetsSettled` then sends
-  nothing (`PASS_LEFT_MEANWHILE`): its button comes back without a notice, and a page
-  brought back from the back-forward cache has it ready. A mark older than the wait, left
-  by a tab that crashed or was killed before its answer, is taken off when a page loads
-  (`passCheckoutLeft`), and Forget this browser takes every one off, after
-  `callOffPassCheckouts` (`forgetBrowser`); a tab whose checkout is still on its way puts
-  its own back (`keepPassCheckoutMark`), so checkouts still go one at a time. A checkout
-  whose answer reaches its tab in the moment before that tab hears of a forget from
-  another is followed to Stripe, and keeps its claim unless its cookie was in the browser
-  when that forget's request went. Every claim carries the collection's nonce
-  (`educhan:pass-nonce`, kept until an answer says nothing more is waiting): the server
-  derives the code from the claim cookie and the nonce together, so a claim whose answer
-  was lost is asked again and handed the same code, and a nonce is worth nothing beside
-  another cookie. What a claim brings is stored (`keepClaimed`) before anything asks
-  whether the reader is still on the page, and a code just handed over stays in
-  `passJustIssued`, drawn on every drawing, beside any code it took the place of and the
-  codes carried from an earlier panel (`earlier`), until the reader leaves the Pass page
-  (`render`) or the document (`pagehide`), when it goes, kept or not, panel and all
-  (`forgetShownCode`), so a page brought back from the back-forward cache does not show
-  it to whoever uses the browser next, but only once the page has drawn it (`shown`): one
-  whose answer came while the reader was on another page, or that they left before it was
-  drawn, waits for them to come back, since one the browser could not keep is nowhere
-  else, and nor is the code of a Pass one it keeps took the place of, or a code carried.
-  A second code handed over on the same visit, by a claim or a reissue code, carries onto
-  its panel (`passCodesCarried`) every code the first panel showed, the first code, the
-  code of a Pass it took the place of and what that panel carried in turn, but neither
-  the new code nor the code the new one takes the place of (`replaced`, the code held
-  as it comes once the new one is kept), which the new panel shows, and no code twice,
-  so no code is drawn twice and no id either. The first code is thus carried unless
+  started after the forget, in any tab, keeps its claim. A checkout answered once the Pass
+  held has changed (`passStillHeld`: removed, replaced or stored where there was none,
+  here or in another tab) or once the reader has moved on (`passPageShown`) is not
+  followed either, and nobody can pay it, since the Stripe page it named is thrown away,
+  so its claim is dropped the same way at once (`unfollowed`, cause `changed` or `left`).
+  It is not set aside: it leaves nothing behind, and set aside, a claim the page found
+  later, one a checkout in another tab set, say, would be drawn as a checkout left here,
+  with Buy beside it. A reader still on the Pass page is told why it was not opened, that
+  nothing was charged and what the page offers to press now (`passChangedText`, a held
+  notice); one who moved on is told nothing unless the drop fails. A checkout called off
+  has no answer to name its order by: a forget pressed here goes after its cookie, and
+  leaving the document takes the page away. The dropped claim's cookie can stay with
+  nothing under it, and a drop that cannot reach educhan says so on whatever page the tab
+  is on, as every claim notice but Stop's is (below), in words for why the checkout was
+  not followed (`PASS_ORDER_KEPT`, by the cause `forgetPassOrder` is given): after a
+  forget pressed in the other tab, by what its mark holds (`passForgetHeardLast`), words
+  that drop the claim with no more than it did, Stop collecting it here again after a
+  Stop, Stop collecting it here after Remove, which leaves no Pass to remove, and Forget
+  this browser again after Forget; after the Pass held changed or the Pass page was left,
+  Stop collecting it here on the Pass page. It is not said once this tab has learned that
+  nothing is left to collect as of a time after the drop went (`passClaimGone`), and,
+  said, it stays until then, besides what takes any notice off (the reader dismissing it,
+  moving to another page or a later notice put in its place, say), as every claim notice
+  does (below). Checkouts go one at a time, since each answer's cookie takes the place of
+  the one before, whichever started first: each keeps a mark while its request is on its
+  way (`openPassCheckout`, under `educhan:pass-checkout:` and a random token, holding the
+  time), and a checkout waits in `passForgetsSettled` until no other's mark is left
+  (`passCheckoutLeft`, each for at most `PASS_FORGET_WAIT_MS`), so one pressed after a
+  forget is never overtaken by one the forget overtook. Leaving the document (`pagehide`)
+  calls off a checkout not yet answered too, and moves `passLeft`, so a press still
+  waiting in `passForgetsSettled` then sends nothing (`PASS_LEFT_MEANWHILE`): its button
+  comes back without a notice, and a page brought back from the back-forward cache has it
+  ready. A mark older than the wait, left by a tab that crashed or was killed before its
+  answer, is taken off when a page loads (`passCheckoutLeft`), and Forget this browser
+  takes every one off, after `callOffPassCheckouts` (`forgetBrowser`); a tab whose
+  checkout is still on its way puts its own back (`keepPassCheckoutMark`), so checkouts
+  still go one at a time. A checkout whose answer reaches its tab in the moment before
+  that tab hears of a forget from another is followed to Stripe, and keeps its claim
+  unless its cookie was in the browser when that forget's request went. Every claim
+  carries the collection's nonce (`educhan:pass-nonce`, kept until an answer says nothing
+  more is waiting): the server derives the code from the claim cookie and the nonce
+  together, so a claim whose answer was lost is asked again and handed the same code, and
+  a nonce is worth nothing beside another cookie. What a claim brings is stored
+  (`keepClaimed`) before anything asks whether the reader is still on the page, and a code
+  just handed over stays in `passJustIssued`, drawn on every drawing, beside any code it
+  took the place of and the codes carried from an earlier panel (`earlier`), until the
+  reader leaves the Pass page (`render`) or the document (`pagehide`), when it goes, kept
+  or not, panel and all (`forgetShownCode`), so a page brought back from the back-forward
+  cache does not show it to whoever uses the browser next, but only once the page has
+  drawn it (`shown`): one whose answer came while the reader was on another page, or that
+  they left before it was drawn, waits for them to come back, since one the browser could
+  not keep is nowhere else, and nor is the code of a Pass one it keeps took the place of,
+  or a code carried. A second code handed over on the same visit, by a claim or a reissue
+  code, carries onto its panel (`passCodesCarried`) every code the first panel showed, the
+  first code, the code of a Pass it took the place of and what that panel carried in turn,
+  but neither the new code nor the code the new one takes the place of (`replaced`, the
+  code held as it comes once the new one is kept), which the new panel shows, and no code
+  twice, so no code is drawn twice and no id either. The first code is thus carried unless
   the new one is kept in its place, even while the browser still holds it beside a
   new code it could not keep, since another tab could yet store another in its place;
   `passEarlierHTML` words each for what it was and for whether the browser holds it as it
@@ -642,9 +654,9 @@ has changed one of those properties and needs a browser check before the test ch
   `has`, while the page shows a purchase being collected (`open` and not `has`, which
   draws the collecting panel in place of the forms) and while sales are paused, and
   none is drawn when the page could not be read or the Pass is not on sale; over a
-  checkout set aside (`passStartedAgain`: Start again, back from Stripe's cancel
-  link, or a checkout not followed to Stripe), which the page goes on collecting, it is
-  drawn again by those rules. So it is offered beside the code of a Pass the browser no
+  checkout set aside (`passStartedAgain`: Start again, back from Stripe's cancel link, or
+  a checkout answered after a forget), which the page goes on collecting, it is drawn
+  again by those rules. So it is offered beside the code of a Pass the browser no
   longer holds only once no other Pass is held here. When educhan tells a tab the held
   code is no longer valid (Check it again, `recheckPass`, Renew, or a post's
   `"pass": "invalid"`), `forgetInvalidCode` takes that code off its panel if it is the
