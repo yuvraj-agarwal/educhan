@@ -78,8 +78,9 @@ jobs:
       # not evidence that anything ran: assert that nothing skipped.
       #
       # Only test-level events count. A package with no test files reports
-      # Action=skip too, with no Test field — cmd/server and internal/mailer
-      # are both in that state, so matching on the action alone fails every run.
+      # Action=skip too, with no Test field — internal/mailer and
+      # internal/media/mediatest are both in that state, so matching on the
+      # action alone fails every run.
       - name: Fail if any test skipped
         if: always()
         run: |

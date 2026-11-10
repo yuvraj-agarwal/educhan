@@ -21,9 +21,12 @@ development — the container is a deployment artifact, not a development tool.
 ## 1. Locally, with no container at all
 
 Local development runs the server natively against a real PostgreSQL. It needs
-Go 1.22+ and nothing else: `make db-up` starts a user-owned PostgreSQL cluster on
+Go 1.22+ and PostgreSQL's own programs (`pg_ctl`, `initdb`, `psql`) installed,
+and no container: `make db-up` starts a user-owned PostgreSQL cluster on
 `localhost:5432` and ensures the `educhan` role and database exist. It is
-`.cursor/scripts/start.sh`, it is idempotent, and it is safe to re-run.
+`.cursor/scripts/start.sh`, it is idempotent, and it is safe to re-run. Where
+PostgreSQL is not installed it stops and says so; on Debian or Ubuntu,
+`bash .cursor/scripts/install.sh` installs it.
 
 ```bash
 make db-up                                        # PostgreSQL on localhost:5432
@@ -100,6 +103,11 @@ export PROJECT_ID=your-project
 export REGION=asia-south1
 
 gcloud config set project "$PROJECT_ID"
+# Two of these are less obvious. logging.googleapis.com is for the exclusion in
+# section 2.8. containerscanning.googleapis.com has Artifact Analysis scan each
+# image pushed to the repository for known vulnerabilities and list what it
+# finds beside the image in Artifact Registry; Google bills for each image
+# scanned, so leave that line out to go without the scan.
 gcloud services enable \
   cloudbuild.googleapis.com \
   artifactregistry.googleapis.com \
@@ -107,6 +115,8 @@ gcloud services enable \
   sqladmin.googleapis.com \
   secretmanager.googleapis.com \
   storage.googleapis.com \
+  logging.googleapis.com \
+  containerscanning.googleapis.com \
   cloudscheduler.googleapis.com
 
 # Somewhere to push the image. The location is part of every image reference, so
@@ -702,7 +712,7 @@ reserved for Cloud SQL's own superuser:
 | --- | --- |
 | Service: `maxScale` 4 × `EDUCHAN_DB_MAX_CONNS` 3 | 12 |
 | A rollout's new revision starting while the old one drains | up to 12 more briefly, usually far fewer |
-| One-off Cloud Run Jobs (admin bootstrap, a sweeper), at the same cap | 3 |
+| The archive sweeper Job (section 2.9), or another one-off Cloud Run Job, at the same cap | 3 |
 | You in Cloud SQL Studio or `psql` | 1–2 |
 
 Raising either `maxScale` or the pool size means doing this sum again, or
@@ -776,7 +786,8 @@ is per instance too.
 
 **Institutional verification has no mail sender yet.** `EDUCHAN_VERIFY_SECRET` is
 left unset in `service.yaml`, which switches the feature off, and it should stay
-that way here until `internal/mailer` grows an SMTP or Google Workspace `Sender`.
+that way here until `internal/mailer` grows a real `Sender` for a dedicated
+transactional mail provider.
 Setting it anyway makes the server refuse to start unless `EDUCHAN_MAIL_DEV=1`
 is also set, which it must not be here.
 The development sender prints the code *and the address it was sent to* to
