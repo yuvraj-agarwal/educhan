@@ -90,18 +90,62 @@ func TestClientIP(t *testing.T) {
 			want:       "198.51.100.9",
 		},
 		{
-			name:       "bracketed ipv6",
-			remoteAddr: "10.0.0.1:41000",
-			forwarded:  []string{"[2001:db8::1]:443"},
+			// IPv6 is keyed on its /64, the block a subscriber is handed and
+			// may use any address of, so the key is the network's first
+			// address however the entry is written.
+			name:       "bracketed ipv6 with a port",
+			remoteAddr: "192.0.2.1:41000",
+			forwarded:  []string{"[2001:db8:1:2:aaaa:bbbb:cccc:dddd]:443"},
 			hops:       1,
-			want:       "2001:db8::1",
+			want:       "2001:db8:1:2::",
+		},
+		{
+			name:       "bracketed ipv6",
+			remoteAddr: "192.0.2.1:41000",
+			forwarded:  []string{"[2001:db8:1:2:aaaa:bbbb:cccc:dddd]"},
+			hops:       1,
+			want:       "2001:db8:1:2::",
 		},
 		{
 			name:       "bare ipv6",
-			remoteAddr: "10.0.0.1:41000",
-			forwarded:  []string{"2001:db8::1"},
+			remoteAddr: "192.0.2.1:41000",
+			forwarded:  []string{"2001:db8:1:2:aaaa:bbbb:cccc:dddd"},
 			hops:       1,
-			want:       "2001:db8::1",
+			want:       "2001:db8:1:2::",
+		},
+		{
+			// Any other address in the same /64 is the same client; otherwise
+			// it could take a fresh key, and a fresh cooldown, every request.
+			name:       "another address in the same /64 has the same key",
+			remoteAddr: "192.0.2.1:41000",
+			forwarded:  []string{"2001:db8:1:2::1"},
+			hops:       1,
+			want:       "2001:db8:1:2::",
+		},
+		{
+			name:       "the last address of a /64",
+			remoteAddr: "192.0.2.1:41000",
+			forwarded:  []string{"2001:db8:1:2:ffff:ffff:ffff:ffff"},
+			hops:       1,
+			want:       "2001:db8:1:2::",
+		},
+		{
+			// The next address over is the first of the next /64: a
+			// neighbouring network, so a key of its own.
+			name:       "the first address of the next /64",
+			remoteAddr: "192.0.2.1:41000",
+			forwarded:  []string{"2001:db8:1:3::"},
+			hops:       1,
+			want:       "2001:db8:1:3::",
+		},
+		{
+			// The forwarded entry is cut by the same rule as the peer, and
+			// the peer is not consulted when the entry is good.
+			name:       "ipv6 entry behind an ipv6 proxy",
+			remoteAddr: "[2001:db8:ff::1]:41000",
+			forwarded:  []string{"2001:db8:1:2:aaaa:bbbb:cccc:dddd"},
+			hops:       1,
+			want:       "2001:db8:1:2::",
 		},
 		{
 			// Otherwise one client holds two rate-limit buckets by switching
@@ -118,6 +162,84 @@ func TestClientIP(t *testing.T) {
 			forwarded:  []string{" , 198.51.100.9 , "},
 			hops:       1,
 			want:       "198.51.100.9",
+		},
+		{
+			name:       "ipv4-mapped ipv6 with brackets and a port folds to ipv4",
+			remoteAddr: "192.0.2.1:41000",
+			forwarded:  []string{"[::ffff:198.51.100.9]:443"},
+			hops:       1,
+			want:       "198.51.100.9",
+		},
+		{
+			// A zone names an interface on the proxy, not a client.
+			name:       "forwarded entry with a zone",
+			remoteAddr: "192.0.2.1:41000",
+			forwarded:  []string{"2001:db8:1:2::5%eth0"},
+			hops:       1,
+			want:       "2001:db8:1:2::",
+		},
+		{
+			// The peer goes through the same cut as a forwarded entry, so a
+			// server exposed directly over IPv6 groups the same way.
+			name:       "ipv6 peer with no trusted proxy",
+			remoteAddr: "[2001:db8:1:2:aaaa:bbbb:cccc:dddd]:52000",
+			want:       "2001:db8:1:2::",
+		},
+		{
+			name:       "ipv6 peer ignores a forwarded header without trusted proxies",
+			remoteAddr: "[2001:db8:1:2:aaaa:bbbb:cccc:dddd]:52000",
+			forwarded:  []string{"2001:db8:9::1"},
+			want:       "2001:db8:1:2::",
+		},
+		{
+			name:       "ipv4-mapped peer folds to ipv4",
+			remoteAddr: "[::ffff:203.0.113.7]:52000",
+			want:       "203.0.113.7",
+		},
+		{
+			name:       "peer with a zone",
+			remoteAddr: "[2001:db8:1:2::5%eth0]:52000",
+			want:       "2001:db8:1:2::",
+		},
+		{
+			name:       "ipv4 peer is unchanged",
+			remoteAddr: "203.0.113.7:52000",
+			want:       "203.0.113.7",
+		},
+		{
+			name:       "ipv4 forwarded entry is unchanged",
+			remoteAddr: "[2001:db8:ff::1]:41000",
+			forwarded:  []string{"203.0.113.7"},
+			hops:       1,
+			want:       "203.0.113.7",
+		},
+		{
+			// The fallbacks land on the peer's key, not its whole address.
+			name:       "short chain falls back to an ipv6 peer's /64",
+			remoteAddr: "[2001:db8:1:2:aaaa:bbbb:cccc:dddd]:52000",
+			forwarded:  []string{"198.51.100.9"},
+			hops:       2,
+			want:       "2001:db8:1:2::",
+		},
+		{
+			name:       "non-address entry falls back to an ipv6 peer's /64",
+			remoteAddr: "[2001:db8:1:2:aaaa:bbbb:cccc:dddd]:52000",
+			forwarded:  []string{"_hidden"},
+			hops:       1,
+			want:       "2001:db8:1:2::",
+		},
+		{
+			name:       "missing header falls back to an ipv6 peer's /64",
+			remoteAddr: "[2001:db8:1:2:aaaa:bbbb:cccc:dddd]:52000",
+			hops:       1,
+			want:       "2001:db8:1:2::",
+		},
+		{
+			// Whatever a listener hands over that is not an address is kept
+			// as it is, as before; there is nothing to cut.
+			name:       "peer that is not an ip address",
+			remoteAddr: "@",
+			want:       "@",
 		},
 	}
 
