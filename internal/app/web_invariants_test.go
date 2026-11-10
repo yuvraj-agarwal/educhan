@@ -4416,22 +4416,40 @@ func TestPassCopyMatchesWhatTheServerDoes(t *testing.T) {
 	held := words(jsFunction(t, script, "passHeldHTML"))
 	for name, want := range map[string]string{
 		"the held Pass": "you'll be sent a reissue code to enter on this page, which gives your Pass a new code; " +
-			"if the payment that bought it was refunded or disputed, or the Pass ran out more than a month ago, " +
+			"if the payment that bought it was refunded or disputed, or the Pass ran out more than 30 days ago, " +
 			"that may no longer be possible.",
 		"the FAQ's Pass entry": "If the payment that bought the Pass was refunded or disputed, or the Pass ran out " +
-			"more than a month ago, that may no longer be possible.",
+			"more than 30 days ago, that may no longer be possible.",
 	} {
 		text := map[string]string{"the held Pass": held, "the FAQ's Pass entry": faq}[name]
 		if !strings.Contains(text, "you'll be sent a reissue code") || !strings.Contains(text, want) {
 			t.Errorf("%s promises a reissue code for a lost code without saying a refunded purchase, or a Pass run out "+
-				"more than a month ago, can end it", name)
+				"more than 30 days ago, can end it", name)
 		}
 	}
 	if !strings.Contains(intro, `const term = info.enabled ? passTermText(info.days) : "a set time";`) {
 		t.Error("the Pass page says how long a Pass lasts without the server's terms")
 	}
-	if got := jsString(t, script, "PASS_GONE_REASONS"); got != "It may have run out more than a month ago, or been refunded or replaced." {
+	if got := jsString(t, script, "PASS_GONE_REASONS"); got != "It may have run out more than 30 days ago, or been refunded or replaced." {
 		t.Errorf("PASS_GONE_REASONS says %q", got)
+	}
+	// The server counts a Pass's term (EDUCHAN_PASS_DAYS), what is left of it
+	// after it runs out (passExpiredGrace) and how long a refund is remembered
+	// (passRevocationTTL) in days, which a calendar month or year can be a day
+	// or more off, so the page gives each length in days, as the server does:
+	// "365 days" rather than "a year", and "30 days" rather than "a month".
+	if got := withoutComments(jsFunction(t, script, "passTermText")); got != "function passTermText(days) {\n"+
+		"  return plural(days, \"day\", \"days\");\n}" {
+		t.Errorf("the Pass page gives a Pass's term as something other than the days the server counts:\n%s", got)
+	}
+	calendar := regexp.MustCompile(`(?i)\b(?:a|one|each|per|every) (?:month|year)\b|\b(?:months|years)\b|\bmonthly\b|\byearly\b|\bannual`)
+	for name, text := range map[string]string{
+		"the Pass page":        words(withoutComments(passSection(t, script))),
+		"the FAQ's Pass entry": faq,
+	} {
+		for _, found := range calendar.FindAllString(text, -1) {
+			t.Errorf("%s gives a length as %q, where the server counts days", name, found)
+		}
 	}
 	if n := strings.Count(withoutComments(script), "${PASS_GONE_REASONS}"); n != 6 {
 		t.Errorf("the reasons a Pass may have gone are given in %d places; want a check, a renewal's check, Renew "+

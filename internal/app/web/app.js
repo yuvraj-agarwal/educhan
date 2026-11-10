@@ -2333,8 +2333,8 @@ const PASS_RUN_OUT_NOT_KEPT =
 const PASS_NO_STORAGE =
   "This browser couldn't store what educhan needs, so it couldn't collect or keep a Pass. Allow this site to store data first.";
 // Why a Pass the server no longer knows may have gone, likeliest first: one
-// that ran out has gone a month past its expiry, deleted yet or not.
-const PASS_GONE_REASONS = "It may have run out more than a month ago, or been refunded or replaced.";
+// that ran out has gone 30 days past its expiry, deleted yet or not.
+const PASS_GONE_REASONS = "It may have run out more than 30 days ago, or been refunded or replaced.";
 
 // Why the Pass that was here has gone, said on the Pass page until the reader
 // leaves it, Remove the Pass or Forget this browser is pressed, here or in
@@ -3712,7 +3712,7 @@ function passUntilText(iso) {
 }
 
 function passTermText(days) {
-  return days === 365 ? "a year" : plural(days, "day", "days");
+  return plural(days, "day", "days");
 }
 
 // What a Pass is, before anything about this browser's. It is the page's
@@ -3837,7 +3837,7 @@ function passHeldHTML(info, held, codeOnScreen, box) {
           you need its code, so show it and write it down first. If you lose it, write to the
           support address on the receipt Stripe emailed you, and you'll be sent a reissue code
           to enter on this page, which gives your Pass a new code; if the payment that bought
-          it was refunded or disputed, or the Pass ran out more than a month ago, that may no
+          it was refunded or disputed, or the Pass ran out more than 30 days ago, that may no
           longer be possible.</p>
         <button class="btn danger" type="button" data-action="forget-pass">Remove the Pass from this browser</button>
       </div>
@@ -3904,7 +3904,7 @@ const PASS_CODE_BACK_HTML = `<strong>This browser has that code again.</strong> 
 // write down both codes, and any other code on the panel still needed, remove
 // that Pass, which takes this panel away, and then enter it. One whose Pass's
 // expiry has passed by the server's clock (ranOut, held.expired), as it came, a
-// reissue code's for a Pass in its month of grace say, or since, is never
+// reissue code's for a Pass in its 30 days of grace say, or since, is never
 // called ready, whatever this computer's clock says: it has run out and needs
 // renewing, with nothing held or a Pass held that has run out here, once the
 // site may store data and it is entered in the code box, and beside a good Pass
@@ -3956,7 +3956,7 @@ function passIssuedHTML(issued, held, box) {
     </div>`;
   }
   // A code this browser does not hold whose Pass's expiry has passed, as it
-  // came (a reissue code's, for a Pass in its month of grace, say) or since,
+  // came (a reissue code's, for a Pass in its 30 days of grace, say) or since,
   // by the server's clock (serverNow), as storedPass judges one held, is never
   // called ready: it has run out, and needs renewing.
   const ranOut = !here && new Date(issued.expires) <= serverNow();
@@ -5559,7 +5559,7 @@ const FAQ_SECTIONS = [
           it. If you lose it, write to the support address on the receipt Stripe emailed you,
           and you'll be sent a reissue code. Enter it on the Pass page, and your Pass gets a
           new code there; the old one stops working. If the payment that bought the Pass was
-          refunded or disputed, or the Pass ran out more than a month ago, that may no longer
+          refunded or disputed, or the Pass ran out more than 30 days ago, that may no longer
           be possible. A reissue code is never part of a link, so no browser's history keeps
           it.</li>
       </ul>
