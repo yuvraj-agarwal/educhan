@@ -3,7 +3,7 @@
 #
 #   bash deploy/first-deploy.sh PROJECT_ID [REGION]
 #
-# REGION defaults to asia-south1. The script follows deploy/README.md section 2
+# REGION defaults to asia-south1. The script follows deploy/README.md 2.1 to 2.9
 # step by step and is safe to re-run: everything it creates is checked for
 # first, so a run that stopped halfway picks up where it left off, and a re-run
 # from a newer checkout moves both the service and the archive sweeper Job onto
