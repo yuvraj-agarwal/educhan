@@ -930,13 +930,13 @@ back is stored: not the text, not what matched, and not which rule. A refused
 post leaves what any request leaves: the request log's line of method, path, status and duration, so a
 `422` or `202` on a posting route shows that a post to that board or thread
 was refused or held, though not what it said or why; and a count against the
-client's address in the refusal budget, kept in memory only and forgotten
-within a minute of its window ending. A held post is stored as any post is,
-with two additions: `held_at`, when it was held, and `held_reason`, which names
-the rule (`threat`, `grooming` or `self_harm`); a held opening post also sets
-its thread's `held_at`. Nothing else the filter matched is kept. A moderator's
-approval is logged with the board, thread and post number, as every
-moderation action is.
+client address in the refusal budget, kept in memory only and forgotten within
+a minute of its window ending. A held post is stored as any post is, with two
+additions: `held_at`, when it was held, and `held_reason`, which names the rule
+(`threat`, `grooming` or `self_harm`); a held opening post also sets its
+thread's `held_at`. Nothing else the filter matched is kept. A moderator's
+approval is logged with the board, thread and post number, as every moderation
+action is.
 It runs in-process, sends nothing anywhere, and takes time linear in the
 length of the post. On one core of a shared Intel Xeon at 2.8 GHz, with the
 machine's load at about 4 to 6, an ordinary 500-character post took about
