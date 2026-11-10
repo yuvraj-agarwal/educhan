@@ -1400,8 +1400,10 @@ and `DATABASE_URL` becomes an ordinary TCP connection string.
 
 Four things need setting for a real deployment, and the deploy guide covers
 each: `EDUCHAN_POSTER_ID_SALT` has to be a stable secret or poster IDs differ
-between instances; `EDUCHAN_TRUST_PROXY` is `1` behind Cloud Run's front end;
-media belongs in Cloud Storage — `EDUCHAN_MEDIA_BACKEND=gcs` with an
+between instances; `EDUCHAN_TRUST_PROXY` is `1` behind Cloud Run's front end,
+and `2` behind the load balancer that puts the site on its own domain, which the
+deploy script sets in the same step as it closes `run.app` (deploy guide section
+2.10); media belongs in Cloud Storage — `EDUCHAN_MEDIA_BACKEND=gcs` with an
 `EDUCHAN_GCS_BUCKET` and `EDUCHAN_GCS_PREFIX`, which the sweeper Job must match
 exactly, because the container filesystem does not outlive the container; and
 Cloud Run's request logs, which carry every visitor's IP, must be excluded from

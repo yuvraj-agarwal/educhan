@@ -89,6 +89,10 @@ git clone https://github.com/yuvraj-agarwal/educhan.git && cd educhan
 bash deploy/first-deploy.sh YOUR_PROJECT_ID            # region defaults to asia-south1
 ```
 
+With `DOMAIN=your.domain` in front, the same command also puts the site on
+that domain, behind a load balancer with Cloud Armor, and closes `run.app` to
+the public once the domain answers (section 2.10).
+
 It runs builds as a service account of its own (`educhan-build`) rather than
 the project's default build account, so the build grants below are the same in
 every project. The rest of this section is what the script does, step by step.
@@ -477,7 +481,7 @@ gets there first applies them and the rest wait.
 The application never logs a client address, but Cloud Run writes its own
 request log (`run.googleapis.com/requests`) for every request, and each entry
 carries `httpRequest.remoteIp` and the user agent. A load balancer, once there
-is one, writes another (`resource.type="http_load_balancer"`). Both land in the
+is one (section 2.10), writes another (`resource.type="http_load_balancer"`). Both land in the
 `_Default` bucket and are kept for 30 days, which is a log of who posted when.
 Exclude both from the `_Default` sink before the service takes public traffic.
 In Cloud Shell:
@@ -660,6 +664,186 @@ or the Job's own retry, tries it again, so a retry is always safe. In the log,
 `blobs_missing` above zero means the media settings are wrong; `blob_failures`
 means the store refused or was unreachable.
 
+### 2.10 A domain of your own
+
+The `run.app` address works, but the site belongs on its own domain, behind a
+global external Application Load Balancer with Cloud Armor in front. Cloud
+Run's own domain mapping is not the way: it is Preview, Google calls it not
+production-ready, and it is not offered in `asia-south1` at all. The script
+builds the load balancer when it is given the domain:
+
+```bash
+DOMAIN=educhan.org bash deploy/first-deploy.sh YOUR_PROJECT_ID
+```
+
+`DOMAIN` is the bare name, in lower case, with no `https://`. Early on, the
+script reserves two addresses and prints four DNS records: an `A` and an
+`AAAA` record for the domain, and the same two for `www.` the domain (left out
+when the domain is itself a `www.` name). Add them while the rest of the run
+goes on, and delete any other `A`, `AAAA` or `CNAME` record on those two
+names. In Cloudflare that is **DNS > Records**, with **Proxy status** set to
+**DNS only**, the grey cloud, on every one of them. Proxied, the orange cloud,
+would break three things:
+
+- **Privacy.** A proxied record sends every visitor to Cloudflare, which ends
+  TLS and so sees each visitor's address and every request they make, the one
+  thing the site says no one keeps. With **DNS only**, Cloudflare answers DNS
+  lookups, which come from resolvers, and no visit passes through it.
+- **The certificate.** Google issues a managed certificate only once the name
+  resolves to the load balancer; proxied, it resolves to Cloudflare.
+- **The hop count.** Cloudflare would be one more proxy in front, so the
+  visitor's address would no longer be where the app looks for it, and Cloud
+  Armor would count Cloudflare's machines rather than visitors.
+
+If the zone has any `CAA` record, the domain's set must allow both of the
+authorities Google issues these certificates from: add `0 issue "pki.goog"`
+and `0 issue "letsencrypt.org"` on the bare name, which covers `www.` too.
+With no `CAA` records at all, any authority may issue, and there is nothing to
+add. Cloudflare publishes some `CAA` records of its own once a zone has any,
+and does not list them, so check what is really published with
+`dig +short CAA educhan.org` rather than in the dashboard.
+
+What the run builds, all named so a later run finds it again:
+
+| Resource | Name | What it does |
+| --- | --- | --- |
+| Global addresses | `educhan-ip`, `educhan-ipv6` | The IPv4 and IPv6 addresses the DNS records point at |
+| Serverless network endpoint group | `educhan-neg` (in `REGION`) | How the load balancer reaches the Cloud Run service |
+| Backend service | `educhan-backend` | `EXTERNAL_MANAGED`, request logging off, the Armor policy attached, and `Strict-Transport-Security: max-age=31536000` on every answer |
+| Cloud Armor policy | `educhan-edge` | One rule at priority 1000: more than `EDGE_RATE` requests a minute from one address (1200 unless set) get `429`, except Stripe's webhook |
+| Certificates | `educhan-cert`, `educhan-cert-www` | Google-managed, one per name, so each goes live with its own DNS record |
+| SSL policy | `educhan-tls` | `MODERN`, TLS 1.2 and up |
+| URL maps | `educhan`, `educhan-http` | Everything goes to the service, `www.` is redirected to the bare name, and `http://` to `https://`, all with `301` |
+| Target proxies | `educhan-https`, `educhan-http` | Hold the certificates and the URL maps |
+| Forwarding rules | `educhan-https`, `educhan-https-v6`, `educhan-http`, `educhan-http-v6` | Ports 443 and 80 on both addresses |
+
+On every run, not only the first, the backend's request logging is switched off
+again and its policy and header put back. A load balancer's request log has an
+entry for every request with the visitor's address and the time (section 2.8),
+and Cloud Armor keeps no log of its own: its decisions go in that same log, so
+with it off, Armor holds an address only in memory, for the count. The
+exclusion in section 2.8 already covers the load balancer's log
+(`resource.type="http_load_balancer"`), and Cloud Run's own request log, which
+is still written for requests that come through the load balancer, so it holds
+nothing even while logging is on by mistake.
+
+**Moving visitors from `run.app` to the domain is one update.** The app finds
+the visitor's address in `X-Forwarded-For` by counting entries from the right
+(`EDUCHAN_TRUST_PROXY`, section 4). On `run.app` the count is one, Cloud Run's
+front end. The load balancer adds two entries, the address it saw and then its
+own, so behind it the count is two. That count is only safe once `run.app` is
+closed: with it open, a client could send an `X-Forwarded-For` of its own
+straight to `run.app` and pick its own flood-control bucket. Closing `run.app`
+without raising the count would put every visitor in the load balancer's
+bucket. So the script leaves the service on `run.app`, unchanged, until the
+domain answers through the load balancer, which it waits up to 20 minutes for,
+and then makes both changes in one `gcloud run services update`:
+`--ingress internal-and-cloud-load-balancing`, which refuses outside requests
+to `run.app` with a `404` and lets the load balancer's through, and
+`EDUCHAN_TRUST_PROXY=2`. Google usually issues the certificates within an hour
+of the DNS records resolving, so on a first run the wait often ends first. The
+site then stays on `run.app` and the script says so; run it again once the
+certificate is `ACTIVE`:
+
+```bash
+gcloud compute ssl-certificates describe educhan-cert --global \
+  --format='value(managed.status,managed.domainStatus)'
+```
+
+`educhan-cert-www` is checked the same way. While a certificate says
+`PROVISIONING`, Google keeps trying. A name marked `FAILED_NOT_VISIBLE` does not
+resolve to the load balancer yet: check its two records, and that both are
+**DNS only**. `FAILED_CAA_FORBIDDEN` means a `CAA` record leaves Google out
+(above). A certificate that says `PROVISIONING_FAILED_PERMANENTLY` or
+`RENEWAL_FAILED` is never tried again, so once its records are right, swap it
+for a new one: take it off the proxy, delete it, and run the script, which
+makes it again (for `educhan-cert-www`, swap the two names in the first two
+lines):
+
+```bash
+gcloud compute target-https-proxies update educhan-https --global --ssl-certificates educhan-cert-www
+gcloud compute ssl-certificates delete educhan-cert --global --quiet
+DOMAIN=educhan.org bash deploy/first-deploy.sh YOUR_PROJECT_ID
+```
+
+Later runs find the load balancer from `educhan-cert` and keep the service
+behind it, so `DOMAIN` can be left off. A run with a different `DOMAIN` stops
+instead (below). The `run.app` address stays enabled: with this ingress
+setting it already refuses the internet, and turning it off as well
+(`--no-default-url`) would also stop the Google services that call it, while
+closing nothing more. `make cloud-deploy` only changes the image, so it keeps
+both settings. `services replace` with `service.yaml` does not: it puts ingress
+back to `all` and the count back to `1`. Set both in the file first (it says
+where), or run the script afterwards, which waits for the domain and switches
+again.
+
+**Check the count once it is live.** The app writes no address anywhere, so
+check it by what flood control does. A new thread on the same board from the
+same address within 30 seconds is refused with `429`, so in Cloud Shell:
+
+```bash
+export DOMAIN=educhan.org
+post() { curl -sS -w '  HTTP %{http_code}\n' -X POST "https://${DOMAIN}/api/boards/meta/threads" \
+  -H 'Content-Type: application/json' -d '{"subject":"launch check","body":"testing flood control"}' "$@"; }
+post                                          # 201, and the new thread's number
+post -H 'X-Forwarded-For: 198.51.100.7'       # 429: a header of the client's own changes nothing
+```
+
+Then, within 30 seconds of the first, post a thread on `/meta/` from a phone
+on mobile data, a different address: it must go through. A second `201` from
+Cloud Shell would mean the count is too high, and the app is reading an entry
+the client wrote; a refusal on the phone would mean it is too low, and every
+visitor shares one bucket. Delete the test threads afterwards, with each one's
+number:
+
+```bash
+MOD_KEY="$(gcloud secrets versions access latest --secret=educhan-mod-key)"
+curl -sS -X DELETE "https://${DOMAIN}/api/boards/meta/threads/NUMBER" -H "X-Mod-Key: ${MOD_KEY}"
+```
+
+**Cost.** The load balancer adds forwarding rules, billed by the hour whether or
+not anyone visits (Google prices the first five together, and this uses four),
+plus a charge per GB it processes. Cloud Armor adds a monthly charge for the
+policy and for its rule, and one per million requests. The certificates, the
+SSL policy and the addresses, while a forwarding rule uses them, cost nothing
+extra. Check the current figures on Google's pricing pages for Cloud Load
+Balancing and Cloud Armor.
+
+**Moving to another domain** is not a re-run, because the badge, the poster key
+and anything else a browser keeps belong to the address it was kept under, and
+none of it follows readers to a new one. If that is still what you want, take
+the load balancer down as below but keep the two addresses, then run the
+script with the new `DOMAIN` and point its DNS records at the same addresses.
+Once the Pass is on sale, its Stripe webhook and return address have to move
+with it.
+
+**Going back to `run.app`**, or taking the load balancer down, starts by
+opening `run.app` and lowering the count together, the switch above in reverse,
+and then deletes what the script built, in this order:
+
+```bash
+gcloud run services update educhan --region "$REGION" \
+  --ingress all --update-env-vars EDUCHAN_TRUST_PROXY=1
+gcloud compute forwarding-rules delete educhan-https educhan-https-v6 educhan-http educhan-http-v6 --global --quiet
+gcloud compute target-https-proxies delete educhan-https --global --quiet
+gcloud compute target-http-proxies delete educhan-http --global --quiet
+gcloud compute url-maps delete educhan educhan-http --global --quiet
+gcloud compute ssl-certificates delete educhan-cert educhan-cert-www --global --quiet
+gcloud compute ssl-policies delete educhan-tls --global --quiet
+gcloud compute backend-services delete educhan-backend --global --quiet
+gcloud compute security-policies delete educhan-edge --global --quiet
+gcloud compute network-endpoint-groups delete educhan-neg --region "$REGION" --quiet
+gcloud compute addresses delete educhan-ip educhan-ipv6 --global --quiet   # unless moving
+```
+
+A reserved address that no forwarding rule uses is billed by the hour, so
+delete the two once nothing will use them again.
+
+**Not built here yet:** Cloud CDN for `/media/` (it waits for image uploads),
+the moderators' `mod.` hostname behind Identity-Aware Proxy (moderation still
+uses `EDUCHAN_MOD_KEY` on the main host), and WAF rules, which would refuse
+honest posts about SQL or `<script>` until tuned.
+
 ---
 
 ## 3. How the Cloud SQL connection works
@@ -727,7 +911,7 @@ ones whose value differs between a development machine and Cloud Run:
 | `EDUCHAN_POSTER_ID_SALT` | random per process | from Secret Manager | Set it locally too, or poster IDs change on every restart. Must be stable across instances and revisions |
 | `EDUCHAN_MOD_KEY` | unset; export a throwaway | from Secret Manager | Unset means every moderation endpoint answers `403` |
 | `EDUCHAN_VERIFY_SECRET` | unset unless testing verification | **unset** | Institutional verification. Unset switches it off; rotating it revokes every badge. Left off on Cloud Run until a mail `Sender` exists — see below |
-| `EDUCHAN_TRUST_PROXY` | `0` | `1` | Cloud Run's front end appends exactly one hop to `X-Forwarded-For` |
+| `EDUCHAN_TRUST_PROXY` | `0` | `1`, or `2` behind the load balancer | Cloud Run's front end appends exactly one hop to `X-Forwarded-For`, and the load balancer of section 2.10 two more, the visitor's address and its own. Changes only together with ingress (section 2.10) |
 | `EDUCHAN_LOG_FORMAT` | `text` (default) | `json` | JSON is what Cloud Logging parses into structured fields |
 | `EDUCHAN_THREAD_COOLDOWN` / `_POST_` / `_UPLOAD_` | `30` / `5` / `15` | same | Seconds; `0` disables one |
 | `EDUCHAN_MAX_UPLOAD_BYTES` | `8388608` | `8388608` | Cloud Run's own request limit is 32 MiB |
@@ -739,8 +923,9 @@ ones whose value differs between a development machine and Cloud Run:
 value higher than the real chain lets a client pick its own rate-limit bucket by
 sending an `X-Forwarded-For` of its own. Poster IDs mostly no longer depend on
 it: they come from the browser's poster key, and only a post sent without one
-(a script, say) falls back to the client address. Cloud Run is one hop; put a
-load balancer or CDN in front and it becomes two.
+(a script, say) falls back to the client address. Cloud Run is one hop; the
+load balancer of section 2.10 makes it two, which `first-deploy.sh` sets at the
+moment it closes `run.app`, and a CDN or another proxy in front would add more.
 
 ---
 
@@ -803,9 +988,9 @@ runs the tests on every push and does not build the image. Adding a trigger is a
 console or `gcloud builds triggers create` change and needs no edit to this
 config, beyond letting `$SHORT_SHA` supply `_TAG` — see section 2.5.
 
-**Not covered here:** Cloud Build triggers and CD, custom domains and
-certificates, Cloud CDN, Cloud Armor, and backups beyond Cloud SQL's automatic
-ones.
+**Not covered here:** Cloud Build triggers and CD, Cloud CDN, Cloud Armor
+rules beyond section 2.10's flood limit, and backups beyond Cloud SQL's
+automatic ones.
 
 ---
 
