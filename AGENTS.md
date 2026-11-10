@@ -364,7 +364,12 @@ needs a browser check before the test changes.
   resolves to, and Back and Forward (`popstate`, left to the browser's own scroll
   restoration), the thread's Update, the age screen's answer and the first load render
   without it, as does a link that changes only the fragment, which is the browser's jump
-  and `focusHash()` (`TestALinkFollowedStartsAtTheTopOfThePage`).
+  and `focusHash()` (`TestALinkFollowedStartsAtTheTopOfThePage`). Chromium restores the
+  offset Back saved against the page still on screen, before `popstate` renders the one
+  left, so Back straight after a link to a shorter page can land above where the reader
+  was, at the foot of the page the link led to; main does the same once the reader
+  scrolls that page or a slow answer draws the skeleton, and keeping the offset by hand
+  (`scrollRestoration`) is left out on purpose.
 - `formHTML` takes the thread it replies to and follows its state: an archived thread
   gets an explanation instead of a form, a locked one a note. A refusal that arrives
   after the form was drawn (`thread is archived`, say) is a notice from `errorMessage`

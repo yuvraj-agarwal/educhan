@@ -3246,11 +3246,12 @@ func TestALinkFollowedStartsAtTheTopOfThePage(t *testing.T) {
 	if !strings.Contains(code, "\nasync function render({ draft = captureDraft(), visit = false } = {}) {\n") {
 		t.Error("render() does not take visit as an argument that is false unless given")
 	}
-	// Kept nowhere: none of the functions it passes through assigns it. A name
-	// visit elsewhere in app.js is another function's own.
+	// Kept nowhere: none of the functions it passes through assigns it, plainly,
+	// by a compound operator (visit ||= ...) or by ++ and --. A name visit
+	// elsewhere in app.js is another function's own.
 	for _, name := range []string{"navigate", "render", "beginLoading", "renderVerify", "startVisit"} {
 		body := strings.ReplaceAll(withoutComments(jsFunction(t, script, name)), "visit = false", "")
-		if regexp.MustCompile(`\bvisit\s*=[^=]`).MatchString(body) {
+		if regexp.MustCompile(`\bvisit\s*(?:[-+*/%&|^]|\|\||&&|\?\?|<<|>>>?|\*\*)?=[^=]|\bvisit\s*(?:\+\+|--)|(?:\+\+|--)\s*visit\b`).MatchString(body) {
 			t.Errorf("%s assigns visit; it is passed down the one render() call that navigate() starts, and kept "+
 				"nowhere", name)
 		}
