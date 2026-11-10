@@ -528,14 +528,17 @@ properties and needs a browser check before the test changes.
   no skeleton, and a failed load keeps it, while the same press made just before the
   redraw began has the form read for its values, and the page is not kept for it. So
   every press made while the redraw loads is answered on its form, sent or not: the
-  refusal is kept with the form as the way to word it (`refuseUnsent`,
-  `refusalNotices`), and a redraw that draws the form again says it there once more,
-  worded for the form drawn and what it holds then, with the focus on its button
-  (`restoreDraft`), the notice said at the press having gone with the old page, after a
-  post link's lookup say, or leaves it as it is when it is still the notice on screen in
-  the same words, Update say; it says nothing when those words no longer hold, something
-  written since an empty press say, taking the notice off if it is still up, and a
-  redraw that draws another page says nothing on it, the refusal going with the form. A
+  refusal is kept with the form as the way to word it (`refuseUnsent`, `refusalNotices`)
+  and left up while the redraw loads, through the render that draws the thread after a
+  post link's lookup too, and while it is still the notice on screen (`unsentOnScreen`)
+  a redraw that draws the form again words it again there for the form drawn and what it
+  holds then, leaving it as it is in words that come out the same, Update say, with the
+  focus on its button if it was lost (`restoreDraft`), and a page kept when the redraw
+  fails to load keeps it with the error after it; it says nothing when those words no
+  longer hold, something written since an empty press say, taking the notice off. One
+  the reader has dismissed, or that another notice has taken the place of, is said no
+  more, and a redraw that draws another page, a page with no form or an error in the
+  page's place takes it off while it is still up, the form it speaks of having gone. A
   draft, held or not, is keyed by the page on screen (`drawnFor` in `captureDraft`),
   never by a render begun since that has not drawn yet, so the second of a double click
   neither carries the form into the page it goes to nor keeps the page on screen under
@@ -583,17 +586,18 @@ properties and needs a browser check before the test changes.
   since then goes with nothing added, as on the page a failed redraw keeps, so the
   refusal is said once. Each notice is worded for what the form still holds when it is
   worded: its text read from the box after `release` and the image it sent unless
-  `release` took that off, or, for one a redraw tells or rewords, the text and image of
-  the form it draws or keeps (`errorMessage`'s `hasText`, `hasImage` and `imageOff`). A
-  post left with nothing is told nothing of what it holds, and one left with nothing
-  because `release` took its image off is told to write something instead, unless the
-  thread takes no posts at all. A request that succeeds keeps the answer it took; a
-  refusal carrying `"captcha"` drops it and, while the form is on screen, sends once
-  more with a fresh one, whose refusal says nothing was posted, or for a code request
-  that no code was sent, and `"required"` also turns `state.site.captcha` on for a page
-  drawn without knowing, as a `404` from `GET /api/captcha` turns it off, the request
-  then going without an answer. Any other refusal, or no response at all, puts the
-  answer back, on `keepCaptcha`'s terms, unless it carries `Educhan-Captcha: spent`
+  `release` took that off; for one a redraw tells or rewords, the text and image of the
+  form it draws or keeps; and for one worded again in place (`rewordRefusal`), the text
+  and image of the form on screen then (`errorMessage`'s `hasText`, `hasImage` and
+  `imageOff`). A post left with nothing is told nothing of what it holds, and one left
+  with nothing because `release` took its image off is told to write something instead,
+  unless the thread takes no posts at all. A request that succeeds keeps the answer it
+  took; a refusal carrying `"captcha"` drops it and, while the form is on screen, sends
+  once more with a fresh one, whose refusal says nothing was posted, or for a code
+  request that no code was sent, and `"required"` also turns `state.site.captcha` on for
+  a page drawn without knowing, as a `404` from `GET /api/captcha` turns it off, the
+  request then going without an answer. Any other refusal, or no response at all, puts
+  the answer back, on `keepCaptcha`'s terms, unless it carries `Educhan-Captcha: spent`
   (`CAPTCHA_SPENT_HEADER`, set by `spendCaptcha`, a `429` from the second flood-control
   check included), which drops it and starts the next puzzle at once if the form is on
   screen and the browser not forgotten since the press. A post that carries the badge
@@ -811,10 +815,14 @@ properties and needs a browser check before the test changes.
   same way, and taken off once its words no longer hold, after a forget say; the two
   refusals of the image itself, and a post the forget stopped, say nothing of a badge
   held, its box or the poster key, and what the last says of the forget that stopped it
-  stays so, so no such change makes them untrue, and they are kept for none of this.
-  That notice is its one refusal for the badge, so a note left on it while the post was
-  on its way goes, whatever left it: a change of badge in another tab
-  (`followCredentialStorage`), a confirmation answered in this one
+  stays so, so no such change makes them untrue, and they are kept for none of this. A
+  change that takes away the badge of a ticked box notes the form all the same, under
+  any of them and under any other refusal whose words come out the same, the server's
+  flood control say, so its next press with something to post is refused once by the
+  note, which says why (`badgeWithdrawn`): only a notice worded again as that of a
+  replaced badge takes the note off. That notice is its one refusal for the badge, so a
+  note left on it while the post was on its way goes, whatever left it: a change of
+  badge in another tab (`followCredentialStorage`), a confirmation answered in this one
   (`submitVerification`), another badged post's refusal in this one (`submit`),
   `/verify` loading over the form (`loadVerification`), or a redraw that puts it back
   (`restoreDraft`).

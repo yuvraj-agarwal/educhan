@@ -256,20 +256,22 @@ const panelRedrawn = `const panel = el.main.querySelector('[data-action="forget-
 // and image it holds then, with whether it had the focus at the press, whether
 // that refuses its badge and whether it refuses the image itself, for the
 // thread's image limit or not, and the wording of a refusal but for one of the
-// image itself (refusalNotices), with the image release took off and whether it
-// is the notice of a replaced badge as things stand when it is worded, its
-// words yet to be told, for the redraw that tells them to word them again for
-// the form it draws and a picker that takes the image off, and for them to be
-// worded again in place while they are still the notice on screen; it takes the
-// image off after a refusal of the image itself, as on screen, where a page
-// kept for the form, or the form's next press if that comes first, unless an
-// image has been attached since, which is left for the server to answer, then
-// switches the picker off (blockRefusedPicker); and it returns.
+// image itself or a post the forget stopped (refusalNotices), with the image
+// release took off and whether it is the notice of a replaced badge as things
+// stand when it is worded, its words yet to be told, for the redraw that tells
+// them to word them again for the form it draws and a picker that takes the
+// image off, and for them to be worded again in place while they are still the
+// notice on screen; it takes the image off after a refusal of the image itself,
+// as on screen, where a page kept for the form, or the form's next press if
+// that comes first, unless an image has been attached since, which is left for
+// the server to answer, then switches the picker off (blockRefusedPicker); and
+// it returns.
 const awayFromScreen = "if (!shown) { const imageRefused = limitReached || uploadsOff; " +
 	`const fileField = form.querySelector("[data-file-field]"); if (imageRefused && fileField) { clearFileField(fileField); } ` +
 	"const word = (on, text, image) => imageRefused ? errorMessage(err, { hasText: text, imageOff }) : " +
 	"notice(imageOff, on, text, image); " +
-	`if (!imageRefused) { refusalNotices.set(form, { notice, replaced: replacedNow, off: imageOff, told: "", after: "" }); } ` +
+	"if (!imageRefused && !stoppedByForget) { " +
+	`refusalNotices.set(form, { notice, replaced: replacedNow, off: imageOff, told: "", after: "" }); } ` +
 	"unsaidNotices.set(form, { " +
 	"word, focused, badgeRefused, imageRefused, limitReached, }); return; }"
 
@@ -1310,20 +1312,17 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 	restored := squash(withoutComments(jsFunction(t, script, "restoreDraft")))
 	inOrder(t, "restoreDraft", restored,
 		"answeredForm = heldForms.has(held) ? null : held;",
-		"if (!form) { keepUnsentDraft(draft); return; } "+
+		"if (!form) { if (unsentOnScreen(answeredForm)) { clearNotice(); } keepUnsentDraft(draft); return; } "+
 			"const unsaid = answeredForm ? takeUnsaidNotice(answeredForm) : undefined; const forgotten = draft.forgets !== browserForgets;",
 		"node.value = draft[name];",
 		"if (badge) badge.checked = same; if (ticked && !same && !(unsaid && unsaid.badgeRefused)) {",
-		"const refused = answeredForm ? refusalNotices.get(answeredForm) : undefined; "+
-			"const unsent = refused && refused.unsent ? refused : undefined; const text = Boolean(draft.body.trim()); "+
-			"const words = unsaid ? unsaid.word(form, text, Boolean(draft.file)) : "+
-			`unsent ? unsent.notice(unsent.off, form, text, Boolean(draft.file)) : ""; `+
-			"const shown = noticeSaid(); if (unsaid || (words && words !== shown)) { showNotice(words); } "+
-			"else if (unsent && !words && shown === unsent.told) { clearNotice(); }",
+		"const refused = answeredForm ? refusalNotices.get(answeredForm) : undefined; const text = Boolean(draft.body.trim()); "+
+			`const words = unsaid ? unsaid.word(form, text, Boolean(draft.file)) : ""; if (unsaid) { showNotice(words); }`,
 		`const refusal = answeredForm && draft.file ? pickerRefusal(form) : ""; if (refusal && unsaid && unsaid.imageRefused) { } `+
 			"else if (refusal && !unchanged) {",
 		"if (details && (draft.open || draft.body || draft.file)) { details.open = true; } "+
-			"const focused = unsaid ? unsaid.focused : unsent ? Boolean(words) : refocusedForms.has(answeredForm); "+
+			"const focused = unsaid ? unsaid.focused : refused && refused.unsent ? refusalNotices.has(form) : "+
+			"refocusedForms.has(answeredForm); "+
 			"if (focused && (!document.activeElement || document.activeElement === document.body)) { "+
 			`form.querySelector('button[type="submit"]')?.focus({ preventScroll: true }); } }`,
 	)
@@ -2428,17 +2427,18 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 		t.Errorf("carriedDraft no longer carries held a form pressed since its values were read: %s", carried)
 	}
 	if code := withoutComments(script); !strings.Contains(code, "\nconst presses = new WeakMap();\n") ||
-		strings.Count(code, "presses") != 5 || strings.Count(code, "carriedDraft(") != 4 ||
+		strings.Count(code, "presses") != 5 || strings.Count(code, "carriedDraft(") != 5 ||
 		!strings.Contains(squash(withoutComments(submitHandler(t, script))), "presses.set(form, (presses.get(form) ?? 0) + 1);") {
 		t.Error("presses is no longer counted at every press and read only by captureDraft and carriedDraft, or carriedDraft " +
-			"is called somewhere besides render's keepPage, its failed load and its restoreDraft")
+			"is called somewhere besides render's keepPage, the notice it keeps as it begins, its failed load and its " +
+			"restoreDraft")
 	}
 	// The held form goes into the new page's <details>, which another page of
 	// the index draws closed, so that is opened: a form on its way is never
 	// folded away out of sight.
 	restore := squash(withoutComments(jsFunction(t, script, "restoreDraft")))
 	inOrder(t, "restoreDraft", restore,
-		"if (!draft || draft.key !== routeKey(state.route)) { return; }",
+		"if (!draft || draft.key !== routeKey(state.route)) { if (draft && unsentOnScreen(draft.held)) { clearNotice(); } return; }",
 		`const form = el.main.querySelector("form[data-kind]");`,
 		"if (draft.held) { const held = draft.held; const forgets = Math.max(draft.forgets, forgottenAt.get(held) ?? 0); "+
 			"if ( heldForms.has(held) && form && "+
@@ -2446,7 +2446,7 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 			`if (held.querySelector("[data-file-field]")) { redrawnPickers.set(held, pickerRefusal(form)); } `,
 		`form.replaceWith(held); const details = held.closest("details"); if (details) details.open = true;`,
 		"return; } answeredForm = heldForms.has(held) ? null : held; draft = { key: draft.key, ...formDraft(held), forgets }; }",
-		"if (!form) { keepUnsentDraft(draft); return; }",
+		"if (!form) { if (unsentOnScreen(answeredForm)) { clearNotice(); } keepUnsentDraft(draft); return; }",
 	)
 	if refusal := squash(withoutComments(jsFunction(t, script, "pickerRefusal"))); refusal != "function pickerRefusal(form) { "+
 		`const drawn = form.querySelector("[data-file-field]"); if (!drawn) { return UPLOADS_OFF_REASON; } `+
@@ -2570,8 +2570,9 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 		t.Errorf("requested appears %d times in render; want it taken, less the fragment, noted as renderedPath "+
 			"and compared once", n)
 	}
-	if n := strings.Count(render, "keepPage"); n != 3 {
-		t.Errorf("keepPage appears %d times in render; want its declaration, the skeleton and the failed load", n)
+	if n := strings.Count(render, "keepPage"); n != 4 {
+		t.Errorf("keepPage appears %d times in render; want its declaration, the notice it keeps as it begins, the "+
+			"skeleton and the failed load", n)
 	}
 	if over := squash(withoutComments(jsFunction(t, script, "overtaken"))); over !=
 		"function overtaken(route) { return state.route !== route; }" {
@@ -2838,7 +2839,7 @@ func TestCaptchaRefusalSaysWhatTheFormStillHolds(t *testing.T) {
 		"let answeredForm = null;",
 		"answeredForm = heldForms.has(held) ? null : held; draft = { key: draft.key, ...formDraft(held), forgets }; }",
 		"const said = noticeSaid(); "+
-			"const unchanged = Boolean(refused && said) && said === (unsaid || unsent ? words : refused.told); "+
+			"const unchanged = Boolean(refused && said) && said === (unsaid ? words : refused.told); "+
 			`const fileField = form.querySelector("[data-file-field]"); const refusal = answeredForm && draft.file ? pickerRefusal(form) : ""; `+
 			"if (refusal && unsaid && unsaid.imageRefused) { } "+
 			"else if (refusal && !unchanged) { showNotice(said ? imageTakenOff(said, refusal, "+
@@ -2847,10 +2848,10 @@ func TestCaptchaRefusalSaysWhatTheFormStillHolds(t *testing.T) {
 		"if (unchanged) { "+
 			`refusalNotices.set(form, { ...refused, off: refusal || refused.off, told: said, after: "" }); rewordRefusal(form); }`,
 	)
-	if !strings.Contains(code, "\nconst refusalNotices = new WeakMap();\n") || strings.Count(code, "refusalNotices") != 11 {
-		t.Error("refusalNotices is no longer only declared, read and kept by rewordRefusal, kept by refuseUnsent, taken out " +
-			"at every press and kept by the submit handler on screen or off it, and read and moved to the form drawn or kept " +
-			"by restoreDraft and by a kept page's failed redraw")
+	if !strings.Contains(code, "\nconst refusalNotices = new WeakMap();\n") || strings.Count(code, "refusalNotices") != 13 {
+		t.Error("refusalNotices is no longer only declared, read and kept by rewordRefusal, read by unsentOnScreen, kept by " +
+			"refuseUnsent, taken out at every press and kept by the submit handler on screen or off it, and read and moved to " +
+			"the form drawn or kept by restoreDraft, which reads it again for the focus, and by a kept page's failed redraw")
 	}
 }
 
@@ -2923,20 +2924,22 @@ func TestARefusalOnScreenIsWordedAgainForWhatChanges(t *testing.T) {
 // link's lookup into its own thread, Update, another page of the board's index,
 // Back say), is answered on its form, as one that is sent is: the press is
 // counted, so the redraw carries the form itself (carriedDraft), and the
-// refusal is kept with it as a rule (refuseUnsent), so the page that redraw
-// draws, if it draws that form again, says it once more, worded for the form
-// drawn at show time, with the focus on its button if it was lost
-// (restoreDraft), the notice said at the press having gone with the old page,
-// or left as it is when it is still on screen in the same words, Update say;
-// and says nothing when its words no longer hold, the reader having written
-// something since an empty press say, the box the note said was not ticked
-// having been ticked since, the form noted afresh for another badge, or the
-// browser forgotten since, taking it off if it is still on screen. A redraw
-// that draws another page says nothing on it, leaving the notice said at the
-// press as it leaves any said while it loads, and every press takes out what
-// the one before kept, so a refusal is said only on its own form, for the press
-// it answers. A page kept for the form whose redraw will not load leaves the
-// refusal as it is on screen, the form never having gone (render).
+// refusal is kept with it as a rule (refuseUnsent). It is left up while the
+// redraw loads, through the render that draws the thread after a post link's
+// lookup too (render), and while it is still the notice on screen
+// (unsentOnScreen) the page that redraw draws, if it draws that form again,
+// words it again for the form drawn, leaving it as it is in words that come out
+// the same, Update say, with the focus on its button if it was lost
+// (restoreDraft), and takes it off when its words no longer hold, the reader
+// having written something since an empty press say, the box the note said was
+// not ticked having been ticked since, the form noted afresh for another badge,
+// or the browser forgotten since. One the reader has dismissed, or that another
+// notice has taken the place of, is said no more. A page drawn for another
+// address, a page drawn with no form and an error drawn in the page's place
+// take it off while it is still the notice on screen, the form it speaks of
+// having gone, and every press takes out what the one before kept, so a refusal
+// is said only on its own form, for the press it answers. A page kept for the
+// form whose redraw will not load keeps it with the error after it (render).
 func TestAPressRefusedBeforeSendingIsSaidOnTheFormDrawn(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -2970,21 +2973,47 @@ func TestAPressRefusedBeforeSendingIsSaidOnTheFormDrawn(t *testing.T) {
 		"const release = holdForm(form);",
 	)
 	if strings.Count(code, "refuseUnsent(") != 3 || strings.Count(code, "emptyPostNotice(") != 2 ||
-		strings.Count(code, "badgeNoteWords(") != 2 || strings.Count(code, ".unsent") != 1 ||
+		strings.Count(code, "badgeNoteWords(") != 2 || strings.Count(code, ".unsent") != 2 ||
 		strings.Count(code, "Write something or attach an image.") != 1 {
 		t.Error("a refusal before anything is sent is said or kept somewhere besides the empty press and the badge's note, " +
-			"or read as unsent somewhere besides restoreDraft")
+			"or read as unsent somewhere besides restoreDraft and unsentOnScreen")
 	}
-	// restoreDraft says it for the form a press during the redraw carried
-	// (answeredForm), once, and gives that form's button the focus
+	// It is that form's refusal on screen only while it is the notice on screen
+	// in the words it was last told: dismissed, or another notice said in its
+	// place, it is not.
+	if on := squash(withoutComments(jsFunction(t, script, "unsentOnScreen"))); on != "function unsentOnScreen(form) { "+
+		"const refused = form ? refusalNotices.get(form) : undefined; "+
+		"return refused && refused.unsent && refused.told && refused.told === noticeSaid() ? refused : undefined; }" {
+		t.Errorf("unsentOnScreen no longer reads a refusal said before sending as on screen only while it is the "+
+			"notice on screen: %s", on)
+	}
+	// A render that keeps the page on screen for the form leaves it up as it
+	// begins, and every other begins without it; an error drawn in the page's
+	// place, a page drawn for another address and a page drawn with no form
+	// take it off, the form it speaks of having gone.
+	render := squash(withoutComments(jsFunction(t, script, "render")))
+	inOrder(t, "render", render,
+		"renderNav(route); if (!(keepPage() && unsentOnScreen(carriedDraft(draft).held))) { clearNotice(); } verifyRefusal = null;",
+		"if (draft && unsentOnScreen(draft.held)) { clearNotice(); } leavePage(); el.main.innerHTML = emptyStateHTML(message, board);",
+	)
+	if strings.Count(code, "unsentOnScreen(") != 5 {
+		t.Error("a refusal said before sending is read as on screen somewhere besides render's start and its error, and " +
+			"restoreDraft's page for another address and page with no form")
+	}
+	// restoreDraft words it again for the form a press during the redraw
+	// carried (answeredForm) while it is still the notice on screen, as any
+	// refusal there, and gives that form's button the focus while it is
 	// (TestARequestGoesOnlyFromAFormOnScreen pins the words and the focus).
 	restore := squash(withoutComments(jsFunction(t, script, "restoreDraft")))
 	inOrder(t, "restoreDraft", restore,
+		"if (!draft || draft.key !== routeKey(state.route)) { if (draft && unsentOnScreen(draft.held)) { clearNotice(); } return; }",
 		"answeredForm = heldForms.has(held) ? null : held;",
-		"const refused = answeredForm ? refusalNotices.get(answeredForm) : undefined; "+
-			"const unsent = refused && refused.unsent ? refused : undefined;",
+		"if (!form) { if (unsentOnScreen(answeredForm)) { clearNotice(); } keepUnsentDraft(draft); return; }",
+		"const refused = answeredForm ? refusalNotices.get(answeredForm) : undefined;",
+		"const unchanged = Boolean(refused && said) && said === (unsaid ? words : refused.told);",
 		"if (unchanged) { ",
-		"const focused = unsaid ? unsaid.focused : unsent ? Boolean(words) : refocusedForms.has(answeredForm);",
+		"const focused = unsaid ? unsaid.focused : refused && refused.unsent ? refusalNotices.has(form) : "+
+			"refocusedForms.has(answeredForm);",
 	)
 	if carried := squash(withoutComments(jsFunction(t, script, "carriedDraft"))); carried != "function carriedDraft(draft) { "+
 		"if (!draft || !draft.from || (presses.get(draft.from) ?? 0) === draft.pressed) { return draft; } "+
@@ -5422,7 +5451,7 @@ func TestVerifyRefusalsAreSaidInTheForm(t *testing.T) {
 		"function clearVerifyRefusal(form) {\n  verifyRefusal = null;\n") {
 		t.Error("sending the form again does not forget the refusal it had, so the step drawn again would say it")
 	}
-	if !regexp.MustCompile(`\n  clearNotice\(\);\n\s*verifyRefusal = null;\n`).MatchString(withoutComments(jsFunction(t, script, "render"))) {
+	if !regexp.MustCompile(`\n  if \(!\(keepPage\(\) && unsentOnScreen\(carriedDraft\(draft\)\.held\)\)\) \{\n    clearNotice\(\);\n  \}\n\s*verifyRefusal = null;\n`).MatchString(withoutComments(jsFunction(t, script, "render"))) {
 		t.Error("render() does not put away a refusal said in a Verify form with the notice, so a later visit says it again")
 	}
 	if clear, sent := strings.Index(submit, "clearVerifyRefusal(form);"), regexp.MustCompile(`await (api|sendWithCaptcha)\(`).FindStringIndex(submit); clear < 0 || sent == nil || clear > sent[0] {
