@@ -714,10 +714,13 @@ const passOrderTagSize = 16
 
 // passOrderName is how a checkout's answer names its order to the page: by
 // what the database holds of the claim the order is under, signed with the
-// secret (passOrderTag). It is for a page that will not send the browser to
-// Stripe, because the browser was forgotten while the checkout was on its
-// way, to drop that claim and no other ({"forget": true, "order"},
-// forgetPassOrder). It collects nothing, since collecting takes the claim
+// secret (passOrderTag). It is for a page that does not send the browser on
+// to the Stripe page the answer names, which nobody can pay once it is thrown
+// away, to drop that claim and no other ({"forget": true, "order"},
+// forgetPassOrder): the page does so for a checkout answered after Remove the
+// Pass, Forget this browser or Stop collecting it here was pressed in another
+// tab, or once the Pass the browser holds has changed, or while the reader is
+// on another page. It collects nothing, since collecting takes the claim
 // itself, which the page never sees (the cookie is HttpOnly). It is signed
 // because the hash alone is what anyone who can read pass_orders holds, from
 // a backup say, and a name made from it would drop every waiting order there,
@@ -898,17 +901,21 @@ func (a *App) forgetPassClaim(w http.ResponseWriter, r *http.Request) {
 
 // forgetPassOrder drops one checkout's claim, the one whose order its answer
 // named (passOrderName), as forgetPassClaim drops each of the browser's: for a
-// checkout that answered after Remove the Pass, Forget this browser or Stop
-// collecting it here was pressed in another tab, which the page does not follow
-// to Stripe, so that its claim does not outlive the forget. A name without the
-// server's signature, one made from a copy of pass_orders say, is refused. It
-// reads no cookie and clears none. A checkout started after the forget is
-// somebody's purchase, and its cookie can arrive while this request is on its
-// way, so clearing the cookie here could clear that one; the cookie the
-// forgotten checkout set may stay in the browser, with nothing under it, until
-// another checkout replaces it, Remove the Pass, Forget this browser or Stop
-// collecting it here clears it (forgetPassClaim), or it runs out. The answer
-// says nothing of what else waits, since no cookie was read.
+// checkout the page does not follow to Stripe, which nobody can then pay, and
+// that no forget sent from its tab drops. That is one answered after Remove the
+// Pass, Forget this browser or Stop collecting it here was pressed in another
+// tab, whose claim would otherwise outlive that forget, or one answered once
+// the Pass the browser holds has changed, or while the reader is on another
+// page, whose claim the page would otherwise go on collecting for nothing until
+// Stripe expires it. A name without the server's signature, one made from a
+// copy of pass_orders say, is refused. It reads no cookie and clears none. A
+// checkout started since is somebody's purchase, and its cookie can arrive
+// while this request is on its way, so clearing the cookie here could clear
+// that one; the cookie the dropped checkout set may stay in the browser, with
+// nothing under it, until another checkout replaces it, Remove the Pass, Forget
+// this browser or Stop collecting it here clears it (forgetPassClaim), or it
+// runs out. The answer says nothing of what else waits, since no cookie was
+// read.
 func (a *App) forgetPassOrder(w http.ResponseWriter, r *http.Request, name string) {
 	raw, err := base64.RawURLEncoding.DecodeString(name)
 	if err != nil || len(raw) != sha256.Size+passOrderTagSize ||

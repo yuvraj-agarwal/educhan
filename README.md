@@ -646,31 +646,32 @@ without a Pass (`TestPassNoGoodOnPostsIsNoPass`). `TestPostingLinesAreUntimed`
 finds every such route that `Routes` names and wants no `duration_ms` on the
 line of each post it sends one: a post that is saved; three that fail at their
 insert after their Pass is read, with a good Pass, one that is no good and none,
-each a `500` and the three logging the same; and posts turned away before their
-Pass is read, whose lines only the route's `untimed` mark keeps from a duration,
-for a malformed poster key, no body, a body that is not JSON, and, on each route
-whose path has one, a board that is not there, a thread number that is not one
-and a thread id that is not one or names no thread. It holds every other route's
-line to keeping its `duration_ms`. The step that reads a post's Pass
-(`postPass`) takes the duration off its line too, however the route was added.
-How long posts take is left to Cloud Run's request latency metrics, which are
-aggregates. Nothing identifying a Pass is logged. The log says that a Pass was
-issued, renewed or reissued, that a reissue code was made, that a refund or a
-dispute took back an order, a payment's term or a whole Pass, or that a paid
-Stripe checkout matched no open Pass order, and never which; a failure to read a
-Pass on a post whose client is still there is logged without the post's path,
-which names its board and thread (the request's own line keeps the path and its
-`500`, as for any failed request). `TestPassIsNeverStoredOrLogged` posts with a
-Pass on every posting route, a thread and a reply each as JSON and with an
-image, and a reply by thread id, and then searches every table and the log for
-the code, its hashes, the budget key, the collection and reissue nonces, the
-payment and session ids, a reissue code and the buyer's email and name, with
-positive controls; `TestPassTablesCannotBeJoinedToPosts` pins the columns. The
-webhook handler reads a handful of fields and never logs the body, which carries
-the payer's email, name and address: `TestPassLogsAreBare` delivers every event
-the Pass takes, with the payer's details in it, and one whose signature does not
-verify, and holds every Pass log line to its message alone, with no field beside
-it.
+each a `500` and the three logging the same; one with a code that parses while
+the passes table cannot be read, a `500` at `postPass`; and posts turned away
+before their Pass is read, whose lines only the route's `untimed` mark keeps
+from a duration, for a malformed poster key, no text, a body that is not JSON,
+and, on each route whose path has one, a board that is not there, a thread
+number that is not one and a thread id that is not one or names no thread. It
+holds every other route's line to keeping its `duration_ms`. The step that reads
+a post's Pass (`postPass`) takes the duration off its line too, however the
+route was added. How long posts take is left to Cloud Run's request latency
+metrics, which are aggregates. Nothing identifying a Pass is logged. The log
+says that a Pass was issued, renewed or reissued, that a reissue code was made,
+that a refund or a dispute took back an order, a payment's term or a whole Pass,
+or that a paid Stripe checkout matched no open Pass order, and never which; a
+failure to read a Pass on a post whose client is still there is logged without
+the post's path, which names its board and thread (the request's own line keeps
+the path and its `500`, as for any failed request).
+`TestPassIsNeverStoredOrLogged` posts with a Pass on every posting route, a
+thread and a reply each as JSON and with an image, and a reply by thread id, and
+then searches every table and the log for the code, its hashes, the budget key,
+the collection and reissue nonces, the payment and session ids, a reissue code
+and the buyer's email and name, with positive controls;
+`TestPassTablesCannotBeJoinedToPosts` pins the columns. The webhook handler
+reads a handful of fields and never logs the body, which carries the payer's
+email, name and address: `TestPassLogsAreBare` delivers every event the Pass
+takes, with the payer's details in it, and one whose signature does not verify,
+and holds every Pass log line to its message alone, with no field beside it.
 
 Apart from Stripe's webhook, which its signature guards instead, the Pass's
 `POST` endpoints take only a body declared as JSON, which no form can send and

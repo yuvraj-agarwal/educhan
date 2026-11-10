@@ -63,10 +63,13 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 // Pass. It is left off whatever the status, a 500 included: a post that fails
 // after its Pass is read, at its insert for example, has spent the lookup's
 // time too (TestPostingLinesAreUntimed). Nothing else on the line depends on a
-// Pass: a Pass that is no good gets the status no Pass gets, and a post whose
-// client goes away while its Pass is looked up goes on as one without a Pass
-// (postPass), so a post leaves the same line with a good Pass, one that is no
-// good or none. A field added here must keep that.
+// Pass but for a failure to read one while its client is still there, which
+// postPass answers with a 500, logged at ERROR as any failed request is, where
+// the same post without a code goes on. Otherwise a Pass that is no good gets
+// the status no Pass gets, and a post whose client goes away while its Pass is
+// looked up goes on as one without a Pass (postPass), so a post leaves the same
+// line with a good Pass, one that is no good or none. A field added here must
+// keep that.
 func requestLogger(log *slog.Logger) middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

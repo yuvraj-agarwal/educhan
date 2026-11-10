@@ -3121,12 +3121,12 @@ func TestPassIsNeverStoredOrLogged(t *testing.T) {
 	if !ok {
 		t.Fatalf("the second reissue code %q does not parse", unspent)
 	}
-	// A checkout is forgotten by its order's name, as the page forgets one
-	// that answered after Remove the Pass, Forget this browser or Stop: the
-	// name goes in a body, once with a signature that is not the server's,
-	// which is refused, and once as it was given. While the order waits, its
-	// claim's hash is in pass_orders, which is what the name is made from;
-	// once forgotten, it is nowhere.
+	// A checkout is forgotten by its order's name, as the page forgets one it
+	// does not follow to Stripe, one that answered after Remove the Pass,
+	// Forget this browser or Stop, say: the name goes in a body, once with a
+	// signature that is not the server's, which is refused, and once as it was
+	// given. While the order waits, its claim's hash is in pass_orders, which
+	// is what the name is made from; once forgotten, it is nowhere.
 	orderer := p.otherBrowser()
 	orderSession, orderName := orderer.checkoutNamed("")
 	orderToken, _ := orderer.claimCookie()
@@ -4092,7 +4092,7 @@ func TestPassForgetDropsTheClaim(t *testing.T) {
 }
 
 // forgetOrder drops the one claim whose order a checkout's answer named, as
-// the page does for a checkout that answered after a forget, and returns the
+// the page does for a checkout it does not follow to Stripe, and returns the
 // claim cookie the answer set, if it set one.
 func (p *passHarness) forgetOrder(name string) (int, *http.Cookie) {
 	p.t.Helper()
@@ -4124,15 +4124,16 @@ func (p *passHarness) forgetOrderAnswered(name string) (int, *http.Cookie, map[s
 }
 
 // TestPassForgetByOrderDropsThatClaimAlone holds the forget the page sends for
-// a checkout that answered after Remove the Pass, Forget this browser or Stop
-// collecting it here, naming the order the answer gave it, to that checkout's
-// claim and no other. The claim collects nothing, even with a copy of its
-// cookie and once its checkout is paid after all, and the buyer gets that
-// through a reissue. A checkout started after the forget is somebody's
-// purchase, and its cookie can be in the browser by the time the forget of the
-// earlier one arrives, so that forget reads no cookie and clears none, and
-// its answer, {"status":"forgotten"}, says nothing of what else waits. Only
-// the server makes a name: one made from what pass_orders holds drops nothing.
+// a checkout it does not follow to Stripe, one that answered after Remove the
+// Pass, Forget this browser or Stop collecting it here was pressed in another
+// tab, or once the Pass held changed, say, naming the order the answer gave it,
+// to that checkout's claim and no other. The claim collects nothing, even with
+// a copy of its cookie and once its checkout is paid after all, and the buyer
+// gets that through a reissue. A checkout started since is somebody's purchase,
+// and its cookie can be in the browser by the time the forget of the earlier
+// one arrives, so that forget reads no cookie and clears none, and its answer,
+// {"status":"forgotten"}, says nothing of what else waits. Only the server
+// makes a name: one made from what pass_orders holds drops nothing.
 func TestPassForgetByOrderDropsThatClaimAlone(t *testing.T) {
 	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
 

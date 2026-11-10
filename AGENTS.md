@@ -1021,54 +1021,56 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   every route `Routes` names with a handler that can run `postPass`, holds it to
   `untimed`, and wants no duration on the line of each post it sends one: a post that is
   saved, three that fail at their insert after their Pass is read (with a good Pass, one
-  that is no good and none, which must log the same), and posts it turns away before it
-  reads their Pass, whose lines nothing but the route's `untimed` keeps from a duration
-  (a malformed poster key, no body, a body that is not JSON, and, where its path has one,
-  a board that is not there, a thread number that is not one and a thread id that is not
-  one or names no thread); it holds every other route's line to a duration. `postPass`
-  takes the duration off too (`markUntimed`), so a post that reaches it leaves none
-  however its route was registered. The Pass skips the captcha only, never the rules, a
-  refusal limit or a cooldown. Only a transaction that writes a `passes` row locks it, so
-  its `xmax` dates nothing its `xmin` does not: `pass_orders.renew_pass_id` is no foreign
-  key, whose check would leave every renewal checkout's transaction id on the Pass's row
-  (`TestPassRowIsDatedOnlyByItsWrites`). What the key's `ON DELETE SET NULL` did is done
-  in code instead: every transaction that deletes a Pass (today a refund or dispute that
-  leaves it no paid time to come, and the prune 30 days past its expiry) clears it from
-  every order that renews it, writing to `pass_orders` alone, so no order, paid or not,
-  names a deleted Pass (`TestPassThatIsGoneIsNamedByNoOrder`); anything new that deletes
-  a Pass must do the same. A Pass 30 days past its expiry has gone for every purpose,
-  pruned yet or not: every lookup of a Pass but `moveOrigin`'s takes only one whose
-  `expires_at` is after `passCutoff(now)`, through `passByToken` and `passWithToken` or
-  in its own query (`renewPass` and `createPassReissue`, for example), and what a
-  transaction then reads or writes of the Pass it found, under the lock, follows from
-  that lookup (`revokeTerm` after `revokePassPayment`'s, for example), so whatever
-  reaches it (such as a check, a post, a renewal, a claim, a reissue code or a refund)
-  finds it gone, and the prune just deletes its rows (`TestPassPastItsGraceIsGone`);
-  anything new that looks a Pass up must do the same. The `now` a lookup is held to is
-  read just before the store call that makes it, so one made after a call to Stripe is
-  held to the clock once Stripe has answered (`createPassOrder`,
-  `TestPassRenewalOfAPassThatIsGone`). Until the prune, an order still naming such a Pass
-  is collected or refunded as one naming none: `renewPass` and `renewalUnderWay` find no
-  Pass, and `moveOrigin`, which a refund of the order calls on it, finds none of its
-  terms still running. A paid order nobody collected has gone the same way once its own
-  term has passed since its deadline, pruned yet or not: every read of a paid order that
-  decides what to do with it holds it to `passOrderKept`, or to `passOrderPayable`, the
-  same bound for a paid order (a claim, a reissue code made or redeemed, a refund, Stripe
-  reporting it paid again, and counting it as waiting or as a renewal under way, for
-  example), so the prune only frees its row (`TestPassOrderPastItsKeepIsGone`). An unpaid
-  order goes when Stripe reports its checkout expired or its payment failed
-  (`dropUnpaidPassOrder`), or reports it paid with a payment already refunded or disputed
-  (`markPassOrderPaid`); otherwise it is no longer waited for past its deadline, and goes
-  at the next prune or at a claim from its own browser (`claimOne`), whichever comes
-  first, a claim the Pass page sends while `GET /api/pass` counts the order as something
-  to collect; a payment Stripe reports after that finds nothing, and the owner is warned.
-  It has gone too once that term has passed since its deadline, pruned yet or not:
-  marking it paid, holding it for a slow payment, counting it as a renewal under way and
-  counting it as something for its browser to collect (`passClaimWaiting`, and what
-  `claimPass` answers is left) all hold it to `passOrderPayable`, one bound, which ends
-  where a paid order's keep does, so none of them takes an order the others have let go,
-  and once nothing is left to collect under a claim, nothing can come under it later
-  (`TestPassOrderPastItsKeepIsGone`, `TestPassReissueWaitsForARenewalUnderWay`,
+  that is no good and none, which must log the same), one with a code that parses while
+  the passes table cannot be read (a `500` at `postPass`), and posts it turns away before
+  it reads their Pass, whose lines nothing but the route's `untimed` keeps from a
+  duration (a malformed poster key, no text, a body that is not JSON, and, where its path
+  has one, a board that is not there, a thread number that is not one and a thread id
+  that is not one or names no thread); it holds every other route's line to a duration.
+  `postPass` takes the duration off too (`markUntimed`), so a post that reaches it leaves
+  none however its route was registered. The Pass skips the captcha only, never the
+  rules, a refusal limit or a cooldown. Only a transaction that writes a `passes` row
+  locks it, so its `xmax` dates nothing its `xmin` does not: `pass_orders.renew_pass_id`
+  is no foreign key, whose check would leave every renewal checkout's transaction id on
+  the Pass's row (`TestPassRowIsDatedOnlyByItsWrites`). What the key's
+  `ON DELETE SET NULL` did is done in code instead: every transaction that deletes a Pass
+  (today a refund or dispute that leaves it no paid time to come, and the prune 30 days
+  past its expiry) clears it from every order that renews it, writing to `pass_orders`
+  alone, so no order, paid or not, names a deleted Pass
+  (`TestPassThatIsGoneIsNamedByNoOrder`); anything new that deletes a Pass must do the
+  same. A Pass 30 days past its expiry has gone for every purpose, pruned yet or not:
+  every lookup of a Pass but `moveOrigin`'s takes only one whose `expires_at` is after
+  `passCutoff(now)`, through `passByToken` and `passWithToken` or in its own query
+  (`renewPass` and `createPassReissue`, for example), and what a transaction then reads
+  or writes of the Pass it found, under the lock, follows from that lookup (`revokeTerm`
+  after `revokePassPayment`'s, for example), so whatever reaches it (such as a check, a
+  post, a renewal, a claim, a reissue code or a refund) finds it gone, and the prune just
+  deletes its rows (`TestPassPastItsGraceIsGone`); anything new that looks a Pass up must
+  do the same. The `now` a lookup is held to is read just before the store call that
+  makes it, so one made after a call to Stripe is held to the clock once Stripe has
+  answered (`createPassOrder`, `TestPassRenewalOfAPassThatIsGone`). Until the prune, an
+  order still naming such a Pass is collected or refunded as one naming none: `renewPass`
+  and `renewalUnderWay` find no Pass, and `moveOrigin`, which a refund of the order calls
+  on it, finds none of its terms still running. A paid order nobody collected has gone
+  the same way once its own term has passed since its deadline, pruned yet or not: every
+  read of a paid order that decides what to do with it holds it to `passOrderKept`, or to
+  `passOrderPayable`, the same bound for a paid order (a claim, a reissue code made or
+  redeemed, a refund, Stripe reporting it paid again, and counting it as waiting or as a
+  renewal under way, for example), so the prune only frees its row
+  (`TestPassOrderPastItsKeepIsGone`). An unpaid order goes when Stripe reports its
+  checkout expired or its payment failed (`dropUnpaidPassOrder`), or reports it paid with
+  a payment already refunded or disputed (`markPassOrderPaid`); otherwise it is no longer
+  waited for past its deadline, and goes at the next prune or at a claim from its own
+  browser (`claimOne`), whichever comes first, a claim the Pass page sends while
+  `GET /api/pass` counts the order as something to collect; a payment Stripe reports
+  after that finds nothing, and the owner is warned. It has gone too once that term has
+  passed since its deadline, pruned yet or not: marking it paid, holding it for a slow
+  payment, counting it as a renewal under way and counting it as something for its
+  browser to collect (`passClaimWaiting`, and what `claimPass` answers is left) all hold
+  it to `passOrderPayable`, one bound, which ends where a paid order's keep does, so none
+  of them takes an order the others have let go, and once nothing is left to collect
+  under a claim, nothing can come under it later (`TestPassOrderPastItsKeepIsGone`,
+  `TestPassReissueWaitsForARenewalUnderWay`,
   `TestPassUnpaidOrderIsPayableUntilItsKeepEnds`, `TestPassPaidAfterItsDeadlineIsKept`).
   Anything new that reads a paid order, or decides what to do with an unpaid one past its
   deadline, must do the same. A reissue code's deadline never runs past what it is for as

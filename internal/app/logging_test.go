@@ -265,7 +265,7 @@ func routesReaching(t *testing.T, fn string) []routeReach {
 // leaves no duration, and the three leave the same log, byte for byte but for
 // its time. Last, each such route is sent posts it turns away before it reads
 // their Pass, so that untimed's own mark alone takes the duration off their
-// lines: a malformed poster key, no body and a body that is not JSON on every
+// lines: a malformed poster key, no text and a body that is not JSON on every
 // one; a board that is not there on each whose path names a board; a thread
 // number that is not one on each that names a thread by number; and a thread
 // id that is not one, and one that names no thread, on each that names a
@@ -414,7 +414,7 @@ func TestPostingLinesAreUntimed(t *testing.T) {
 		status                           int
 	}{
 		{what: "a malformed poster key", key: "not a key", status: http.StatusBadRequest},
-		{what: "no body", body: `{"body":""}`, status: http.StatusBadRequest},
+		{what: "no text", body: `{"body":""}`, status: http.StatusBadRequest},
 		{what: "a body that is not JSON", body: `{"body":`, status: http.StatusBadRequest},
 		{what: "a board that is not there", wildcard: "slug", value: "nowhere", status: http.StatusNotFound},
 		{what: "a thread number that is not one", wildcard: "no", value: "none", status: http.StatusBadRequest},
