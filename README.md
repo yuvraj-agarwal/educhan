@@ -755,7 +755,7 @@ Delivery goes through `internal/mailer.Sender`, the same way blob storage goes
 through `internal/media.Store`. No mail is sent yet: the only sender in the
 repository is the development one, which prints the code and the address to the
 server's stdout instead of sending them, so the feature is usable and testable
-locally once `EDUCHAN_MAIL_DEV=1` is set:
+locally once `EDUCHAN_VERIFY_SECRET` and `EDUCHAN_MAIL_DEV=1` are both set:
 
 ```
 [educhan] verification code for ana@iitb.ac.in: 481920 (valid for 15m0s)
