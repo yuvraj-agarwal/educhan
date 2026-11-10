@@ -10900,9 +10900,10 @@ func ageCheck(v *view, m []int) bool {
 		// relay results are out", "the class 8 girls dm me every day", "9th
 		// graders who went on the trip", "grade 9 student here, dm me" or
 		// "class 8 girl here". Its students or kids asked to get in touch
-		// are looked for too when secrecy or a meeting follows and nothing
-		// they would study or sign up for does (pupilsSought): "class 8
-		// students dm me, no parents".
+		// are looked for too when secrecy, a lure, an ask or a meeting
+		// follows and nothing they would study or sign up for does
+		// (pupilsSought): "class 8 students dm me, no parents", "class 6
+		// kids dm me, i have a surprise for you".
 		noun := ws[len(ws)-1]
 		pupils := pupilWords[noun]
 		if !soughtYouths[noun] && !pupils {
@@ -11108,28 +11109,39 @@ func pupilsReached(next []string) bool {
 	return k < len(next) && reachTails[next[k]]
 }
 
-// pupilsSought reports secrecy kept from adults or a meeting in ws, the
-// words after a school year's students or kids asked to get in touch.
-// Parents or other adults kept out ("no parents", "no adults", "don't tell
-// your mum", not "no parents needed") are secrecy whatever else is said.
-// Teachers kept out, "don't tell anyone", a secret, a private chat, "between
-// us", being alone and a meeting are secrecy only with nothing they would
-// study, sign up for or do as a group (pupilErrands: "for the quiz team,
-// it's a secret from the other section", "secret santa", "a private discord
-// for the batch", "i have the notes, don't tell anyone"; teacherErrands,
-// for a teacher who is not kept out: "a party for sir"; a surprise for a
-// teacher, a classmate, a group, an occasion or a name: "a surprise for
-// ma'am, don't tell the teachers", "a surprise for kabir"), or with a lure
-// beside it (pupilLures: "for free robux", "i'll pay you", "i'll send you
-// gifts", "i'll send gifts", not "we'll buy gifts" or "i'll send gifts to
-// everyone" (pupilGiven); a surprise for the reader: "i have a surprise for
-// you", "a surprise for my juniors" (pupilReader)); a meeting is none
-// in a school's or a group's place ("meeting at lunch", "lets meet in the
-// library", "in room 12"). "Just us" is secrecy unless a group follows it
-// ("just us girls", "just us no seniors"). So "class 7 kids dm me, it's a
-// secret", "class 7 kids dm me, it's a surprise, don't tell anyone", "lets
-// meet after school, just us" and "i'll send you gifts, keep it between
-// us" are held.
+// pupilsSought reports secrecy kept from adults, a lure, an ask or a
+// meeting in ws, the words after a school year's students or kids asked to
+// get in touch. Parents or other adults kept out ("no parents", "no
+// adults", "don't tell your mum", "your parents don't need to know", not
+// "no parents needed", "no parents signature required" or "tell your
+// parents"), asked about ("are your parents home?") and being asked to
+// come alone are secrecy whatever else is said. A lure (pupilLures given to
+// the reader: "for free robux", "i'll pay you", "i'll send you gifts", "i'll
+// send gifts", not "we'll buy gifts" or "i'll send gifts to everyone"
+// (pupilGiven); a surprise for the reader: "i have a surprise for you", "a
+// surprise for my juniors" (pupilReader)) is one with nothing they would
+// study, sign up for or do as a group (pupilErrands, below: "i'll pay you
+// 200 rs for your old books") and not said to all of them ("a surprise for
+// you all after boards", pupilsAll). Teachers kept out, "don't tell anyone",
+// "promise you won't tell", "tell no one", "keep it quiet", a secret, a
+// private chat, "between us", being alone, a photo, a video call, coming to
+// their school or picking them up (pupilAsks) and a meeting are secrecy
+// only with no lure and nothing they would study, sign up for or do as a
+// group (pupilErrands: "for the quiz team, it's a secret from the other
+// section", "secret santa", "a private discord for the batch", "i have the
+// notes, don't tell anyone", "send me a photo for the farewell slideshow";
+// teacherErrands, for a teacher who is not kept out: "a party for sir"; a
+// surprise for a teacher, a classmate, a group, an occasion or a name: "a
+// surprise for ma'am, don't tell the teachers", "a surprise for kabir", "it's
+// riya's birthday, we're planning a surprise"); a meeting is none in a
+// school's or a group's place ("meeting at lunch", "lets meet in the
+// library", "in room 12") or of a kind (meetKinds: "the parents meeting",
+// "the sports meet"). "Just us" is secrecy unless a group follows it ("just
+// us girls", "just us no seniors"), and "just me" unless a duty does ("just
+// me handling the forms"). So "class 7 kids dm me, it's a secret", "class 6
+// kids dm me, i have a surprise for you", "class 7 kids dm me, it's a
+// surprise, don't tell anyone", "lets meet after school, just us" and "i'll
+// send you gifts, keep it between us" are held.
 func pupilsSought(ws []string) bool {
 	lured, surprise := false, false
 	for i, w := range ws {
@@ -11148,24 +11160,32 @@ func pupilsSought(ws []string) bool {
 			// For the reader, a lure: "a surprise for you", "something
 			// special for you", "a surprise for whoever dms first".
 			lured = lured || pupilReader(ws[i+1:])
-		case is(w, "for"):
+		case is(w, "for") && !pupilReader(ws[i:]):
 			// A surprise is an errand in a post that is for a teacher, a
 			// classmate, a group, an occasion or a name: "a surprise for
 			// ma'am", "for riya's birthday", "a surprise for kabir", "dm me
-			// for the class party ... it's a surprise".
+			// for the class party ... it's a surprise"; not for the reader,
+			// "a surprise for my juniors".
 			who, at := forWhom(ws[i:])
 			surprise = surprise || teacherWords[who] || pupilGroups[who] || pupilMates[who] ||
-				pupilErrands[who] || teacherErrands[who] || pupilNamed(ws[i:], at)
+				pupilErrands[who] || teacherErrands[who] || pupilNamed(ws[i:], at) ||
+				pupilNickNamed(ws[i:], at) && !pupilHas(ws[max(0, i-4):i])
+		case !ownerWords[w] && ownerWord(w) && i+1 < len(ws) && pupilOccasions[ws[i+1]]:
+			// Someone's occasion: "it's riya's birthday".
+			surprise = true
 		}
 	}
 	surprise = surprise && hasWord(ws, "surprise")
+	// kept reports, before ws[i] and any determiner or owner, a word that
+	// keeps it out ("no parents", "without your parents") or a verb of
+	// passing on that is barred ("don't tell your mum", tellBarred); not
+	// "tell your parents" or "don't forget to tell your parents".
 	kept := func(i int) bool {
-		for _, p := range ws[max(0, i-3):i] {
-			if keptFrom[p] {
-				return true
-			}
+		k := i - 1
+		for k >= max(0, i-3) && (determiners[ws[k]] || ownerWord(ws[k])) {
+			k--
 		}
-		return false
+		return k >= 0 && (keptFrom[ws[k]] || passVerbs[ws[k]] && tellBarred(ws, k))
 	}
 	// A teacher named and not kept out, whom a gift, a party or a plan is
 	// for: "a party for sir", "ma'am's gift".
@@ -11173,17 +11193,26 @@ func pupilsSought(ws []string) bool {
 	for i, w := range ws {
 		forTeacher = forTeacher || teacherWords[strings.TrimSuffix(w, "'s")] && !kept(i)
 	}
-	errand := (anyIn(ws, pupilErrands) || surprise || forTeacher && anyIn(ws, teacherErrands)) && !lured
+	errands := anyIn(ws, pupilErrands) || surprise || forTeacher && anyIn(ws, teacherErrands)
+	if lured && !errands && !pupilsAll(ws) {
+		return true
+	}
+	errand := errands && !lured
 	for i, w := range ws {
 		var next string
 		if i+1 < len(ws) {
 			next = ws[i+1]
 		}
 		switch {
-		case parentWords[w] && kept(i) && !parentsNeeded[next]:
+		case parentWords[w] && kept(i) && !parentsNeeded[next] && !parentNouns[next],
+			parentWords[w] && parentsAway(ws[i+1:]),
+			is(w, "alone") && i > 0 && aloneAsks[ws[i-1]]:
 			return true
 		case is(w, "just") && (is(next, "us") || is(next, "me")):
 			rest := ws[i+2:]
+			if is(next, "me") && len(rest) > 0 && pupilDuties[rest[0]] && (len(rest) == 1 || !objectWords[rest[1]]) {
+				break
+			}
 			for len(rest) > 0 && (is(rest[0], "the") || is(rest[0], "no") || is(rest[0], "without")) {
 				rest = rest[1:]
 			}
@@ -11192,11 +11221,15 @@ func pupilsSought(ws []string) bool {
 			}
 		case errand:
 		case teacherWords[w] && kept(i) && !parentsNeeded[next],
-			(is(w, "anyone") || is(w, "anybody")) && i > 0 && is(ws[i-1], "tell") && kept(i-1),
+			(is(w, "anyone") || is(w, "anybody")) && i > 0 && is(ws[i-1], "tell") && tellBarred(ws, i-1),
+			is(w, "tell") && (i+1 == len(ws) && tellBarred(ws, i) || is(next, "nobody") || is(next, "noone") ||
+				is(next, "no") && i+2 < len(ws) && is(ws[i+2], "one")),
+			is(w, "quiet") && i > 0 && (is(ws[i-1], "it") || is(ws[i-1], "keep")),
 			pupilSecrets[w],
-			is(w, "between") && (is(next, "us") || is(next, "ourselves")):
+			is(w, "between") && (is(next, "us") || is(next, "ourselves")),
+			pupilAsks(ws, i):
 			return true
-		case pupilMeets[w]:
+		case pupilMeets[w] && (i == 0 || !meetKinds[ws[i-1]]):
 			near := false
 			for _, x := range ws[i+1 : min(len(ws), i+7)] {
 				near = near || pupilPlaces[x]
@@ -11204,6 +11237,102 @@ func pupilsSought(ws []string) bool {
 			if !near {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// tellBarred reports a verb of passing on at ws[k] said not to be done:
+// "don't tell", "never tell", "do not tell", "dont you dare tell", "no need
+// to tell", "you won't tell"; not "tell", "you need to tell" or "don't
+// forget to tell".
+func tellBarred(ws []string, k int) bool {
+	for j := k - 1; j >= max(0, k-3); j-- {
+		if tellNegators[ws[j]] {
+			return true
+		}
+		if !tellBetween[ws[j]] {
+			return false
+		}
+	}
+	return false
+}
+
+// parentsAway reports, in the words after parents, that they are away or
+// are not to know: "are your parents home?", "when your parents are away",
+// "your parents don't need to know", "parents won't find out".
+func parentsAway(ws []string) bool {
+	if len(ws) > 0 && (pupilAway[ws[0]] || len(ws) > 1 && (is(ws[0], "are") || is(ws[0], "r")) && pupilAway[ws[1]]) {
+		return true
+	}
+	for j, w := range ws[:min(len(ws), 3)] {
+		if tellNegators[w] {
+			for _, x := range ws[j+1 : min(len(ws), j+4)] {
+				if pupilKnows[x] {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	return false
+}
+
+// pupilAsks reports, at ws[i], something asked of a year's students that
+// no errand would ask: a photo ("send me a photo", "can i see a pic"), a
+// video call ("lets vc", "video call", "turn on your camera"), coming to
+// their school ("i'll come to your school", not "... for the career talk")
+// or picking them up ("i'll pick you up after school").
+func pupilAsks(ws []string, i int) bool {
+	w, prev, next, third := ws[i], "", "", ""
+	if i > 0 {
+		prev = ws[i-1]
+	}
+	if i+1 < len(ws) {
+		next = ws[i+1]
+	}
+	if i+2 < len(ws) {
+		third = ws[i+2]
+	}
+	switch {
+	case pupilPhotos[w]:
+		// Of or for someone else, a photo is an errand's: "a pic of ur
+		// notes", "photos from the trip", "a photo for the yearbook".
+		if pupilPhotoOf[next] {
+			k := i + 2
+			for k < len(ws) && k < i+4 && (determiners[ws[k]] || ownerWord(ws[k])) {
+				k++
+			}
+			if k == len(ws) || !pupilPhotoOf[ws[k]] && !photoSubjects[ws[k]] {
+				return false
+			}
+		}
+		return anyIn(ws[max(0, i-3):i], photoAsks)
+	case is(w, "vc") || is(w, "facetime") || is(w, "videocall"):
+		return true
+	case is(w, "video"):
+		return is(next, "call") || is(next, "chat")
+	case is(w, "camera") || is(w, "cam") || is(w, "webcam"):
+		return ownerWords[prev] || is(prev, "on")
+	case is(w, "school"):
+		return (is(prev, "your") || is(prev, "ur")) && i >= 2 &&
+			(pupilVisits[ws[i-2]] || is(ws[i-2], "to") && i >= 3 && pupilVisits[ws[i-3]]) && !is(next, "for")
+	case is(w, "pick"):
+		return objectWords[next] && is(third, "up")
+	}
+	return false
+}
+
+// pupilsAll reports the reader named as all of the year: "you all", "u
+// guys", "y'all", "all of you".
+func pupilsAll(ws []string) bool {
+	for i, w := range ws {
+		if is(w, "yall") || is(w, "y'all") {
+			return true
+		}
+		if i+1 < len(ws) && (is(w, "you") || is(w, "u")) && (is(ws[i+1], "all") || is(ws[i+1], "guys")) ||
+			i+2 < len(ws) && is(w, "all") && is(ws[i+1], "of") && is(ws[i+2], "you") {
+			return true
 		}
 	}
 	return false
@@ -11243,17 +11372,44 @@ func pupilReader(ws []string) bool {
 	return at+1 == len(ws) || !pupilErrands[ws[at+1]] && !teacherErrands[ws[at+1]] && !pupilOccasions[ws[at+1]]
 }
 
-// pupilNamed reports a name at ws[at], whom "for" names with no determiner
-// or owner before it (forWhom) and with the clause ending after it: "a
-// surprise for kabir, keep it secret". A name in small letters is told
-// from other words only by lowerName, which takes many adjectives, so it
-// is one only with a clause after it that does not go on as a noun phrase
-// would (pupilNameEnds: not "for new friends") and when it is none of
+// pupilNamed reports a name at ws[at], whom "for" or "to" names with no
+// determiner or owner before it (forWhom, pupilRecipient) and with the
+// clause ending after it: "a surprise for kabir, keep it secret", "i'll
+// send gifts to riya". A name in small letters is told from other words
+// only by lowerName, which takes many adjectives, so it is one only with a
+// clause after it that does not go on as a noun phrase would
+// (pupilNameEnds: not "for new friends") and when it is none of
 // pupilNotNames, which are said after "for" to the reader or of nobody
-// ("for free", "for cutie", "for princess", "for champ").
+// ("for free", "for cutie", "for princess", "for champ"), nor one of
+// pupilNickNames (pupilNickNamed).
 func pupilNamed(ws []string, at int) bool {
-	return at > 0 && is(ws[at-1], "for") && lowerName(ws[at]) && !pupilNotNames[ws[at]] &&
+	return at > 0 && (is(ws[at-1], "for") || is(ws[at-1], "to")) && lowerName(ws[at]) &&
+		!pupilNotNames[ws[at]] && !pupilNickNames[ws[at]] && (at+1 == len(ws) || pupilNameEnds[ws[at+1]])
+}
+
+// pupilNickNamed reports at ws[at], as pupilNamed would a name, one of
+// pupilNickNames: given names that are also said to a child ("pari",
+// "prince", "angel"). The caller reads one as a name unless the poster has
+// it for them (pupilHas): "it's a surprise for pari", "we're planning a
+// surprise for prince", not "i have a surprise for angel".
+func pupilNickNamed(ws []string, at int) bool {
+	return at > 0 && (is(ws[at-1], "for") || is(ws[at-1], "to")) && pupilNickNames[ws[at]] &&
 		(at+1 == len(ws) || pupilNameEnds[ws[at+1]])
+}
+
+// pupilHas reports the poster, and not their group, saying they have
+// what is for someone, in ws, the words before "for": "i have a surprise",
+// "i've got something special", "got a gift"; not "we have a surprise" or
+// "it's a surprise".
+func pupilHas(ws []string) bool {
+	has := false
+	for _, w := range ws {
+		if pupilWe[w] {
+			return false
+		}
+		has = has || is(w, "have") || is(w, "got") || is(w, "i've") || is(w, "ive")
+	}
+	return has
 }
 
 // pupilGiven reports gifts (ws[i]) after one of pupilGivers in the two
@@ -11293,8 +11449,9 @@ func pupilGiven(ws []string, i int) bool {
 // ("to the teachers", "for teachers day"), a group of the school's that
 // is not the reader's kind (pupilGiftGroups: "the class", "the seniors",
 // not "the girls" or "my juniors"), everyone, an occasion (pupilOccasions,
-// "secret santa") or a name (pupilNamed). Not when "who", "that" or "of"
-// follows them: "everyone who dms", "all of you".
+// "secret santa") or a name (pupilNamed, and pupilNickNamed, since gifts
+// sent are not the poster's to have: "i'll send gifts to pari"). Not when
+// "who", "that" or "of" follows them: "everyone who dms", "all of you".
 func pupilRecipient(ws []string) bool {
 	if len(ws) < 2 || !is(ws[0], "to") && !is(ws[0], "for") {
 		return false
@@ -11320,7 +11477,7 @@ func pupilRecipient(ws []string) bool {
 	case pupilGiftGroups[who]:
 		return !(is(ws[k-1], "my") && (is(who, "junior") || is(who, "juniors")))
 	}
-	return pupilNamed(ws, k)
+	return pupilNamed(ws, k) || pupilNickNamed(ws, k)
 }
 
 var (
@@ -11331,24 +11488,53 @@ var (
 	// "pls dm me".
 	pupilPleases = canonSetOf(`pls plz please plss`)
 	// pupilSecrets are a secret, a private chat or being alone, and
-	// pupilMeets a meeting, which pupilPlaces after them make a group's;
-	// parentWords and teacherWords after one of keptFrom are parents or
+	// pupilMeets a meeting, which pupilPlaces after them make a group's
+	// and meetKinds before them one of a kind ("the parents meeting", "the
+	// sports meet"); parentWords and teacherWords after one of keptFrom,
+	// or after one of passVerbs that is barred (tellBarred), are parents or
 	// other adults, or teachers, kept out ("no parents", "don't tell your
-	// mum", "no teachers allowed"), unless parentsNeeded follows.
+	// mum", "no teachers allowed"), unless parentsNeeded follows or
+	// parentNouns makes them a noun's ("no parents signature required");
+	// pupilAway and a "not" and pupilKnows after them are their being
+	// away or not knowing (parentsAway); aloneAsks before "alone" ask the
+	// reader to be alone ("come alone"); and pupilDuties after "just me"
+	// are the poster's own work ("just me handling the forms").
 	pupilSecrets = canonSetOf(`secret secrets secretly private privately alone nobody noone`)
 	pupilMeets   = canonSetOf(`meet meets meetup meeting meetings`)
+	meetKinds    = canonSetOf(`parent parents teacher teachers ptm pta sports sport alumni staff`)
 	pupilPlaces  = canonSetOf(`library canteen cafeteria room hall lunch recess club clubs ground field lab classroom
 		auditorium gym court`)
 	parentWords = canonSetOf(`parents parent mom mum mommy mummy dad daddy papa family adults adult grownups
 		grown elders`)
-	keptFrom      = canonSetOf(`no without w/o tell dont don't not`)
+	keptFrom     = canonSetOf(`no without`)
+	passVerbs    = canonSetOf(`tell telling let letting show showing inform informing involve mention text call`)
+	tellNegators = canonSetOf(`no dont don't never not cant can't mustn't mustnt shouldn't shouldnt won't wont
+		doesn't doesnt without`)
+	tellBetween   = canonSetOf(`you u ya ever dare even just go and to need needs have has`)
 	parentsNeeded = canonSetOf(`needed required necessary involved`)
+	parentNouns   = canonSetOf(`permission consent signature signatures sign approval volunteer volunteers teacher
+		teachers meeting meetings`)
+	pupilAway   = canonSetOf(`home around away`)
+	pupilKnows  = canonSetOf(`know knows find hear see`)
+	aloneAsks   = canonSetOf(`come coming be meet you u yourself urself`)
+	pupilDuties = canonSetOf(`handling running doing organising organizing managing collecting taking making
+		coordinating sorting`)
+	// pupilPhotos after one of photoAsks, a video call, a camera that is
+	// the reader's or on, and pupilVisits to the reader's school are asks
+	// (pupilAsks).
+	pupilPhotos = canonSetOf(`photo photos pic pics picture pictures selfie selfies pix`)
+	photoAsks   = canonSetOf(`send sending see show share`)
+	// pupilPhotoOf after a photo say whose or what for it is; it is an
+	// ask only when photoSubjects, the reader or the poster, follows.
+	pupilPhotoOf  = canonSetOf(`of for from`)
+	photoSubjects = canonSetOf(`you u yourself urself me`)
+	pupilVisits   = canonSetOf(`come coming visit visiting`)
 	// pupilGroups after "just us" make it a group's ("just us girls", "just
 	// us no seniors"), and pupilLures are what a child is bought with when
 	// they are the reader's or free ("i'll pay you", "i'll send you gifts",
 	// "free money", not "a gift for ma'am"); robux are always one.
 	pupilGroups = canonSetOf(`girls boys guys class batch section students kids team squad seniors juniors`)
-	pupilLures  = canonSetOf(`money cash pay gift gifts reward rewards`)
+	pupilLures  = canonSetOf(`money cash rs rupees bucks pay gift gifts reward rewards`)
 	// pupilErrands are what a year's students are got in touch with for:
 	// notes, doubts, an exam, a form, a team, a club, a debate, a group
 	// chat for the class, secret santa; teacherErrands are errands only
@@ -11362,7 +11548,7 @@ var (
 		study studying homework hw assignment assignments quiz form forms project projects team teams book books
 		tuition tuitions revision revise revising olympiad competition trip fee fees result results timetable
 		practical sample farewell fest event committee council election santa club clubs debate debates mun
-		discord gc formula formulas sheet sheets chess choir band match tournament`)
+		discord gc formula formulas sheet sheets chess choir band match tournament cleanup exhibition exhibitions`)
 	teacherErrands = canonSetOf(`gift gifts present presents birthday card cake party plan plans planning`)
 	pupilMates     = canonSetOf(`classmate classmates friend friends bestie bff senior seniors junior juniors`)
 	pupilReaders   = canonSetOf(`you u ya yall y'all whoever anyone anybody`)
@@ -11382,10 +11568,12 @@ var (
 	pupilNameEnds   = canonSetOf(`keep dont don't do it it's its pls plz please so but shh tell from on at this
 		tomorrow today tonight we we're i i'm i'll she he they is will ok okay`)
 	pupilNotNames = canonSetOf(`free sure once good real best special lucky cute cutie cutest baby babe dear dearest
-		darling love lovely sweetie sweetheart sweety sweet honey favourite favorite fav crush new angel princess prince
-		queen king handsome beautiful gorgeous pretty prettiest adorable precious little smart brave sunshine star
-		superstar rockstar champ champion buddy kiddo kiddie doll dolly cupcake pumpkin munchkin bae boo hottie sexy
-		hot jaan jaanu babu baba bacha bachcha beta beti chotu chhotu sona shona pari gudiya`)
+		darling love lovely sweetie sweetheart sweety sweet honey favourite favorite fav crush new princess queen king
+		handsome beautiful gorgeous pretty prettiest adorable little smart brave sunshine superstar rockstar champ
+		champion buddy kiddo kiddie doll dolly cupcake pumpkin munchkin bae boo hottie sexy hot jaan jaanu baba bacha
+		bachcha beta beti gudiya`)
+	// pupilNickNames are given names also said to a child (pupilNickNamed).
+	pupilNickNames = canonSetOf(`pari sona shona prince angel star babu chotu chhotu precious`)
 )
 
 // canonSetOf is setOf for words looked up in the loose view as well.
