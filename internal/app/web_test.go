@@ -603,10 +603,11 @@ func TestAcceptsGzip(t *testing.T) {
 // address. It is true of what educhan keeps, and the Verify page and the FAQ
 // say so, with its limits: whoever holds the server secret can test any address
 // they can list, timing can tie a badged post to its verification (on any day
-// until a nightly sweep, if the server runs one, and after it on a day only one
-// address at its institution verified), and every badged post carries the
-// credential, whose id finds the stored row. Words that say no one can make that link at all, or that the
-// badge is not linked to its poster, are a promise the code does not keep.
+// until a nightly sweep, if the server runs one, and after it on a day when no
+// other credential its institution got that day is still valid), and every
+// badged post carries the credential, whose id finds the stored row. Words that
+// say no one can make that link at all, or that the badge is not linked to its
+// poster, are a promise the code does not keep.
 var absoluteBadgePromise = regexp.MustCompile(`(?i)\b(?:server|operator) included\b|\bwork(?:s|ed)? back from\b|\btrac(?:e|ed|ing) back\b|\b(?:cannot|can't|can never) be (?:linked|traced|connected)\b|\bnot (?:linked|traceable|connected) to (?:this|the|its|a|any) (?:poster|post|address)\b|\bno one\b[^.]*\bcan (?:work|trace|link)\b`)
 
 func TestSiteNeverPromisesTheBadgeCannotBeTraced(t *testing.T) {
@@ -693,6 +694,7 @@ func TestBadgeLimitsSayWhatTheServerDoes(t *testing.T) {
 		"the next nightly clean-up",
 		"has a badge.",
 		"the only badge issued",
+		"the only one at your",
 	} {
 		if strings.Contains(said, wrong) {
 			t.Errorf("app.js says %q", wrong)
@@ -711,8 +713,9 @@ func TestBadgeLimitsSayWhatTheServerDoes(t *testing.T) {
 	}
 	for _, want := range []string{
 		"got a badge or asked for a code, even a badge since forgotten or expired, until the server clears it.",
-		"the only one at your institution to get a badge",
-		"the only one at your university or college to get a badge",
+		"no one else at your institution got a badge that is still valid.",
+		"no one else at your university or college got a badge that is still valid.",
+		"In older copies of the database, it works on any day.",
 	} {
 		if !strings.Contains(said, want) {
 			t.Errorf("app.js does not say %q", want)
