@@ -3471,7 +3471,7 @@ func TestJoinActsMatchesTheActsOneByOne(t *testing.T) {
 // The first bound is per byte of the post, at full length: the most any of
 // these bodies costs is about 150 steps a byte ("stacked method questions"),
 // which is also the most of the 29,397 bodies built to be slow that the
-// counts were last checked on, about 6.5% under the bound; the next most
+// counts were last checked on, about 6% under the bound; the next most
 // here are handles glued to an opening bracket, about 127 (about 198 before
 // firstHandle turned them down before their checks), and a pill question run
 // into such a handle, about 116. A step is not a fixed time — across those
@@ -3782,6 +3782,28 @@ func TestFilterCostIsBounded(t *testing.T) {
 	// above hold of nothing.
 	if full, size, _ := cost(bodies["words"](maxBodyLen)); full < size {
 		t.Errorf("%d steps counted for %d bytes of words", full, size)
+	}
+}
+
+// TestFilterSupportSearchesSkipMany holds the support rules to starting no
+// search in a post of "many" over and over, once the block rules have walked
+// it. The planner cuts the openings it reads for the rule for "suicidal"
+// short, and with "a bit" spelled "a~bit" among the words that may stand
+// before it, they stopped at the "a": every "ma" that started a word was a
+// place to look for "m a bit suicidal" from, which took the stacked method
+// questions of TestFilterCostIsBounded from about 150 steps a byte to about
+// 157, of the 160 it allows.
+func TestFilterSupportSearchesSkipMany(t *testing.T) {
+	f := scanField(fieldBody, strings.Repeat("many ", 80), nil)
+	if _, ok := f.firstBlock(); ok {
+		t.Fatal(`a post of "many" over and over is blocked`)
+	}
+	before := f.work()
+	if f.anyMatch(supportRules, f.supportCheck) {
+		t.Fatal(`a post of "many" over and over gets the support screen`)
+	}
+	if w := f.work() - before; w != 0 {
+		t.Errorf(`the support rules cost %d steps in a post of "many" over and over, not 0`, w)
 	}
 }
 

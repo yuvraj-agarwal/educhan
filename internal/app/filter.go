@@ -3968,10 +3968,15 @@ var supportRules = []rule{bothViews(`\b` + words(
 	// object after "cut" ("the urge to cut my hair").
 	words(`urge`, `urges`)+`~to~`+words(`cut`, `self~harm`, `sh`, `hurt~myself`, `relapse`),
 	// "i'm feeling suicidal", "been feeling so suicidal", "feeling
-	// suicidal tonight": with the "I" left out, ownSubject reads it.
+	// suicidal tonight": with the "I" left out, ownSubject reads it. "a
+	// bit" is spelled out as the two ways "a~bit" matches, with a
+	// separator and closed up, since the planner cuts this rule's openings
+	// short and "a~bit" cut short is an "a" with anything after it: every
+	// "ma" that started a word ("many", "mama") was a place to look for "m
+	// a bit suicidal" from (TestFilterSupportSearchesSkipMany).
 	`(?:i~)?`+words(`'?m`, `am`, `m`, `was`, `feel`, `feeling`, `felt`, `been`, `'?ve~been`, `have~been`, `get`, `got`,
 		`getting`, `keep~feeling`, `still~feel`, `still~feeling`)+`~(?:`+words(`feeling`, `getting`, `been~feeling`)+
-		`~)?(?:(?:very|pretty|a~bit|super|extremely|quite|`+crisisAdverbs+`)~)*suicidal`,
+		`~)?(?:(?:very|pretty|a[^\pL\pN]+bit|abit|super|extremely|quite|`+crisisAdverbs+`)~)*suicidal`,
 	`suicidal~`+words(`thoughts`, `feelings`, `again`, `ideation`),
 	`(?:i~)?`+words(`don'?t`, `do~not`, `dont`, `dnt`)+`~(?:really~)?`+words(`want~to`, `wanna`, `wana`)+`~`+
 		words(`be~alive`, `live`, `exist`, `be~here~anymore`, `wake~up`),
