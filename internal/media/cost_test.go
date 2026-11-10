@@ -407,10 +407,10 @@ func greyQuadrants(w, h int) *image.Gray {
 // and drops at every block: what it holds as it decodes is those tables, as
 // many as a collection running while they are made marks live
 // (pngInflateChurn). That comes to a few megabytes: left out, the term failed
-// this fixture in four runs of five without -race and in neither of two with
-// it, so the fixture does not catch it in every run, and
-// TestPNGDecodeIsChargedTheInflatersTables holds it in the model as well. Two
-// more JPEGs of YCbCr samples, both turned on their side, are converted to
+// this fixture in four runs of five without -race and in neither of two runs
+// of the test alone with it, so the fixture does not catch it in every run,
+// and TestPNGDecodeIsChargedTheInflatersTables holds it in the model as well.
+// Two more JPEGs of YCbCr samples, both turned on their side, are converted to
 // RGB, a copy of 4 bytes a pixel that the turn copies again whole, by segments
 // image/jpeg reads where a walk that stopped at the first scan would not see
 // them: the progressive 4:2:0 file, without its JFIF APP0, with an Adobe
@@ -1173,16 +1173,17 @@ func costlyPNG(size int) []byte {
 // its picture. What a collection marks depends on how long it runs, which
 // depends on the machine: the PNG of a pixel and 8 MiB of such blocks
 // (TestProcessingCostCoversWhatIsHeld) measured 1.7 to 4.8 MiB held as it
-// decoded, and under -race, as CI runs it, at most 3.2 MiB, so left out the
+// decoded, and under -race, as CI runs it, 1.4 to 4.6 MiB, so left out the
 // term failed that fixture in four runs of five without -race and in neither
-// of two with it. It is held here as well: on top of each kind's picture and
-// rows, its decode phase is charged enough that with processingSlack the
-// decode of a pixel comes to 2 MiB more than the most such a decode was
-// measured to hold, 4.9 MiB, from 31 MiB of such blocks on a busy machine.
-// What the inflater allocates is the same on every run: held to at least a
-// hundred and twenty-eight times the image data's bytes, it says the tables
-// are still made a block at a time, which if they ever were not would leave
-// the term with nothing to charge for.
+// of two runs of the test alone under -race, though a run of the whole suite
+// under -race measured more than the slack. It is held here as well: on top of
+// each kind's picture and rows, its decode phase is charged enough that with
+// processingSlack the decode of a pixel comes to 2 MiB more than the most such
+// a decode was measured to hold, 4.9 MiB, from 31 MiB of such blocks on a busy
+// machine. What the inflater allocates is the same on every run: held to at
+// least a hundred and twenty-eight times the image data's bytes, it says the
+// tables are still made a block at a time, which if they ever were not would
+// leave the term with nothing to charge for.
 func TestPNGDecodeIsChargedTheInflatersTables(t *testing.T) {
 	const size = 1 << 20
 	data := costlyPNG(size)

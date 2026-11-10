@@ -1360,10 +1360,11 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   slack, and the decode is charged `pngInflateChurn` (4 MiB) for them now. How much of
   them a collection marks follows how long it runs: left out, the term failed their
   fixture (`PNG of costly empty blocks`) in four runs of five without `-race` on one
-  machine and in neither of two under it, as CI runs the tests, so the fixture does not
-  catch it in every run. `TestPNGDecodeIsChargedTheInflatersTables` holds it in every
-  PNG's decode phase, and holds `compress/flate` to making the tables a block at a time,
-  which is what the term is for.
+  machine and in neither of two runs of the test alone under it, as CI runs the tests,
+  though a run of the whole suite under `-race` measured 4.6 MiB with the term, so the
+  fixture does not catch it in every run. `TestPNGDecodeIsChargedTheInflatersTables`
+  holds it in every PNG's decode phase, and holds `compress/flate` to making the tables
+  a block at a time, which is what the term is for.
   `TestProcessingCostCoversWhatIsHeld` is the package's slowest test: under `-race` it
   took 1.7 to 3.2 minutes in CI over eight runs, before the fixture `PNG of costly empty
   blocks`, which takes about 22 seconds of it under `-race`, and 3.3 to 5 minutes on a
