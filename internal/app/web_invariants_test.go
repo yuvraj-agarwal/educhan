@@ -3246,8 +3246,14 @@ func TestALinkFollowedStartsAtTheTopOfThePage(t *testing.T) {
 	if !strings.Contains(code, "\nasync function render({ draft = captureDraft(), visit = false } = {}) {\n") {
 		t.Error("render() does not take visit as an argument that is false unless given")
 	}
-	if regexp.MustCompile(`\bvisit\s*=[^=]`).MatchString(strings.ReplaceAll(code, "visit = false", "")) {
-		t.Error("app.js assigns visit; it is passed down the one render() call that navigate() starts, and kept nowhere")
+	// Kept nowhere: none of the functions it passes through assigns it. A name
+	// visit elsewhere in app.js is another function's own.
+	for _, name := range []string{"navigate", "render", "beginLoading", "renderVerify", "startVisit"} {
+		body := strings.ReplaceAll(withoutComments(jsFunction(t, script, name)), "visit = false", "")
+		if regexp.MustCompile(`\bvisit\s*=[^=]`).MatchString(body) {
+			t.Errorf("%s assigns visit; it is passed down the one render() call that navigate() starts, and kept "+
+				"nowhere", name)
+		}
 	}
 	popstate := jsBlock(t, script, `window.addEventListener("popstate", () => {`, "});")
 	if got, want := jsLines(popstate), []string{
@@ -3294,8 +3300,9 @@ func TestALinkFollowedStartsAtTheTopOfThePage(t *testing.T) {
 	render := withoutComments(jsFunction(t, script, "render"))
 	views := strings.Index(render, "switch (route.view) {")
 	after := strings.Index(render, `if (route.view !== "post" && route.view !== "verify") startVisit(visit);`)
+	load := strings.Index(render, "const finish = beginLoading(visit);")
 	if views < 0 || after < views || strings.Contains(render[views:after], "startVisit(") ||
-		strings.Contains(render[:strings.Index(render, "const finish = beginLoading(visit);")], "await ") {
+		load < 0 || strings.Contains(render[:load], "await ") {
 		t.Error("render() does not start the visit once the switch has drawn the view, or waits on something before " +
 			"its loading begins")
 	}
