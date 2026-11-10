@@ -1,8 +1,9 @@
 -- Institutional verification ("Verified Anonymity").
 --
--- The privacy property these two tables exist to hold up is that a badge can
--- never be traced back to an address or to a post. Three deliberate omissions
--- carry it:
+-- The privacy property these two tables exist to hold up is that nothing kept
+-- with a post points to an address or to the row its badge came from, within
+-- the limits README.md sets out under "The privacy property, exactly". Three
+-- deliberate omissions carry it:
 --
 --   * No email column. The uniqueness key is HMAC(EDUCHAN_VERIFY_SECRET,
 --     normalised address); the address itself is never written anywhere.
