@@ -12743,7 +12743,7 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 			return false
 		}
 		if is(last, "self") || is(last, "myself") || cutBodyParts[last] {
-			if hurtByAccident(next) {
+			if hurtByAccident(next, lessAsked(text, m[0])) {
 				return false
 			}
 		}
@@ -12848,8 +12848,10 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 	case (hasWord(ws, "cut") || hasWord(ws, "cutting")) && len(next) > 2 && (is(next[0], "down") ||
 		is(next[0], "back")) && is(next[1], "to") && selfAmount(next[2]):
 		return false // "i cut myself back to 2 hours of gaming"
-	case len(ws) >= 2 && is(ws[0], "i") && simplePast[ws[1]] && hurtByAccident(next):
-		// "I burned myself on the Bunsen burner", "i cut myself shaving".
+	case len(ws) >= 2 && is(ws[0], "i") && is(last, "myself") && hurtForms[ws[len(ws)-2]] &&
+		hurtByAccident(next, lessAsked(text, m[0])):
+		// "I burned myself on the Bunsen burner", "i cut myself shaving", "I
+		// keep hurting myself in basketball".
 		return false
 	case is(last, "myself") && anyIn(ws, burnWords) && nextIn(0, canonSetOf(`out`)):
 		return false // "burning myself out studying"
@@ -12866,7 +12868,7 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 		s := wordsIn(sentenceAround(text, m[0], m[1]))
 		part := is(last, "head") || hitBodyParts[last]
 		return (anyIn(s, bleedSigns) || !part && anyIn(s, hurtSigns)) && !(hitBodyParts[last] && anyIn(s, itchSigns)) &&
-			!hurtByAccident(next) && !accidentAhead(next) && !(len(next) > 0 && (is(next[0], "on") || is(next[0], "into")))
+			!hurtByAccident(next, false) && !accidentAhead(next) && !(len(next) > 0 && (is(next[0], "on") || is(next[0], "into")))
 	case is(last, "die"):
 		// "ready to die for my country"; not "want to die for real", a
 		// time it has lasted ("i've wanted to die for weeks", dieForTimes)
@@ -13270,6 +13272,15 @@ func accidentAhead(next []string) bool {
 	}
 	return false
 }
+
+// lessAsked reports a question of how before i in its clause, where "less"
+// after "hurt myself" asks to be hurt less: "how do i burn myself less when
+// frying", "any tips to cut myself less when shaving".
+func lessAsked(text string, i int) bool {
+	return anyIn(wordsIn(clauseBefore(text, i)), lessAsks)
+}
+
+var lessAsks = canonSetOf(`how tips tip way ways advice`)
 
 // supportPhrasing reads the support phrasings that need the post round
 // them, and says whether it decided: a past attempt with a past time after
@@ -13675,13 +13686,41 @@ var againTimes = canonSetOf(`again since for every daily last yesterday today to
 
 // hurtByAccident reads the words after "hurt myself" or "cut myself" for
 // an accident or an activity, named: "accidentally", "by accident", "on the
-// stove", "on a nail", "while cooking", "shaving", "lifting weights", "at
-// football". What is not named as one is not one: "on my wrist", "on
-// monday", "using a razor blade", "trying to feel something", "when I'm sad".
-// A word of how much comes before either: "hurt myself less when i fall
-// while skating", "badly while cooking".
-func hurtByAccident(next []string) bool {
+// stove", "on a piece of paper", "while cooking", "shaving", "lifting
+// weights", "at football", and a clause that names one (accidentClause):
+// "when I cook", "every time I play football", "when I fell off my bike",
+// past a tool ("with a knife while chopping") or a habit ("all the time
+// when I cook"). What is not named as one is not one: "on my wrist", "on
+// monday", "on purpose", "using a razor blade", "trying to feel
+// something", "when I'm sad", "with a knife in the kitchen". A word of how
+// much comes before either ("badly while cooking"), and in a question,
+// asked, "less" ("how do i cut myself less when shaving"); said of the
+// poster, "more" and "less" say how often the harm comes, not an accident
+// ("i cut myself more when i'm at practice"), but before an accident
+// marker or in a comparison (comparisons) they compare accidents: "more
+// on the iron than the stove", "more shaving with the new razor".
+func hurtByAccident(next []string, asked bool) bool {
+	if anyIn(next, notAccidents) || anyIn(next, harmSites) {
+		return false // "on the stove on purpose", "when i'm stressed at work", "when shaving my wrists"
+	}
 	for len(next) > 1 && hurtDegrees[next[0]] {
+		next = next[1:]
+	}
+	if len(next) > 1 && (is(next[0], "more") || is(next[0], "less")) && !asked &&
+		(anyIn(next, comparisons) || is(next[1], "on") || is(next[1], "accidentally") || is(next[1], "by") ||
+			activityGerunds[next[1]]) {
+		next = next[1:] // "more at football than at cricket", "more shaving with the new razor"
+	}
+	if asked && len(next) > 1 && is(next[0], "less") {
+		next = next[1:]
+		if len(next) > 1 && is(next[0], "often") {
+			next = next[1:] // "less often when cooking"
+		}
+	}
+	if len(next) > 3 && (is(next[0], "all") && is(next[1], "the") && is(next[2], "time") ||
+		is(next[0], "every") && is(next[1], "single") && is(next[2], "time")) {
+		next = next[3:] // "all the time when I cook", "every single time I cook"
+	} else if len(next) > 1 && is(next[0], "always") {
 		next = next[1:]
 	}
 	if len(next) == 0 {
@@ -13694,19 +13733,75 @@ func hurtByAccident(next []string) bool {
 	case is(w, "by"):
 		return len(next) > 1 && (is(next[1], "accident") || is(next[1], "mistake"))
 	case is(w, "on"):
-		return anyIn(next[1:min(len(next), 4)], accidentObjects)
-	case is(w, "while") || is(w, "whilst") || is(w, "when") || is(w, "during") || is(w, "at") || is(w, "in"):
-		ahead := next[1:min(len(next), 5)]
-		return anyIn(ahead, activities) || anyIn(ahead, activityGerunds)
+		return anyIn(next[1:min(len(next), 6)], accidentObjects)
+	case is(w, "with"):
+		// "with a knife while chopping", "with the scalpel in the dissection
+		// practical"; a place alone is not what was being done: "with a
+		// knife in the kitchen".
+		for k := 2; k < min(len(next), 6); k++ {
+			if accidentLeads[next[k]] {
+				return accidentClause(next[k+1:], true)
+			}
+		}
+		return false
+	case (is(w, "every") || is(w, "each")) && len(next) > 1 && activities[next[1]] && !activityPlaces[next[1]]:
+		return true // "every match", "each practice"
+	case is(w, "every") && len(next) > 2 && is(next[1], "time"), is(w, "everytime") && len(next) > 1:
+		// "every time I play football": the clause starts after it.
+		if is(w, "every") {
+			next = next[1:]
+		}
+		return accidentClause(next[1:], false)
+	case accidentLeads[w]:
+		return accidentClause(next[1:], false)
 	}
 	return activityGerunds[w]
 }
 
+// accidentClause reports, in the words ws of a clause after "when",
+// "while", "every time" or the like, what someone was doing when they got
+// hurt, by the poster or no one named: an activity (activities, and with
+// strict none that is only a place, activityPlaces), one of
+// activityGerunds in its first four words, a thing hurt on
+// (accidentObjects), or one of accidentVerbs, with fallVerbs only before
+// a fall's direction (fallWays): "when I cook", "when I open cans", "when
+// I fell off my bike", "when I do the high jump", "while chopping"; not
+// "when I fell out with my best friend", "when I slip up". Someone else's
+// clause ("when my parents fight", "while they were at work") names an
+// accident only with a thing hurt on.
+func accidentClause(ws []string, strict bool) bool {
+	ws = ws[:min(len(ws), 10)]
+	if len(ws) == 0 {
+		return false
+	}
+	if clauseOthers[ws[0]] || len(ws) > 1 && ownerWord(ws[0]) && !is(ws[0], "my") ||
+		len(ws) > 1 && is(ws[0], "my") && !selfBody[ws[1]] && !bodyHeads[ws[1]] {
+		return anyIn(ws, accidentObjects)
+	}
+	for i, w := range ws {
+		switch {
+		case activities[w] && !(strict && activityPlaces[w]) && !(i > 0 && activitiesLeft[ws[i-1]]),
+			accidentObjects[w], accidentVerbs[w],
+			i < 4 && activityGerunds[w]:
+			return true
+		case fallVerbs[w] && (i+1 == len(ws) || fallWays[ws[i+1]]):
+			return true
+		}
+	}
+	return false
+}
+
 var (
 	// activities, after "at", "in", "during" or "while", make hurting
-	// oneself an accident.
+	// oneself an accident; activityPlaces among them are only where it
+	// happened.
 	activities = canonSetOf(`football cricket basketball volleyball hockey tennis badminton kabaddi practice
-		training gym match game pe sports sport nets workout lab kitchen work rehearsal`)
+		training gym match game pe sports sport nets workout lab kitchen work rehearsal practical practicals
+		dissection woodwork carpentry garden ballet jump burpees pushups squats drills art`)
+	activityPlaces = canonSetOf(`kitchen lab gym work garden`)
+	// activitiesLeft, before an activity, say it was over: "when I got
+	// home from practice".
+	activitiesLeft = canonSetOf(`from after`)
 	// activityGerunds are what someone was doing when they got hurt:
 	// "shaving", "cooking", "chopping onions". Cutting and burning are not
 	// among them, being what "hurt myself cutting" means.
@@ -13715,13 +13810,38 @@ var (
 		skating skateboarding falling tripping slipping fixing repairing building working sewing knitting baking
 		frying grilling trimming lifting training practicing practising boxing hiking welding soldering moving
 		unpacking packing sawing drilling hammering dancing jumping swimming surfing`)
+	// accidentVerbs, in a clause of the poster's own, are what they were
+	// doing; fallVerbs only before one of fallWays: "fell off my bike",
+	// not "fell out with her" or "slip up".
+	accidentVerbs = canonSetOf(`cook cooks cooked bake bakes baked fry fries fried chop chops chopped slice
+		slices sliced peel peels peeled open opens opened shave shaves shaved iron irons ironed sew sews sewed
+		skate skates skated cycle cycles cycled climb climbs climbed lift lifts lifted play plays played`)
+	fallVerbs = canonSetOf(`fall falls fell slip slips slipped trip trips tripped`)
+	fallWays  = canonSetOf(`off down over on onto from`)
+	// comparisons compare one accident with another.
+	comparisons = canonSetOf(`than`)
+	// accidentLeads start a clause that may name an accident.
+	accidentLeads = canonSetOf(`while whilst when whenever during at in`)
+	// clauseOthers start a clause of someone else's.
+	clauseOthers = canonSetOf(`he she they we someone somebody everyone everybody nobody people mum mom dad
+		parents it`)
+	// notAccidents, anywhere after "hurt myself", say it was no accident:
+	// done on purpose, alone or unseen, or set in a feeling ("when i'm
+	// stressed at work", "when nobody is around").
+	notAccidents = canonSetOf(`purpose purposely deliberately intentionally nobody alone sad stressed upset anxious
+		angry mad depressed lonely overwhelmed scared numb empty crying panicking triggered hopeless worthless
+		guilty ashamed miserable frustrated feel feeling feels felt think thinking remember hate`)
+	// harmSites, anywhere after "hurt myself", are where the harm is done,
+	// not an accident: "when shaving my wrists".
+	harmSites = canonSetOf(`wrist wrists vein veins`)
 	// hurtDegrees say how much someone hurt themselves, before what they
-	// were doing: "less when i fall", "badly while cooking".
-	hurtDegrees = canonSetOf(`less more badly bad so really pretty`)
+	// were doing: "badly while cooking".
+	hurtDegrees = canonSetOf(`badly bad so really pretty`)
 	// accidentObjects, after "on", are what someone hurt themselves on.
-	accidentObjects = canonSetOf(`stove hob oven pan pot kettle iron burner bunsen grill toaster glass nail nails
-		fence wire paper can tin lid edge corner table desk door metal rock rocks stone stones bike chain stapler
-		zip zipper broken sharp radiator heater exhaust tray`)
+	accidentObjects = canonSetOf(`stove hob oven pan pans pot pots kettle iron burner bunsen grill toaster glass
+		nail nails fence wire paper can cans tin tins lid edge corner table desk door metal rock rocks stone stones
+		bike chain stapler zip zipper broken sharp radiator heater exhaust tray trays glue trampoline floor stairs
+		ladder ice pavement straightener straighteners curler curlers cardboard peeler grater`)
 )
 
 // forAPurpose reports "for" and an ordinary purpose named after a match:
@@ -13871,7 +13991,7 @@ var (
 	dontWords    = canonSetOf(`don't dont dnt do`)
 	dontSubjects = canonSetOf(`just really honestly seriously literally so and but lol tbh ngl man bro yaar rn now today tonight anymore okay ok also still kinda like yeah i`)
 	cutIdioms    = canonSetOf(`off a an some slack short loose out free`)
-	simplePast   = canonSetOf(`cut burned burnt hurt`)
+	hurtForms    = canonSetOf(`cut cutting burn burned burnt burning hurt hurting`)
 	dieIdioms    = canonSetOf(`laughing laughter embarrassment shame boredom cringe cuteness happiness excitement jealousy envy hunger thirst heat curiosity suspense anticipation secondhand shock fright cold heatstroke stress exhaustion tiredness dehydration hypothermia tension`)
 	endItTimes   = canonSetOf(`tonight today now soon all tomorrow already finally forever here this`)
 	dyeObjects   = canonSetOf(`my her his their our your the hair it them clothes shirt`)
@@ -13885,9 +14005,10 @@ var (
 	secondObjects = canonSetOf(`a an some`)
 	// selfPhrasal, after "cut myself", "burn myself" or "hurt myself",
 	// make a phrasal verb of it ("cut myself off", "burn myself out"), and
-	// selfDegrees a degree ("hurt myself less"); selfIdiomTimes after
-	// either set it in a time or an activity ("less when i fall", "out
-	// during exams", "off this semester"). selfMarks after them are a
+	// selfDegrees a degree ("hurt myself less"); selfIdiomTimes after a
+	// phrasal verb set it in a time ("out during exams", "off this
+	// semester"), and after a degree only before an accident or an activity
+	// named ("less when i fall", selfIdiom). selfMarks after them are a
 	// method's: a place on the body (selfBody), how deep or a scar ("out
 	// deeply", "so it doesn't scar"), or the harm hidden ("down my arm",
 	// "less visibly", "out of sight", "so no one sees"). "Up" is no
@@ -16895,7 +17016,7 @@ func methodCheck(v *view, m []int) bool {
 	case is(first, "die") && (is(ws[len(ws)-1], "wrist") || is(ws[len(ws)-1], "wrists")):
 		// "can you die from cutting your wrists", not "you can die from
 		// cutting your wrists, so" or "on a tin can".
-		return dieAsked(wordsBefore(text, m[0], 3)) && !hurtByAccident(next) && !accidentAhead(next)
+		return dieAsked(wordsBefore(text, m[0], 3)) && !hurtByAccident(next, false) && !accidentAhead(next)
 	case len(ws) >= 3 && searchKinds[first] && (is(ws[1], "to") || is(ws[1], "of") || is(ws[1], "for")):
 		// "self harm" is two words: "tips for self harm recovery".
 		return searchedMethod(ws[2], next)
@@ -17131,7 +17252,7 @@ func unseenAfter(next []string) bool {
 // not "when playing with my friends"). "How to cut myself less" still asks
 // about cutting.
 func selfIdiom(ws, next []string) bool {
-	if len(next) == 0 || is(next[0], "less") && hasWord(ws, "cut") {
+	if len(next) == 0 {
 		return false
 	}
 	phrasal := selfPhrasal[next[0]]
@@ -17164,13 +17285,19 @@ func selfIdiom(ws, next []string) bool {
 		return true // "burn myself out completely"
 	}
 	handled := false // a handling earlier in the clause, whose harmHandled read what follows "with"
+	used := false    // a handling of something named, which harmHandled did not read as the harm
 	for i, w := range rest {
 		if !phrasal && (selfHarmings[w] && !selfHandlings[w] || is(w, "it") && i > 0 && doForms[rest[i-1]] ||
-			selfHandlings[w] && harmHandled(w, rest[i+1:]) || is(w, "with") && !handled && harmWith(rest[i:])) {
+			selfHandlings[w] && harmHandled(w, rest[i+1:]) ||
+			is(w, "with") && !handled && !(i > 0 && cookingWords[rest[i-1]]) && harmWith(rest[i:])) {
 			return false // "less after cutting", "less every time i do it", "less when using my nails"
 		}
 		handled = handled && !selfClauses[w] || selfHandlings[w]
+		// A thing named and handled with no harm: "using a spoon to stir
+		// the curry", "holding hot pans", not "holding it".
+		used = used || selfHandlings[w] && i+1 < len(rest) && !handledPronouns[rest[i+1]]
 	}
+	every := false // "every summer", "every week at practice": a season or a stretch, not each time
 	if is(rest[0], "every") {
 		k := 1
 		if k < len(rest) && is(rest[k], "single") {
@@ -17179,6 +17306,23 @@ func selfIdiom(ws, next []string) bool {
 		if k+1 == len(rest) && selfOften[rest[k]] {
 			return false // "less every time", "less every day": the harm as often as it comes
 		}
+		every = k < len(rest) && !is(rest[k], "time")
+	}
+	if !phrasal {
+		// A degree is an idiom only set in an accident or an activity
+		// named, a thing handled with no harm, or a season: "less when
+		// shaving", "less often when cooking", "less on the hair
+		// straightener", "less when using a spoon to stir the curry", "less
+		// when brushing my hair", "less every summer"; not "less when im
+		// sad", "less before school" or "less if my parents check".
+		if len(rest) > 1 && is(rest[0], "often") {
+			rest = rest[1:]
+		}
+		doing := len(rest) > 1 && accidentLeads[rest[0]] && len(rest[1]) > 4 && strings.HasSuffix(rest[1], "ing") &&
+			!selfHarmings[rest[1]] && !notAccidents[rest[1]] // "less when brushing my hair", not "when crying"
+		return (used || (every || doing) && !anyIn(rest, harmSites)) && selfIdiomTimes[rest[0]] &&
+			!anyIn(rest, notAccidents) ||
+			hurtByAccident(rest, false)
 	}
 	return selfIdiomTimes[rest[0]]
 }
@@ -17229,7 +17373,17 @@ func harmWith(ws []string) bool {
 // "put my hand near the stove" or "put my hands up".
 func harmHandled(handling string, ws []string) bool {
 	if hairPulls[handling] {
-		return anyBefore(ws, hairWords, selfClauses) // "pulling my hair", not "pulling the rope"
+		// "pulling my hair", not "pulling the rope" or "pulling my hair
+		// into a bun".
+		for i, w := range ws {
+			if selfClauses[w] {
+				return false
+			}
+			if hairWords[w] {
+				return !(i+1 < len(ws) && hairStyled[ws[i+1]])
+			}
+		}
+		return false
 	}
 	if putForms[handling] {
 		for i, w := range ws {
@@ -17252,7 +17406,13 @@ func harmHandled(handling string, ws []string) bool {
 			}
 		case selfTools[w]:
 			return true
+		case objectUsed(w, ws):
+			// "using a spoon to stir the curry", "rubbing out mistakes with
+			// an eraser": what is handled is put to its use.
 		case weaponHeads[w] || bluntHeads[w] || selfHarmObjects[w]:
+			if matchWords[w] {
+				return !(!bodyAfter(ws) && anyBefore(ws, matchRites, selfClauses)) // "matches for the puja"
+			}
 			return !(playGear[w] && holdForms[handling] && !bodyAfter(ws[i+1:]) ||
 				playKit[w] && playUse(ws[i+1:])) // "a hammer to nail the frame": what is handled is the hammer
 		case (selfBody[w] || bodyHeads[w]) && !(i > 0 && (is(ws[i-1], "with") || is(ws[i-1], "bare") ||
@@ -17262,6 +17422,48 @@ func harmHandled(handling string, ws []string) bool {
 	}
 	return false
 }
+
+// objectUsed reports one of selfHarmObjects, w, put to an ordinary use of
+// its own (objectUses) in the words ws of the handling's clause, with no
+// place on the body or "myself" there: "a spoon to stir the curry", "a pin
+// to sew my uniform", "a box cutter in art class", "a rope for skipping",
+// "an eraser on my notebook", "a coin for the experiment"; not "a pin on my
+// arm".
+func objectUsed(w string, ws []string) bool {
+	for _, o := range objectUses {
+		if o.things[w] {
+			return !bodyAfter(ws) && anyBefore(ws, o.uses, selfClauses)
+		}
+	}
+	return false
+}
+
+var (
+	objectUses = []struct{ things, uses map[string]bool }{
+		{canonSetOf(`spoon spoons`), canonSetOf(`stir stirring cook cooking eat eating curry milk tea soup`)},
+		{canonSetOf(`pin pins`), canonSetOf(`sew sewing stitch uniform board badge fix hem`)},
+		{canonSetOf(`cutter cutters`), canonSetOf(`art craft crafts project cardboard class model`)},
+		{canonSetOf(`rope ropes`), canonSetOf(`gym skipping skip tent tug climbing pe`)},
+		{canonSetOf(`belt belts`), canonSetOf(`karate judo taekwondo treadmill trousers jeans`)},
+		{canonSetOf(`rubber rubbers eraser erasers`), canonSetOf(`erase erasing rubbing rub notebook mistakes
+			mistake braces hair pencil drawing`)},
+		{canonSetOf(`paperclip paperclips`), canonSetOf(`phone sim reset papers tray`)},
+		{canonSetOf(`coin coins`), canonSetOf(`lottery ticket experiment scratchcard science toss`)},
+	}
+	// matchWords are lit for a rite or the stove (matchRites), not for
+	// play: "lighting matches for the puja", "for the birthday candles", "to
+	// light the stove"; not "for practice" or "for the candle".
+	matchWords = canonSetOf(`match matches`)
+	matchRites = canonSetOf(`puja pooja diya diyas birthday diwali havan aarti lamp lamps agarbatti incense stove
+		chulha gas`)
+	// hairStyled, after the hair pulled, style it: "into a bun", "back".
+	hairStyled = canonSetOf(`into back up through together tight`)
+	// handledPronouns, after a handling, name nothing handled: "holding it".
+	handledPronouns = canonSetOf(`it them this that these those`)
+	// cookingWords, before "with", cook with what follows: "cooking with
+	// fire on a chulha".
+	cookingWords = canonSetOf(`cooking baking frying grilling roasting`)
+)
 
 // playUse reports, in the words ws after what is handled and before a
 // clause of its own begins, one of playUses with no place on the body or
