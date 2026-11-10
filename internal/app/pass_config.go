@@ -83,8 +83,8 @@ const (
 	defaultPassDays             = 365
 	defaultPassHourlyPosts      = 30
 	defaultPassCheckoutCooldown = 30 * time.Second
-	// maxPassDays bounds the term at a hundred years, so a Pass's expiry, and
-	// an uncollected order's deadline plus its term, stay far inside the dates
+	// maxPassDays bounds the term at 36500 days, so a Pass's expiry, and an
+	// uncollected order's deadline plus its term, stay far inside the dates
 	// PostgreSQL and JSON can hold.
 	maxPassDays = 36500
 )

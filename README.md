@@ -376,10 +376,10 @@ Stripe's 24-hour checkout, which is as long as a slow payment holds its order
 sets the cookie, and only forgetting the claim clears it. A paid order nobody
 has collected is kept for its own term past its deadline, or past a slow
 payment's hold (below), and the cookie runs out 24 days after the deadline. So
-with a term of 25 days or more, the default year included, an order paid by its
-deadline outlasts the cookie, and is collected then with a reissue code; with 24
-days or less it can have gone by the time the cookie runs out, pruned yet or not
-(below), and once it has, it can be neither collected nor reissued.
+with a term of 25 days or more, the default 365 days included, an order paid by
+its deadline outlasts the cookie, and is collected then with a reissue code;
+with 24 days or less it can have gone by the time the cookie runs out, pruned
+yet or not (below), and once it has, it can be neither collected nor reissued.
 
 Collecting takes the order under the claim once it is paid: a renewal renews
 its Pass by the order's own term, and anything else makes a new Pass, as does

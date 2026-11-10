@@ -352,7 +352,7 @@ func TestPassConfigFromEnv(t *testing.T) {
 		"public url with a fragment":     {"EDUCHAN_PUBLIC_URL": "https://educhan.example#x"},
 		"not a url":                      {"EDUCHAN_PUBLIC_URL": "educhan"},
 		"zero days":                      {"EDUCHAN_PASS_DAYS": "0"},
-		"days past a hundred years":      {"EDUCHAN_PASS_DAYS": "36501"},
+		"days past 36500":                {"EDUCHAN_PASS_DAYS": "36501"},
 		"days past the year 9999":        {"EDUCHAN_PASS_DAYS": "3000000"},
 		"sales neither open nor paused":  {"EDUCHAN_PASS_SALES": "closed"},
 		"sales off":                      {"EDUCHAN_PASS_SALES": "off"},
@@ -413,8 +413,7 @@ func TestPassConfigFromEnv(t *testing.T) {
 	}
 	env["EDUCHAN_PASS_SECRET"] = testPassSecret
 
-	// The term may be up to a hundred years, and sales open or paused, in
-	// any case.
+	// The term may be up to 36500 days, and sales open or paused, in any case.
 	for value, paused := range map[string]bool{"": false, "open": false, "OPEN": false, "paused": true, " Paused ": true} {
 		env["EDUCHAN_PASS_SALES"] = value
 		env["EDUCHAN_PASS_DAYS"] = "36500"

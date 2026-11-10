@@ -1421,10 +1421,10 @@ func TestPassCollectsOnlyThroughItsOwnClaim(t *testing.T) {
 	// The second tab is paid: its Pass is issued, and nothing is left to
 	// collect here.
 	p.paid(second, "pi_second")
-	year := 365 * 24 * time.Hour
+	term := 365 * 24 * time.Hour
 	before := time.Now()
 	code, issued := p.claim()
-	if code != http.StatusOK || issued.Status != "issued" || issued.Claim || !dayRoundedAfter(issued.ExpiresAt, before, time.Now(), year) {
+	if code != http.StatusOK || issued.Status != "issued" || issued.Claim || !dayRoundedAfter(issued.ExpiresAt, before, time.Now(), term) {
 		t.Fatalf("claim of the latest checkout: status %d, %+v; want a Pass for 365 days from the claim", code, issued)
 	}
 	// The first tab, paid later, is not collected here and changes nothing
@@ -1450,7 +1450,7 @@ func TestPassCollectsOnlyThroughItsOwnClaim(t *testing.T) {
 	}
 	before = time.Now()
 	code, own := p.otherBrowser().redeem(token)
-	if code != http.StatusOK || own.Status != "issued" || own.Pass == issued.Pass || !dayRoundedAfter(own.ExpiresAt, before, time.Now(), year) {
+	if code != http.StatusOK || own.Status != "issued" || own.Pass == issued.Pass || !dayRoundedAfter(own.ExpiresAt, before, time.Now(), term) {
 		t.Fatalf("redeem of the earlier tab's payment: status %d, %+v", code, own)
 	}
 	for _, c := range []string{issued.Pass, own.Pass} {
@@ -1471,7 +1471,7 @@ func TestPassCollectsOnlyThroughItsOwnClaim(t *testing.T) {
 	shared.paid(bought, "pi_buyer")
 	before = time.Now()
 	code, buyer := shared.claim()
-	if code != http.StatusOK || buyer.Status != "issued" || !dayRoundedAfter(buyer.ExpiresAt, before, time.Now(), year) {
+	if code != http.StatusOK || buyer.Status != "issued" || !dayRoundedAfter(buyer.ExpiresAt, before, time.Now(), term) {
 		t.Fatalf("the buyer's claim: status %d, %+v", code, buyer)
 	}
 	var origin bool
@@ -2354,7 +2354,7 @@ func TestPassRefundTakesOffOneTerm(t *testing.T) {
 		t.Fatalf("two renewals took the Pass to %v, want %v", got, bought.AddDate(0, 0, 730))
 	}
 
-	// Refunding the middle renewal takes its year off and leaves the rest.
+	// Refunding the middle renewal takes its term off and leaves the rest.
 	p.refund("pi_renewed")
 	if got, ok := p.passExpiresAt(issued.Pass); !ok || !got.Equal(bought.AddDate(0, 0, 365)) {
 		t.Fatalf("after refunding one renewal the Pass runs to %v (kept: %v), want %v", got, ok, bought.AddDate(0, 0, 365))
@@ -3644,10 +3644,10 @@ func TestPassRenewalRacingARefund(t *testing.T) {
 				if claimed.status != http.StatusOK || claimed.body.Status != "renewed" {
 					t.Fatalf("renewal ahead of the refund: status %d, %+v", claimed.status, claimed.body)
 				}
-				// The renewal's year stands; the purchase's is gone.
+				// The renewal's term stands; the purchase's is gone.
 				got, ok := p.passExpiresAt(issued.Pass)
 				if !ok || !got.After(time.Now()) || !got.Before(bought.AddDate(0, 0, 365)) {
-					t.Fatalf("after the refund the Pass runs to %v (kept: %v); want the renewal's year only", got, ok)
+					t.Fatalf("after the refund the Pass runs to %v (kept: %v); want the renewal's term only", got, ok)
 				}
 			} else {
 				_, claimed := p.race(refund, claim, [2]string{"the refund", "the renewal's claim"})
@@ -4535,7 +4535,7 @@ func TestPassRefundTakesOffOnlyWhatIsLeft(t *testing.T) {
 		t.Fatalf("after refunding the purchase the Pass runs to %v (kept: %v), want %v", got, ok, end.AddDate(0, 0, 465))
 	}
 	if got, want := r.termEndsAt("pi_three_terms_second"), dayCeil(refundedAt).AddDate(0, 0, 365); !got.Equal(want) || !want.Equal(end.AddDate(0, 0, 100)) {
-		t.Fatalf("after refunding the purchase the next renewal ends %v, want a whole year from the midnight after the refund, %v", got, want)
+		t.Fatalf("after refunding the purchase the next renewal ends %v, want 365 days from the midnight after the refund, %v", got, want)
 	}
 	secondRefund := refundedAt.AddDate(0, 0, 10)
 	if res, err := r.app.store.revokePassPayment(context.Background(), r.app.passPaymentHash("pi_three_terms_second"), secondRefund); err != nil || res != revokedTerm {
@@ -4545,7 +4545,7 @@ func TestPassRefundTakesOffOnlyWhatIsLeft(t *testing.T) {
 		t.Fatalf("after refunding the first renewal the Pass runs to %v (kept: %v), want %v", got, ok, end.AddDate(0, 0, 110))
 	}
 	if got, want := r.termEndsAt("pi_three_terms_third"), dayCeil(secondRefund).AddDate(0, 0, 365); !got.Equal(want) || !want.Equal(end.AddDate(0, 0, 110)) {
-		t.Fatalf("the last renewal's term ends %v, want a whole year from the midnight after the refund, %v", got, want)
+		t.Fatalf("the last renewal's term ends %v, want 365 days from the midnight after the refund, %v", got, want)
 	}
 	// Refunded in its turn an hour later, the last renewal leaves only the
 	// rest of the day the first renewal stops at, which no payment left pays
@@ -4631,7 +4631,7 @@ func TestPassReissueAfterTheOriginIsRefunded(t *testing.T) {
 
 	// The renewal the right moved to loses it once the Pass is renewed again,
 	// by its holder say: it no longer pays for all the time the Pass has left,
-	// and reissuing the Pass to its payer would hand over the year renewed
+	// and reissuing the Pass to its payer would hand over the term renewed
 	// after it. A reissue code made for it before goes with the right.
 	kept := p.buy("pi_kept")
 	onlooker := p.otherBrowser()
@@ -4668,7 +4668,7 @@ func TestPassReissueAfterTheOriginIsRefunded(t *testing.T) {
 	}
 
 	// While the purchase is the origin, a refund that leaves one renewal with
-	// time to come makes it no second origin. With the purchase's own year
+	// time to come makes it no second origin. With the purchase's own term
 	// run, and a renewal by somebody who saw the code running, the holder's
 	// later renewal refunded leaves the purchase the Pass's one origin.
 	guarded := p.buy("pi_guarded")
@@ -4687,7 +4687,7 @@ func TestPassReissueAfterTheOriginIsRefunded(t *testing.T) {
 		t.Fatalf("the purchase and a renewal left alone with time to come: %d origins, want the purchase alone", n)
 	}
 	if status, _, _ := p.reissueCode("mod-key", "pi_guarded"); status != http.StatusOK {
-		t.Fatalf("reissue with the purchase whose year has run: status %d", status)
+		t.Fatalf("reissue with the purchase whose term has run: status %d", status)
 	}
 
 	// A renewal whose term has run does not stand in the way: with the
@@ -4985,7 +4985,7 @@ func TestPassReissueWaitsForARenewalUnderWay(t *testing.T) {
 // and then waits on Stripe for a session; a reissue code for the right that
 // moved to the onlooker's renewal, used meanwhile, finds no order under way
 // and gives the Pass another code. The order, looked up again by the holder's
-// code, is refused as a renewal of a Pass that is gone, so the year the
+// code, is refused as a renewal of a Pass that is gone, so the term the
 // holder would pay for never lands on the Pass handed to the onlooker.
 func TestPassRenewalCheckoutRacingAReissue(t *testing.T) {
 	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
