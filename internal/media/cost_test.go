@@ -1173,17 +1173,17 @@ func costlyPNG(size int) []byte {
 // its picture. What a collection marks depends on how long it runs, which
 // depends on the machine: the PNG of a pixel and 8 MiB of such blocks
 // (TestProcessingCostCoversWhatIsHeld) measured 1.7 to 4.8 MiB held as it
-// decoded, and under -race, as CI runs it, 1.4 to 4.6 MiB, so left out the
+// decoded, and under -race, as CI runs it, 1.0 to 5.0 MiB, so left out the
 // term failed that fixture in four runs of five without -race and in neither
-// of two runs of the test alone under -race, though a run of the whole suite
-// under -race measured more than the slack. It is held here as well: on top of
-// each kind's picture and rows, its decode phase is charged enough that with
-// processingSlack the decode of a pixel comes to 2 MiB more than the most such
-// a decode was measured to hold, 4.9 MiB, from 31 MiB of such blocks on a busy
-// machine. What the inflater allocates is the same on every run: held to at
-// least a hundred and twenty-eight times the image data's bytes, it says the
-// tables are still made a block at a time, which if they ever were not would
-// leave the term with nothing to charge for.
+// of two runs of the test alone under -race, though two runs of the whole
+// suite under -race measured more than the slack. It is held here as well: on
+// top of each kind's picture and rows, its decode phase is charged enough that
+// with processingSlack the decode of a pixel comes to 2 MiB more than the most
+// such a decode was measured to hold, 5.0 MiB as logged, in a run of the whole
+// suite under -race. What the inflater allocates is the same on every run:
+// held to at least a hundred and twenty-eight times the image data's bytes, it
+// says the tables are still made a block at a time, which if they ever were
+// not would leave the term with nothing to charge for.
 func TestPNGDecodeIsChargedTheInflatersTables(t *testing.T) {
 	const size = 1 << 20
 	data := costlyPNG(size)
@@ -1198,7 +1198,8 @@ func TestPNGDecodeIsChargedTheInflatersTables(t *testing.T) {
 		t.Errorf("inflating %d bytes of costly blocks allocated %d bytes, under 128 times as many: compress/flate no longer makes their tables afresh at every block", size, allocated)
 	}
 
-	const mostHeld, spare = 49 << 20 / 10, 2 << 20
+	// mostHeld is the 5.0 MiB logged (to a tenth), rounded up.
+	const mostHeld, spare = 51 << 20 / 10, 2 << 20
 	for _, k := range []struct {
 		name          string
 		w, h          int

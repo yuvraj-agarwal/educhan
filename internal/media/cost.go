@@ -110,7 +110,7 @@ const processingSlack int64 = 4 << 20
 // so with the collector running continually a picture of one pixel whose image
 // data was 8 MiB of such blocks measured 1.7 to 4.8 MiB held as it decoded,
 // and one of 31 MiB up to 4.9 MiB on a busy machine, where processingSlack,
-// 4 MiB, was all it was charged; under -race 1.4 to 4.6 MiB, the most with the
+// 4 MiB, was all it was charged; under -race 1.0 to 5.0 MiB, the most with the
 // other packages' tests running beside it. What a collection marks follows how
 // fast the tables are made and how long it runs, not the picture or how much
 // of the file the blocks are, so the charge is the same for every PNG: with
