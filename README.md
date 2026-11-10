@@ -255,12 +255,13 @@ PostgreSQL leaves all of these off by default; leave them off.
   second too. So an issuance followed by a badged post ties that post to its
   stored record — the one row with that label and that expiry day — on any day
   its institution issued only one credential, however many other institutions
-  issued that day; and on any day while the row still carries its own
-  transaction id (until the next sweep, in a backup taken before it, and in the
-  write-ahead log), since that id dates the row to just before the post. The
-  post brings the poster's other badged posts in its thread with it, by their
-  shared poster ID. The posts' gaps keep that possible for as long as the posts
-  are kept; the request log adds the second for as long as it is kept.
+  issued that day; and, while the row still carries its own transaction id
+  (until the next sweep, in a backup taken before it, and in the write-ahead
+  log), on any day no other credential of its institution was issued between
+  that row and the post, since that id dates the row to just before the post.
+  The post brings the poster's other badged posts in its thread with it, by
+  their shared poster ID. The posts' gaps keep that possible for as long as the
+  posts are kept; the request log adds the second for as long as it is kept.
 - Which posts carry which badge, because a badge is displayed on the post.
 - Which badged posts in one thread came from the same credential, because they
   share a poster ID there, as any poster's posts in a thread do. In different
@@ -302,7 +303,8 @@ PostgreSQL leaves all of these off by default; leave them off.
   neither the gaps among the posts' transaction ids nor the log's lines name an
   institution, but a badged post soon after an issuance does, and that ties the
   post to a single record on a day its institution issued only one credential,
-  or on any day while the record still carries its own transaction id.
+  or, while the record still carries its own transaction id, on any day no
+  other credential of its institution was issued between the two.
 - Group a poster's requests by their badge. The credential is sent only on the
   posts that carry one, so an operator watching the request layer sees it on
   exactly the posts that already display it, and on nothing else. On those posts
@@ -878,7 +880,7 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Index | Paginated, newest bump first, showing each thread's opening post and last three replies |
 | Catalog | Every live thread on one page as excerpt tiles with thumbnails; an excerpt shows a spoiler as `[spoiler]`, never what it hides |
 | Attachments | One image per post and a per-board cap per thread, validated by magic bytes, thumbnailed at upload, served from `/media/…`; off unless switched on, and `GET /api/site` says which |
-| Verification | Optional institutional badge from a six-digit code handed to a mail sender. No mail is sent yet: the only sender in the repository is the development one, which prints the code and the address to the server's stdout and needs `EDUCHAN_MAIL_DEV=1`, and the deploy script leaves verification switched off. The address is never written to the database, only a keyed hash of it, and nothing stored with a post points to its verification record, though timing can tie the two: until the nightly sweep, in backups taken before it, and afterwards on a day an institution issues a single credential ([The privacy property, exactly](#the-privacy-property-exactly)) |
+| Verification | Optional institutional badge from a six-digit code handed to a mail sender. No mail is sent yet: the only sender in the repository is the development one, which prints the code and the address to the server's stdout and needs `EDUCHAN_MAIL_DEV=1`, and the deploy script leaves verification switched off. The address is never written to the database, only a keyed hash of it, and nothing stored with a post points to its verification record, though timing can tie the two: until the nightly sweep, in backups taken before it or in the write-ahead log, and afterwards on a day an institution issues a single credential ([The privacy property, exactly](#the-privacy-property-exactly)) |
 | Moderation | Sticky, lock, and delete a post or a whole thread, plus creating and reconfiguring boards, behind a shared moderation key |
 | Archive | Threads pushed past a board's thread limit are archived rather than deleted: they leave the index and the catalog, refuse replies, and still load by number |
 | Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed, then rewrites the verification credentials so that every credential issued before the sweep carries the sweep's transaction id rather than its own ([Transaction ids, and the nightly rewrite](#transaction-ids-and-the-nightly-rewrite)); per-client cooldowns limit new threads, replies, and uploads, and forget each address within a minute of its cooldown ending while the process has CPU between requests (see Flood control for an idle Cloud Run instance) |

@@ -40,9 +40,10 @@ import (
 //     id is, as its SHA-256, the key of the stored row that also holds the
 //     address's keyed hash, so whoever sees a credential and holds the
 //     database can find that row.
-//  3. Nothing stored with a post links it to a credential. The badge is copied onto the post
-//     as text, the verification tables reference no post, and using a
-//     credential updates no row, so there is no timestamp to line up against.
+//  3. Nothing stored with a post links it to a credential. The badge is
+//     copied onto the post as text, the verification tables reference no
+//     post, and using a credential updates no row, so there is no timestamp
+//     to line up against.
 //     A badged post's poster ID is derived from the random id inside the
 //     credential as presented, never from what the database keeps of it, so
 //     it ties a credential's posts together within one thread — as any

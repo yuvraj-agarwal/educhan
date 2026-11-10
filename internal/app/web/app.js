@@ -2313,14 +2313,14 @@ const VERIFY_INTRO = `
     what keeps your ID the same within a thread on the posts you badge. It is
     not made from your address. There are limits: whoever runs this server can
     check whether any address they can list, such as every address at your
-    institution they can find, has a badge. A post you badge soon after
-    verifying could be matched to your verification by its timing, and with it
-    your other badged posts in that thread, and so to you if your address is
-    among those they check. That works until the next nightly clean-up, or in a
-    copy of the database made before it; after that, still on a day when yours
-    is the only badge issued for your institution. All of this is a promise about
-    what is kept, not about someone who changes the server or records what is
-    sent to it.
+    institution they can find, has a badge. Timing could match a post you badge
+    soon after verifying, with your other badged posts in that thread, to your
+    verification, and so to you if they check your address. That works until
+    the next nightly clean-up and for a while after it, in the server's own
+    recovery records and in copies of the database made before or soon after
+    it; later, only on a day when yours is the only badge issued for your
+    institution. All of this is a promise about what is kept, not about someone
+    who changes the server or records what is sent to it.
   </p>
   <p class="verify-note muted">
     The badge is off by default on every post, and is sent to the server only
@@ -2776,12 +2776,13 @@ const FAQ_SECTIONS = [
         badge.</p>
       <p>This has limits. The people who run this site can check whether any address they can
         list, such as every address at your university or college they can find, has a badge.
-        A badged post you make soon after verifying could be matched to your verification by
-        its timing, and with it your other badged posts in that thread, and so to you if your
-        address is among those they check. That works until the next nightly clean-up, or in
-        a copy of the database made before it; after that, still on a day when yours is the
-        only badge issued for your university or college. All of this is a promise about what
-        is kept, not about someone who changes the server or records what is sent to it.</p>
+        Timing could match a badged post you make soon after verifying, with your other
+        badged posts in that thread, to your verification, and so to you if they check your
+        address. That works until the next nightly clean-up and for a while after it, in the
+        server's own recovery records and in copies of the database made before or soon after
+        it; later, only on a day when yours is the only badge issued for your university or
+        college. All of this is a promise about what is kept, not about someone who changes
+        the server or records what is sent to it.</p>
       <p>On a shared computer, use <strong>Forget this browser</strong> on the
         <a href="/verify#forget-browser">Verify</a> page before you leave. The badge stays in
         that browser for whoever uses it next, and so do the key your IDs are made from and
