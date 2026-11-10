@@ -16,7 +16,7 @@ educhan is a fast, high-signal imageboard designed for students, researchers, an
 
 - Stage: working prototype; not launched yet
 - Domain: educhan.org (the site is not live there yet)
-- A deployment made with `deploy/first-deploy.sh` is text-only for now: the script leaves image uploads off because images are not yet scanned, and institutional verification off because there is no real mail sender yet
+- A deployment made with `deploy/first-deploy.sh` is text-only for now: the script leaves image uploads off because images are not yet scanned (see [Image attachments](#image-attachments)), and institutional verification off because there is no real mail sender yet (see [Email delivery](#email-delivery))
 
 The prototype in this repository implements the imageboard end to end: boards,
 anonymous posting with tripcodes and per-thread poster IDs, one image per post,
