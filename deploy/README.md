@@ -29,8 +29,8 @@ to re-run. Where PostgreSQL is not installed it stops and says so; on Debian
 or Ubuntu, `bash .cursor/scripts/install.sh` installs it (if the packaged
 PostgreSQL service then holds port 5432, stop it with
 `sudo service postgresql stop` before `make db-up`; that lasts until the next
-boot or the next upgrade of the PostgreSQL packages, either of which may start
-it again).
+boot, or until a PostgreSQL server package is installed, upgraded or
+reconfigured, any of which may start it again).
 
 ```bash
 make db-up                                        # PostgreSQL on localhost:5432
