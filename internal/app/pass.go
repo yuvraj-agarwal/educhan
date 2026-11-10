@@ -36,9 +36,10 @@ import (
 //  1. Nothing about a Pass reaches a post. The post row, the poster ID and the
 //     post's request line are the same whether a good Pass was used, one that
 //     is no good or none: the line has the method, the path and the status,
-//     and no duration, which looking a Pass up would lengthen (requestLogger).
-//     Using one writes nothing, so there is no "last used" to line up against
-//     a post.
+//     and no duration, which looking a Pass up would lengthen (requestLogger),
+//     and a post whose client goes away during that lookup goes on as one
+//     without a Pass (postPass). Using one writes nothing, so there is no "last
+//     used" to line up against a post.
 //  2. Nothing about the buyer reaches educhan. They pay on Stripe's own page,
 //     and what educhan keeps of the payment is an HMAC of its id, which lets a
 //     refund or a chargeback take back the time that payment bought, and lets
@@ -1075,16 +1076,23 @@ type passGrant struct {
 // held to the captcha like any other, and whatever it is refused for is what
 // any post without a Pass can be refused for. Nor does the line show the lookup
 // below, which a code that parses costs and no Pass does not: a posting route's
-// line carries no duration (untimed). The page hears that the Pass is no good
-// from the answer's body (passGrant.Refused), which no log records: expired
-// until 30 days past its expiry, so the page can offer to renew it, and invalid
-// from then on, when it has gone (passCutoff).
+// line carries no duration (untimed), and this takes it off too (markUntimed),
+// so a post that gets this far leaves none however its route was registered.
+// Nor does a client that goes away during the lookup: the post goes on as one
+// without a Pass, so it is stopped where any post whose client has gone is, by
+// its next read or by flood control, say, and leaves the line such a post
+// leaves. The page hears that the Pass is no good from the answer's body
+// (passGrant.Refused), which no log records: expired until 30 days past its
+// expiry, so the page can offer to renew it, and invalid from then on, when it
+// has gone (passCutoff).
 //
 // A good Pass changes nothing here: no cooldown is added or lifted, and a post
 // that is refused after this, by flood control or anything else, costs its
-// budget nothing. Only a failure to read the Pass is an error, and it is
-// answered without logging the path, which names the thread.
+// budget nothing. Only a failure to read the Pass while its client is still
+// there is an error, and it is answered without logging the path, which names
+// the thread.
 func (a *App) postPass(w http.ResponseWriter, r *http.Request, badged bool) (passGrant, bool) {
+	markUntimed(w)
 	if badged || !a.passEnabled() {
 		return passGrant{}, true
 	}
@@ -1101,10 +1109,12 @@ func (a *App) postPass(w http.ResponseWriter, r *http.Request, badged bool) (pas
 	switch {
 	case errors.Is(err, errNotFound):
 		return passGrant{Refused: passInvalid}, true
+	case err != nil && r.Context().Err() != nil:
+		// The client went away. A 500 here would be a status only a code that
+		// parses can cause; the post goes on as one without a Pass instead.
+		return passGrant{}, true
 	case err != nil:
-		if r.Context().Err() == nil {
-			a.log.Error("could not read the Pass", "error", err)
-		}
+		a.log.Error("could not read the Pass", "error", err)
 		writeError(w, http.StatusInternalServerError, "could not read the Pass")
 		return passGrant{}, false
 	case !now.Before(expires):

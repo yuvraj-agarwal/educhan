@@ -628,25 +628,28 @@ database round trip that a post without one does not, and beside the path, which
 names the thread, a duration would mark the posts that sent a code that reads as
 one, good or no good. So the line of a route that takes a post carries its
 method, path and status and no `duration_ms`, and a post leaves the same line,
-but for its time, with a good Pass, one that is no good or none
-(`TestPassNoGoodOnPostsIsNoPass`); `TestPostingLinesAreUntimed` finds every such
-route in the code and holds it to that, and every other route's line to keeping
-its `duration_ms`. How long posts take is left to Cloud Run's request latency
-metrics, which are aggregates. Nothing identifying a Pass is logged. The log
-says that a Pass was issued, renewed or reissued, that a reissue code was made,
-that a refund or a dispute took back an order, a payment's term or a whole Pass,
-or that a paid Stripe checkout matched no open Pass order, and never which; a
-failure to read a Pass on a post is logged without the post's path, which names
-its board and thread (the request's own line keeps the path and its `500`, as
-for any failed request). `TestPassIsNeverStoredOrLogged` posts with a Pass on
-every posting route, a thread and a reply each as JSON and with an image, and a
-reply by thread id, and then searches every table and the log for the code, its
-hashes, the budget key, the collection and reissue nonces, the payment and
-session ids, a reissue code and the buyer's email and name, with positive
-controls; `TestPassTablesCannotBeJoinedToPosts` pins the columns. The webhook
-handler reads a handful of fields and never logs the body, which carries the
-payer's email, name and address: `TestPassLogsAreBare` delivers every event the
-Pass takes, with the payer's details in it, and one whose signature does not
+but for its time, with a good Pass, one that is no good or none, even when its
+client goes away while the code is looked up, since the post then goes on as one
+without a Pass (`TestPassNoGoodOnPostsIsNoPass`). `TestPostingLinesAreUntimed`
+finds every such route that `Routes` names and holds it to that, and every other
+route's line to keeping its `duration_ms`; the step that reads a post's Pass
+(`postPass`) takes the duration off its line too, however the route was added.
+How long posts take is left to Cloud Run's request latency metrics, which are
+aggregates. Nothing identifying a Pass is logged. The log says that a Pass was
+issued, renewed or reissued, that a reissue code was made, that a refund or a
+dispute took back an order, a payment's term or a whole Pass, or that a paid
+Stripe checkout matched no open Pass order, and never which; a failure to read a
+Pass on a post whose client is still there is logged without the post's path,
+which names its board and thread (the request's own line keeps the path and its
+`500`, as for any failed request). `TestPassIsNeverStoredOrLogged` posts with a
+Pass on every posting route, a thread and a reply each as JSON and with an
+image, and a reply by thread id, and then searches every table and the log for
+the code, its hashes, the budget key, the collection and reissue nonces, the
+payment and session ids, a reissue code and the buyer's email and name, with
+positive controls; `TestPassTablesCannotBeJoinedToPosts` pins the columns. The
+webhook handler reads a handful of fields and never logs the body, which carries
+the payer's email, name and address: `TestPassLogsAreBare` delivers every event
+the Pass takes, with the payer's details in it, and one whose signature does not
 verify, and holds every Pass log line to its message alone, with no field beside
 it.
 

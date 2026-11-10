@@ -1001,15 +1001,18 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   line only a Pass can cause would tie its holder to the thread. For the same reason the
   request line of a route that takes a post carries no duration, which looking a code up
   would lengthen (`untimed` in `Routes`, `requestLogger`), so a post leaves the same
-  line, but for its time, with a good Pass, one that is no good or none
-  (`TestPassNoGoodOnPostsIsNoPass`). A field added to the request line must be the same
-  on a posting route whatever Pass the post carried, and a new route that takes a post is
-  marked `untimed`: `TestPostingLinesAreUntimed` finds every route whose handler can run
-  `postPass` in the code and holds its line to no duration, and every other route's to
-  one. The Pass skips the captcha only, never the rules, a refusal limit or a cooldown.
-  Only a transaction that writes a `passes` row locks it, so its `xmax` dates nothing its
-  `xmin` does not: `pass_orders.renew_pass_id` is no foreign key, whose check would leave
-  every renewal checkout's transaction id on the Pass's row
+  line, but for its time, with a good Pass, one that is no good or none, and a post whose
+  client goes away during the lookup goes on as one without a Pass, so it leaves the line
+  one without a Pass would (`TestPassNoGoodOnPostsIsNoPass`). A field added to the
+  request line must be the same on a posting route whatever Pass the post carried, and a
+  new route that takes a post is marked `untimed`: `TestPostingLinesAreUntimed` finds
+  every route `Routes` names with a handler that can run `postPass` and holds it to
+  `untimed` and its line to no duration, and every other route's line to one. `postPass`
+  takes the duration off too (`markUntimed`), so a post that reaches it leaves none
+  however its route was registered. The Pass skips the captcha only, never the rules, a
+  refusal limit or a cooldown. Only a transaction that writes a `passes` row locks it, so
+  its `xmax` dates nothing its `xmin` does not: `pass_orders.renew_pass_id` is no foreign
+  key, whose check would leave every renewal checkout's transaction id on the Pass's row
   (`TestPassRowIsDatedOnlyByItsWrites`). What the key's `ON DELETE SET NULL` did is done
   in code instead: every transaction that deletes a Pass (today a refund or dispute that
   leaves it no paid time to come, and the prune 30 days past its expiry) clears it from

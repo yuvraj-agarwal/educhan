@@ -157,11 +157,13 @@ func TestServingWarningsAreTheServersAlone(t *testing.T) {
 	}
 }
 
-// routeReach is a route Routes registers, and whether its handler can run the
-// function routesReaching was asked about.
+// routeReach is a route Routes registers, whether its handler can run the
+// function routesReaching was asked about, and whether the handler's expression
+// names untimed.
 type routeReach struct {
 	pattern string
 	reaches bool
+	untimed bool
 }
 
 // routesReaching parses this package's sources and returns every route Routes
@@ -237,8 +239,9 @@ func routesReaching(t *testing.T, fn string) []routeReach {
 		if err != nil {
 			t.Fatalf("pattern %s: %v", lit.Value, err)
 		}
-		reaches := slices.ContainsFunc(namesIn(call.Args[1]), func(n string) bool { return reaching[n] })
-		found = append(found, routeReach{pattern, reaches})
+		names := namesIn(call.Args[1])
+		reaches := slices.ContainsFunc(names, func(n string) bool { return reaching[n] })
+		found = append(found, routeReach{pattern, reaches, slices.Contains(names, "untimed")})
 		return false
 	})
 	return found
@@ -249,7 +252,10 @@ func routesReaching(t *testing.T, fn string) []routeReach {
 // duration, and every other route's line to one. The routes are found in the
 // code, so a route added later that takes a post fails here until Routes marks
 // it untimed. Each is sent a request, a post where the route takes one, and its
-// line read back.
+// line read back: postPass takes the duration off too, so a route whose handler
+// is not seen to run it and whose post leaves no duration fails here as well. A
+// posting handler served without untimed leaves none once it reads the post's
+// Pass.
 func TestPostingLinesAreUntimed(t *testing.T) {
 	routes := routesReaching(t, "postPass")
 	var logs syncBuffer
@@ -287,10 +293,12 @@ func TestPostingLinesAreUntimed(t *testing.T) {
 		line := requestLine(t, &logs, method, path)
 		_, hasDuration := line["duration_ms"]
 		switch {
+		case route.reaches && !route.untimed:
+			t.Errorf("%s runs postPass and Routes does not mark it untimed", route.pattern)
 		case route.reaches && hasDuration:
 			t.Errorf("%s runs postPass and its line has a duration (status %d): %v", route.pattern, status, line)
 		case !route.reaches && !hasDuration:
-			t.Errorf("%s does not take a post and its line has no duration (status %d): %v", route.pattern, status, line)
+			t.Errorf("%s is not seen to run postPass and its line has no duration (status %d): %v", route.pattern, status, line)
 		}
 		if route.reaches {
 			posting++
@@ -300,6 +308,16 @@ func TestPostingLinesAreUntimed(t *testing.T) {
 	}
 	if posting == 0 || timed == 0 {
 		t.Fatalf("found %d routes that take a post and %d that do not, in %v", posting, timed, routes)
+	}
+
+	bare := http.NewServeMux()
+	bare.HandleFunc("POST /bare/{slug}/threads", p.app.handleCreateThread)
+	req := httptest.NewRequest(http.MethodPost, "/bare/untimed/threads", strings.NewReader(`{"body":"bare"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	requestLogger(p.app.log)(bare).ServeHTTP(rec, req)
+	if line := requestLine(t, &logs, http.MethodPost, "/bare/untimed/threads"); rec.Code != http.StatusCreated || line["duration_ms"] != nil {
+		t.Errorf("a post served without untimed: status %d, line %v", rec.Code, line)
 	}
 }
 

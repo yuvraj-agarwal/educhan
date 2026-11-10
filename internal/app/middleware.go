@@ -57,12 +57,14 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 //
 // The line for a route that takes a post carries no duration either (untimed).
 // How long a post takes depends on what it carried: a Pass code that parses,
-// good or no good, is looked up and no Pass is not, and a badge's credential
-// is checked. Beside the path, which names the thread, and the time, which the
+// good or no good, is looked up and no Pass is not, and a badge's credential is
+// checked. Beside the path, which names the thread, and the time, which the
 // post's row holds too, a duration would say which posts in a thread carried a
 // Pass. Nothing else on the line depends on one: a Pass that is no good gets
-// the status no Pass gets (postPass), so a post leaves the same line with a
-// good Pass, one that is no good or none. A field added here must keep that.
+// the status no Pass gets, and a post whose client goes away while its Pass is
+// looked up goes on as one without a Pass (postPass), so a post leaves the same
+// line with a good Pass, one that is no good or none. A field added here must
+// keep that.
 func requestLogger(log *slog.Logger) middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -83,16 +85,24 @@ func requestLogger(log *slog.Logger) middleware {
 	}
 }
 
-// untimed marks a route whose request line goes without a duration, on the
-// statusRecorder requestLogger hands down: every route that takes a post.
-// TestPostingLinesAreUntimed finds those routes in the code, so one added
-// without it fails there.
+// untimed marks a route whose request line goes without a duration: every route
+// that takes a post, so that each line it leaves goes without, that of a post
+// turned away before its Pass is read included. TestPostingLinesAreUntimed
+// fails for a route Routes names with a handler that can run postPass and no
+// untimed, and postPass takes the duration off itself too (markUntimed), so a
+// post that gets that far leaves none on a route registered some other way.
 func untimed(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if rec, ok := w.(*statusRecorder); ok {
-			rec.untimed = true
-		}
+		markUntimed(w)
 		h(w, r)
+	}
+}
+
+// markUntimed takes the duration off the request line of the request w answers,
+// when w is the statusRecorder requestLogger hands down.
+func markUntimed(w http.ResponseWriter) {
+	if rec, ok := w.(*statusRecorder); ok {
+		rec.untimed = true
 	}
 }
 

@@ -2761,12 +2761,24 @@ func TestPassSharesOneHourlyBudget(t *testing.T) {
 	}
 }
 
+// goneOnceRead is a request body whose client goes away once it is read: the
+// first read cancels the request's context (gone).
+type goneOnceRead struct {
+	io.Reader
+	gone context.CancelFunc
+}
+
+func (b goneOnceRead) Read(p []byte) (int, error) {
+	defer b.gone()
+	return b.Reader.Read(p)
+}
+
 // TestPassNoGoodOnPostsIsNoPass holds a post that presents a Pass that is no
 // good, refunded, replaced or run out, to what a post without one gets: no
 // status of its own for the log to record beside the thread's path, and the
-// Pass's state in the answer's body, which no log records, for the page. The
-// request line of a reply with a good Pass, one that is no good and none is
-// the same but for its time.
+// Pass's state in the answer's body, which no log records, for the page. What a
+// post with a good Pass, one that is no good and none logs is the same but for
+// its time, and so is it when the post's client goes away.
 func TestPassNoGoodOnPostsIsNoPass(t *testing.T) {
 	var logs syncBuffer
 	p := passServerLogging(t, nil, &logs)
@@ -2790,10 +2802,11 @@ func TestPassNoGoodOnPostsIsNoPass(t *testing.T) {
 		t.Fatalf("expired Pass: status %d, %+v", status, out)
 	}
 
-	// A reply leaves the same request line, byte for byte but for its time,
-	// with a good Pass, with one that is no good, refunded, run out, unknown or
-	// malformed, and with none: no status of its own, and no duration, which
-	// the Pass's lookup would lengthen (requestLogger).
+	// A reply leaves the same log, byte for byte but for its time, with a good
+	// Pass, with one that is no good, refunded, run out, unknown or malformed,
+	// and with none: nothing beside its request line, and on that line no
+	// status of its own and no duration, which the Pass's lookup would lengthen
+	// (requestLogger).
 	thread := p.createThread("pass-board", "", "", "a thread")
 	good := p.buy("pi_post_good")
 	refunded := p.buy("pi_post_refunded")
@@ -2807,25 +2820,73 @@ func TestPassNoGoodOnPostsIsNoPass(t *testing.T) {
 		{"a malformed Pass", "not a pass", passInvalid},
 		{"no Pass", "", ""},
 	}
+	stamp := regexp.MustCompile(`"time":"[^"]*"`)
+	// loggedBy returns everything logged while post runs, up to and with its
+	// request line, which can come just after its answer, times blanked.
+	loggedBy := func(post func()) string {
+		t.Helper()
+		from := len(logs.String())
+		post()
+		for deadline := time.Now().Add(5 * time.Second); ; {
+			if logged := logs.String()[from:]; strings.Contains(logged, `"msg":"request"`) {
+				return stamp.ReplaceAllString(logged, `"time":""`)
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("no request line logged after:\n%s", logs.String()[from:])
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	sameLogs := func(how string, logged []string) {
+		t.Helper()
+		if slices.ContainsFunc(logged, func(l string) bool { return l != logged[0] || strings.Contains(l, `"duration_ms"`) }) {
+			t.Errorf("%s with %d kinds of Pass and none logged differently, or a duration:\n%s", how, len(presented)-1, strings.Join(logged, ""))
+		}
+	}
+	var logged []string
 	for _, sent := range presented {
 		header := http.Header{}
 		if sent.code != "" {
 			header.Set(passHeader, sent.code)
 		}
-		var out passResponse
-		if status := p.postWithHeaders(header, path, map[string]any{"body": sent.what}, &out); status != http.StatusCreated || out.Pass != sent.answer {
-			t.Fatalf("a reply with %s: status %d, %+v", sent.what, status, out)
-		}
+		logged = append(logged, loggedBy(func() {
+			var out passResponse
+			if status := p.postWithHeaders(header, path, map[string]any{"body": sent.what}, &out); status != http.StatusCreated || out.Pass != sent.answer {
+				t.Fatalf("a reply with %s: status %d, %+v", sent.what, status, out)
+			}
+		}))
 	}
-	stamp := regexp.MustCompile(`^\{"time":"[^"]*",`)
-	var lines []string
-	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
-		if strings.Contains(line, `"path":"`+path+`"`) {
-			lines = append(lines, stamp.ReplaceAllString(line, `{"time":"",`))
+	sameLogs("replies", logged)
+
+	// A post whose client goes away while its Pass is looked up goes on as one
+	// without a Pass (postPass), so what stops it is what stops any post whose
+	// client has gone, and it leaves the log that post leaves: a reply stopped
+	// by its next read, which answers nobody, and a new thread whose address is
+	// cooling down refused by flood control.
+	routes := p.app.Routes()
+	gone := func(target string, sent struct{ what, code, answer string }) int {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		body, _ := json.Marshal(map[string]any{"body": sent.what})
+		req := httptest.NewRequest(http.MethodPost, target, goneOnceRead{bytes.NewReader(body), cancel}).WithContext(ctx)
+		req.Header.Set("Content-Type", "application/json")
+		if sent.code != "" {
+			req.Header.Set(passHeader, sent.code)
 		}
+		rec := httptest.NewRecorder()
+		routes.ServeHTTP(rec, req)
+		return rec.Code
 	}
-	if len(lines) != len(presented) || slices.ContainsFunc(lines, func(line string) bool { return line != lines[0] }) {
-		t.Fatalf("replies with %d kinds of Pass and none were logged differently:\n%s", len(presented)-1, strings.Join(lines, "\n"))
+	p.app.threadLimiter = newCooldownLimiter(time.Hour)
+	if status := gone("/api/boards/pass-board/threads", presented[len(presented)-1]); status != http.StatusOK {
+		t.Fatalf("a new thread whose client went away, the first from its address: status %d", status)
+	}
+	for _, target := range []string{path, "/api/boards/pass-board/threads"} {
+		logged = nil
+		for _, sent := range presented {
+			logged = append(logged, loggedBy(func() { gone(target, sent) }))
+		}
+		sameLogs("posts to "+target+" whose client went away", logged)
 	}
 
 	// A badged post is the credential's request: the Pass header is not read,
