@@ -391,6 +391,77 @@ func TestAgeScreenIsNeverCalledVerification(t *testing.T) {
 	}
 }
 
+// absoluteBadgePromise is the promise the site must not make about the badge:
+// that nobody, the server included, can get from a badged post back to an
+// address. It is true of what educhan keeps, and the Verify page and the FAQ
+// say so, with its limits: whoever holds the server secret can test an address
+// they already suspect, timing can tie a badged post to its verification on a
+// day its institution issued one badge, and every badged post carries the
+// credential, whose id finds the stored row. Words that say no one can make
+// that link at all are a promise the code does not keep.
+var absoluteBadgePromise = regexp.MustCompile(`(?i)\b(?:server|operator) included\b|\bwork(?:s|ed)? back from\b|\btrac(?:e|ed|ing) back\b|\b(?:cannot|can't|can never) be (?:linked|traced|connected)\b|\bno one\b[^.]*\bcan (?:work|trace|link)\b`)
+
+func TestSiteNeverPromisesTheBadgeCannotBeTraced(t *testing.T) {
+	// The pattern has to catch the wording it exists for, and the wording the
+	// pages use now has to pass it.
+	for _, phrase := range []string{
+		"so no one — this server included — can work back from a post to your address",
+		"It is not made from your address, and cannot be traced back to it.",
+		"the badge cannot be linked to a post",
+		"no one, the operator included, can link a badge to an address",
+	} {
+		if !absoluteBadgePromise.MatchString(phrase) {
+			t.Fatalf("absoluteBadgePromise does not match %q", phrase)
+		}
+	}
+	for _, fine := range []string{
+		"so nothing kept with a post points to your address",
+		"So nothing stored with a badged post points to your email address",
+		"school students included",
+	} {
+		if absoluteBadgePromise.MatchString(fine) {
+			t.Fatalf("absoluteBadgePromise matches %q, which promises only what is kept", fine)
+		}
+	}
+
+	// The copy wraps wherever the source lines end, so it is read with its
+	// whitespace folded, as a browser lays it out.
+	space := regexp.MustCompile(`\s+`)
+	read := map[string]string{}
+	for _, name := range []string{"app.js", "index.html"} {
+		body, err := fs.ReadFile(webFS(), name)
+		if err != nil {
+			t.Fatalf("reading %s: %v", name, err)
+		}
+		read[name] = space.ReplaceAllString(string(body), " ")
+		for _, found := range absoluteBadgePromise.FindAllString(read[name], -1) {
+			t.Errorf("%s promises the badge cannot be traced: %q", name, found)
+		}
+	}
+	// A scan of the wrong files, or of none, would pass for the wrong reason:
+	// the copy that makes the promise has to be among what was read.
+	for name, want := range map[string]string{
+		"app.js":     "so nothing kept with a post points to your address",
+		"index.html": "The address itself is never stored.",
+	} {
+		if !strings.Contains(read[name], want) {
+			t.Errorf("%s was read without %q, which this test expects to find there", name, want)
+		}
+	}
+}
+
+// Forget this browser's confirmation is said once the page has been drawn
+// again, after it has asked the server whether verification is on. A badge
+// another tab verified while that request was out is drawn on that page, so a
+// sentence about what the browser holds now could be said beside a badge. It
+// says what was just done instead.
+func TestForgettingTheBrowserIsSaidAsDone(t *testing.T) {
+	said := jsString(t, appScript(t), "BROWSER_FORGOTTEN")
+	if !strings.HasPrefix(said, "This browser was forgotten") || strings.Contains(said, "no longer holds") {
+		t.Errorf("BROWSER_FORGOTTEN is %q; want what was forgotten, not what the browser holds now", said)
+	}
+}
+
 func TestWebShellReferencesItsAssets(t *testing.T) {
 	body, err := fs.ReadFile(webFS(), "index.html")
 	if err != nil {

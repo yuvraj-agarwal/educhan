@@ -2055,7 +2055,12 @@ function forgetBrowserHTML() {
     </div>`;
 }
 
-const BROWSER_FORGOTTEN = "This browser no longer holds your post key, your name or a badge.";
+// BROWSER_FORGOTTEN says what was just done, not what the browser holds now.
+// It is said once the page has been drawn again, after the page has asked the
+// server whether verification is on, and a badge another tab verified while
+// that request was out is drawn above it: "no longer holds a badge" was then
+// said beside one.
+const BROWSER_FORGOTTEN = "This browser was forgotten, and whatever post key, name and badge it held then are gone.";
 
 // revealClearOfHeader scrolls the page just far enough to bring el into view
 // clear of the sticky header. focus() and scrollIntoView() do not know about
@@ -2304,10 +2309,14 @@ const VERIFY_INTRO = `
     you an optional badge. The address itself is never stored: what is kept is
     a keyed hash of it, in a table that has no link to any post or thread. The
     badge you get carries only the institution, an expiry and a random number,
-    so no one — this server included — can work back from a post to your
-    address. The random number is what keeps your ID the same within a thread
-    on the posts you badge. It is not made from your address, and cannot be
-    traced back to it.
+    so nothing kept with a post points to your address. The random number is
+    what keeps your ID the same within a thread on the posts you badge. It is
+    not made from your address. There are limits: whoever runs this server can
+    check whether an address they already suspect has a badge. On a day when
+    yours is the only badge issued for your institution, a post you badge soon
+    after verifying could be matched to your verification by its timing, and so
+    to you, if they already suspect your address. None of this holds against
+    someone who changes the server or records what is sent to it.
   </p>
   <p class="verify-note muted">
     The badge is off by default on every post, and is sent to the server only
@@ -2391,8 +2400,10 @@ function verifyViewHTML() {
         <p class="muted">
           Tick &ldquo;post with&rdquo; on the posting form to use it. It is kept
           in this browser and stays until it expires or you forget it &mdash;
-          closing the tab no longer discards it. Verifying another address
-          replaces it and retires this one.
+          closing the tab does not discard it. Verifying the same address again
+          cancels this badge on the server. Verifying a different address only
+          replaces it in this browser, and this one stays valid until it
+          expires.
         </p>
         <div class="verify-forget">
           <p><strong>On a shared or borrowed computer, forget it before you walk away.</strong>
@@ -2759,6 +2770,12 @@ const FAQ_SECTIONS = [
         or to the posts you make without the badge &mdash; unless you give both the same name or tripcode,
         which would show they're yours. That's why the Name field empties when you tick the
         badge.</p>
+      <p>This has limits. The people who run this site can check whether an address they
+        already suspect has a badge. On a day when yours is the only badge issued for your
+        university or college, a badged post you make soon after verifying could be matched to
+        your verification by its timing, and so to you, if they already suspect your address.
+        None of this holds against someone who changes the server or records what is sent to
+        it.</p>
       <p>On a shared computer, use <strong>Forget this browser</strong> on the
         <a href="/verify#forget-browser">Verify</a> page before you leave. The badge stays in
         that browser for whoever uses it next, and so do the key your IDs are made from and
