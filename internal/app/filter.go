@@ -9273,12 +9273,37 @@ func (f *scannedField) payCheck(v *view, m []int) bool {
 	if len(next) > 0 && !payTails[next[0]] {
 		return false
 	}
+	// "will pay tomorrow after school for the farewell party": paying for
+	// something bought or held, later in the clause.
+	for i := 1; i+1 < len(next); i++ {
+		k := i + 1
+		for k < len(next) && determiners[next[k]] {
+			k++
+		}
+		if is(next[i], "for") && k < len(next) && (payGoods[next[k]] || payOccasions[next[k]]) {
+			return false
+		}
+	}
 	around := sentenceAround(text, m[0], m[1])
 	sentence := wordsIn(around)
 	damaged, own := damagePaid(sentence)
-	after := sentenceAfter(text, m[1])
+	// after is the rest of the promise's sentence, read for threatWindow
+	// and on to the end of a word that cuts, up to 32 bytes more, so that a
+	// purchase's clause is read whole and rest goes on from a word's end:
+	// "enjoy your last day" is not "la" and "st day", nor "i ordered the
+	// hoodies" "i order".
+	after := text[m[1]:min(len(text), m[1]+threatWindow)]
+	if j := strings.IndexAny(after, ".!?\n"); j >= 0 {
+		after = after[:j]
+	}
+	inWord := func(c byte) bool { return c >= utf8.RuneSelf || c == '\'' || isWordByte(c) }
+	if end := m[1] + len(after); end > m[1] && inWord(text[end-1]) {
+		for limit := min(len(text), end+32); end < limit && inWord(text[end]); end++ {
+		}
+		after = text[m[1]:end]
+	}
 	rest := text[m[1]+len(after) : min(len(text), m[1]+len(after)+threatWindow)]
-	if anyIn(sentence, moneyWords) ||
+	if anyIn(sentence, moneyWords) && !realArms(sentence) ||
 		purchasePaid(wordsIn(sentenceBefore(text, m[0])), after, rest) && !fightSet(sentence, true) ||
 		damaged && !fightSet(sentence, forIt || !own) {
 		return false
@@ -9295,8 +9320,12 @@ func (f *scannedField) payCheck(v *view, m []int) bool {
 		return (is(who, "you") || is(who, "u") || is(who, "y'all") || is(who, "everyone") || reckoning) &&
 			f.threatCheck(v, m)
 	}
-	if whoeverWronged(wordsIn(subjectClause(text, m[0]))) {
+	sc := wordsIn(subjectClause(text, m[0]))
+	if whoeverWronged(sc) {
 		return f.threatCheck(v, m) // "whoever broke my phone will pay tomorrow after school"
+	}
+	if len(sc) == 1 && (is(sc[0], "you're") || is(sc[0], "youre") || is(sc[0], "ur")) {
+		return f.threatCheck(v, m) // "you're gonna pay tomorrow after school", as "you'll pay"
 	}
 	subject := threatSubject(text, m[0])
 	switch {
@@ -9384,14 +9413,21 @@ var (
 	wrongAux = canonSetOf(`keeps kept keep has have had been is was always just also even ever again still
 		really actually literally`)
 	prepWords = canonSetOf(`something somethin smth surprise revenge rope ropes lighter lighters poison bleach
-		balaclava zip zipties ziptie handcuffs cuffs chloroform mace`)
+		balaclava zip zipties ziptie handcuffs cuffs chloroform mace bullets ammo ammunition cartridges rounds`)
+	// payAmmo, or a weapon, in the sentence of "will pay" keep money from
+	// making it a payment (realArms): "i ordered a gun online", "i bought
+	// bullets".
+	payAmmo = canonSetOf(`bullets ammo ammunition cartridges`)
+	// purchaseNegators before a purchase word make it none (purchaseMade).
+	purchaseNegators = canonSetOf(`nobody noone no can't cant cannot never won't wont couldn't couldnt should
+		should've shouldve shoulda`)
 	// plainPreps count as prepWords only with no ordinary use after them
 	// (plainPrepUse: "the gloves for the match", "tape for the project",
-	// "the charts and tape", craftGoods), so "gloves" and "duct tape for
-	// you" still do. poisonWords after the poster's purchase, and
+	// "the charts and tape", craftGoods), so "gloves", "the stuff" and
+	// "duct tape for you" still do. poisonWords after the poster's purchase, and
 	// fightDeaths or lastRites after "last", make it a threat's ("it's
 	// laced", "your funeral", "your last meal").
-	plainPreps = canonSetOf(`tape duct gloves glove mask masks spray`)
+	plainPreps = canonSetOf(`tape duct gloves glove mask masks spray stuff things supplies`)
 	craftGoods = canonSetOf(`chart charts paper papers glue markers cardboard sheets thermocol paint paints
 		colours colors`)
 	poisonWords = canonSetOf(`poison poisoned poisoning laced spiked drugged`)
@@ -9399,7 +9435,8 @@ var (
 	fightDeaths = canonSetOf(`dead grave graves funeral funerals coffin coffins morgue bloodbath massacre carnage`)
 	// payGoods, bought before "for", and payOccasions after the people it
 	// is for, make a purchase for them ordinary, and payTrail may close it
-	// (payOrdinary).
+	// (payOrdinary); either after "for" later in the clause of "will pay"
+	// is what is paid for ("will pay tomorrow for the farewell party").
 	payGoods = canonSetOf(`cake cakes pizza pizzas snacks snack food lunch dinner breakfast chocolates chocolate
 		sweets mithai samosa samosas flowers flower bouquet card cards hoodie hoodies tshirt tshirts shirt shirts
 		jersey jerseys book books notes drinks juice coffee tea icecream burger burgers biryani maggi decorations
@@ -9460,7 +9497,7 @@ var (
 // the kid you bullied"), are no purchase.
 func purchasePaid(before []string, after, rest string) bool {
 	for i, w := range before {
-		if !purchaseWords[w] {
+		if !purchaseWords[w] || !purchaseMade(before, i) {
 			continue
 		}
 		for k := i - 1; k >= 0 && k >= i-3; k-- {
@@ -9495,7 +9532,9 @@ func purchasePaid(before []string, after, rest string) bool {
 				if c > 0 {
 					promise = wordsIn(clauses[0])
 				}
-				later := wordsIn(strings.Join(clauses[c+1:], " ") + " " + rest)
+				// later is read from the words after the purchase in its own
+				// clause on: "i bought flowers for your grave".
+				later := append(slices.Clone(ws[i+1:]), wordsIn(strings.Join(clauses[c+1:], " ")+" "+rest)...)
 				if c > 1 || anyIn(promise, payWays) || payMenace(ws[i+1:], later) {
 					continue
 				}
@@ -9503,11 +9542,52 @@ func purchasePaid(before []string, after, rest string) bool {
 					return true // "i ordered your hoodie", "i already ordered the pizza"
 				}
 			default:
-				return true
+				if purchaseMade(ws, i) {
+					return true
+				}
 			}
 		}
 	}
 	return false
+}
+
+// realArms reports a weapon or ammunition (payAmmo) in ws, not a toy's
+// (toyWeapon: "a nerf gun", "nerf bullets"): "i ordered a gun online", "i
+// bought bullets".
+func realArms(ws []string) bool {
+	for i, w := range ws {
+		if (weaponHeads[w] || payAmmo[w]) && !(i > 0 && toyWeapon[ws[i-1]]) {
+			return true
+		}
+	}
+	return false
+}
+
+// purchaseMade reports the purchase word at ws[i], said by someone other than
+// the poster, as something bought, ordered, booked or signed up for: with
+// what is bought after it ("ordered hoodies", "signed up for the trip",
+// "collect the book"), not "that's an order", "ordered me around", "nobody
+// can buy you a new face", "your parents can't buy you out of this", "should
+// have bought a helmet" or "signed my suspension".
+func purchaseMade(ws []string, i int) bool {
+	var next, then string
+	if i+1 < len(ws) {
+		next = ws[i+1]
+	}
+	if i+2 < len(ws) {
+		then = ws[i+2]
+	}
+	switch w := ws[i]; {
+	case anyIn(ws[max(0, i-3):i], purchaseNegators):
+		return false
+	case (is(w, "signed") || is(w, "sign")) && !is(next, "up"):
+		return false
+	case objectWords[next] || is(next, "em") || is(next, "me") || is(next, "us"):
+		// "buy them lunch", "signed us up", not "buy them time" or
+		// "ordered me around".
+		return payGoods[then] || is(then, "up")
+	}
+	return next != ""
 }
 
 // purchaseArmed reports, in the words after the poster's own purchase, a
@@ -9529,7 +9609,7 @@ func purchaseArmed(ws []string) bool {
 		case i >= 6:
 			return false
 		case plainPreps[w] && !plainPrepUse(ws, i),
-			weaponHeads[w] || bluntHeads[w] || fuelHeads[w] || prepWords[w],
+			(weaponHeads[w] || bluntHeads[w] || fuelHeads[w] || prepWords[w]) && !(i > 0 && toyWeapon[ws[i-1]]),
 			is(w, "for") && payForWhat[next],
 			is(w, "for") && (objectWords[next] || is(next, "em")) && !payOrdinary(ws[:i], next, ws[i+2:]):
 			return true
@@ -9598,8 +9678,8 @@ func payMenace(bought, later []string) bool {
 	kept := make([]string, len(later))
 	spared := false
 	for i, w := range later {
-		menace := weaponHeads[w] || bluntHeads[w] || fuelHeads[w] || prepWords[w] || poisonWords[w] ||
-			is(w, "spray") && i > 0 && is(later[i-1], "pepper")
+		menace := (weaponHeads[w] || bluntHeads[w] || fuelHeads[w] || prepWords[w]) &&
+			!(i > 0 && toyWeapon[later[i-1]]) || poisonWords[w] || is(w, "spray") && i > 0 && is(later[i-1], "pepper")
 		switch {
 		case is(w, "dead") && i+1 < len(later) && deadIntensified[later[i+1]],
 			menace && payUse(later, i, food, pitched, placed > i):
