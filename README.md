@@ -1337,7 +1337,14 @@ while Update pressed on the thread's own address, and another page of the index,
 keep the page on screen for it. Answered on its page, a success goes to the new
 post and a refusal is said once, with the focus as on screen; answered while the
 lookup has the form off the screen, it is told as above. Either way nothing it
-sent is left in a new form to be posted twice. After a refusal of the image
+sent is left in a new form to be posted twice. A press refused before anything
+is sent, an empty one say, or one refused to say the page took a ticked badge
+off, is answered on its form too, so every press made while such a redraw loads
+is, sent or not: its refusal, said at the press, is said again, once, on the
+form the redraw draws, worded for that form as it stands, with its button given
+the focus. Words still on screen, Update having kept them up say, are left as
+they are, and words that no longer hold, something written since an empty press
+say, are said no more, and taken off if still up. After a refusal of the image
 itself (the image limit reached, or uploads switched off) the image is taken
 off, as on screen, and a page left as it was switches the picker off and updates
 the thread's counts, as on screen, as does a press of the form made first,

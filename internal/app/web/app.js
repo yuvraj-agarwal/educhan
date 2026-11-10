@@ -172,13 +172,13 @@ async function api(path, options = {}) {
 // a redraw while the post was held had release take it off ("" when it did not:
 // holdForm). The caller adds that to anything but the two refusals of the image
 // itself (imageTakenOff). A form holds what it sent at the answer, but for what
-// release took off; a notice worded later, by a redraw, reads what the reader
-// has left in it since, its text erased, say, or its image taken out. action is
-// what was refused — "post", or "code" for a verification code request — so a
-// cooldown tells the reader to do that again, not something they were not
-// doing. kept is false for a refusal said over a form that was not the one
-// sent, and so does not hold what was written: a Verify step drawn again while
-// its request was out (sayVerifyRefusal).
+// release took off; a notice worded later, by a redraw or in place
+// (rewordRefusal), reads what the reader has left in it since, its text erased,
+// say, or its image taken out. action is what was refused — "post", or "code"
+// for a verification code request — so a cooldown tells the reader to do that
+// again, not something they were not doing. kept is false for a refusal said
+// over a form that was not the one sent, and so does not hold what was written:
+// a Verify step drawn again while its request was out (sayVerifyRefusal).
 function errorMessage(err, { hasText = true, hasImage = true, imageOff = "", action = "post", kept = true } = {}) {
   // Nothing is left of the post, neither text nor image: an image-only post
   // whose image release took off, say, or a text-only post whose text the
@@ -243,7 +243,8 @@ function errorMessage(err, { hasText = true, hasImage = true, imageOff = "", act
   // held (captureDraft), after a post link's lookup into its thread say, as it
   // puts its values back into its own page (restoreDraft) or keeps that page
   // (render): on screen it would have gone, so it is told that nothing was
-  // posted and, unless release left it nothing to post, to post again.
+  // posted and, unless it is left with nothing to post, neither text nor image,
+  // to post again.
   if (err.notSent) {
     if (nothingLeft) {
       return "You left this page before the post went through, so nothing was posted.";
@@ -393,6 +394,11 @@ function showNotice(message) {
 function clearNotice() {
   el.notice.hidden = true;
   el.notice.textContent = "";
+}
+
+// noticeSaid is what the notice on screen says, or "" when none is up.
+function noticeSaid() {
+  return el.notice.hidden ? "" : el.notice.querySelector(".notice-text").textContent;
 }
 
 // announce names the page for assistive tech, which otherwise gets no signal
@@ -1571,14 +1577,14 @@ function drawBadgeOption(form) {
 // to keep apart. So that press is refused, once, saying so (submit), and the
 // one after it posts. A badged post that goes through takes the note with it,
 // as does a refusal of it that tells the form, on screen, that its badge was
-// replaced, that notice being its one refusal (submit), or a redraw that words
-// that notice again for the form it draws (restoreDraft), and so does the
-// reader ticking or unticking the box. Each is kept with the number of the
-// badge that went (badgeNumber), and the poster key storage held then, for the
-// notice to name that ID only while the key is the same (badgeWithdrawnNotice).
-// It lives with the form, and a draft carries it across a re-render (formDraft,
-// restoreDraft). Forget this browser drops it: the key goes too, so the next
-// post has an ID of its own.
+// replaced, that notice being its one refusal (submit), or that notice worded
+// again, in place or by a redraw for the form it draws (rewordRefusal,
+// restoreDraft), and so does the reader ticking or unticking the box. Each is
+// kept with the number of the badge that went (badgeNumber), and the poster key
+// storage held then, for the notice to name that ID only while the key is the
+// same (badgeWithdrawnNotice). It lives with the form, and a draft carries it
+// across a re-render (formDraft, restoreDraft). Forget this browser drops it:
+// the key goes too, so the next post has an ID of its own.
 const badgeWithdrawn = new WeakMap();
 
 // withdrawBadgeOption is drawBadgeOption for a form whose badge has gone from
@@ -1587,18 +1593,27 @@ const badgeWithdrawn = new WeakMap();
 // the puzzle the form now needs, as the reader's own untick would
 // (captchaBadgeToggled), so the press after the one the note refuses usually
 // finds it solved; but not with startNothing: when the badge went with the
-// browser forgotten in another tab, which starts nothing here, or as /verify
-// is drawn over the form (loadVerification), or a redraw puts a held form back
+// browser forgotten in another tab, which starts nothing here, or as /verify is
+// drawn over the form (loadVerification), or a redraw puts a held form back
 // (restoreDraft), since drawing a page starts nothing, or as the form's own
 // badged post is refused while the form is off the screen, where nobody is
 // writing in it (submit). A form noted then starts it at the press the note
-// refuses (submit).
+// refuses (submit). A box drawn again for another badge or none, ticked or not,
+// has a refusal the form was told worded again for it while that is still the
+// notice on screen (rewordRefusal).
 function withdrawBadgeOption(form, startNothing) {
   const offered = badgeOffered(form);
   const key = storageGet(POSTER_KEY_STORAGE_KEY) || "";
-  if (!drawBadgeOption(form)) return;
-  badgeWithdrawn.set(form, { number: offered, key });
-  if (!startNothing && captchaFormNeedsIt(form) && captchaFormHasWriting(form)) {
+  const ticked = drawBadgeOption(form);
+  if (ticked) {
+    badgeWithdrawn.set(form, { number: offered, key });
+  }
+  // A box drawn again, ticked or not, changes what a refusal the form was told
+  // can say about it (rewordRefusal).
+  if (badgeOffered(form) !== offered) {
+    rewordRefusal(form);
+  }
+  if (ticked && !startNothing && captchaFormNeedsIt(form) && captchaFormHasWriting(form)) {
     prepareCaptcha();
   }
 }
@@ -1646,8 +1661,10 @@ function pressedWithoutBadge(form, key) {
 // or revoked while storage holds another badge, verified since in this browser,
 // in another tab or in this one by a confirmation answered after the reader
 // left /verify, and the browser has not been forgotten since the press by the
-// time the form is told: on screen, storage holding that badge at the answer;
-// for a form answered off the screen, at the answer or when a redraw tells it
+// time the form is told: storage holding that badge at the answer, or by the
+// time the notice is worded again, in place while it is on screen
+// (rewordRefusal) or by a redraw that draws the form again (restoreDraft), and
+// for a form answered off the screen, by the time a redraw tells it
 // (unsaidNotices). A badge stored after a forget is someone else's, so the form
 // is then told the server's words (submit).
 const BADGE_REPLACED = "The badge this post carried was replaced by one verified since in this browser, so nothing was posted.";
@@ -1663,22 +1680,25 @@ const BADGE_REPLACED = "The badge this post carried was replaced by one verified
 // took off). It reads the badge held, the box of the form it is given, the
 // poster key and what the post holds when it is worded, as it is said: on
 // screen at the answer; for a form answered off the screen, by the redraw that
-// tells it, for the form drawn or kept then (unsaidNotices); and again by a
-// redraw loading meanwhile that takes the image off, for the form it draws and
-// the text put back into it (restoreDraft), that form then losing a note left
+// tells it, for the form drawn or kept then (unsaidNotices); again by a redraw
+// loading meanwhile that draws the form again while the notice is still up,
+// Update say, or that takes the image off, for the form it draws and the text
+// and image put back into it (restoreDraft); and again in place while it is
+// still the notice on screen, when the form's box is drawn again for another
+// badge or none, a badge verified or forgotten in another tab say, or the
+// browser is forgotten (rewordRefusal). Each time, the form loses a note left
 // on it since, the notice being its one refusal. Each of those can change by
 // then: with no badge held by then, forgotten since, it ends with what pressing
 // again does, there being no box to tick; with another, verified since, it
 // names that one, which the form offers; with the new badge's box ticked since,
 // it says that pressing again posts with that badge; and for a post left with
-// nothing in it since, its text erased say, it says only what went. Unless a
-// redraw that takes the image off words it again, a notice on screen stays as
-// it was worded through a change made after it is said, a badge forgotten or
-// verified in another tab say, so it names the badge it was worded for: the
-// change shows on the form itself, whose box is drawn again for the badge held
-// then or taken out, a box ticked then refusing the next press once, saying why
-// (followCredentialStorage). In a browser forgotten since the press, the form
-// is told the server's words instead (BADGE_REPLACED).
+// nothing in it since, its text erased say, it says only what went. The
+// reader's own changes to the form while the notice is on screen, a tick of its
+// box or its text erased say, do not word it again: the reader makes them with
+// the form in sight, the box ticked as the notice says to, and the notice, an
+// alert, would be heard again at each; the next wording reads them. In a
+// browser forgotten since the press, the form is told the server's words
+// instead (submit).
 function badgeReplacedNotice(form, { hasText, hasImage, imageOff }) {
   if (!hasText && (imageOff !== "" || !hasImage)) {
     return BADGE_REPLACED;
@@ -2422,7 +2442,12 @@ function forgetOnThisPage() {
 // (badgeWithdrawn), as after another tab took a badge away: that would tell
 // whoever presses it that this browser held a badge, and with the poster key
 // gone too the post has an ID of its own, shared with none of the posts made
-// before the forget. It notes the forget it did (forgottenAt).
+// before the forget. It notes the forget it did (forgottenAt). A refusal the
+// form was told, while it is still the notice on screen, is worded again for
+// the browser forgotten (rewordRefusal), so it names no badge the browser held:
+// the notice of a replaced badge gives way to the server's words, and the
+// badge's note said at a press before the forget goes, the badge and the ID it
+// speaks of gone with it.
 function forgetForm(form) {
   const name = field(form, "name");
   if (name) {
@@ -2432,6 +2457,7 @@ function forgetForm(form) {
   badgeWithdrawn.delete(form);
   drawBadgeOption(form);
   forgottenAt.set(form, browserForgets);
+  rewordRefusal(form);
 }
 
 // The forget that last reached each posting form, by form, as browserForgets
@@ -2501,17 +2527,18 @@ function openForgetChannel() {
 // is not the one this tab held, every posting form on screen offers the badge
 // read now, unticked, or none (drawBadgeOption), and one that had the badge
 // before ticked is noted to say so at its next press (withdrawBadgeOption,
-// badgeWithdrawn), as is a held form a redraw has taken off the screen, once
-// it is put back (restoreDraft); and /verify, when it shows the badge panel, is
-// drawn again, unless the reader has drawn another step there by the time the
-// page has asked the server (renderVerify). /verify showing the address step
-// is left as it is, whatever badge it was drawn over, so a reader filling it
-// in, or waiting on a code request, loses nothing. So is a code step, unless
-// the badge read in is one newly verified there (codeSpentElsewhere). An
-// emptied credential is the browser forgotten in another tab (forgetBrowser):
-// the forms change as for any badge gone, before or after its message on
-// FORGET_CHANNEL is heard here, but start no puzzle, since a forget starts
-// nothing.
+// badgeWithdrawn), as is a held form a redraw has taken off the screen, once it
+// is put back (restoreDraft); a refusal a form on screen was told, while it is
+// still the notice on screen, is worded again for the badge read now
+// (rewordRefusal); and /verify, when it shows the badge panel, is drawn again,
+// unless the reader has drawn another step there by the time the page has asked
+// the server (renderVerify). /verify showing the address step is left as it is,
+// whatever badge it was drawn over, so a reader filling it in, or waiting on a
+// code request, loses nothing. So is a code step, unless the badge read in is
+// one newly verified there (codeSpentElsewhere). An emptied credential is the
+// browser forgotten in another tab (forgetBrowser): the forms change as for any
+// badge gone, before or after its message on FORGET_CHANNEL is heard here, but
+// start no puzzle, since a forget starts nothing.
 function followCredentialStorage(event) {
   if (event.key !== CREDENTIAL_STORAGE_KEY && event.key !== null) {
     return;
@@ -4023,7 +4050,11 @@ async function render({ draft = captureDraft() } = {}) {
     // of its image switches its picker off and puts the thread's counts in
     // step, as on screen (blockRefusedPicker), which a page drawn afresh does
     // itself. The draft is read as it stands now, so a form pressed while the
-    // redraw loaded is that form, held (carriedDraft).
+    // redraw loaded is that form, held (carriedDraft). A refusal the form was
+    // told while the redraw loaded, still the notice on screen, stays with the
+    // error after it, as does one told now, and each is kept with what follows
+    // it (refusalNotices), for it to be worded again in place with that left
+    // after it (rewordRefusal).
     draft = carriedDraft(draft);
     if (keepPage() && draft.held.isConnected) {
       renderedPath = drawnFor.path;
@@ -4037,13 +4068,16 @@ async function render({ draft = captureDraft() } = {}) {
       if (unsaid && unsaid.imageRefused) {
         blockRefusedPicker(draft.held, unsaid.limitReached);
       }
-      const body = field(draft.held, "body");
-      const image = field(draft.held, "image");
-      const words = unsaid
-        ? unsaid.word(draft.held, Boolean(body && body.value.trim()), Boolean(image && image.files.length))
-        : "";
-      const said = el.notice.hidden ? "" : el.notice.querySelector(".notice-text").textContent;
-      showNotice([words, said, message].filter(Boolean).join(" "));
+      const { text, image } = formHolds(draft.held);
+      const words = unsaid ? unsaid.word(draft.held, text, image) : "";
+      const said = noticeSaid();
+      const told = [words, said, message].filter(Boolean).join(" ");
+      showNotice(told);
+      const refused = refusalNotices.get(draft.held);
+      if (refused && (unsaid || (said !== "" && said === refused.told))) {
+        const after = [unsaid ? said : refused.after, message].filter(Boolean).join(" ");
+        refusalNotices.set(draft.held, { ...refused, told, after });
+      }
       if (unsaid && unsaid.focused && (!document.activeElement || document.activeElement === document.body)) {
         draft.held.querySelector('button[type="submit"]')?.focus({ preventScroll: true });
       }
@@ -4180,10 +4214,11 @@ function captureDraft() {
 // form itself carried held, whatever has become of the press since. A post
 // pressed then is carried as one pressed just before the redraw began would
 // have been (captureDraft), and so is a press refused then before anything is
-// sent, an empty one say, though the same press made just before the redraw
-// began has the form read for its values. So a redraw with the form's routeKey,
-// Update say, keeps the page on screen for any press made while it loads, with
-// no skeleton, and keeps it, form and all, when the new page will not load
+// sent, an empty one say, for its refusal to be said again on the form drawn
+// (refuseUnsent), though the same press made just before the redraw began has
+// the form read for its values. So a redraw with the form's routeKey, Update
+// say, keeps the page on screen for any press made while it loads, with no
+// skeleton, and keeps it, form and all, when the new page will not load
 // (render), while a post link's lookup into its thread blanks the page all the
 // same once it is slow enough to draw its skeleton; and the page drawn, by the
 // redraw or the thread the lookup goes on to, puts the form back, or reads it
@@ -4236,7 +4271,8 @@ function restoreDraft(draft) {
   // its page was drawn again, its notice said then, or off the screen, before
   // the redraw began or while it loaded, its notice said here (below). So is
   // one pressed while the redraw loaded and refused before anything was sent,
-  // an empty press say, its notice said then too (carriedDraft).
+  // an empty press say, its notice said then and again here, for the form drawn
+  // (carriedDraft, below).
   let answeredForm = null;
   if (draft.held) {
     const held = draft.held;
@@ -4352,14 +4388,36 @@ function restoreDraft(draft) {
   // poster key (badgeReplacedNotice). Each can have changed since the answer:
   // the text erased or the image taken out while the form was still in sight,
   // say, or the badge forgotten or another verified; and after Forget this
-  // browser the form is told the server's words (BADGE_REPLACED). Its button
-  // gets the focus as it would have (below). After a refusal of its image,
-  // which took the image off, the new page's picker and counts, drawn from what
-  // the server says by then, stand as drawn (blockRefusedPicker).
-  const words = unsaid ? unsaid.word(form, Boolean(draft.body.trim()), Boolean(draft.file)) : "";
-  if (unsaid) {
+  // browser the form is told the server's words (submit). Its button gets the
+  // focus as it would have (below). After a refusal of its image, which took
+  // the image off, the new page's picker and counts, drawn from what the server
+  // says by then, stand as drawn (blockRefusedPicker).
+  //
+  // A press refused before anything was sent, made on the form while it was
+  // still in sight as the redraw loaded, an empty press or one the badge's note
+  // stopped (refuseUnsent), is said again now on this form, once, worded for it
+  // as it stands, the text and image going back into it, and its button gets
+  // the focus, the one the press gave it having gone with the old page (below).
+  // Words the notice still shows, Update having kept it up say, are not said
+  // again, and so not heard again; words that no longer hold, the reader having
+  // written something since an empty press say, are said no more, and taken off
+  // if they are still up.
+  const refused = answeredForm ? refusalNotices.get(answeredForm) : undefined;
+  const unsent = refused && refused.unsent ? refused : undefined;
+  const text = Boolean(draft.body.trim());
+  const words = unsaid
+    ? unsaid.word(form, text, Boolean(draft.file))
+    : unsent
+      ? unsent.notice(unsent.off, form, text, Boolean(draft.file))
+      : "";
+  const shown = noticeSaid();
+  if (unsaid || (words && words !== shown)) {
     showNotice(words);
+  } else if (unsent && !words && shown === unsent.told) {
+    clearNotice();
   }
+  const said = noticeSaid();
+  const unchanged = Boolean(refused && said) && said === (unsaid || unsent ? words : refused.told);
 
   // A form with no image field, on a site that takes no images, gets no file
   // back; a switched-off field refuses it in setFile and says why. A held form
@@ -4368,36 +4426,37 @@ function restoreDraft(draft) {
   // is taken off as release takes it off when the redraw comes first, the
   // notice saying so rather than giving way to the picker's reason: the
   // refusal's own notice, still on screen, is worded again with that reason
-  // (refusalNotices), and any other has it added (imageTakenOff). So whichever
-  // comes first, the answer or the redraw, the notice ends the same. Worded
-  // again, the notice reads the text put back into this form, and the notice of
-  // a replaced badge reads the form's box as just set too (badgeReplacedNotice)
-  // and is its one refusal for the badge, as on screen: a note set on it above,
-  // for a box ticked since and taken out since with its badge say, goes, the
-  // notice saying what pressing again does then. The one case with nothing
-  // added is the notice of a refusal of the image itself said above, the image
-  // limit reached or uploads switched off, which says already that the image
-  // was taken off and why: an image attached since goes with nothing said, the
-  // picker left as the new page drew it, as on the page a failed redraw keeps
-  // (blockRefusedPicker), so the refusal is said once.
+  // (below), and any other has it added (imageTakenOff). So whichever comes
+  // first, the answer or the redraw, the notice ends the same. The one case
+  // with nothing added is the notice of a refusal of the image itself said
+  // above, the image limit reached or uploads switched off, which says already
+  // that the image was taken off and why: an image attached since goes with
+  // nothing said, the picker left as the new page drew it, as on the page a
+  // failed redraw keeps (blockRefusedPicker), so the refusal is said once.
   const fileField = form.querySelector("[data-file-field]");
   const refusal = answeredForm && draft.file ? pickerRefusal(form) : "";
   if (refusal && unsaid && unsaid.imageRefused) {
     // Taken off: the new form is left without it.
-  } else if (refusal) {
-    const said = el.notice.hidden ? "" : el.notice.querySelector(".notice-text").textContent;
-    const refused = refusalNotices.get(answeredForm);
-    const kept = { hasText: Boolean(draft.body.trim()), isThread: form.dataset.kind === "thread" };
-    const unchanged = refused && said === (unsaid ? words : refused.told);
-    if (unchanged && refused.replaced) {
-      badgeWithdrawn.delete(form);
-    }
-    showNotice(unchanged ? refused.notice(refusal, form, kept.hasText) : said ? imageTakenOff(said, refusal, kept) : refusal);
-  } else if (fileField && draft.file && setFile(fileField, draft.file)) {
+  } else if (refusal && !unchanged) {
+    showNotice(said ? imageTakenOff(said, refusal, { hasText: text, isThread: form.dataset.kind === "thread" }) : refusal);
+  } else if (!refusal && fileField && draft.file && setFile(fileField, draft.file)) {
     updateFileField(fileField);
     // Only alongside the file it was ticked for.
     const spoiler = field(form, "spoiler");
     if (spoiler) spoiler.checked = draft.spoiler;
+  }
+  // A refusal's own notice still on screen, said while the redraw loaded or
+  // above, speaks of this form now: it is kept with it and worded again for it
+  // (rewordRefusal), as the form stands with its values back, the text put back
+  // into it, its image or the picker's reason for taking it off, and for the
+  // notice of a replaced badge the box as just set too (badgeReplacedNotice).
+  // That notice is the form's one refusal for the badge, as on screen: a note
+  // set on it above, for a box ticked since and taken out since with its badge
+  // say, goes, the notice saying what pressing again does then. Words that come
+  // out the same are left as they are, and not heard again.
+  if (unchanged) {
+    refusalNotices.set(form, { ...refused, off: refusal || refused.off, told: said, after: "" });
+    rewordRefusal(form);
   }
   const details = form.closest("details");
   if (details && (draft.open || draft.body || draft.file)) {
@@ -4407,8 +4466,10 @@ function restoreDraft(draft) {
   // scrolling, if the form had the focus at the press and it is lost now, on
   // the page itself or nowhere. A form refused on screen while the redraw
   // loaded had it given back then, on a button that has gone with the old page
-  // since (refocusedForms), so the new form's button takes its place.
-  const focused = unsaid ? unsaid.focused : refocusedForms.has(answeredForm);
+  // since (refocusedForms), so the new form's button takes its place. So does a
+  // press refused before anything was sent, whose focus went to the old form's
+  // text box or badge box (submit), when its refusal is said again above.
+  const focused = unsaid ? unsaid.focused : unsent ? Boolean(words) : refocusedForms.has(answeredForm);
   if (focused && (!document.activeElement || document.activeElement === document.body)) {
     form.querySelector('button[type="submit"]')?.focus({ preventScroll: true });
   }
@@ -5473,22 +5534,34 @@ const refocusedForms = new WeakSet();
 // the hold ends, and goes as the redraw drew it then (holdForm).
 const redrawnPickers = new WeakMap();
 
-// How each posting form's last refusal was worded, by form, as a function of
-// why release took its image off ("" for not at all), of the form it is said to
-// and of whether that form holds text and an image, with whether it is the
-// notice of a replaced badge and, for a form told on screen, the words it was
-// told: a refusal answered while a redraw of the page loads, which then draws
+// How each posting form's last refusal is worded, by form, for it to be worded
+// again while it is still the notice on screen (rewordRefusal) and by a redraw
+// that draws the form again (restoreDraft): notice, a function of why its image
+// was taken off ("" for not at all), of the form it is said to and of whether
+// that form holds text and an image; replaced, whether it is the notice of a
+// replaced badge as things stand when it is worded; off, why its image was
+// taken off, by release or by a redraw since; told, the words on screen, ""
+// while a form answered off the screen has yet to be told (unsaidNotices);
+// after, what a failed redraw that kept the page added after them (render); and
+// unsent, set for a refusal said before anything was sent, an empty press or
+// the badge's note (refuseUnsent), which a redraw that draws the form again
+// says once more, the press having been made on the form while it was still in
+// sight. A refusal answered while a redraw of the page loads, which then draws
 // the picker switched off, is worded again with the picker's reason for the
-// form that redraw draws and the text put back into it (restoreDraft), so it
-// reads as it would had the redraw come first, and the notice of a replaced
-// badge, its one refusal for the badge, then takes off a note that form was
-// given (badgeWithdrawn). The words it was told on screen, or for a form
-// answered off the screen the words the redraw has just told it
-// (unsaidNotices), say whether its notice is still the one on screen, however
-// the page has changed since, a badge forgotten or verified meanwhile say,
-// which the wording reads as it stands then (badgeReplacedNotice). The two
-// refusals of the image itself take the image off themselves, and keep nothing
-// here.
+// form that redraw draws and the text put back into it, so it reads as it would
+// had the redraw come first, and the notice of a replaced badge, its one
+// refusal for the badge, then takes off a note that form was given
+// (badgeWithdrawn). The words told say whether its notice is still the one on
+// screen, however the page has changed since, a badge forgotten or verified
+// meanwhile say, which the wording reads as it stands then
+// (badgeReplacedNotice): a notice the reader has dismissed, or that another has
+// taken the place of, is not worded again. The two refusals of the image itself
+// take the image off themselves, and keep nothing here, and nor does a post the
+// forget stopped (FORGOTTEN_BEFORE_SENDING): none of them speaks of a badge
+// held, its box or the poster key, and what the last says of the forget that
+// stopped it stays so, so no change of badge and no forget since can make its
+// words untrue. Every press of the form takes its entry out (submit), so a
+// refusal is worded again only for the press it answers.
 const refusalNotices = new WeakMap();
 
 // What each posting form would have been told when its post was answered, or
@@ -5510,12 +5583,12 @@ const refusalNotices = new WeakMap();
 // forget of the badge or another badge verified can change, the notice then
 // naming no badge or the one held then, and a badge stored where none was held
 // at the answer has the form told that notice rather than the server's words,
-// while after Forget this browser the form is told the server's words
-// (BADGE_REPLACED). Every press of the form takes out what is left unsaid, one
-// refused before it is sent included, acting first on a refusal of the image
-// unless an image has been attached since (submit), so a form is told only of
-// the press it is answering, and a form that does not come back, to a page
-// drawn for another address say, takes its entry with it.
+// while after Forget this browser the form is told the server's words (submit).
+// Every press of the form takes out what is left unsaid, one refused before it
+// is sent included, acting first on a refusal of the image unless an image has
+// been attached since (submit), so a form is told only of the press it is
+// answering, and a form that does not come back, to a page drawn for another
+// address say, takes its entry with it.
 const unsaidNotices = new WeakMap();
 
 // takeUnsaidNotice takes out what a form answered off the screen was not told
@@ -5524,6 +5597,61 @@ function takeUnsaidNotice(form) {
   const unsaid = unsaidNotices.get(form);
   unsaidNotices.delete(form);
   return unsaid;
+}
+
+// formHolds is whether a posting form holds text and an image now, for a notice
+// worded as it is said (refusalNotices).
+function formHolds(form) {
+  const body = field(form, "body");
+  const image = field(form, "image");
+  return { text: Boolean(body && body.value.trim()), image: Boolean(image && image.files.length) };
+}
+
+// rewordRefusal words again the refusal a posting form was told, while it is
+// still the notice on screen (refusalNotices), when what it speaks of can have
+// changed under it before the next press: the form's badge box drawn again for
+// another badge or none (withdrawBadgeOption), on a change of badge in another
+// tab say (followCredentialStorage); the browser forgotten, in another tab say
+// (forgetForm); or the form drawn again by a redraw that puts its values back
+// (restoreDraft). It is worded by the rule it was first worded by, for the
+// badge held, the box on that form, the poster key and the text and image the
+// form holds then, as a form answered off the screen is when a redraw tells it
+// (unsaidNotices): the notice of a replaced badge names the badge held then, or
+// none, and after Forget this browser the form is told the server's words
+// (submit), so the screen names no badge the browser held. The notice of a
+// replaced badge is the form's one refusal for the badge, so a note left on the
+// form since goes (badgeWithdrawn). A refusal said before anything was sent
+// whose words no longer hold, the badge's note after a forget say, is taken
+// off, with what was added after it left on screen. Only the notice's words
+// change: the focus stays where it is, on its dismiss button too, and the page
+// is not scrolled. The notice is an alert, so a screen reader hears the new
+// words, as it hears the notice a failed redraw adds to (render); words that
+// come out the same are left as they are, and not heard again. The reader's own
+// changes to the form, a tick of its box or its text erased say, word nothing
+// again: the reader makes them with the form in sight, and the notice would be
+// heard again at each; the next wording reads them.
+function rewordRefusal(form) {
+  const refused = refusalNotices.get(form);
+  const said = noticeSaid();
+  if (!refused || !refused.told || said !== refused.told) {
+    return;
+  }
+  const { text, image } = formHolds(form);
+  const words = refused.notice(refused.off, form, text, image);
+  if (refused.replaced()) {
+    badgeWithdrawn.delete(form);
+  }
+  const told = [words, refused.after].filter(Boolean).join(" ");
+  if (words) {
+    refused.told = told;
+  } else {
+    refusalNotices.delete(form);
+  }
+  if (!told) {
+    clearNotice();
+  } else if (told !== said) {
+    el.notice.querySelector(".notice-text").textContent = told;
+  }
 }
 
 // holdForm switches off a form's controls while its request is pending, from
@@ -5608,6 +5736,60 @@ el.main.addEventListener("focusin", (event) => {
 
 /* Submitting --------------------------------------------------------------- */
 
+// refuseUnsent says why a press of a posting form is refused before anything is
+// sent, an empty press or one the badge's note stops (submit), and keeps with
+// the form how to word it (refusalNotices): words, a function of the form it is
+// said to and of whether that form holds text and an image, which gives "" once
+// what it says no longer holds. A redraw loading meanwhile, the press made on
+// the form while it was still in sight, during a post link's lookup into its
+// thread, Update, another page of the board's index or Back say, carries the
+// form for that press (carriedDraft), and if the page it draws is the form's
+// own, the refusal is said there once more, on the form drawn, worded for it,
+// with the focus on that form's button (restoreDraft), as a refusal the server
+// answered is: the notice said at the press was on the old page, which the
+// render that draws the thread after a post link's lookup takes off as it
+// begins, and the focus it gave went with the old form. A redraw that draws
+// another page says nothing, and the refusal goes with the form. Until the next
+// press, the refusal is worded again in place while it is the notice on screen
+// (rewordRefusal).
+function refuseUnsent(form, words, text, image) {
+  const notice = (off, on, hasText, hasImage) => {
+    const said = words(on, hasText, hasImage);
+    return said ? imageTakenOff(said, off, { hasText, isThread: on.dataset.kind === "thread" }) : "";
+  };
+  const told = notice("", form, text, image);
+  refusalNotices.set(form, { notice, replaced: () => false, off: "", told, after: "", unsent: true });
+  showNotice(told);
+}
+
+// emptyPostNotice is what a press with nothing to post is told. An image is
+// offered as the alternative only where the form can take one.
+function emptyPostNotice(form) {
+  const image = field(form, "image");
+  return image && !image.disabled ? "Write something or attach an image." : "Write something to post.";
+}
+
+// badgeNoteWords is how to word the badge's note for a press it refuses
+// (badgeWithdrawnNotice), for the form it is said to as that form stands: the
+// badge held, the box drawn for it and the poster key, which another tab's
+// verification or forget can change while the note is on screen, or a redraw
+// that draws the form again. Its words no longer hold, and are "", once the
+// browser has been forgotten since the press, which takes out the badge box and
+// the key the note speaks of and says nothing at the next press (forgetForm),
+// once the form's box is ticked, which posts with that badge, or once the form
+// has a note of its own again, for a box ticked since and drawn again for
+// another badge, which refuses the next press itself.
+function badgeNoteWords(withdrawn) {
+  const forgets = browserForgets;
+  return (on) => {
+    const box = field(on, "badge");
+    if (forgets !== browserForgets || (box && box.checked) || badgeWithdrawn.has(on)) {
+      return "";
+    }
+    return badgeWithdrawnNotice(on, withdrawn);
+  };
+}
+
 el.main.addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.target;
@@ -5636,18 +5818,22 @@ el.main.addEventListener("submit", async (event) => {
   // so that a redraw loading meanwhile, whose draft was read from this form
   // before it, carries the form itself, held, as it carries a post pressed
   // before it began (carriedDraft), and the focus an earlier refusal gave back
-  // is no longer this press's to give again (refocusedForms).
+  // is no longer this press's to give again (refocusedForms), nor is the
+  // refusal the form was told this press's to word again (refusalNotices).
   presses.set(form, (presses.get(form) ?? 0) + 1);
   refocusedForms.delete(form);
+  refusalNotices.delete(form);
   const button = form.querySelector('button[type="submit"]');
   const data = new FormData(form);
   const name = String(data.get("name") || "");
   const body = String(data.get("body") || "");
   const file = image && !image.disabled && image.files[0];
 
+  // Nothing to post. The refusal is said again on the form a redraw loading
+  // meanwhile draws, unless the reader has written something or attached an
+  // image since (refuseUnsent).
   if (!body.trim() && !file) {
-    // An image is offered as the alternative only where the form can take one.
-    showNotice(image && !image.disabled ? "Write something or attach an image." : "Write something to post.");
+    refuseUnsent(form, (on, text, image) => (text || image ? "" : emptyPostNotice(on)), false, false);
     (field(form, "body") || form).focus();
     return;
   }
@@ -5665,7 +5851,8 @@ el.main.addEventListener("submit", async (event) => {
   }
 
   // A form whose ticked badge was taken out from under it says so before its
-  // post goes without one, once; the press after it posts (badgeWithdrawn).
+  // post goes without one, once, and again on the form a redraw loading
+  // meanwhile draws (refuseUnsent); the press after it posts (badgeWithdrawn).
   // The box drawn in its place, if the page holds a badge now, takes the focus,
   // for the reader to tick it there. That post needs the puzzle the badge
   // would have skipped, which starts now if it has not: the page taking the
@@ -5676,7 +5863,7 @@ el.main.addEventListener("submit", async (event) => {
   if (badgeWithdrawn.has(form)) {
     const withdrawn = badgeWithdrawn.get(form);
     badgeWithdrawn.delete(form);
-    showNotice(badgeWithdrawnNotice(form, withdrawn));
+    refuseUnsent(form, badgeNoteWords(withdrawn), Boolean(body.trim()), Boolean(file));
     const box = field(form, "badge");
     if (box) box.focus();
     if (captchaFormNeedsIt(form) && captchaFormHasWriting(form)) {
@@ -5903,28 +6090,34 @@ el.main.addEventListener("submit", async (event) => {
       err.status === 404 || (err.status === 403 && (err.message === "thread is archived" || err.message === "thread is locked"));
     // Worded for the image release took off, or for none, for the form it is
     // said to and for whether that form holds text and an image, and kept with
-    // the form, with whether it is the notice of a replaced badge: a redraw
-    // still loading that then takes the image off words it again, as it would
-    // have read had the redraw come first, for the form that redraw draws and
-    // the text put back into it (restoreDraft), and a form off the screen, told
-    // nothing here, is told it worded as things stand when it is told (below).
-    // The notice of a replaced badge is worded so only while the browser has
-    // not been forgotten since the press: a badge stored after a forget is
-    // someone else's, so the form is then told the server's words
-    // (BADGE_REPLACED). For a form off the screen it is the notice of a
-    // replaced badge too when storage holds none at the answer but holds one by
-    // the time a redraw tells the form, verified in another tab meanwhile say,
-    // so the form is not sent to verify again for a badge the browser holds. A
-    // post not sent from a form off the screen (below) is worded as the
-    // forget's if the browser had been forgotten since the press by the time it
-    // was dropped, which would have stopped it on screen too, and otherwise as
-    // one not sent because the reader left its page (errorMessage).
+    // the form, with whether it is the notice of a replaced badge as things
+    // stand when it is worded (refusalNotices): a redraw still loading that
+    // then draws the form again words it again, for the form that redraw draws
+    // and the text and image put back into it, with the picker's reason where
+    // it takes the image off, as it would have read had the redraw come first
+    // (restoreDraft); a change of badge or a forget heard while it is still the
+    // notice on screen words it again in place (rewordRefusal); and a form off
+    // the screen, told nothing here, is told it worded as things stand when it
+    // is told (below). The notice of a replaced badge is worded so only while
+    // the browser has not been forgotten since the press: a badge stored after
+    // a forget is someone else's, so the form is then told the server's words
+    // (submit). It is the notice of a replaced badge too when storage holds
+    // none at the answer but holds one by the time it is worded again, for a
+    // form on screen while its notice is still up (rewordRefusal) and for one
+    // off the screen when a redraw tells it, verified in another tab meanwhile
+    // say, so the form is not sent to verify again for a badge the browser
+    // holds. A post not sent from a form off the screen (below) is worded as
+    // the forget's if the browser had been forgotten since the press by the
+    // time it was dropped, which would have stopped it on screen too, and
+    // otherwise as one not sent because the reader left its page
+    // (errorMessage).
     const badgeRefused = Boolean(held) && (reason === "expired" || reason === "revoked");
     const stoppedByForget = err.notSent && forgotten();
+    const replacedNow = () => (replaced || (badgeRefused && state.verification.badge !== null)) && !forgotten();
     const said = (off, on, text, image) =>
       stoppedByForget
         ? FORGOTTEN_BEFORE_SENDING
-        : (replaced || (!shown && badgeRefused && state.verification.badge !== null)) && !forgotten()
+        : replacedNow()
           ? badgeReplacedNotice(on, { hasText: text, hasImage: image, imageOff: off })
           : errorMessage(err, { hasText: text, hasImage: image, imageOff: off });
     const notice = (off, on = form, text = hasText, image = hasImage) =>
@@ -5955,7 +6148,7 @@ el.main.addEventListener("submit", async (event) => {
       const word = (on, text, image) =>
         imageRefused ? errorMessage(err, { hasText: text, imageOff }) : notice(imageOff, on, text, image);
       if (!imageRefused) {
-        refusalNotices.set(form, { notice, replaced });
+        refusalNotices.set(form, { notice, replaced: replacedNow, off: imageOff, told: "", after: "" });
       }
       unsaidNotices.set(form, {
         word,
@@ -5984,7 +6177,7 @@ el.main.addEventListener("submit", async (event) => {
       return;
     }
     const told = notice(imageOff);
-    refusalNotices.set(form, { notice, told, replaced });
+    refusalNotices.set(form, { notice, replaced: replacedNow, off: imageOff, told, after: "" });
     showNotice(told);
   }
 });
