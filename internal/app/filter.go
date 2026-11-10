@@ -11233,7 +11233,14 @@ func pupilsSought(ws []string) bool {
 			return true
 		case is(w, "just") && (is(next, "us") || is(next, "me")):
 			rest := ws[i+2:]
-			if is(next, "me") && len(rest) > 0 && pupilDuties[rest[0]] && (len(rest) == 1 || !objectWords[rest[1]]) {
+			duty := rest
+			if is(next, "me") && len(rest) > 2 && is(rest[0], "and") && !objectWords[rest[1]] &&
+				!pupilReaders[rest[1]] && !ownerWords[rest[1]] {
+				// "just me and riya organising the fest": a duty shared
+				// with someone named, not with the reader.
+				duty = rest[2:]
+			}
+			if is(next, "me") && len(duty) > 0 && pupilDuties[duty[0]] && (len(duty) == 1 || !objectWords[duty[1]]) {
 				break
 			}
 			for len(rest) > 0 && (is(rest[0], "the") || is(rest[0], "no") || is(rest[0], "without")) {
@@ -11252,7 +11259,8 @@ func pupilsSought(ws []string) bool {
 			is(w, "between") && (is(next, "us") || is(next, "ourselves")),
 			pupilAsks(ws, i):
 			return true
-		case pupilMeets[w] && (i == 0 || !meetKinds[ws[i-1]]):
+		case pupilMeets[w] && (i == 0 || !meetKinds[ws[i-1]]) &&
+			!(meetsOpenly(ws[i+1:]) && !privatePlace(ws[i+1:])):
 			near := false
 			for _, x := range ws[i+1 : min(len(ws), i+7)] {
 				near = near || pupilPlaces[x]
@@ -11260,6 +11268,39 @@ func pupilsSought(ws []string) bool {
 			if !near {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// meetsOpenly reports, in ws after a meeting, someone met in the open, one of
+// meetPeople after at most "the" or "our" and one word ("meet the alumni",
+// "meet the career counsellor"), or a group's business after "about" ("a
+// meeting about the class magazine", pupilGroups); not "meet me" or "meet the
+// guy".
+func meetsOpenly(ws []string) bool {
+	k, topic := 0, false
+	if len(ws) > 0 && meetTopics[ws[0]] {
+		k, topic = 1, true
+	}
+	if k < len(ws) && (is(ws[k], "the") || is(ws[k], "our")) {
+		k++
+	}
+	for j := k; j < len(ws) && j <= k+1; j++ {
+		if meetPeople[ws[j]] || topic && pupilGroups[ws[j]] {
+			return true
+		}
+	}
+	return false
+}
+
+// privatePlace reports, in the next seven words of ws, a place of someone's
+// own (an owner before one of privatePlaces, or "home"): "at my house", "your
+// place", "at home".
+func privatePlace(ws []string) bool {
+	for j := 1; j < len(ws) && j < 8; j++ {
+		if privatePlaces[ws[j]] && (ownerWord(ws[j-1]) || is(ws[j], "home")) {
+			return true
 		}
 	}
 	return false
@@ -11524,8 +11565,15 @@ var (
 	// are the poster's own work ("just me handling the forms").
 	pupilSecrets = canonSetOf(`secret secrets secretly private privately alone nobody noone`)
 	pupilMeets   = canonSetOf(`meet meets meetup meeting meetings`)
-	meetKinds    = canonSetOf(`parent parents teacher teachers ptm pta sports sport alumni staff`)
-	pupilPlaces  = canonSetOf(`library canteen cafeteria room hall lunch recess club clubs ground field lab classroom
+	meetKinds    = canonSetOf(`parent parents teacher teachers ptm pta sports sport alumni staff un reunion`)
+	// meetPeople are met in the open, and meetTopics say what a group meets
+	// about (meetsOpenly), unless privatePlaces of someone's own follow
+	// (privatePlace: "at my house").
+	meetPeople = canonSetOf(`alumni counsellor counselor counsellors counselors principal coach coaches mentor
+		mentors judges panel`)
+	meetTopics    = canonSetOf(`about regarding`)
+	privatePlaces = canonSetOf(`house home place flat apartment car room`)
+	pupilPlaces   = canonSetOf(`library canteen cafeteria room hall lunch recess club clubs ground field lab classroom
 		auditorium gym court`)
 	parentWords = canonSetOf(`parents parent mom mum mommy mummy dad daddy papa family adults adult grownups
 		grown elders`)
