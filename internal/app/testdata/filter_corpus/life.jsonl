@@ -516,3 +516,17 @@
 {"id": "life-750", "body": "they sh'd not take that long to mark papers", "subject": "", "name": "", "expect": "publish", "why": "\"sh'd not take that long\": a verb after \"not\" makes it \"should\" (V5-SHD-NOT control)"}
 {"id": "life-751", "body": "i sh'd not even 2 days ago", "subject": "", "name": "", "expect": "support", "why": "\"sh'd not\" before a number of days ago is \"self harmed\" (R5CHK-SHD-NOT-DIGIT, beside life-746..748)"}
 {"id": "life-752", "body": "we sh'd not wait 10 minutes for the bus", "subject": "", "name": "", "expect": "publish", "why": "a verb after \"not\", and no \"ago\": \"should not wait\" (R5CHK-SHD-NOT-DIGIT)"}
+{"id": "life-753", "body": "i genuinely want to die", "subject": "", "name": "", "expect": "support", "why": "'genuinely' between I and the crisis verb (R5-F1)"}
+{"id": "life-754", "body": "i kind of want to die", "subject": "", "name": "", "expect": "support", "why": "'kind of' between I and the crisis verb (R5-F1)"}
+{"id": "life-755", "body": "i still kinda want to die", "subject": "", "name": "", "expect": "support", "why": "two hedges between I and the crisis verb (R5-F1)"}
+{"id": "life-756", "body": "tbh i genuinely want to die", "subject": "", "name": "", "expect": "support", "why": "'genuinely' after a filler (R5-F1)"}
+{"id": "life-757", "body": "i desperately want to hurt myself", "subject": "", "name": "", "expect": "support", "why": "'desperately' before hurting oneself (R5-F1)"}
+{"id": "life-758", "body": "i badly want to cut myself", "subject": "", "name": "", "expect": "support", "why": "'badly' before cutting oneself (R5-F1)"}
+{"id": "life-759", "body": "i fucking want to die", "subject": "", "name": "", "expect": "support", "why": "a swear word between I and the crisis verb (R5-F1)"}
+{"id": "life-760", "body": "i f*cking want to die", "subject": "", "name": "", "expect": "support", "why": "a masked swear word between I and the crisis verb (R5-F1)"}
+{"id": "life-761", "body": "i genuinely wish i was dead", "subject": "", "name": "", "expect": "support", "why": "'genuinely' before wishing to be dead (R5-F1)"}
+{"id": "life-762", "body": "i truly wish i could die", "subject": "", "name": "", "expect": "support", "why": "'truly' before wishing to die (R5-F1)"}
+{"id": "life-763", "body": "i genuinely cut myself last night", "subject": "", "name": "", "expect": "support", "why": "'genuinely' before cutting last night (R5-F1)"}
+{"id": "life-764", "body": "i have really wanted to die for weeks", "subject": "", "name": "", "expect": "support", "why": "how long the poster has wanted to die, not dying for something (R5-F1)"}
+{"id": "life-765", "body": "i genuinely want to die laughing at this meme", "subject": "", "name": "", "expect": "publish", "why": "dying laughing is an idiom, with any adverb (R5-F1)"}
+{"id": "life-766", "body": "i kinda want to disappear from social media for a while", "subject": "", "name": "", "expect": "publish", "why": "leaving social media for a while (R5-F1)"}

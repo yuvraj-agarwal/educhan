@@ -3777,6 +3777,16 @@ var (
 	jumpOff = words(`jump`, `leap`, `dive`, `flip`, `backflip`, `do~a~flip`, `do~a~backflip`, `swan~dive`) +
 		`~off~(?:of~)?` + words(`a`, `the`, `your`, `ur`, `that`) + `~(?:[\pL\pN]+~){0,2}?` + words(`bridge`,
 		`building`, `roof`, `rooftop`, `cliff`, `terrace`, `balcony`, `tower`, `floor`, `ledge`)
+	// crisisAdverbs are the words of how much or how sure that may stand
+	// between "I" and a crisis verb: "i really want to die", "i genuinely
+	// want to die", "i kind of want to die", "i fucking want to die".
+	// carriers holds the same words for ownSubject.
+	crisisAdverbs = words(`really`, `just`, `honestly`, `kinda`, `actually`, `literally`, `seriously`, `so`,
+		`genuinely`, `truly`, `legit`, `highkey`, `lowkey`, `definitely`, `def`, `sincerely`, `desperately`,
+		`badly`, `constantly`, `usually`, `deeply`, `totally`, `completely`, `fully`, `absolutely`, `sorta`,
+		`kind~of`, `sort~of`, `almost`, `rly`, `rlly`, `realy`, `srsly`, `deadass`, `prolly`, `probably`,
+		`fucking`, `fuckin`, `fking`, `fkin`, `fkn`, `fcking`, `fckin`, `f~cking`, `f~ckin`, `f~king`, `freaking`,
+		`frickin`, `effing`, `mostly`, `only`, `still`, `sometimes`, `100`)
 )
 
 // supportRules are crisis language in the poster's own voice, in English and
@@ -3785,14 +3795,15 @@ var (
 // are something else in context: a distance in "kms", a hostel in "I don't
 // want to live in the hostel", an idiom in "die of embarrassment".
 var supportRules = []rule{bothViews(`\b` + words(
-	`i~(?:(?:really|just|honestly|kinda|actually|literally|seriously|so)~)*`+
+	`i~(?:`+crisisAdverbs+`~)*`+
 		words(`want`, `wanna`, `wana`, `wish`, `need`)+`~(?:(?:to|2)~)?`+words(crisisActs, jumpOff),
 	// Wherever the "i" is, in any tense, which ownSubject reads: "I hate
 	// myself and want to self harm", "i used to want to die and now i do
 	// again", "still want to die tbh". Others wanting it are aboutSomeoneElse.
 	words(`want`, `wanted`, `wanting`, `wanna`, `wana`, `need`, `wish`, `wished`, `wishing`)+`~(?:(?:to|2)~)?`+crisisActs,
-	`i~wish~i~`+words(`could`, `would`, `can`, `'?d`)+`~(?:just~)?`+words(crisisActs, `never~been~born`),
-	`i~`+words(`'?m`, `am`, `m`)+`~(?:`+words(`so`, `just`, `honestly`, `really`)+`~)?ready~to~die`,
+	`i~(?:`+crisisAdverbs+`~){0,2}wish~i~`+words(`could`, `would`, `can`, `'?d`)+`~(?:just~)?`+
+		words(crisisActs, `never~been~born`),
+	`i~`+words(`'?m`, `am`, `m`)+`~(?:`+crisisAdverbs+`~){0,2}ready~to~die`,
 	`i~(?:'?m|am|m)?~`+words(`going~to`, `gonna`, `gunna`, `about~to`, `ready~to`, `thinking~about`,
 		`thinking~of`, `planning~to`, `planning~on`)+`~`+plannedActs,
 	// The same plan with the "I" left out, which ownSubject reads: "planning
@@ -3802,7 +3813,7 @@ var supportRules = []rule{bothViews(`\b` + words(
 		`made~up~my~mind~to`)+`~`+plannedActs,
 	words(`planning`, `planned`, `plotting`)+`~my~(?:own~)?suicide`,
 	// "i should just die", "i deserve to die", "i don't deserve to live".
-	`i~(?:`+words(`really`, `honestly`, `literally`, `seriously`)+`~)?`+words(`should`, `shud`, `shld`, `deserve~to`)+
+	`i~(?:`+crisisAdverbs+`~){0,2}`+words(`should`, `shud`, `shld`, `deserve~to`)+
 		`~(?:just~)?die`,
 	`i~`+words(`don'?t`, `dont`, `do~not`)+`~(?:even~)?deserve~to~`+words(`live`, `be~alive`, `exist`),
 	// "i just want it all to end", "i want my life to end": supportCheck
@@ -3894,7 +3905,7 @@ var supportRules = []rule{bothViews(`\b` + words(
 	// suicidal tonight": with the "I" left out, ownSubject reads it.
 	`(?:i~)?`+words(`'?m`, `am`, `m`, `was`, `feel`, `feeling`, `felt`, `been`, `'?ve~been`, `have~been`, `get`, `got`,
 		`getting`, `keep~feeling`, `still~feel`, `still~feeling`)+`~(?:`+words(`feeling`, `getting`, `been~feeling`)+
-		`~)?(?:(?:so|really|very|kinda|pretty|a~bit|super|extremely|quite|lowkey)~)?suicidal`,
+		`~)?(?:(?:very|pretty|a~bit|super|extremely|quite|`+crisisAdverbs+`)~){0,2}suicidal`,
 	`suicidal~`+words(`thoughts`, `feelings`, `again`, `ideation`),
 	`(?:i~)?`+words(`don'?t`, `do~not`, `dont`, `dnt`)+`~(?:really~)?`+words(`want~to`, `wanna`, `wana`)+`~`+
 		words(`be~alive`, `live`, `exist`, `be~here~anymore`, `wake~up`),
@@ -3903,9 +3914,9 @@ var supportRules = []rule{bothViews(`\b` + words(
 	// "I started cutting again", "I've been cutting again".
 	`i~(?:'?m~|am~|m~|'?ve~|have~)?(?:`+words(`been`, `keep`, `kept`, `still`, `started`, `start`, `back~to`)+
 		`~)?`+words(`cutting`, `hurting~myself`, `harming~myself`)+`~again`,
-	`i~`+words(`'?m`, `am`, `m`)+`~(?:`+words(`so`, `really`, `just`, `honestly`, `literally`)+`~){0,2}`+
+	`i~`+words(`'?m`, `am`, `m`)+`~(?:`+crisisAdverbs+`~){0,2}`+
 		words(`tired`, `sick`, `exhausted`)+`~of~`+words(`being~alive`, `living`, `life`, `existing`),
-	`i~(?:`+words(`'?ve`, `have`)+`~)?(?:`+words(`always`, `often`, `really`, `just`)+`~)?`+
+	`i~(?:`+words(`'?ve`, `have`)+`~)?(?:(?:always|often|`+crisisAdverbs+`)~){0,2}`+
 		words(`wanted`, `wished`)+`~(?:to~)?`+words(`die`, `be~dead`, `not~be~alive`, `not~exist`, `disappear`),
 	// "I stand at the balcony and think about jumping": supportCheck wants
 	// somewhere high in the sentence, or "off" after it.
@@ -3961,8 +3972,8 @@ var supportRules = []rule{bothViews(`\b` + words(
 		words(`meals?`, `eating`, `food`, `dinner`, `lunch`, `breakfast`, `i~eat`)+`)?`,
 	`nothing~(?:left~)?to~live~for`,
 	`better~off~dead`,
-	`i~wish~i~`+words(`was`, `were`)+`~dead`,
-	`i~wish~i~`+words(`wasn'?t`, `weren'?t`, `was~never`, `were~never`, `had~never~been`, `hadn'?t~been`)+
+	`i~(?:`+crisisAdverbs+`~){0,2}wish~i~`+words(`was`, `were`)+`~dead`,
+	`i~(?:`+crisisAdverbs+`~){0,2}wish~i~`+words(`wasn'?t`, `weren'?t`, `was~never`, `were~never`, `had~never~been`, `hadn'?t~been`)+
 		`~`+words(`born`, `alive`),
 	words(`everyone`, `everybody`, `everyone~else`, `the~world`, `this~world`, `my~family`, `my~parents`,
 		`my~friends`, `my~mom`, `my~mum`, `my~dad`, `my~class`)+`~`+words(`would`, `will`, `'?d`, `'?ll`, `is`, `are`,
@@ -4041,8 +4052,7 @@ var supportRules = []rule{bothViews(`\b` + words(
 ) + `\b`),
 	// With no "I", where a sentence, a line or a greentext line starts:
 	// ">honestly want to end it", "want to die. not a meme".
-	bothViews(`(?:^|[.!?;:\n>,])[^\pL\pN]*(?:` + words(`honestly`, `really`, `just`, `literally`, `seriously`,
-		`kinda`, `lowkey`, `genuinely`, `still`, `sometimes`) + `~){0,3}` + words(
+	bothViews(`(?:^|[.!?;:\n>,])[^\pL\pN]*(?:` + crisisAdverbs + `~){0,3}` + words(
 		words(`want`, `wanna`, `wana`)+`~(?:(?:to|2)~)?`+words(`die`, `end~it~all`, `end~my~life`, `end~it`,
 			`kill~my~self`, `not~exist`, `not~be~alive`, `disappear`),
 		// "been cutting again since the results came out"
@@ -12855,10 +12865,12 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 		return (anyIn(s, bleedSigns) || !part && anyIn(s, hurtSigns)) && !(hitBodyParts[last] && anyIn(s, itchSigns)) &&
 			!hurtByAccident(next) && !accidentAhead(next) && !(len(next) > 0 && (is(next[0], "on") || is(next[0], "into")))
 	case is(last, "die"):
-		// "ready to die for my country"; not "want to die for real", or a
-		// death owed for something: "i deserve to die for what i did", "i
-		// should just die for being this stupid".
+		// "ready to die for my country"; not "want to die for real", a
+		// time it has lasted ("i've wanted to die for weeks", dieForTimes)
+		// or a death owed for something: "i deserve to die for what i did",
+		// "i should just die for being this stupid".
 		if len(next) > 0 && is(next[0], "for") && !(len(next) > 1 && (is(next[1], "real") || is(next[1], "good"))) &&
+			!dieForTime(next[1:]) &&
 			!hasWord(ws, "deserve") && !hasWord(ws, "should") && !hasWord(ws, "shud") && !hasWord(ws, "shld") {
 			return false
 		}
@@ -13540,12 +13552,27 @@ func ownSubject(text string, i int) bool {
 			return false
 		case joiners[w]:
 			joined = true
-		case carriers[w]:
+		case carrierWord(w):
+		case is(w, "of") && k > 0 && (is(ws[k-1], "kind") || is(ws[k-1], "sort")):
+			k-- // "i kind of want to die"
 		case !joined:
 			return false
 		}
 	}
 	return true
+}
+
+// carrierWord reports one of carriers, or one drawn out by repeating its
+// last letter: "reallyyy", "sooo".
+func carrierWord(w string) bool {
+	if carriers[w] {
+		return true
+	}
+	n := len(w)
+	for n > 1 && w[n-1] == w[n-2] {
+		n--
+	}
+	return n < len(w) && carriers[w[:n]]
 }
 
 var (
@@ -13554,11 +13581,16 @@ var (
 	otherSubjects       = canonSetOf(`we we're we've we'll we'd us our they'd their his her its it who`)
 	joiners             = canonSetOf(`and then n &`)
 	// carriers carry a verb without being its subject: "been",
-	// "started", "still", "honestly".
+	// "started", "still", "honestly", and the words of crisisAdverbs
+	// ("genuinely", "desperately", "fucking"); carrierWord also reads them
+	// drawn out ("reallyyy", "sooo") and "kind of" and "sort of".
 	carriers = canonSetOf(`been have has had keep kept keeps still started start starting again just really
 		honestly seriously literally actually also always often sometimes lowkey finally secretly basically even already
 		now today yesterday tonight lately recently back to used am was 'm do did so ngl tbh fr like ok okay
-		anyway anyways yeah well because cause cuz bc but tho though lol idk`)
+		anyway anyways yeah well because cause cuz bc but tho though lol idk genuinely truly legit highkey definitely
+		def sincerely desperately badly constantly usually deeply totally completely fully absolutely sorta kinda
+		almost rly rlly realy srsly deadass prolly probably fucking fuckin fking freaking frickin effing mostly only
+		100`)
 )
 
 // someoneElseThinks reports that the thinking a support match starts with
@@ -13771,6 +13803,19 @@ var (
 	reactions = canonSetOf(`care cares notice miss happier better relieved mourn cry sad upset matter funeral
 		remember forget`)
 )
+
+// dieForTime reports how long, after "die for": "weeks", "a few months",
+// "the past 2 years", "so long", not "a few days off".
+func dieForTime(ws []string) bool {
+	for i, w := range ws[:min(len(ws), 4)] {
+		if dieForTimes[w] {
+			return !(i+1 < len(ws) && is(ws[i+1], "off"))
+		}
+	}
+	return false
+}
+
+var dieForTimes = canonSetOf(`weeks months years days ages while long yrs`)
 
 // dieIdiom reports "die of embarrassment", "die from boredom", "die
 // laughing" or "die trying" in the words after "die".
