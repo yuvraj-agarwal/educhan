@@ -13,7 +13,10 @@ import (
 // client, and the poster ID of a post sent with no poster key, to that: a
 // second address in the same /64 is the same client, and the first address of
 // the next /64 is another. A client's share of the upload budget is held to it
-// in busy_test.go instead, because that needs bodies held open.
+// in busy_test.go instead, because that needs bodies held open. The one image
+// post a client may have waiting for room in that budget is counted under the
+// same key as its share (reserveUpload), and no test holds it to the /64 on
+// its own.
 const (
 	// The first and the last address of one /64: the furthest apart two
 	// addresses of one client can be.

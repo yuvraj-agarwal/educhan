@@ -1680,15 +1680,16 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `addressKey` in `middleware.go` to the first address of its /64 (`2001:db8:1:2::`),
   which is all an in-memory key holds for an IPv6 client. Every limit that takes
   `clientIP` is keyed on it (today the posting and upload cooldowns, a client's share of
-  the upload budget and the per-client half of the code-request cooldown, whose other half
-  is keyed on the email's hash), and so is the poster ID of a post with no poster key. A
-  subscriber is normally handed at least a /64 and can use any address in it, so keyed on
-  the whole address one client could take a fresh key with every request. Everyone in one
-  /64 shares those keys, as everyone behind one IPv4 NAT address does (`TestClientIP`, and
-  through the handlers `ipv6_grouping_test.go`). The forwarded entry and the peer both go
-  through `addressKey`; a path into `clientIP` that skipped it would give an IPv6 client a
-  fresh key per request again. A holder of a shorter prefix, a /56 or a /48, still has
-  many /64s, and so many keys: a known limit, stated in the README, that the code does not
+  the upload budget and the one image post a client may have waiting for room in it, and
+  the per-client half of the code-request cooldown, whose other half is keyed on the
+  email's hash), and so is the poster ID of a post with no poster key. A subscriber is
+  normally handed at least a /64 and can use any address in it, so keyed on the whole
+  address one client could take a fresh key with every request. Everyone in one /64 shares
+  those keys, as everyone behind one IPv4 NAT address does (`TestClientIP`, and through
+  the handlers `ipv6_grouping_test.go`). The forwarded entry and the peer both go through
+  `addressKey`; a path into `clientIP` that skipped it would give an IPv6 client a fresh
+  key per request again. A holder of a shorter prefix, a /56 or a /48, still has many
+  /64s, and so many keys: a known limit, stated in the README, that the code does not
   close.
   The keys carry client addresses, so the limiters are also a privacy surface: `New`
   builds a `cooldownSweep` over all four limiters and starts its timer, which drops every
