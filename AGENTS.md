@@ -1019,8 +1019,10 @@ cost down:
   patterns' subjects, "i will", "someone should", sit in front of the whole list of
   acts), shares one copy of each class's ranges among the programs (`shareRunes`), and
   drops each pattern's tree once it is planned (`forget`). `TestFilterPlanIsBounded`
-  holds the compiled programs to 800,000 instructions (about 798,700 now; when it
-  was 570,000, the same patterns split without the bound came to 1.4 million). The grammar rules
+  holds the compiled programs to 800,000 instructions (about 799,100 now; when it
+  was 570,000, the same patterns split without the bound came to 1.4 million). The support
+  rules that start at "I" and an adverb sit behind one copy of `crisisAdverbs`, which the
+  planner does not split, and share one copy of `crisisActs` there. The grammar rules
   keep their patterns small by matching the rarest word, the verb or the harm, and
   reading the speaker and the object in Go (`frameSpeaker`, `threatFrame`,
   `threatSubject`); a pattern that starts at "i" or "the" and spells out what follows

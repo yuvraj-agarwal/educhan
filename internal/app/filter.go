@@ -3780,13 +3780,13 @@ var (
 	// crisisAdverbs are the words of how much or how sure that may stand
 	// between "I" and a crisis verb: "i really want to die", "i genuinely
 	// want to die", "i kind of want to die", "i fucking want to die".
-	// carriers holds the same words for ownSubject.
-	crisisAdverbs = words(`really`, `just`, `honestly`, `kinda`, `actually`, `literally`, `seriously`, `so`,
-		`genuinely`, `truly`, `legit`, `highkey`, `lowkey`, `definitely`, `def`, `sincerely`, `desperately`,
-		`badly`, `constantly`, `usually`, `deeply`, `totally`, `completely`, `fully`, `absolutely`, `sorta`,
-		`kind~of`, `sort~of`, `almost`, `rly`, `rlly`, `realy`, `srsly`, `deadass`, `prolly`, `probably`,
-		`fucking`, `fuckin`, `fking`, `fkin`, `fkn`, `fcking`, `fckin`, `f~cking`, `f~ckin`, `f~king`, `freaking`,
-		`frickin`, `effing`, `mostly`, `only`, `still`, `sometimes`, `100`)
+	// carriers holds the same words for ownSubject. The words that end in
+	// "ly" share the ending, which keeps the patterns that hold them small.
+	crisisAdverbs = words(words(`r(?:ea)?l?`, `honest`, `actual`, `literal`, `s(?:eriou|r)s`, `genuine`, `tru`,
+		`definite`, `sincere`, `desperate`, `bad`, `constant`, `usual`, `deep`, `total`, `complete`, `ful`,
+		`absolute`, `pro(?:l|bab)`, `most`, `on`)+`ly`, `just`, `kind(?:a|~of)`, `sort(?:a|~of)`, `so`, `legit`,
+		`(?:high|low)key`, `def`, `almost`, `deadass`, `f(?:uc|c|~c|~)?k(?:ing|in|n)`, `fr(?:eak|ick)in`,
+		`freaking`, `effing`, `still`, `sometimes`, `100`)
 )
 
 // supportRules are crisis language in the poster's own voice, in English and
@@ -3795,15 +3795,27 @@ var (
 // are something else in context: a distance in "kms", a hostel in "I don't
 // want to live in the hostel", an idiom in "die of embarrassment".
 var supportRules = []rule{bothViews(`\b` + words(
-	`i~(?:`+crisisAdverbs+`~)*`+
-		words(`want`, `wanna`, `wana`, `wish`, `need`)+`~(?:(?:to|2)~)?`+words(crisisActs, jumpOff),
+	// "i really want to die", "i honestly wish i could disappear", "i
+	// should just die", "i deserve to die", "i wish i was dead", "i wish i
+	// was never born", "i'm so ready to die", "i'm honestly tired of being
+	// alive", "i've always wanted to die", "i often wish i was dead": one
+	// alternative, so that the adverbs and the acts are compiled once each.
+	`i~(?:`+words(`'?m`, `am`, `m`, `'?ve`, `have`)+`~)?(?:(?:always|often|`+crisisAdverbs+`)~)*`+words(
+		words(words(`want`, `wanna`, `wana`, `wish`, `need`)+`~(?:(?:to|2)~)?`,
+			`wish~i~`+words(`could`, `would`, `can`, `'?d`)+`~(?:just~)?`)+crisisActs,
+		words(`want`, `wanna`, `wana`, `wish`, `need`)+`~(?:(?:to|2)~)?`+jumpOff,
+		`wish~i~`+words(`could`, `would`, `can`, `'?d`)+`~(?:just~)?never~been~born`,
+		words(`should`, `shud`, `shld`, `deserve~to`)+`~(?:just~)?die`,
+		`wish~i~`+words(`was`, `were`)+`~dead`,
+		`wish~i~`+words(`wasn'?t`, `weren'?t`, `was~never`, `were~never`, `had~never~been`, `hadn'?t~been`)+
+			`~`+words(`born`, `alive`),
+		`ready~to~die`,
+		words(`tired`, `sick`, `exhausted`)+`~of~`+words(`being~alive`, `living`, `life`, `existing`),
+		words(`wanted`, `wished`)+`~(?:to~)?`+words(`die`, `be~dead`, `not~be~alive`, `not~exist`, `disappear`)),
 	// Wherever the "i" is, in any tense, which ownSubject reads: "I hate
 	// myself and want to self harm", "i used to want to die and now i do
 	// again", "still want to die tbh". Others wanting it are aboutSomeoneElse.
 	words(`want`, `wanted`, `wanting`, `wanna`, `wana`, `need`, `wish`, `wished`, `wishing`)+`~(?:(?:to|2)~)?`+crisisActs,
-	`i~(?:`+crisisAdverbs+`~){0,2}wish~i~`+words(`could`, `would`, `can`, `'?d`)+`~(?:just~)?`+
-		words(crisisActs, `never~been~born`),
-	`i~`+words(`'?m`, `am`, `m`)+`~(?:`+crisisAdverbs+`~){0,2}ready~to~die`,
 	`i~(?:'?m|am|m)?~`+words(`going~to`, `gonna`, `gunna`, `about~to`, `ready~to`, `thinking~about`,
 		`thinking~of`, `planning~to`, `planning~on`)+`~`+plannedActs,
 	// The same plan with the "I" left out, which ownSubject reads: "planning
@@ -3812,9 +3824,7 @@ var supportRules = []rule{bothViews(`\b` + words(
 	words(`planning~to`, `planning~on`, `planned~to`, `decided~to`, `deciding~to`, `decided~i'?m~going~to`,
 		`made~up~my~mind~to`)+`~`+plannedActs,
 	words(`planning`, `planned`, `plotting`)+`~my~(?:own~)?suicide`,
-	// "i should just die", "i deserve to die", "i don't deserve to live".
-	`i~(?:`+crisisAdverbs+`~){0,2}`+words(`should`, `shud`, `shld`, `deserve~to`)+
-		`~(?:just~)?die`,
+	// "i don't deserve to live".
 	`i~`+words(`don'?t`, `dont`, `do~not`)+`~(?:even~)?deserve~to~`+words(`live`, `be~alive`, `exist`),
 	// "i just want it all to end", "i want my life to end": supportCheck
 	// turns down a sentence about exams or an essay ending. A bare "want
@@ -3905,7 +3915,7 @@ var supportRules = []rule{bothViews(`\b` + words(
 	// suicidal tonight": with the "I" left out, ownSubject reads it.
 	`(?:i~)?`+words(`'?m`, `am`, `m`, `was`, `feel`, `feeling`, `felt`, `been`, `'?ve~been`, `have~been`, `get`, `got`,
 		`getting`, `keep~feeling`, `still~feel`, `still~feeling`)+`~(?:`+words(`feeling`, `getting`, `been~feeling`)+
-		`~)?(?:(?:very|pretty|a~bit|super|extremely|quite|`+crisisAdverbs+`)~){0,2}suicidal`,
+		`~)?(?:(?:very|pretty|a~bit|super|extremely|quite|`+crisisAdverbs+`)~)*suicidal`,
 	`suicidal~`+words(`thoughts`, `feelings`, `again`, `ideation`),
 	`(?:i~)?`+words(`don'?t`, `do~not`, `dont`, `dnt`)+`~(?:really~)?`+words(`want~to`, `wanna`, `wana`)+`~`+
 		words(`be~alive`, `live`, `exist`, `be~here~anymore`, `wake~up`),
@@ -3914,10 +3924,6 @@ var supportRules = []rule{bothViews(`\b` + words(
 	// "I started cutting again", "I've been cutting again".
 	`i~(?:'?m~|am~|m~|'?ve~|have~)?(?:`+words(`been`, `keep`, `kept`, `still`, `started`, `start`, `back~to`)+
 		`~)?`+words(`cutting`, `hurting~myself`, `harming~myself`)+`~again`,
-	`i~`+words(`'?m`, `am`, `m`)+`~(?:`+crisisAdverbs+`~){0,2}`+
-		words(`tired`, `sick`, `exhausted`)+`~of~`+words(`being~alive`, `living`, `life`, `existing`),
-	`i~(?:`+words(`'?ve`, `have`)+`~)?(?:(?:always|often|`+crisisAdverbs+`)~){0,2}`+
-		words(`wanted`, `wished`)+`~(?:to~)?`+words(`die`, `be~dead`, `not~be~alive`, `not~exist`, `disappear`),
 	// "I stand at the balcony and think about jumping": supportCheck wants
 	// somewhere high in the sentence, or "off" after it.
 	words(`think`, `thinking`, `thought`)+`~`+words(`about`, `of`)+`~jumping`,
@@ -3972,9 +3978,6 @@ var supportRules = []rule{bothViews(`\b` + words(
 		words(`meals?`, `eating`, `food`, `dinner`, `lunch`, `breakfast`, `i~eat`)+`)?`,
 	`nothing~(?:left~)?to~live~for`,
 	`better~off~dead`,
-	`i~(?:`+crisisAdverbs+`~){0,2}wish~i~`+words(`was`, `were`)+`~dead`,
-	`i~(?:`+crisisAdverbs+`~){0,2}wish~i~`+words(`wasn'?t`, `weren'?t`, `was~never`, `were~never`, `had~never~been`, `hadn'?t~been`)+
-		`~`+words(`born`, `alive`),
 	words(`everyone`, `everybody`, `everyone~else`, `the~world`, `this~world`, `my~family`, `my~parents`,
 		`my~friends`, `my~mom`, `my~mum`, `my~dad`, `my~class`)+`~`+words(`would`, `will`, `'?d`, `'?ll`, `is`, `are`,
 		`'?s`)+`~(?:all~)?(?:be~)?(?:`+words(`so~much`, `much`, `a~lot`, `way`)+`~)?`+words(`better~off`, `better`,
@@ -4052,7 +4055,7 @@ var supportRules = []rule{bothViews(`\b` + words(
 ) + `\b`),
 	// With no "I", where a sentence, a line or a greentext line starts:
 	// ">honestly want to end it", "want to die. not a meme".
-	bothViews(`(?:^|[.!?;:\n>,])[^\pL\pN]*(?:` + crisisAdverbs + `~){0,3}` + words(
+	bothViews(`(?:^|[.!?;:\n>,])[^\pL\pN]*(?:` + crisisAdverbs + `~)*` + words(
 		words(`want`, `wanna`, `wana`)+`~(?:(?:to|2)~)?`+words(`die`, `end~it~all`, `end~my~life`, `end~it`,
 			`kill~my~self`, `not~exist`, `not~be~alive`, `disappear`),
 		// "been cutting again since the results came out"
