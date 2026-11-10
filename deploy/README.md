@@ -115,9 +115,10 @@ gcloud config set project "$PROJECT_ID"
 # first-deploy.sh enables it on every run. To go without the scan, take that
 # line out here and out of the script, and where it is already on, turn it off:
 #   gcloud services disable containerscanning.googleapis.com
-# Google can refuse that for an API used in the last 30 days or enabled in the
-# last 3, and gcloud then says to add --force, which also turns off any enabled
-# service that depends on this one.
+# Google can refuse that for an API that was used in the last 30 days, was
+# enabled in the last 3, or has an enabled service depending on it. gcloud
+# then says to add --force, which also turns off every enabled service that
+# depends on this one.
 gcloud services enable \
   cloudbuild.googleapis.com \
   artifactregistry.googleapis.com \
