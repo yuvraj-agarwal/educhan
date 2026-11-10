@@ -10,10 +10,15 @@ metadata:
   name: educhan
   labels:
     cloud.googleapis.com/location: ${REGION}
-  # Behind the load balancer (deploy/README.md section 2.10), uncomment these
-  # two lines and set EDUCHAN_TRUST_PROXY below to "2", in the same change.
-  # services replace sets the whole service, so without them it opens run.app
-  # to the internet again and sets the hop count back to 1.
+  # Once first-deploy.sh has moved the site behind the load balancer
+  # (deploy/README.md section 2.10), keep it there: uncomment these two lines
+  # and set EDUCHAN_TRUST_PROXY below to "2" before the next services replace.
+  # A replace sets the whole service, so without them it opens run.app to the
+  # internet again and sets the count back to 1. To move a service there in
+  # the first place, use the script, which closes run.app first and raises
+  # the count second. Metadata takes one annotations: key, so if this file
+  # has gained another annotation here, put the ingress line under that key
+  # rather than adding a second one.
   # annotations:
   #   run.googleapis.com/ingress: internal-and-cloud-load-balancing
 spec:
@@ -75,9 +80,10 @@ spec:
             #       name: educhan-verify-secret
             #       key: latest
 
-            # Cloud Run's front end appends the caller's address to
-            # X-Forwarded-For: exactly one hop. Behind the load balancer, which
-            # appends two more, it is "2", but only with run.app closed by the
+            # How many entries at the end of X-Forwarded-For Google wrote.
+            # Cloud Run's front end appends one, the caller's address. Behind
+            # the load balancer, which appends two (the visitor's address and
+            # then its own), it is "2", but only with run.app closed by the
             # ingress annotation at the top (deploy/README.md section 2.10).
             # Raising it otherwise hands clients control of their own
             # rate-limit bucket, and of the poster ID of any post they send

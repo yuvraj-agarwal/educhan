@@ -1335,8 +1335,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `EDUCHAN_GCS_BUCKET`, with `roles/storage.objectAdmin` on that bucket and nothing
   broader) — the `local` backend can only write to `/tmp`, which is in-memory and
   per-instance, so uploads would not survive. `EDUCHAN_TRUST_PROXY` is `1` on `run.app`
-  and `2` behind the load balancer (`deploy/README.md` section 2.10), and changes only
-  together with the service's ingress, which closes `run.app` behind it; and
+  and `2` behind the load balancer (`deploy/README.md` section 2.10): it is raised only
+  after the service's ingress has closed `run.app`, and lowered before `run.app` opens; and
   `EDUCHAN_POSTER_ID_SALT` has to come from Secret Manager or poster IDs differ per
   instance. Cloud SQL is reached over the socket Cloud Run mounts at
   `/cloudsql/{connection name}`; `pgx` takes that as `?host=/cloudsql/…` in `DATABASE_URL`,
