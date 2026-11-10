@@ -104,6 +104,13 @@ func securityHeaders(next http.Handler) http.Handler {
 // clientIP returns the address flood control is keyed on, and that a poster ID
 // is derived from when the request carries no poster key.
 //
+// For IPv6 that is not the whole address but its /64 (addressKey): a subscriber
+// is normally handed at least a /64 and may use any address in it, so keyed on
+// the whole address one client could take a fresh key for every request and no
+// cooldown would ever apply. Everyone in one /64, such as a household or a
+// campus subnet, shares a key, as everyone behind one IPv4 NAT address always
+// has.
+//
 // X-Forwarded-For is read only when the deployment declares how many reverse
 // proxies stand in front of the server (EDUCHAN_TRUST_PROXY). Each of those
 // proxies appends the address it saw, so with N trusted hops the real peer is
@@ -146,9 +153,9 @@ func forwardedFor(r *http.Request) []string {
 	return entries
 }
 
-// parseClientIP normalises one forwarded entry. Entries may carry a port or
-// brackets, and IPv4-mapped IPv6 is folded down so one client cannot occupy two
-// rate-limit buckets by switching notation.
+// parseClientIP turns one forwarded entry into the client's key. Entries may
+// carry a port or brackets; what is left must be an IP address, and addressKey
+// makes the key from it.
 func parseClientIP(entry string) (string, bool) {
 	if host, _, err := net.SplitHostPort(entry); err == nil {
 		entry = host
@@ -157,14 +164,44 @@ func parseClientIP(entry string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	return addr.Unmap().String(), true
+	return addressKey(addr), true
 }
 
-// peerIP is the address of whoever opened the connection.
+// peerIP is the key for whoever opened the connection, made by addressKey like
+// a forwarded entry's: a port is dropped and brackets are trimmed exactly as
+// parseClientIP does, so no spelling of an IPv6 peer skips the /64 cut. A peer
+// whose host is not an IP address is returned as that host, port removed.
 func peerIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
 	}
-	return host
+	addr, err := netip.ParseAddr(strings.Trim(host, "[]"))
+	if err != nil {
+		return host
+	}
+	return addressKey(addr)
+}
+
+// addressKey is the one place an address becomes the key clientIP returns, so a
+// forwarded entry and a peer give the same key for the same client.
+//
+//   - IPv4-mapped IPv6 is folded down to IPv4, and a zone is dropped, so one
+//     client cannot occupy two rate-limit buckets by switching notation.
+//   - An IPv4 address is the key as it is.
+//   - An IPv6 address is cut to the first address of its /64, in canonical
+//     form: 2001:db8:1:2:aaaa:bbbb:cccc:dddd becomes "2001:db8:1:2::". The /64
+//     is the smallest block a subscriber is normally given, and the interface
+//     half below it is the client's to change at will.
+//
+// A client holding a shorter prefix, a /56 or a /48, still has many /64s and so
+// many keys; nothing here closes that.
+func addressKey(addr netip.Addr) string {
+	addr = addr.Unmap().WithZone("")
+	if addr.Is4() {
+		return addr.String()
+	}
+	// Prefix fails only for a length past the address's own, never 64 of 128.
+	network, _ := addr.Prefix(64)
+	return network.Addr().String()
 }
