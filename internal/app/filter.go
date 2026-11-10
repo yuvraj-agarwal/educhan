@@ -13815,7 +13815,7 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 		return true
 	case is(last, "sh") && wantWords[first]:
 		// "i want to sh so badly right now", "i keep wanting to sh".
-		return !shellAfter(text, m[1], next)
+		return !shellAfter(v, m[1], next)
 	case is(last, "forever") || is(last, "bus") || is(last, "car") || is(last, "truck") || is(last, "train") ||
 		is(last, "lorry"):
 		// "i want to sleep forever after this exam week lol", "hope i get
@@ -18265,7 +18265,7 @@ func methodCheck(v *view, m []int) bool {
 		// "self harm" is two words: "tips for self harm recovery".
 		return searchedMethod(ws[2], next)
 	case is(ws[len(ws)-1], "sh"):
-		return !shellAfter(text, m[1], next)
+		return !shellAfter(v, m[1], next)
 	case is(ws[len(ws)-1], "myself") && len(next) > 0 && (hasWord(ws, "cut") || hasWord(ws, "burn") ||
 		hasWord(ws, "shoot")) && secondObjects[next[0]]:
 		return false // "how to cut myself a fringe", "how to burn myself a cd"
@@ -18435,14 +18435,16 @@ func searchedMethod(w string, next []string) bool {
 	return true
 }
 
-// shellAfter reports "sh", ending at text[end] and followed by the words
+// shellAfter reports "sh", ending at v.text[end] and followed by the words
 // next, used as a shell's command rather than a verb: "sh-ow", "sh
 // build.sh", "sh into the server"; or as the start of a word masked with a
 // character and a letter after it, which is how swearing is censored: "sh*t",
-// "sh!t", "sh#t".
-func shellAfter(text string, end int, next []string) bool {
+// "sh!t", "sh#t". The letter must be an ASCII one as posted: the view reads
+// "é" as "e", but "sh!é" masks no word.
+func shellAfter(v *view, end int, next []string) bool {
+	text := v.text
 	if end+1 < len(text) && strings.IndexByte("-./_*!#@$%", text[end]) >= 0 && text[end+1] < utf8.RuneSelf &&
-		unicode.IsLetter(rune(text[end+1])) {
+		unicode.IsLetter(rune(text[end+1])) && v.end[end+1]-v.start[end+1] == 1 {
 		return true
 	}
 	return len(next) > 0 && shellWords[next[0]] || anyIn(next, canonSetOf(`sh bash zsh ssh`))
