@@ -115,8 +115,9 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-// clientIP returns the address flood control is keyed on, and that a poster ID
-// is derived from when the request carries no poster key.
+// clientIP returns the address flood control and a client's share of the upload
+// budget are keyed on, and that a poster ID is derived from when the request
+// carries no poster key.
 //
 // For IPv6 that is not the whole address but its /64 (addressKey): a subscriber
 // is normally handed at least a /64 and may use any address in it, so keyed on

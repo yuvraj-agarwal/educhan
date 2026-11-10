@@ -12,7 +12,8 @@ import (
 // real handlers through one trusted proxy and hold every limit that keys on the
 // client, and the poster ID of a post sent with no poster key, to that: a
 // second address in the same /64 is the same client, and the first address of
-// the next /64 is another.
+// the next /64 is another. A client's share of the upload budget is held to it
+// in busy_test.go instead, because that needs bodies held open.
 const (
 	// The first and the last address of one /64: the furthest apart two
 	// addresses of one client can be.
