@@ -602,9 +602,8 @@ func TestAcceptsGzip(t *testing.T) {
 // that nobody, the server included, can get from a badged post back to an
 // address. It is true of what educhan keeps, and the Verify page and the FAQ
 // say so, with its limits: whoever holds the server secret can test any address
-// they can list, timing can tie a badged post to its verification (on any day
-// until a nightly sweep, if the server runs one, and after it on a day when no
-// other credential its institution got that day is still valid), and every
+// they think of, timing can tie a badged post to its verification, a badge that
+// is its institution's only stored one names its row on every post, and every
 // badged post carries the credential, whose id finds the stored row. Words that
 // say no one can make that link at all, or that the badge is not linked to its
 // poster, are a promise the code does not keep.
@@ -685,9 +684,15 @@ func TestForgettingTheBrowserIsSaidAsDone(t *testing.T) {
 // mention it only as something the server might run, never as "the next" one.
 // The check on a guessed address finds a stored row, which outlives a badge
 // the browser forgot or that ran out, and a code request's row too, so the
-// copy may not say it finds only who "has a badge". And after a clean-up the
-// timing match needs one address, not one issuance, at the institution that
-// day: two confirmations from one address leave one row.
+// copy may not say it finds only who "has a badge". The address checked is one
+// the operator brings: "an address they can list" reads as if the server could
+// list addresses. The timing match needs no other credential of the
+// institution from that day still stored, not one issuance or one address
+// that day: two confirmations from one address leave one row, and an address
+// that verifies again on a later day moves its row to a later expiry, so the
+// copy states no condition for it rather than one narrower than the rows. And
+// each stored row keeps its label, so a badge that is its institution's only
+// stored one names its row on every post, on any day: the copy says so.
 func TestBadgeLimitsSayWhatTheServerDoes(t *testing.T) {
 	said := regexp.MustCompile(`\s+`).ReplaceAllString(appScript(t), " ")
 	for _, wrong := range []string{
@@ -695,27 +700,27 @@ func TestBadgeLimitsSayWhatTheServerDoes(t *testing.T) {
 		"has a badge.",
 		"the only badge issued",
 		"the only one at your",
+		"address they can list",
+		"works on any day",
+		"only one address",
 	} {
 		if strings.Contains(said, wrong) {
 			t.Errorf("app.js says %q", wrong)
 		}
 	}
 	cleanUp := regexp.MustCompile(`(\S+ \S+ \S+) nightly clean-up`)
-	found := cleanUp.FindAllStringSubmatch(said, -1)
-	// The Verify page and the FAQ each state the limits once.
-	if len(found) != 2 {
-		t.Fatalf("app.js mentions a nightly clean-up %d times, want 2 (the Verify page and the FAQ)", len(found))
-	}
-	for _, m := range found {
+	for _, m := range cleanUp.FindAllStringSubmatch(said, -1) {
 		if !strings.HasSuffix(m[1], "runs a") {
 			t.Errorf("app.js says %q, which assumes the server runs a nightly clean-up", m[0])
 		}
 	}
+	// The Verify page and the FAQ each state the limits once, in the same words
+	// apart from who runs the site.
 	for _, want := range []string{
-		"got a badge or asked for a code, even a badge since forgotten or expired, until the server clears it.",
-		"no one else at your institution got a badge that is still valid.",
-		"no one else at your university or college got a badge that is still valid.",
-		"In older copies of the database, it works on any day.",
+		"can check any address they think of, or a list of them, for a badge or a code request, even one since forgotten or expired, until it is cleared.",
+		"and your other badged posts in that thread, to you if they check your address.",
+		"If yours is the only badge from your institution the server keeps, so can every post you badge.",
+		"If yours is the only badge from your university or college the site keeps, so can every post you badge.",
 	} {
 		if !strings.Contains(said, want) {
 			t.Errorf("app.js does not say %q", want)
