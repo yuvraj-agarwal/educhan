@@ -1365,8 +1365,8 @@ focus was lost, or kept with the error after it on a page kept when the redraw
 will not load. Words that come out the same are left as they are, and words that
 no longer hold, something written since an empty press say, are taken off. A
 refusal the reader has dismissed, or that another notice has taken the place of,
-is said no more, and one whose form is not drawn again, the redraw drawing
-another page, a page with no form or an error in its place, is taken off. After
+is said no more, and one whose form is not drawn again, another page, a page
+with no form, the age screen or an error drawn in its place, is taken off. After
 a refusal of the image itself (the image limit reached, or uploads switched off)
 the image is taken off, as on screen, and a page left as it was switches the
 picker off and updates the thread's counts, as on screen, as does a press of the
