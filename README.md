@@ -7,17 +7,16 @@ educhan is a fast, high-signal imageboard designed for students, researchers, an
 ## Core Features
 
 - **Verified Anonymity** — Students aged 18 and over can optionally verify institutional email domains (`.ac.in`, `.edu`, etc.) to receive a badge naming the institution, never the person
-- **Imageboard-native experience** — Fast, ephemeral, image-first discussion
-- **One image per post** — JPEG, PNG, WebP or GIF
+- **Imageboard-native experience** — Fast, ephemeral threads on topic boards, with no accounts
+- **One image per post** — JPEG, PNG, WebP or GIF; uploads are off unless a server switches them on
 - **Archive** — Threads that fall off a board stay readable in its archive for a while, then are deleted
 - **Google Cloud native** — Built for scalability and low operational overhead
 
 ## Current Status
 
-- Domain: [educhan.org](https://educhan.org)
-- Stage: Technology Concept (TRL 2)
-- Architecture and product design completed
-- Prototype under development
+- Stage: working prototype; not launched yet
+- Domain: educhan.org (the site is not live there yet)
+- The deployment is text-only for now: `deploy/first-deploy.sh` leaves image uploads off until images are stripped of metadata and scanned, and institutional verification off until there is a real mail sender
 
 The prototype in this repository implements the imageboard end to end: boards,
 anonymous posting with tripcodes and per-thread poster IDs, one image per post,
@@ -966,9 +965,9 @@ Accept-Encoding`; the fonts are compressed already. JSON from the API is not com
 
 - **Backend**: Go 1.22 standard library HTTP server, `pgx` for PostgreSQL
 - **Database**: PostgreSQL 16, versioned SQL migrations applied on startup
-- **Front end**: dependency-free HTML/CSS/JS served from the Go binary
-- **Deployment**: multi-stage Docker build onto a distroless base, built by Cloud Build into Artifact Registry; Cloud Run with Cloud SQL (see [Deployment](#deployment))
-- **Planned**: Google Cloud Storage, Gemini API + Cloud Vision for moderation, Cloud CDN + Cloud Armor
+- **Front end**: HTML/CSS/JS with no framework and no build step, served from the Go binary; highlight.js and KaTeX are vendored for code and maths
+- **Deployment**: multi-stage Docker build onto a distroless base, built by Cloud Build into Artifact Registry; Cloud Run with Cloud SQL and Cloud Storage (see [Deployment](#deployment))
+- **Planned**: Gemini API + Cloud Vision for moderation, Cloud CDN + Cloud Armor
 
 ## Running locally
 
@@ -1575,7 +1574,7 @@ short commit SHA.
 
 ## Contributing
 
-This project is in early stages. Contribution guidelines will be added once the initial prototype is ready.
+The prototype is built and still changing quickly. Contribution guidelines have not been written yet; `AGENTS.md` describes the conventions the code follows, and `make check` runs the formatting check, `go vet` and the tests.
 
 ## License
 
