@@ -60,11 +60,13 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 // good or no good, is looked up and no Pass is not, and a badge's credential is
 // checked. Beside the path, which names the thread, and the time, which the
 // post's row holds too, a duration would say which posts in a thread carried a
-// Pass. Nothing else on the line depends on one: a Pass that is no good gets
-// the status no Pass gets, and a post whose client goes away while its Pass is
-// looked up goes on as one without a Pass (postPass), so a post leaves the same
-// line with a good Pass, one that is no good or none. A field added here must
-// keep that.
+// Pass. It is left off whatever the status, a 500 included: a post that fails
+// after its Pass is read, at its insert for example, has spent the lookup's
+// time too (TestPostingLinesAreUntimed). Nothing else on the line depends on a
+// Pass: a Pass that is no good gets the status no Pass gets, and a post whose
+// client goes away while its Pass is looked up goes on as one without a Pass
+// (postPass), so a post leaves the same line with a good Pass, one that is no
+// good or none. A field added here must keep that.
 func requestLogger(log *slog.Logger) middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -87,10 +89,13 @@ func requestLogger(log *slog.Logger) middleware {
 
 // untimed marks a route whose request line goes without a duration: every route
 // that takes a post, so that each line it leaves goes without, that of a post
-// turned away before its Pass is read included. TestPostingLinesAreUntimed
-// fails for a route Routes names with a handler that can run postPass and no
-// untimed, and postPass takes the duration off itself too (markUntimed), so a
-// post that gets that far leaves none on a route registered some other way.
+// turned away before its Pass is read included, whose duration nothing but this
+// mark takes off. TestPostingLinesAreUntimed fails for a route Routes names
+// with a handler that can run postPass and no untimed, and for a duration on
+// the line of a post such a route turns away before it reads its Pass, one with
+// a malformed poster key for example. postPass takes the duration off itself
+// too (markUntimed), so a post that gets that far leaves none on a route
+// registered some other way.
 func untimed(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		markUntimed(w)

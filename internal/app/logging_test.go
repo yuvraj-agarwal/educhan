@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -251,17 +252,34 @@ func routesReaching(t *testing.T, fn string) []routeReach {
 // handler can run postPass, which reads the Pass a post presents, to no
 // duration, and every other route's line to one. The routes are found in the
 // code, so a route added later that takes a post fails here until Routes marks
-// it untimed. Each is sent a request, a post where the route takes one, and its
-// line read back: postPass takes the duration off too, so a route whose handler
-// is not seen to run it and whose post leaves no duration fails here as well. A
-// posting handler served without untimed leaves none once it reads the post's
-// Pass.
+// it untimed. Each is sent a request, a post that must be saved where the
+// route takes one, and its own line read back, the one logged after it was
+// sent, which must carry the status it was answered with: postPass takes the
+// duration off too, so a route whose handler is not seen to run it and whose
+// post leaves no duration fails here as well. A posting handler served without
+// untimed leaves none once it reads the post's Pass.
+//
+// Each route that takes a post is then sent three posts that fail after their
+// Pass is read, a trigger refusing their insert: one with a good Pass, one
+// with a Pass that is no good and one with none. Each is answered 500 and
+// leaves no duration, and the three leave the same log, byte for byte but for
+// its time. Last, each such route is sent posts it turns away before it reads
+// their Pass, so that untimed's own mark alone takes the duration off their
+// lines: a malformed poster key, no body and a body that is not JSON on every
+// one; a board that is not there on each whose path names a board; a thread
+// number that is not one on each that names a thread by number; and a thread
+// id that is not one, and one that names no thread, on each that names a
+// thread by id. Each carries a code that parses while the passes table cannot
+// be read, so a post that got as far as postPass would be answered 500, as a
+// post that does is on each route.
 func TestPostingLinesAreUntimed(t *testing.T) {
 	routes := routesReaching(t, "postPass")
 	var logs syncBuffer
 	p := passServerLogging(t, nil, &logs)
 	p.addBoard("untimed")
 	thread := p.createThread("untimed", "", "", "a thread")
+	// Its line is in before any request below notes where the log stands.
+	requestLine(t, &logs, 0, http.MethodPost, "/api/boards/untimed/threads")
 	values := map[string]string{
 		"slug": "untimed",
 		"no":   strconv.FormatInt(thread.ThreadNo, 10),
@@ -270,44 +288,78 @@ func TestPostingLinesAreUntimed(t *testing.T) {
 		"path": "nothing-here.png",
 	}
 	wildcard := regexp.MustCompile(`\{(\w+)(\.\.\.)?\}`)
-
-	var posting, timed int
-	for _, route := range routes {
-		method, path, ok := strings.Cut(route.pattern, " ")
+	// fill gives the method and the path a route's pattern stands for, each
+	// wildcard filled from with, else from values, else with 1.
+	fill := func(pattern string, with map[string]string) (string, string) {
+		method, path, ok := strings.Cut(pattern, " ")
 		if !ok {
-			method, path = http.MethodGet, route.pattern
+			method, path = http.MethodGet, pattern
 		}
-		path = wildcard.ReplaceAllStringFunc(path, func(w string) string {
-			if v, ok := values[wildcard.FindStringSubmatch(w)[1]]; ok {
+		return method, wildcard.ReplaceAllStringFunc(path, func(w string) string {
+			name := wildcard.FindStringSubmatch(w)[1]
+			if v, ok := with[name]; ok {
+				return v
+			}
+			if v, ok := values[name]; ok {
 				return v
 			}
 			return "1"
 		})
-		req, err := http.NewRequest(method, p.base+path, strings.NewReader(`{"body":"timed or not"}`))
+	}
+	// A redirect is not followed, so the status a request is answered with is
+	// the one its own line holds.
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	stamp := regexp.MustCompile(`"time":"[^"]*"`)
+	// send sends a request and returns its status, its own request line and
+	// everything logged from its sending up to that line, times blanked.
+	send := func(method, path string, header http.Header, body string) (int, map[string]any, string) {
+		t.Helper()
+		req, err := http.NewRequest(method, p.base+path, strings.NewReader(body))
 		if err != nil {
 			t.Fatal(err)
 		}
+		if header != nil {
+			req.Header = header.Clone()
+		}
 		req.Header.Set("Content-Type", "application/json")
-		status := p.send(req, nil)
+		from := len(logs.String())
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		io.Copy(io.Discard, res.Body)
+		res.Body.Close()
+		line := requestLine(t, &logs, from, method, path)
+		if line["status"] != float64(res.StatusCode) {
+			t.Errorf("%s %s was answered %d, and its line is %v", method, path, res.StatusCode, line)
+		}
+		return res.StatusCode, line, stamp.ReplaceAllString(logs.String()[from:], `"time":""`)
+	}
 
-		line := requestLine(t, &logs, method, path)
+	var posting []string
+	var timed int
+	for _, route := range routes {
+		method, path := fill(route.pattern, nil)
+		status, line, _ := send(method, path, nil, `{"body":"timed or not"}`)
 		_, hasDuration := line["duration_ms"]
 		switch {
 		case route.reaches && !route.untimed:
 			t.Errorf("%s runs postPass and Routes does not mark it untimed", route.pattern)
 		case route.reaches && hasDuration:
 			t.Errorf("%s runs postPass and its line has a duration (status %d): %v", route.pattern, status, line)
+		case route.reaches && status != http.StatusCreated:
+			t.Errorf("%s runs postPass and its post was not saved (status %d): %v", route.pattern, status, line)
 		case !route.reaches && !hasDuration:
 			t.Errorf("%s is not seen to run postPass and its line has no duration (status %d): %v", route.pattern, status, line)
 		}
 		if route.reaches {
-			posting++
+			posting = append(posting, route.pattern)
 		} else {
 			timed++
 		}
 	}
-	if posting == 0 || timed == 0 {
-		t.Fatalf("found %d routes that take a post and %d that do not, in %v", posting, timed, routes)
+	if len(posting) == 0 || timed == 0 {
+		t.Fatalf("found %d routes that take a post and %d that do not, in %v", len(posting), timed, routes)
 	}
 
 	bare := http.NewServeMux()
@@ -315,19 +367,102 @@ func TestPostingLinesAreUntimed(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/bare/untimed/threads", strings.NewReader(`{"body":"bare"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
+	from := len(logs.String())
 	requestLogger(p.app.log)(bare).ServeHTTP(rec, req)
-	if line := requestLine(t, &logs, http.MethodPost, "/bare/untimed/threads"); rec.Code != http.StatusCreated || line["duration_ms"] != nil {
+	if line := requestLine(t, &logs, from, http.MethodPost, "/bare/untimed/threads"); rec.Code != http.StatusCreated || line["duration_ms"] != nil {
 		t.Errorf("a post served without untimed: status %d, line %v", rec.Code, line)
+	}
+
+	// Posts that fail after their Pass is read, at their insert, which a
+	// trigger refuses.
+	from = len(logs.String())
+	good := p.buy("pi_untimed")
+	// The purchase's last line is in before the posts below note where the log
+	// stands.
+	requestLine(t, &logs, from, http.MethodPost, "/api/pass/claim")
+	p.exec(`CREATE FUNCTION refuse_post() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'no post is saved'; END$$`)
+	p.exec(`CREATE TRIGGER refuse_post BEFORE INSERT ON posts FOR EACH ROW EXECUTE FUNCTION refuse_post()`)
+	presented := []struct{ what, code string }{
+		{"a good Pass", good.Pass},
+		{"a Pass that is no good", "ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ"},
+		{"no Pass", ""},
+	}
+	for _, pattern := range posting {
+		method, path := fill(pattern, nil)
+		var logged []string
+		for _, sent := range presented {
+			header := http.Header{}
+			if sent.code != "" {
+				header.Set(passHeader, sent.code)
+			}
+			status, line, all := send(method, path, header, `{"body":"never saved"}`)
+			if _, timed := line["duration_ms"]; status != http.StatusInternalServerError || timed || !strings.Contains(all, "no post is saved") {
+				t.Errorf("%s with %s, its insert refused: status %d, logged:\n%s", pattern, sent.what, status, all)
+			}
+			logged = append(logged, all)
+		}
+		if slices.ContainsFunc(logged, func(l string) bool { return l != logged[0] }) {
+			t.Errorf("%s, its insert refused, logged differently with %d kinds of Pass and none:\n%s", pattern, len(presented)-1, strings.Join(logged, ""))
+		}
+	}
+
+	// Posts turned away before their Pass is read.
+	p.exec(`ALTER TABLE passes RENAME TO passes_unreadable`)
+	unreadable := http.Header{passHeader: {"ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ"}}
+	early := []struct {
+		what, wildcard, value, key, body string
+		status                           int
+	}{
+		{what: "a malformed poster key", key: "not a key", status: http.StatusBadRequest},
+		{what: "no body", body: `{"body":""}`, status: http.StatusBadRequest},
+		{what: "a body that is not JSON", body: `{"body":`, status: http.StatusBadRequest},
+		{what: "a board that is not there", wildcard: "slug", value: "nowhere", status: http.StatusNotFound},
+		{what: "a thread number that is not one", wildcard: "no", value: "none", status: http.StatusBadRequest},
+		{what: "a thread id that is not one", wildcard: "id", value: "none", status: http.StatusBadRequest},
+		{what: "a thread id that names no thread", wildcard: "id", value: "999999", status: http.StatusNotFound},
+	}
+	sentTo := map[string]int{}
+	for _, pattern := range posting {
+		method, path := fill(pattern, nil)
+		if status, line, _ := send(method, path, unreadable, `{"body":"as far as postPass"}`); status != http.StatusInternalServerError || line["duration_ms"] != nil {
+			t.Errorf("%s with a Pass that cannot be read: status %d, line %v", pattern, status, line)
+		}
+		for _, post := range early {
+			if post.wildcard != "" && !strings.Contains(pattern, "{"+post.wildcard+"}") {
+				continue
+			}
+			sentTo[post.what]++
+			method, path := fill(pattern, map[string]string{post.wildcard: post.value})
+			header := unreadable.Clone()
+			if post.key != "" {
+				header.Set(posterKeyHeader, post.key)
+			}
+			body := post.body
+			if body == "" {
+				body = `{"body":"turned away"}`
+			}
+			if status, line, _ := send(method, path, header, body); status != post.status || line["duration_ms"] != nil {
+				t.Errorf("%s with %s: status %d, want %d, line %v", pattern, post.what, status, post.status, line)
+			}
+		}
+	}
+	for _, post := range early {
+		if sentTo[post.what] == 0 {
+			t.Errorf("no route that takes a post has a {%s}, so none was sent %s", post.wildcard, post.what)
+		}
 	}
 }
 
-// requestLine waits for the request line of method and path, which is
-// written once the handler returns and can come just after its answer, and
-// returns it decoded.
-func requestLine(t *testing.T, logs *syncBuffer, method, path string) map[string]any {
+// requestLine waits for the request line of method and path among what was
+// logged after the log's first from bytes, which the caller notes before it
+// sends the request, once the lines of the requests it sent before are in: so
+// the line read is that request's own, never one an earlier request to the
+// same path left. The line is written once the handler returns and can come
+// just after its answer. It returns the line decoded.
+func requestLine(t *testing.T, logs *syncBuffer, from int, method, path string) map[string]any {
 	t.Helper()
 	for deadline := time.Now().Add(5 * time.Second); ; {
-		for _, raw := range strings.Split(logs.String(), "\n") {
+		for _, raw := range strings.Split(logs.String()[from:], "\n") {
 			var line map[string]any
 			if json.Unmarshal([]byte(raw), &line) == nil &&
 				line["msg"] == "request" && line["method"] == method && line["path"] == path {
@@ -335,7 +470,7 @@ func requestLine(t *testing.T, logs *syncBuffer, method, path string) map[string
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("no request line for %s %s in:\n%s", method, path, logs.String())
+			t.Fatalf("no request line for %s %s in what was logged after it was sent:\n%s", method, path, logs.String()[from:])
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

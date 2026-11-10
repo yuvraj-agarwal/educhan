@@ -632,8 +632,15 @@ method, path and status and no `duration_ms`, and a post leaves the same line,
 but for its time, with a good Pass, one that is no good or none, even when its
 client goes away while the code is looked up, since the post then goes on as one
 without a Pass (`TestPassNoGoodOnPostsIsNoPass`). `TestPostingLinesAreUntimed`
-finds every such route that `Routes` names and holds it to that, and every other
-route's line to keeping its `duration_ms`; the step that reads a post's Pass
+finds every such route that `Routes` names and wants no `duration_ms` on the
+line of each post it sends one: a post that is saved; three that fail at their
+insert after their Pass is read, with a good Pass, one that is no good and none,
+each a `500` and the three logging the same; and posts turned away before their
+Pass is read, whose lines only the route's `untimed` mark keeps from a duration,
+for a malformed poster key, no body, a body that is not JSON, and, on each route
+whose path has one, a board that is not there, a thread number that is not one
+and a thread id that is not one or names no thread. It holds every other route's
+line to keeping its `duration_ms`. The step that reads a post's Pass
 (`postPass`) takes the duration off its line too, however the route was added.
 How long posts take is left to Cloud Run's request latency metrics, which are
 aggregates. Nothing identifying a Pass is logged. The log says that a Pass was

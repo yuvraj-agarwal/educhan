@@ -1006,8 +1006,14 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   one without a Pass would (`TestPassNoGoodOnPostsIsNoPass`). A field added to the
   request line must be the same on a posting route whatever Pass the post carried, and a
   new route that takes a post is marked `untimed`: `TestPostingLinesAreUntimed` finds
-  every route `Routes` names with a handler that can run `postPass` and holds it to
-  `untimed` and its line to no duration, and every other route's line to one. `postPass`
+  every route `Routes` names with a handler that can run `postPass`, holds it to
+  `untimed`, and wants no duration on the line of each post it sends one: a post that is
+  saved, three that fail at their insert after their Pass is read (with a good Pass, one
+  that is no good and none, which must log the same), and posts it turns away before it
+  reads their Pass, whose lines nothing but the route's `untimed` keeps from a duration
+  (a malformed poster key, no body, a body that is not JSON, and, where its path has one,
+  a board that is not there, a thread number that is not one and a thread id that is not
+  one or names no thread); it holds every other route's line to a duration. `postPass`
   takes the duration off too (`markUntimed`), so a post that reaches it leaves none
   however its route was registered. The Pass skips the captcha only, never the rules, a
   refusal limit or a cooldown. Only a transaction that writes a `passes` row locks it, so
