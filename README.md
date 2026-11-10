@@ -1129,7 +1129,12 @@ not-found view.
   here**. It asks on every visit, with a growing pause while it is open, and sends the
   collection's nonce (`educhan:pass-nonce`) each time until an answer says nothing more is
   waiting, so an answer lost on the way is asked for again and brings the same code;
-  refused then, it checks the Pass it holds and says a date that moved on. A code the
+  refused then, it checks the Pass it holds and says a date that moved on. A reissue
+  code's answer, or a claim's, that says a purchase waits, a checkout opened in another
+  tab since the page was drawn, say, is drawn the same way, and starts collecting it
+  unless the page already is: one collection asks at a time for each drawing of the page,
+  and none starts for the answer to a request sent before Remove the Pass, Forget this
+  browser or Stop collecting it here was pressed, here or in another tab. A code the
   server hands over is stored before anything else and stays on screen, beside any code it
   took the place of, until the reader leaves the page; once drawn, kept or not, it is not
   drawn again for whoever comes back to the page next, by a link or by the Back button

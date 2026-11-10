@@ -2353,11 +2353,23 @@ let passLost = "";
 let passVisit = 0;
 
 // passAsked is set by Check now for the drawing it asks for, which takes it
-// (renderPass), so that what that drawing's first claim comes to, a renewal
-// or the Pass held checked after a lost answer, is said in view as the press's
-// answer (showClaimed, showPassNotice). What a later claim brings is the
-// page's own news, said where showNotice puts it.
+// (renderPass) and marks itself with it (passAskedFor) until the first
+// collection started for it takes the mark (collectFor), or it lands without
+// one, so that what that drawing's first claim comes to, a renewal or the Pass
+// held checked after a lost answer, is said in view as the press's answer
+// (showClaimed, showPassNotice), whatever started that collection. What a later
+// claim brings is the page's own news, said where showNotice puts it.
 let passAsked = false;
+let passAskedFor = 0;
+
+// passCollecting is the drawing (its passVisit) whose collection may still ask
+// (collectPass), or 0: set when one starts (collectFor), so that no other
+// starts for the same drawing, and cleared once it finds nothing left under the
+// claim, after which it asks no more (collectionOver). A collection that stops
+// for any other reason leaves it naming a drawing the page no longer shows: one
+// drawn again, or ended by a forget, which moves passVisit, or the reader gone
+// from the Pass page, which is drawn anew when they come back.
+let passCollecting = 0;
 
 // passForgets counts the times this browser has stopped collecting
 // (forgetPassClaim), here or in another tab (followPassForget). A claim whose
@@ -4381,7 +4393,7 @@ function refocus(button) {
 // keeping a keyboard where it was.
 async function renderPass(...selectors) {
   const visit = ++passVisit;
-  const asked = passAsked;
+  passAskedFor = passAsked ? visit : 0;
   passAsked = false;
   const query = new URLSearchParams(window.location.search);
   const back = query.has("paid") ? "paid" : query.has("cancelled") ? "cancelled" : "";
@@ -4419,12 +4431,15 @@ async function renderPass(...selectors) {
     );
   }
   if (info.enabled && (info.claim || passNoncePending(PASS_NONCE_STORAGE_KEY)) && visit === passVisit) {
-    // Not awaited: it goes on while the page is open, and the page is usable
-    // meanwhile. A nonce left from a claim whose answer never arrived is
-    // asked for again even with nothing left under the claim, since that
-    // claim may have handed over a code.
-    collectPass(visit, asked);
+    // It goes on while the page is open, and the page is usable meanwhile. A
+    // nonce left from a claim whose answer never arrived is asked for again
+    // even with nothing left under the claim, since that claim may have handed
+    // over a code. One started for this drawing before it landed, by a reissue
+    // code's answer, say, goes on alone (collectFor).
+    collectFor(visit);
   }
+  // What Check now asked for is this drawing's first claim, or none.
+  passAskedFor = 0;
   return true;
 }
 
@@ -4656,8 +4671,11 @@ function redrawPass(info, ...selectors) {
 // passAfterLostAnswer gave), or the end of the collecting. It draws from what
 // the page on screen was drawn from, so an answer to a request an earlier
 // drawing sent is shown too. An answer that changes nothing only clears the
-// note left by an attempt that failed. A notice that answers Check now
-// (asked) is said in view (showPassNotice).
+// note left by an attempt that failed. Drawn saying something still waits into
+// a newer drawing than its collection's own, which may have landed with nothing
+// to collect, it starts collecting for that one, unless a collection already
+// asks for it (collectFor), so the page keeps checking as it says. A notice
+// that answers Check now (asked) is said in view (showPassNotice).
 function showClaimed(claim, news, notice = "", asked = false) {
   if (!passPageShown()) {
     return;
@@ -4671,6 +4689,9 @@ function showClaimed(claim, news, notice = "", asked = false) {
     return;
   }
   redrawPass({ ...lastPassInfo, claim }, '[data-action="collect-pass"]', "#pass-held", "form[data-pass] input");
+  if (claim && lastPassInfo.enabled) {
+    collectFor(passVisit);
+  }
   if (news === "issued" || unseen) {
     focusPassPanel("pass-issued");
   }
@@ -4684,30 +4705,70 @@ function showClaimed(claim, news, notice = "", asked = false) {
   }
 }
 
-// collectPass collects what this browser paid for. Stripe sends the buyer
-// back before or after it tells educhan the payment went through, and a bank
-// payment can take days, so "not yet" is asked again with a growing pause
-// while the page stays open, and the next visit asks again. Every claim
-// carries the collection's nonce, so one whose answer was lost is answered
-// again with the same code. It stops when nothing is left to collect, or the
-// page has been drawn again, or this browser has stopped collecting: then no
-// claim is sent and no nonce drawn. An answer already on its way is drawn
-// only if it brought something, and dropped unstored if this browser has
-// stopped collecting since it was asked (passForgets). A claim refused when
-// asked again with a nonce kept from an earlier one may have renewed the
-// Pass held in an answer that never arrived, so that Pass is checked
-// (passAfterLostAnswer). What a renewal or that check comes to is said once
-// the Pass held has been checked (confirmRenewal), and not at all if something
-// that takes a held notice off, another tab's removal of the Pass, say, came
-// meanwhile (passNoticeForgets), since there was no notice yet for it to take
-// off. The first claim of a drawing Check now asked for (asked) answers that
-// press, and what it comes to is said in view; later ones are the page's own
-// news (showClaimed). An answer that leaves nothing under the claim, the Pass
+// collectFor starts collecting (collectPass) for the drawing of the Pass page
+// on screen (visit), unless that drawing has been replaced meanwhile, or a
+// collection for it may still ask (passCollecting): a drawing has one asking at
+// most. Every drawing made from an answer that says something waits under the
+// claim says the page keeps checking, and so starts one this way: the drawing
+// from the server's own answer, which also starts one for a nonce left from a
+// claim whose answer may have been lost (renderPass); a claim's answer drawn
+// into a newer drawing than its collection's own, which may have landed with
+// nothing to collect (showClaimed); a reissue code's answer, drawn into a page
+// whose own answer did not say so, with a checkout opened in another tab since,
+// say (redeemPassReissue); and Stop collecting it here when educhan could not
+// be reached, which leaves on screen the drawing whose collection it ended, and
+// the claim this browser's (its click). Every other drawing that says so draws
+// again what one of those drew (lastPassInfo), while its collection still asks
+// or is ending, and what ends it draws the page again: a forget, a newer
+// drawing, or the collection itself, having found nothing left; the reader
+// leaving the page ends it too, and the page is drawn anew when they come back.
+// The first collection started for a drawing takes Check now's mark on it
+// (passAskedFor).
+function collectFor(visit) {
+  if (visit !== passVisit || passCollecting === visit) {
+    return;
+  }
+  passCollecting = visit;
+  const asked = passAskedFor === visit;
+  passAskedFor = 0;
+  collectPass(visit, asked);
+}
+
+// collectionOver notes that the collection for visit has found nothing left
+// under the claim, so it asks no more, and an answer that says something waits
+// starts one again for the same drawing (collectFor).
+function collectionOver(visit) {
+  if (passCollecting === visit) {
+    passCollecting = 0;
+  }
+}
+
+// collectPass collects what this browser paid for. Stripe sends the buyer back
+// before or after it tells educhan the payment went through, and a bank payment
+// can take days, so "not yet" is asked again with a growing pause while the
+// page stays open, and the next visit asks again. Every claim carries the
+// collection's nonce, so one whose answer was lost is answered again with the
+// same code. It is started for one drawing of the page, and only by collectFor,
+// which starts no other for that drawing until it has found nothing left
+// (collectionOver). It stops when nothing is left to collect, or the page has
+// been drawn again, or this browser has stopped collecting: then no claim is
+// sent and no nonce drawn. An answer already on its way is drawn only if it
+// brought something, and dropped unstored if this browser has stopped
+// collecting since it was asked (passForgets). A claim refused when asked again
+// with a nonce kept from an earlier one may have renewed the Pass held in an
+// answer that never arrived, so that Pass is checked (passAfterLostAnswer).
+// What a renewal or that check comes to is said once the Pass held has been
+// checked (confirmRenewal), and not at all if something that takes a held
+// notice off, another tab's removal of the Pass, say, came meanwhile
+// (passNoticeForgets), since there was no notice yet for it to take off. The
+// first claim of a drawing Check now asked for (asked) answers that press, and
+// what it comes to is said in view; later ones are the page's own news
+// (showClaimed). An answer that leaves nothing under the claim, the Pass
 // collected and nothing more waiting, say, or a refusal that finds nothing
-// there, tells this tab that nothing was left for this browser to collect as
-// of when that claim was sent (sent), which takes off a claim notice said for
-// a forget that went before that, before what the answer brings is drawn in
-// its place (heedPassClaimGone).
+// there, tells this tab that nothing was left for this browser to collect as of
+// when that claim was sent (sent), which takes off a claim notice said for a
+// forget that went before that, before what the answer brings is drawn in its
+// place (heedPassClaimGone).
 async function collectPass(visit, asked = false) {
   let wait = PASS_CLAIM_FIRST_WAIT_MS;
   for (;;) {
@@ -4739,6 +4800,7 @@ async function collectPass(visit, asked = false) {
       if (res.claim !== true) {
         dropPassNonce(PASS_NONCE_STORAGE_KEY);
         heedPassClaimGone(sent);
+        collectionOver(visit);
       }
       const notices = passNoticeForgets;
       const notice = news === "renewed" ? await confirmRenewal(res) : "";
@@ -4757,6 +4819,7 @@ async function collectPass(visit, asked = false) {
       // was dropped.
       dropPassNonce(PASS_NONCE_STORAGE_KEY);
       heedPassClaimGone(sent);
+      collectionOver(visit);
       const notices = passNoticeForgets;
       const found = again ? await passAfterLostAnswer() : "";
       if (forgets !== passForgets) {
@@ -4930,10 +4993,17 @@ async function redeemPassReissue(typed) {
   if (!passPageShown()) {
     return;
   }
-  // The answer says whether anything waits under the claim as it was when
-  // the code was asked about: once this browser has stopped collecting since,
-  // here or in another tab, the page keeps what that left it saying.
+  // The answer says whether anything waits under the claim as it was when the
+  // code was asked about: once this browser has stopped collecting since, here
+  // or in another tab, the page keeps what that left it saying, and starts
+  // collecting nothing for it. Otherwise what it says waits, a checkout opened
+  // in another tab since this page was drawn, say, is collected as the
+  // drawing's own answer would have it, unless a collection already asks for
+  // this drawing (collectFor).
   drawPass(res && claims === passForgets ? { ...lastPassInfo, claim: res.claim === true } : lastPassInfo);
+  if (res && claims === passForgets && res.claim === true && lastPassInfo.enabled) {
+    collectFor(passVisit);
+  }
   if (news === "issued") {
     focusPassPanel("pass-issued");
   } else {
@@ -6555,7 +6625,7 @@ document.addEventListener("click", (event) => {
       }
       // Unless the page has been drawn again since, which collects afresh.
       if (!done && visit === passVisit) {
-        collectPass(visit);
+        collectFor(visit);
       }
       if (done) {
         passStartedAgain = false;

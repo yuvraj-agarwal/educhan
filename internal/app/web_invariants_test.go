@@ -573,7 +573,7 @@ func TestPassPageStoresAClaimedPassBeforeAnythingElse(t *testing.T) {
 func TestPassPageCollectsAPendingPurchase(t *testing.T) {
 	script := appScript(t)
 	render := withoutComments(jsFunction(t, script, "renderPass"))
-	call := regexp.MustCompile(`if \(([^{]*)\) \{\s*collectPass\(visit, asked\);`).FindStringSubmatch(render)
+	call := regexp.MustCompile(`if \(([^{]*)\) \{\s*collectFor\(visit\);`).FindStringSubmatch(render)
 	if call == nil || !strings.Contains(call[1], "info.claim || passNoncePending(PASS_NONCE_STORAGE_KEY)") || strings.Contains(call[1], "back") || strings.Contains(call[1], "paid") {
 		t.Errorf("renderPass no longer collects whenever the server says there is a purchase to collect, "+
 			"or a claim's answer may have been lost: %q", call)
@@ -661,6 +661,71 @@ func TestPassPageCollectsAPendingPurchase(t *testing.T) {
 	}
 	if section := words(withoutComments(passSection(t, script))); strings.Contains(section, "added to your Pass") {
 		t.Error("the Pass page promises an earlier payment is added to the Pass a later checkout buys")
+	}
+}
+
+// A drawing of the Pass page that says something waits under the claim says the
+// page keeps checking while it is open, so whatever draws one from an answer
+// that says so starts collecting for it: the drawing itself, a claim's answer
+// drawn into a newer drawing than its collection's own, a reissue code's
+// answer, with a checkout opened in another tab since the page was drawn, say,
+// and Stop collecting it here that could not reach educhan. Each goes through
+// collectFor, which starts none while a collection may still ask for that
+// drawing, so a drawing never has two asking, and a collection gives that up
+// only once it has found nothing left. A reissue code's answer that lands after
+// a forget pressed since it was asked, here or in another tab, starts nothing,
+// as it draws nothing of the claim, and a forget pressed once a collection has
+// started ends it (TestPassClaimsCarryANonceAndCanBeDropped).
+func TestPassPageRunsOneCollectionPerDrawing(t *testing.T) {
+	script := appScript(t)
+	code := withoutComments(script)
+	start := withoutComments(jsFunction(t, script, "collectFor"))
+	if start != "function collectFor(visit) {\n  if (visit !== passVisit || passCollecting === visit) {\n    return;\n  }\n"+
+		"  passCollecting = visit;\n  const asked = passAskedFor === visit;\n  passAskedFor = 0;\n  collectPass(visit, asked);\n}" {
+		t.Error("collectFor starts a collection for a drawing that has been replaced, or beside one that may still ask for it")
+	}
+	over := withoutComments(jsFunction(t, script, "collectionOver"))
+	if over != "function collectionOver(visit) {\n  if (passCollecting === visit) {\n    passCollecting = 0;\n  }\n}" {
+		t.Error("collectionOver gives up a mark that is not its own collection's")
+	}
+	// The mark is set by collectFor alone and given up by collectionOver
+	// alone, and a collection is started only through collectFor.
+	if !strings.Contains(code, "\nlet passCollecting = 0;\n") || strings.Count(code, "passCollecting = ") != 3 ||
+		len(regexp.MustCompile(`\bpassCollecting\b`).FindAllString(code, -1)) != 5 || strings.Count(code, "collectPass(") != 2 {
+		t.Error("a Pass collection is started, or its mark set or given up, other than through collectFor and collectionOver")
+	}
+	// A collection gives the mark up as soon as an answer finds nothing left
+	// under the claim, before the wait on the Pass held a renewal or a lost
+	// answer brings, so an answer that says something waits meanwhile starts
+	// one again; it gives it up nowhere else.
+	collect := withoutComments(jsFunction(t, script, "collectPass"))
+	if strings.Count(code, "collectionOver(") != 3 || strings.Count(collect, "collectionOver(visit);") != 2 ||
+		!strings.Contains(collect, "dropPassNonce(PASS_NONCE_STORAGE_KEY);\n        heedPassClaimGone(sent);\n        collectionOver(visit);\n      }\n"+
+			"      const notices = passNoticeForgets;\n      const notice = news === \"renewed\" ? await confirmRenewal(res) : \"\";") ||
+		!strings.Contains(collect, "dropPassNonce(PASS_NONCE_STORAGE_KEY);\n      heedPassClaimGone(sent);\n      collectionOver(visit);\n"+
+			"      const notices = passNoticeForgets;\n      const found = again ? await passAfterLostAnswer() : \"\";") {
+		t.Error("a Pass collection gives up its mark other than once an answer finds nothing left, before any wait")
+	}
+	// Who starts one: the drawing (renderPass,
+	// TestPassPageCollectsAPendingPurchase), a claim's answer drawn into a
+	// newer drawing, a reissue code's answer drawn from what it says when no
+	// forget came since it was asked, and a Stop that could not reach educhan
+	// (TestPassClaimsCarryANonceAndCanBeDropped). Each starts one only on a
+	// page drawn from the server's answer, which says what is collected.
+	if strings.Count(code, "collectFor(") != 5 || strings.Count(withoutComments(jsFunction(t, script, "renderPass")), "collectFor(visit);") != 1 {
+		t.Error("a Pass collection is started from somewhere other than the drawing, a claim's answer, a reissue code's answer and Stop")
+	}
+	claimed := withoutComments(jsFunction(t, script, "showClaimed"))
+	if !strings.Contains(claimed, "redrawPass({ ...lastPassInfo, claim }, '[data-action=\"collect-pass\"]', \"#pass-held\", \"form[data-pass] input\");\n"+
+		"  if (claim && lastPassInfo.enabled) {\n    collectFor(passVisit);\n  }\n") {
+		t.Error("a claim's answer that says something still waits, drawn into a newer drawing, leaves that drawing collecting nothing")
+	}
+	redeem := withoutComments(jsFunction(t, script, "redeemPassReissue"))
+	drawn := strings.Index(redeem, "drawPass(res && claims === passForgets ? { ...lastPassInfo, claim: res.claim === true } : lastPassInfo);\n"+
+		"  if (res && claims === passForgets && res.claim === true && lastPassInfo.enabled) {\n    collectFor(passVisit);\n  }\n")
+	if drawn < 0 || strings.Count(redeem, "collectFor(") != 1 || drawn < strings.Index(redeem, "\n  if (!passPageShown()) {\n    return;\n  }") {
+		t.Error("a reissue code's answer that says something waits under the claim leaves the page saying it keeps checking " +
+			"while nothing collects, or starts collecting after a forget pressed since it was asked, or off the Pass page")
 	}
 }
 
@@ -1326,7 +1391,7 @@ func TestPassAnswersDrawOnlyOnThePassPage(t *testing.T) {
 	// Check now moves focus only if its own drawing happened, which renderPass
 	// says; the claim's answer is shown through showClaimed, which asks first.
 	if !strings.Contains(bodies["Check now"], "renderPass().then((drawn) => {\n      if (drawn) {\n        passFocus(") ||
-		!strings.Contains(bodies["renderPass"], "collectPass(visit, asked);\n  }\n  return true;\n}") {
+		!strings.Contains(bodies["renderPass"], "collectFor(visit);\n  }\n\n  passAskedFor = 0;\n  return true;\n}") {
 		t.Error("Check now moves focus once its drawing was overtaken, or the reader left the page")
 	}
 }
@@ -1402,17 +1467,23 @@ func TestPassNoticesFromAPressAreBroughtIntoView(t *testing.T) {
 		said += strings.Count(body, "showPassNotice(")
 	}
 	// Check now marks the drawing it asks for (passAsked), which renderPass
-	// takes before anything else can, and hands to its collection; only the
-	// first claim's answer, the press's, is said in view (showClaimed), and
-	// later polls' news is not.
+	// takes before anything else can, and marks itself with (passAskedFor)
+	// until it lands; the first collection started for that drawing takes the
+	// mark, whatever started it, a reissue code's answer that landed first,
+	// say (collectFor); only that collection's first claim's answer, the
+	// press's, is said in view (showClaimed), and later polls' news is not.
 	checkNow := block(`if (event.target.closest('[data-action="collect-pass"]')) {`)
 	render := withoutComments(jsFunction(t, script, "renderPass"))
 	collect := withoutComments(jsFunction(t, script, "collectPass"))
 	claimed := withoutComments(jsFunction(t, script, "showClaimed"))
+	collectFor := withoutComments(jsFunction(t, script, "collectFor"))
 	if !strings.Contains(checkNow, "event.preventDefault();\n    passAsked = true;\n    renderPass().then(") ||
-		!strings.Contains(render, "{\n  const visit = ++passVisit;\n  const asked = passAsked;\n  passAsked = false;\n") ||
+		!strings.Contains(render, "{\n  const visit = ++passVisit;\n  passAskedFor = passAsked ? visit : 0;\n  passAsked = false;\n") ||
 		strings.Count(code, "passAsked = ") != 3 || // and its declaration
-		!strings.Contains(render, "collectPass(visit, asked);") ||
+		!strings.Contains(code, "\nlet passAskedFor = 0;\n") || strings.Count(code, "passAskedFor = ") != 4 ||
+		!strings.HasSuffix(render, "collectFor(visit);\n  }\n\n  passAskedFor = 0;\n  return true;\n}") ||
+		!strings.Contains(collectFor, "  const asked = passAskedFor === visit;\n  passAskedFor = 0;\n  collectPass(visit, asked);\n}") ||
+		strings.Count(code, "passAskedFor") != 5 ||
 		!strings.HasPrefix(collect, "async function collectPass(visit, asked = false) {") ||
 		strings.Count(collect, ", asked);") != 2 ||
 		!strings.Contains(collect, "\n    }\n    asked = false;\n    await new Promise((resolve) => setTimeout(resolve, wait));") ||
@@ -2883,7 +2954,7 @@ func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 	// forget's answer to take off and a Pass stored in another tab to leave,
 	// and is not said once this tab has learned that nothing is left to
 	// collect since the press (TestPassNoticeGoesWithWhatItSaid).
-	failed := regexp.MustCompile(`if \(!done && visit === passVisit\) \{\s*collectPass\(visit\);\s*\}`)
+	failed := regexp.MustCompile(`if \(!done && visit === passVisit\) \{\s*collectFor\(visit\);\s*\}`)
 	said := regexp.MustCompile(`if \(!done\) \{\s*refocus\(stopClaim\);\s*if \(passClaimGone <= at\) \{\s*` +
 		`showPassNotice\("Couldn't reach educhan, so this browser is still collecting it\.[^"]*"\);\s*noteClaimNotice\(at\);\s*\}\s*return;\s*\}`)
 	if !failed.MatchString(stop) || !said.MatchString(stop) {
@@ -3972,8 +4043,8 @@ func TestPassNoticeGoesWithWhatItSaid(t *testing.T) {
 	}
 	collect := withoutComments(jsFunction(t, script, "collectPass"))
 	sent := strings.Index(collect, "const sent = Date.now();\n    try {\n      res = await api(\"/api/pass/claim\", {")
-	answered := strings.Index(collect, "if (res.claim !== true) {\n        dropPassNonce(PASS_NONCE_STORAGE_KEY);\n        heedPassClaimGone(sent);\n      }")
-	refused := strings.Index(collect, "dropPassNonce(PASS_NONCE_STORAGE_KEY);\n      heedPassClaimGone(sent);\n"+
+	answered := strings.Index(collect, "if (res.claim !== true) {\n        dropPassNonce(PASS_NONCE_STORAGE_KEY);\n        heedPassClaimGone(sent);\n        collectionOver(visit);\n      }")
+	refused := strings.Index(collect, "dropPassNonce(PASS_NONCE_STORAGE_KEY);\n      heedPassClaimGone(sent);\n      collectionOver(visit);\n"+
 		"      const notices = passNoticeForgets;\n      const found = again ? await passAfterLostAnswer() : \"\";")
 	if sent < 0 || answered < sent || refused < answered || strings.Index(collect, "showClaimed(") < answered ||
 		strings.Index(collect, "if (forgets !== passForgets) {\n      return;\n    }") > answered {
