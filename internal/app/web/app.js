@@ -128,6 +128,10 @@ function unreachableError() {
 // against what the server answers.
 const IMAGE_LIMIT_REACHED = "image limit reached";
 const UPLOADS_SWITCHED_OFF = "image uploads are switched off on this server";
+// And for an image that did not finish arriving in time, which the server
+// answers 400 rather than 408: Chromium sends a request answered 408 on a
+// reused connection again, image and all, without telling the page.
+const UPLOAD_TOO_SLOW = "upload too slow";
 // UPLOADS_OFF_REASON is why a form on this site has no image field, or why the
 // one it had was switched off.
 const UPLOADS_OFF_REASON = "This site doesn't take images.";
@@ -206,7 +210,7 @@ function errorMessage(err, { hasText = true, action = "post", kept = true } = {}
   // The image did not finish arriving in the time the server gives a body,
   // counted from when it had room to read it: the connection, not the server.
   // Nothing was posted and no flood-control wait was started.
-  if (err.status === 408) {
+  if (err.status === 400 && err.message === UPLOAD_TOO_SLOW) {
     return "Your image took too long to upload, so nothing was posted. Check your connection or try a smaller image, then post again: your post is still in the form.";
   }
   // The form stays on screen after a refusal, so these say what happened and

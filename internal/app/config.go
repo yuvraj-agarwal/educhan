@@ -117,18 +117,22 @@ const defaultRefusalLimit = 10
 // 8 MiB comfortably covers a phone photo without inviting abuse.
 const defaultMaxUploadBytes int64 = 8 << 20
 
-// maxUploadLimit is the most MaxUploadBytes may be, 31 MiB: the largest
-// size, in whole MiB, at which the cheapest file of every format is still
-// processed within the processing budget (media.MaxUploadBytes). From about
-// 31.5 MiB even a file of one pixel is refused as too costly to process, after
-// its bytes have been read, so a limit past that would be one nothing could
+// maxUploadLimit is the most MaxUploadBytes may be, 31 MiB: the largest size,
+// in whole MiB, at which the cheapest file of every format is still processed
+// within the processing budget (media.MaxUploadBytes). From about 31.5 MiB
+// even a file of one pixel is refused as too costly to process, after its
+// bytes have been read, so a limit past that would be one nothing could
 // reach. The body that carries an image, up to multipartOverhead more than
 // the image, must also fit the memory set aside for request bodies
-// (media.UploadBudget, 64 MiB), where it is reserved whole before it is read:
-// a body larger than that budget would be reserved as the whole of it and read
-// past it, and the budget would no longer bound what the uploads hold. That
-// allows 63 MiB, so the processing budget is what decides.
-const maxUploadLimit = min(media.MaxUploadBytes, media.UploadBudget-multipartOverhead)
+// (media.UploadBudget, 64 MiB), where it is reserved whole before most of it
+// is read, with its first eighth, which is in memory twice until the form has
+// been read, reserved a second time (admitBody): a body whose room came to
+// more than that budget would be reserved as the whole of it and read past
+// it, and the budget would no longer bound what the uploads hold. That allows
+// a body of eight ninths of the budget, an image of just under 56 MiB, so the
+// processing budget is what decides.
+const maxUploadLimit = min(media.MaxUploadBytes,
+	media.UploadBudget/(uploadAdmitPart+1)*uploadAdmitPart-multipartOverhead)
 
 // checkUploadLimit refuses an attachment size limit over maxUploadLimit.
 func checkUploadLimit(cfg Config) error {

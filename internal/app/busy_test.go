@@ -387,9 +387,10 @@ func multipartImage(t *testing.T, body string, image []byte) ([]byte, string) {
 // after the body is read (processContext), so a slow connection no longer
 // spends the image's budget and is no longer mistaken for a busy server and
 // turned away 503. A body slower than the read timeout is the client's doing
-// and is answered 408, with nothing stored either way; that answer is written
-// once the read timeout has passed, inside the write deadline parseSubmission
-// set answerAllowance beyond it, so the 408 is lost without the allowance.
+// and is answered upload too slow, with nothing stored either way; that answer
+// is written once the read timeout has passed, inside the write deadline
+// parseSubmission set answerAllowance beyond it, so the answer is lost without
+// the allowance.
 func TestSlowUploadBodyIsNotMistakenForABusyServer(t *testing.T) {
 	t.Run("a body slower than the processing deadline still posts", func(t *testing.T) {
 		h := testServer(t, nil)
@@ -422,14 +423,15 @@ func TestSlowUploadBodyIsNotMistakenForABusyServer(t *testing.T) {
 
 	// The wait for room in the upload budget is the server's: a post that
 	// waited still has the whole read timeout for its body, counted from when
-	// there was room, and is not answered 408 for the server's own load.
+	// there was room, and is not answered upload too slow for the server's own
+	// load.
 	t.Run("a body that waited for room has the whole read timeout", func(t *testing.T) {
 		h := testServer(t, nil)
 		h.addBoard("general")
 		const (
 			held    = 2 * time.Second // the budget is full this long, well inside the wait postDeadline allows
 			timeout = 3 * time.Second // the body's read timeout
-			sending = 2400 * time.Millisecond
+			sending = 4 * time.Second // from the start: past the timeout from then, inside it from the room
 		)
 		h.app.uploadReadTimeout = timeout
 
@@ -443,9 +445,10 @@ func TestSlowUploadBodyIsNotMistakenForABusyServer(t *testing.T) {
 		release := time.AfterFunc(held, free)
 		defer release.Stop()
 
-		// Expect: 100-continue keeps the body back until the server starts
-		// reading it, as a slow connection whose buffers have filled does,
-		// so the body takes its time from when there was room.
+		// The body is sent from the start, and its first bytes read before
+		// the wait for room; the rest waits in the connection's buffers until
+		// there is room, as on a slow connection, and arrives past the read
+		// timeout counted from the start, inside it counted from the room.
 		body, contentType := multipartImage(t, "waited, then slow", pngBytes(t, 32, 32))
 		const chunks = 12
 		req, err := http.NewRequest(http.MethodPost, h.client.base+"/api/boards/general/threads",
@@ -454,9 +457,8 @@ func TestSlowUploadBodyIsNotMistakenForABusyServer(t *testing.T) {
 			t.Fatal(err)
 		}
 		req.Header.Set("Content-Type", contentType)
-		req.Header.Set("Expect", "100-continue")
 		req.ContentLength = int64(len(body))
-		patient := &http.Client{Transport: &http.Transport{ExpectContinueTimeout: time.Minute}}
+		patient := &http.Client{}
 		t.Cleanup(patient.CloseIdleConnections)
 
 		start := time.Now()
@@ -471,7 +473,7 @@ func TestSlowUploadBodyIsNotMistakenForABusyServer(t *testing.T) {
 			t.Fatalf("answered after %v, inside the %v read timeout from the start; the test proves nothing", took, timeout)
 		}
 		if resp.StatusCode != http.StatusCreated {
-			t.Fatalf("a post that waited %v for room, then sent its body in %v: status %d (%s) after %v, want 201",
+			t.Fatalf("a post that waited %v for room, its body sent over %v: status %d (%s) after %v, want 201",
 				held, sending, resp.StatusCode, answer, took)
 		}
 		if n := h.countRows("posts"); n != 1 {
@@ -479,17 +481,14 @@ func TestSlowUploadBodyIsNotMistakenForABusyServer(t *testing.T) {
 		}
 	})
 
-	t.Run("a body slower than the read timeout is answered 408", func(t *testing.T) {
+	t.Run("a body slower than the read timeout is answered upload too slow", func(t *testing.T) {
 		h := testServer(t, nil)
 		h.addBoard("general")
 		h.app.uploadReadTimeout = 400 * time.Millisecond
 
 		status, bodyText := stalledUpload(t, h.client.base)
-		if status != http.StatusRequestTimeout {
-			t.Fatalf("stalled upload: status %d (%s), want 408", status, bodyText)
-		}
-		if !strings.Contains(bodyText, "slow") {
-			t.Errorf("408 body = %q, want it to name the slow upload", bodyText)
+		if !answeredTooSlow(status, bodyText) {
+			t.Fatalf("stalled upload: status %d (%s), want 400 %q", status, bodyText, uploadTooSlow)
 		}
 		if n := h.countRows("posts"); n != 0 {
 			t.Errorf("%d posts stored for a stalled upload, want none", n)
@@ -533,11 +532,28 @@ func stalledUpload(t *testing.T, base string) (int, string) {
 	return resp.StatusCode, string(out)
 }
 
+// answeredTooSlow reports whether an answer is the refusal of an upload body
+// that fell behind its pace or its read window: 400 with uploadTooSlow, and no
+// Retry-After asked of it. Not 408 Request Timeout: Chromium takes a 408 on a
+// reused keep-alive connection for an idle connection closed, and sends the
+// whole request again, without telling the page, until one comes on a fresh
+// connection, so a poster too slow to send the image once sent it several
+// times over before being told.
+func answeredTooSlow(status int, text string) bool {
+	var out struct {
+		Error      string `json:"error"`
+		RetryAfter *int   `json:"retry_after"`
+	}
+	return status == http.StatusBadRequest && json.Unmarshal([]byte(text), &out) == nil &&
+		out.Error == uploadTooSlow && out.RetryAfter == nil
+}
+
 // idleBody is a raw connection that has sent an image post's headers,
 // declaring a body it has not sent yet. One from idleUpload has also been
 // told by the server to go on (Expect: 100-continue), which the server says
-// only once its handler starts reading the body: past the wait for room,
-// holding it or refused it.
+// once its handler starts reading the body: with uploads on, when it waits
+// for the body's first bytes, before anything is reserved for it
+// (startBody).
 type idleBody struct {
 	conn    net.Conn
 	read    *bufio.Reader
@@ -642,19 +658,22 @@ func drainShares(t *testing.T, h *harness, clients ...string) {
 	})
 }
 
-// A body holds its room in the upload budget from before it is read until its
-// post is answered, and a post whose body never arrives never reaches flood
-// control. So eight connections declaring 8 MiB bodies and sending nothing
-// held the whole budget for the read timeout, turned every other image post
-// away 503, and cost their client nothing. Now one client's posts, an IPv6
-// client's counted by its /64 (shareKey), hold at most clientUploadShare, half
-// the budget, its next post refused 429 at once; and a body that falls behind
-// an even pace through its read window by more than uploadPaceGrace is cut
-// off and answered 408, giving its room back, whether it sends nothing or a
-// trickle.
+// A body holds its room in the upload budget until its post is answered, and
+// a post whose body never arrives never reaches flood control. So eight
+// connections declaring 8 MiB bodies and sending nothing held the whole budget
+// for the read timeout, turned every other image post away 503, and cost their
+// client nothing. Now one client's posts, an IPv6 client's counted by its /64
+// (shareKey), hold at most clientUploadShare, half the budget, its next post
+// refused 429 at once; and a body that falls behind an even pace through its
+// read window by more than its grace is cut off and answered upload too slow,
+// giving its room back, whether it stops or trickles. A body holds its
+// declared size only once an eighth of it has arrived (admitBody,
+// TestIdleBodiesDoNotHoldUpOtherImagePosts), so the bodies here send that
+// (underwayUpload) and then stop.
 func TestIdleUploadsCannotHoldTheUploadBudget(t *testing.T) {
-	const declared = 8 << 20 // the default attachment limit, declared and never sent
+	const declared = 8 << 20 // the default attachment limit, declared and an eighth of it sent
 	conns := int(media.UploadBudget / declared)
+	perClient := int(clientUploadShare / declared)
 
 	t.Run("one client holds no more than its share", func(t *testing.T) {
 		h := testServer(t, func(cfg *Config) { cfg.TrustedProxyHops = 1 })
@@ -664,11 +683,9 @@ func TestIdleUploadsCannotHoldTheUploadBudget(t *testing.T) {
 		h.app.postDeadline = 16 * time.Second // a wait for room gives up after a second
 		const holder, other = "203.0.113.1", "198.51.100.2"
 		drainShares(t, h, holder, other)
-		for i := 0; i < conns; i++ {
-			idleUpload(t, h.base, holder, declared)
-		}
-		if got := h.app.uploadShares.of(holder); got != clientUploadShare {
-			t.Errorf("the idle client holds %d bytes of the upload budget, want its share, %d", got, clientUploadShare)
+		for i := 1; i <= perClient; i++ {
+			underwayUpload(t, h.base, holder, declared)
+			awaitShare(t, h, holder, int64(i)*declared)
 		}
 
 		var created createdPost
@@ -682,6 +699,9 @@ func TestIdleUploadsCannotHoldTheUploadBudget(t *testing.T) {
 			h.client.lastHeader.Get("Retry-After") != strconv.Itoa(want) {
 			t.Errorf("the idle client's next image post: status %d, %+v, Retry-After %q; want 429 with %ds to wait",
 				status, refused, h.client.lastHeader.Get("Retry-After"), want)
+		}
+		if got := h.app.uploadShares.of(holder); got != clientUploadShare {
+			t.Errorf("the idle client holds %d bytes of the upload budget, want its share, %d", got, clientUploadShare)
 		}
 		if n := h.countRows("posts"); n != 1 {
 			t.Errorf("%d posts stored, want the other client's", n)
@@ -698,11 +718,9 @@ func TestIdleUploadsCannotHoldTheUploadBudget(t *testing.T) {
 		h.app.postDeadline = 16 * time.Second // a wait for room gives up after a second
 		const network, other = "2001:db8:0:1::", "2001:db8:0:2::1"
 		drainShares(t, h, shareKey(network+"1"), shareKey(other))
-		for i := 1; i <= conns; i++ {
-			idleUpload(t, h.base, network+strconv.Itoa(i), declared)
-		}
-		if got := h.app.uploadShares.of(shareKey(network + "1")); got != clientUploadShare {
-			t.Errorf("the idle network holds %d bytes of the upload budget, want its share, %d", got, clientUploadShare)
+		for i := 1; i <= perClient; i++ {
+			underwayUpload(t, h.base, network+strconv.Itoa(i), declared)
+			awaitShare(t, h, shareKey(network+"1"), int64(i)*declared)
 		}
 
 		var created createdPost
@@ -718,15 +736,19 @@ func TestIdleUploadsCannotHoldTheUploadBudget(t *testing.T) {
 	t.Run("a body that does not arrive gives its room back", func(t *testing.T) {
 		h := testServer(t, func(cfg *Config) { cfg.TrustedProxyHops = 1 })
 		h.addBoard("general")
-		h.app.uploadPaceGrace = 300 * time.Millisecond
-		h.app.uploadReadTimeout = time.Minute
-		h.app.postDeadline = 17 * time.Second // a wait for room gives up after two seconds
+		// An eighth of a body is a second of its window: each body below
+		// holds its room for three seconds from its start, its second and the
+		// grace, and a wait for room gives up after four.
+		h.app.uploadPaceGrace = 2 * time.Second
+		h.app.uploadReadTimeout = 8 * time.Second
+		h.app.postDeadline = 19 * time.Second
 		// Two clients, each within its share, between them the whole budget.
 		holders := []string{"203.0.113.1", "203.0.113.2"}
 		drainShares(t, h, append(holders, "198.51.100.2")...)
 		var idle []*idleBody
 		for i := 0; i < conns; i++ {
-			idle = append(idle, idleUpload(t, h.base, holders[i%2], declared))
+			idle = append(idle, underwayUpload(t, h.base, holders[i%2], declared))
+			awaitShare(t, h, holders[i%2], int64(i/2+1)*declared)
 		}
 
 		var created createdPost
@@ -734,8 +756,8 @@ func TestIdleUploadsCannotHoldTheUploadBudget(t *testing.T) {
 			t.Fatalf("another client's image post: status %d (%s), want 201", status, created.Error)
 		}
 		for i, b := range idle {
-			if status, text := b.answer(t, 5*time.Second); status != http.StatusRequestTimeout {
-				t.Errorf("idle body %d: status %d (%s), want 408", i, status, text)
+			if status, text := b.answer(t, 5*time.Second); !answeredTooSlow(status, text) {
+				t.Errorf("idle body %d: status %d (%s), want 400 %q", i, status, text, uploadTooSlow)
 			}
 		}
 	})
@@ -766,14 +788,607 @@ func TestIdleUploadsCannotHoldTheUploadBudget(t *testing.T) {
 		}()
 		start := time.Now()
 		status, text := b.answer(t, 10*time.Second)
-		if status != http.StatusRequestTimeout {
-			t.Fatalf("trickling body: status %d (%s), want 408", status, text)
+		if !answeredTooSlow(status, text) {
+			t.Fatalf("trickling body: status %d (%s), want 400 %q", status, text, uploadTooSlow)
 		}
 		if took := time.Since(start); took > 5*time.Second {
 			t.Errorf("trickling body answered after %v, want soon after the %v grace, not at the %v window's end",
 				took, h.app.uploadPaceGrace, h.app.uploadReadTimeout)
 		}
 	})
+}
+
+// startedUpload is a rawUpload, declaring no wait to be told to go on, that
+// has sent the first bytes of its body, its first boundary line, and then
+// nothing more.
+func startedUpload(t *testing.T, base, client string, size int64) *idleBody {
+	t.Helper()
+	b := rawUpload(t, base, client, size, false)
+	if _, err := io.WriteString(b.conn, "--BOUND\r\n"); err != nil {
+		t.Fatalf("send the start of the body: %v", err)
+	}
+	return b
+}
+
+// underwayUpload is a startedUpload that has gone on to send the head of a
+// part and filler, until the body is under way (admitBytes of it sent), and
+// then nothing more.
+func underwayUpload(t *testing.T, base, client string, size int64) *idleBody {
+	t.Helper()
+	b := startedUpload(t, base, client, size)
+	b.send(t, int(admitBytes(size))-len("--BOUND\r\n"))
+	return b
+}
+
+// send sends n bytes more of the body: the head of a filler part, if n leaves
+// room for it, and then filler.
+func (b *idleBody) send(t *testing.T, n int) {
+	t.Helper()
+	const head = "Content-Disposition: form-data; name=\"filler\"\r\n\r\n"
+	piece := bytes.Repeat([]byte("x"), n)
+	if n > len(head) {
+		copy(piece, head)
+	}
+	if _, err := b.conn.Write(piece); err != nil {
+		t.Fatalf("send %d bytes of the body: %v", n, err)
+	}
+}
+
+// awaitShare waits for client's posts to hold want bytes of the upload
+// budget, and fails the test if they do not within a few seconds.
+func awaitShare(t *testing.T, h *harness, client string, want int64) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for h.app.uploadShares.of(client) != want {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s holds %d bytes of the upload budget, want %d", client, h.app.uploadShares.of(client), want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// awaitBudgetFree waits until want bytes of the upload budget are free, and
+// no more, failing the test if that takes over five seconds.
+func awaitBudgetFree(t *testing.T, want int64) {
+	t.Helper()
+	free := func() int64 {
+		// The most TryReserveUpload takes, found by halving.
+		lo, hi := int64(0), media.UploadBudget
+		for lo < hi {
+			n := (lo + hi + 1) / 2
+			if give, ok := media.TryReserveUpload(n); ok {
+				give()
+				lo = n
+			} else {
+				hi = n - 1
+			}
+		}
+		return lo
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for free() != want {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d bytes of the upload budget are free, want %d", free(), want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// A body took its room in the upload budget, and its place in the queue for
+// room, as soon as its headers had been read, whatever it then sent. So
+// sixteen addresses, each within its share with three connections that
+// declared the largest body there may be and sent none of it, kept the
+// budget full and its queue long: each body held its room for the pace's
+// grace before it was cut off, the next took it, and was answered upload too
+// slow before flood control, charged nothing, to come straight back. An
+// honest image post waited 8 to 11 seconds behind them, and many were turned
+// away 503. A body then took neither its client's share nor a place in the
+// queue until its first bytes had arrived, and held its declared size for a
+// second if it stopped there; but a hundred /64s of one /48, each with its
+// one post in the queue, sending a boundary line a post, still kept an honest
+// image post waiting ten seconds. A body now holds room for twice what it has
+// sent at most, or uploadHeadBytes, a piece at a time, until an eighth of it
+// has arrived, and only then its declared size (admitBody).
+func TestIdleBodiesDoNotHoldUpOtherImagePosts(t *testing.T) {
+	const declared = 8<<20 + multipartOverhead // the most a body may be, at the default limit
+	perClient := int(clientUploadShare / declared)
+
+	t.Run("bodies that send nothing take no room and no place in the queue", func(t *testing.T) {
+		h := testServer(t, func(cfg *Config) { cfg.TrustedProxyHops = 1 })
+		h.addBoard("general")
+		h.app.uploadPaceGrace = 4 * time.Second
+		h.app.uploadReadTimeout = time.Minute
+		var clients []string
+		for i := 1; i <= 16; i++ {
+			clients = append(clients, "203.0.113."+strconv.Itoa(i))
+		}
+		const other = "198.51.100.2"
+		drainShares(t, h, append(clients, other)...)
+		var idle []*idleBody
+		for _, client := range clients {
+			for i := 0; i < perClient; i++ {
+				idle = append(idle, rawUpload(t, h.base, client, declared, false))
+			}
+		}
+		// Long enough for the server to have read every request's headers.
+		time.Sleep(300 * time.Millisecond)
+
+		start := time.Now()
+		var created createdPost
+		status := uploadFrom(t, h, other, &created)
+		took := time.Since(start)
+		if status != http.StatusCreated {
+			t.Fatalf("another client's image post beside %d idle bodies: status %d (%s) after %v, want 201",
+				len(idle), status, created.Error, took)
+		}
+		if took > h.app.uploadPaceGrace/2 {
+			t.Errorf("another client's image post beside %d idle bodies took %v, want it taken at once, not after their %v grace",
+				len(idle), took, h.app.uploadPaceGrace)
+		}
+		for _, client := range clients {
+			if got := h.app.uploadShares.of(client); got != 0 {
+				t.Errorf("%s, whose bodies sent nothing, holds %d bytes of the upload budget, want none", client, got)
+			}
+		}
+		for i, b := range idle {
+			if status, text := b.answer(t, 2*h.app.uploadPaceGrace); !answeredTooSlow(status, text) {
+				t.Errorf("idle body %d: status %d (%s), want 400 %q", i, status, text, uploadTooSlow)
+			}
+		}
+	})
+
+	t.Run("bodies that start and stop hold what they have sent", func(t *testing.T) {
+		h := testServer(t, func(cfg *Config) { cfg.TrustedProxyHops = 1 })
+		h.addBoard("general")
+		h.app.uploadPaceGrace = 6 * time.Second
+		h.app.uploadReadTimeout = time.Minute
+		// A hundred /64s of one /48, each its own client (shareKey), with as
+		// many bodies as its share would hold whole: each body sends its first
+		// boundary line and stops. Held whole, eight of them would fill the
+		// budget, and the rest would each put a post in the queue for room.
+		var clients []string
+		for i := 1; i <= 100; i++ {
+			clients = append(clients, fmt.Sprintf("2001:db8:abcd:%x::1", i))
+		}
+		const other = "198.51.100.2"
+		keys := []string{other}
+		for _, client := range clients {
+			keys = append(keys, shareKey(client))
+		}
+		drainShares(t, h, keys...)
+		var stalled []*idleBody
+		for _, client := range clients {
+			for j := 0; j < perClient; j++ {
+				stalled = append(stalled, startedUpload(t, h.base, client, declared))
+			}
+		}
+		// Each holds the first piece of room its body takes, for the buffer
+		// its first bytes were read into.
+		for _, client := range clients {
+			awaitShare(t, h, shareKey(client), int64(perClient)*uploadHeadBytes)
+		}
+
+		body := boundForm(t, 2<<20, "from another client", pngBytes(t, 32, 32))
+		req, err := http.NewRequest(http.MethodPost, h.base+"/api/boards/general/threads", bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "multipart/form-data; boundary=BOUND")
+		req.Header.Set("X-Forwarded-For", other)
+		start := time.Now()
+		var created createdPost
+		status := h.client.send(req, &created)
+		took := time.Since(start)
+		if status != http.StatusCreated {
+			t.Fatalf("another client's %d-byte image post beside %d stalled bodies: status %d (%s) after %v, want 201",
+				len(body), len(stalled), status, created.Error, took)
+		}
+		if took > h.app.uploadPaceGrace/2 {
+			t.Errorf("another client's %d-byte image post beside %d stalled bodies took %v, want it taken at once, not after their %v grace",
+				len(body), len(stalled), took, h.app.uploadPaceGrace)
+		}
+		for i, b := range stalled {
+			if status, text := b.answer(t, 2*h.app.uploadPaceGrace); !answeredTooSlow(status, text) {
+				t.Errorf("stalled body %d: status %d (%s), want 400 %q", i, status, text, uploadTooSlow)
+			}
+		}
+	})
+
+	// A body takes room a piece at a time, each before it is read into and
+	// as large as all before it, so it holds at most twice what it has sent,
+	// or uploadHeadBytes if that is more, until an eighth of it has arrived;
+	// then it holds its declared size.
+	t.Run("a body holds its declared size once an eighth of it has arrived", func(t *testing.T) {
+		h := testServer(t, func(cfg *Config) { cfg.TrustedProxyHops = 1 })
+		h.addBoard("general")
+		// Under way, a body that stops holds its room for an eighth of its
+		// window and the grace: six seconds.
+		h.app.uploadPaceGrace = 4 * time.Second
+		h.app.uploadReadTimeout = 16 * time.Second
+		const client = "203.0.113.1"
+		drainShares(t, h, client)
+		b := startedUpload(t, h.base, client, declared)
+		sent := len("--BOUND\r\n")
+		awaitShare(t, h, client, uploadHeadBytes)
+		b.send(t, 64<<10-sent)
+		sent = 64 << 10
+		awaitShare(t, h, client, 2*int64(sent))
+		admit := admitBytes(declared)
+		b.send(t, int(admit)-1-sent)
+		awaitShare(t, h, client, admit)
+		b.send(t, 1)
+		awaitShare(t, h, client, declared)
+		// What has arrived is in memory until the read of the form has
+		// copied it into the image's buffer, which is what the declared size
+		// is for: the budget holds room for it a second time, though the
+		// client's share counts the body once.
+		awaitBudgetFree(t, media.UploadBudget-declared-admit)
+		if status, text := b.answer(t, 2*h.app.uploadPaceGrace); !answeredTooSlow(status, text) {
+			t.Errorf("a body that stopped once under way: status %d (%s), want 400 %q", status, text, uploadTooSlow)
+		}
+		awaitBudgetFree(t, media.UploadBudget)
+	})
+
+	// The queue for room is in the order posts asked: with every post of
+	// each of many clients in it, an image post from anyone else waited
+	// behind all of them. A client has one post waiting at a time.
+	t.Run("one post of a client waits for room at a time", func(t *testing.T) {
+		h := testServer(t, func(cfg *Config) { cfg.TrustedProxyHops = 1 })
+		h.addBoard("general")
+		h.app.uploadReadTimeout = 10 * time.Second
+		const client = "203.0.113.1"
+		drainShares(t, h, client)
+		full, err := media.ReserveUpload(context.Background(), math.MaxInt64)
+		if err != nil {
+			t.Fatalf("fill the upload budget: %v", err)
+		}
+		var once sync.Once
+		free := func() { once.Do(full) }
+		t.Cleanup(free)
+
+		// The first post is sent apart from the harness's client, which keeps
+		// the last answer's headers for the second.
+		body, contentType := multipartImage(t, "waits for room", pngBytes(t, 32, 32))
+		req, err := http.NewRequest(http.MethodPost, h.base+"/api/boards/general/threads", bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", contentType)
+		req.Header.Set("X-Forwarded-For", client)
+		first := &http.Client{}
+		t.Cleanup(first.CloseIdleConnections)
+		waited := make(chan int, 1)
+		go func() {
+			resp, err := first.Do(req)
+			if err != nil {
+				waited <- 0
+				return
+			}
+			resp.Body.Close()
+			waited <- resp.StatusCode
+		}()
+		for deadline := time.Now().Add(5 * time.Second); h.app.uploadShares.of(client) == 0; time.Sleep(5 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatal("the client's first image post never asked for room")
+			}
+		}
+
+		start := time.Now()
+		var refused busyPost
+		status := uploadFrom(t, h, client, &refused)
+		took := time.Since(start)
+		want := int(busyRetryAfter / time.Second)
+		if status != http.StatusTooManyRequests || refused.RetryAfter != want {
+			t.Errorf("the client's second image post while its first waits for room: status %d (%s) after %v, want 429 with %ds to wait",
+				status, refused.Error, took, want)
+		}
+		if took > 2*time.Second {
+			t.Errorf("the client's second image post was answered after %v, want at once", took)
+		}
+
+		free()
+		select {
+		case status := <-waited:
+			if status != http.StatusCreated {
+				t.Errorf("the client's first image post, once there was room: status %d, want 201", status)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("the client's first image post was never answered")
+		}
+	})
+}
+
+// A body sent over a long round trip arrives as TCP's slow start sends it: a
+// burst of about 15 KB, then one a round trip later twice as large, and so on
+// up to what the link carries in a round trip, so that in its first seconds
+// it is far behind the pace of a large body before it catches up. A grace
+// that began at a second and grew only with what had arrived refused an
+// 8.3 MB image sent at 375 KB/s, faster than its pace asks, over a round trip
+// of 0.65 s within two seconds, and over one of a second within 1.3. The whole
+// grace holds from the first byte (pacedBody), and such a body is taken. Here
+// the round trip is that 0.65 s, the grace five round trips and the window
+// eight, and the body 1.5 MB, so that each byte is as much of the window as
+// one of the 8.3 MB body is of 30 s: the body falls as far behind its pace in
+// its first two seconds, and the grace that began at a second refused it
+// there, at its third or fourth burst.
+func TestABodyOverALongRoundTripIsTaken(t *testing.T) {
+	h := testServer(t, nil)
+	h.addBoard("general")
+	const rtt = 650 * time.Millisecond
+	h.app.uploadPaceGrace = 5 * rtt
+	h.app.uploadReadTimeout = 8 * rtt
+	drainShares(t, h, "127.0.0.1")
+	body := boundForm(t, 1_500_000, "over a long round trip", pngBytes(t, 32, 32))
+	b := rawUpload(t, h.base, "", int64(len(body)), false)
+	const firstBurst, linkBurst = 14_600, 375_000 // TCP's first window; what the link carries in a round trip
+	start := time.Now()
+	for k, sent, burst := 0, 0, firstBurst; sent < len(body); k, burst = k+1, 2*burst {
+		n := min(burst, linkBurst, len(body)-sent)
+		if _, err := b.conn.Write(body[sent : sent+n]); err != nil {
+			break // answered early: the answer says why
+		}
+		sent += n
+		time.Sleep(time.Until(start.Add(time.Duration(k+1) * rtt)))
+	}
+	status, text := b.answer(t, 10*time.Second)
+	if status != http.StatusCreated {
+		t.Fatalf("a %d-byte body in slow start's bursts over a %v round trip: status %d (%s) after %v, want 201",
+			len(body), rtt, status, text, time.Since(start))
+	}
+}
+
+// A body under way took room for the rest of itself in one ask and then, in
+// another, room for its start a second time, holding the first while it
+// waited for the second. Eight honest 8 MiB posts whose rests were granted
+// together, as room other uploads had held came free, then held the whole
+// budget between them, each waiting for its copy, and nothing was read until
+// the first of them gave up, ten seconds after its handler started: it was
+// answered 503, and every other image post on the server waited behind them.
+// The rest and the copy are one ask (bodyRoom.takeRest), so a body granted
+// room for them asks for none more and goes on.
+func TestBodiesUnderWayDoNotWaitOnEachOthersRoom(t *testing.T) {
+	h := testServer(t, func(cfg *Config) { cfg.TrustedProxyHops = 1 })
+	h.addBoard("general")
+	const (
+		declared = 8 << 20
+		bodies   = int(media.UploadBudget / declared)
+		other    = 50 << 20 // held by other uploads until the bodies are under way
+	)
+	admit := int(admitBytes(declared))
+	awaitBudgetFree(t, media.UploadBudget)
+	var clients []string
+	for i := 1; i <= bodies; i++ {
+		clients = append(clients, "203.0.113."+strconv.Itoa(i))
+	}
+	drainShares(t, h, clients...)
+	held, ok := media.TryReserveUpload(other)
+	if !ok {
+		t.Fatalf("hold %d bytes of a free upload budget: refused", other)
+	}
+	var once sync.Once
+	free := func() { once.Do(held) }
+	t.Cleanup(free)
+
+	// Each body sends all but the last byte of its first eighth, holding room
+	// for that eighth, and then that byte, under way: with the other uploads'
+	// room and the eighths held, too little is free for the rest of any of
+	// them, and each waits for it.
+	forms := make([][]byte, bodies)
+	conns := make([]*idleBody, bodies)
+	for i, client := range clients {
+		image := pngBytes(t, 32, 32)
+		probe := boundForm(t, 1000, client, image)
+		forms[i] = boundForm(t, 1000+declared-len(probe), client, image)
+		if len(forms[i]) != declared {
+			t.Fatalf("body %d is %d bytes, want %d", i, len(forms[i]), declared)
+		}
+		conns[i] = rawUpload(t, h.base, client, declared, false)
+		if _, err := conns[i].conn.Write(forms[i][:admit-1]); err != nil {
+			t.Fatalf("send the start of body %d: %v", i, err)
+		}
+		awaitShare(t, h, client, int64(admit))
+	}
+	for i := range conns {
+		if _, err := conns[i].conn.Write(forms[i][admit-1 : admit]); err != nil {
+			t.Fatalf("send the last byte of body %d's first eighth: %v", i, err)
+		}
+	}
+	waiting := func() int {
+		h.app.uploadShares.mu.Lock()
+		defer h.app.uploadShares.mu.Unlock()
+		return len(h.app.uploadShares.waiting)
+	}
+	for deadline := time.Now().Add(5 * time.Second); waiting() != bodies; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d of %d bodies under way wait for room, want all of them", waiting(), bodies)
+		}
+	}
+
+	// The other uploads are answered, and the bodies are sent on at full
+	// speed.
+	start := time.Now()
+	free()
+	for i := range conns {
+		go func(i int) { _, _ = conns[i].conn.Write(forms[i][admit:]) }(i)
+	}
+	type answer struct {
+		status int
+		text   string
+		took   time.Duration
+	}
+	answers := make([]answer, bodies)
+	var wg sync.WaitGroup
+	for i := range conns {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			status, text := conns[i].answer(t, 30*time.Second)
+			answers[i] = answer{status, text, time.Since(start)}
+		}(i)
+	}
+	wg.Wait()
+	for i, a := range answers {
+		if a.status != http.StatusCreated {
+			t.Errorf("body %d, once the other uploads' room came free: status %d (%s) after %v, want 201",
+				i, a.status, a.text, a.took)
+		}
+	}
+	awaitBudgetFree(t, media.UploadBudget)
+}
+
+// A body waits for its next piece of room holding the pieces it has, and for
+// the rest of its room holding its first eighth (admitBody), and the queue for
+// room is in order, so the rest a body asks for at its head holds up the
+// pieces asked for behind it. Fifty-seven 8 MiB bodies sent at once, each of
+// which had sent its eighth, held 57 MiB between them, too little was left for
+// the rest of any, and nothing that would give room back was being read: every
+// one of them waited until it gave up, ten seconds after its handler started,
+// and most were answered 503, where the server before bodies took their room a
+// piece at a time took them all. A post that holds room now waits for more
+// only while the posts waiting hold no more than waitingRoom between them, and
+// is otherwise turned away busy at once, so the first in the queue always has
+// room for its rest once the posts not waiting have been answered. Here the
+// bodies send their eighths and pause, as bodies paced at a MiB a second all
+// do a second in: all but the last two at most wait, the first of them gets
+// its room at once, and once they go on every one of them is taken.
+func TestBodiesWaitingForRoomLeaveRoomForTheFirstOfThem(t *testing.T) {
+	h := testServer(t, func(cfg *Config) { cfg.TrustedProxyHops = 1 })
+	h.addBoard("general")
+	// Neither the pace nor the wait for room gives up while the test is
+	// sending: what is at work is the room.
+	h.app.uploadPaceGrace = time.Minute
+	h.app.uploadReadTimeout = 2 * time.Minute
+	h.app.postDeadline = 75 * time.Second // a wait for room gives up after a minute
+	const declared = 8 << 20
+	admit := admitBytes(declared)
+	// One body more than leaves room for the rest of one of them: the eighths
+	// alone leave less than a body free.
+	bodies := int((media.UploadBudget-declared)/admit) + 1
+	room := h.app.waitingRoom()
+	if most := int(room / admit); most+1 >= bodies {
+		t.Fatalf("the waiting room, %d bytes, holds %d eighths: the test needs more bodies than that and one more", room, most)
+	}
+	awaitBudgetFree(t, media.UploadBudget)
+	var clients []string
+	for i := 1; i <= bodies; i++ {
+		clients = append(clients, "203.0.113."+strconv.Itoa(i))
+	}
+	drainShares(t, h, clients...)
+	image := pngBytes(t, 32, 32)
+	probe := boundForm(t, 1000, "waiting", image)
+	form := boundForm(t, 1000+declared-len(probe), "waiting", image)
+	if len(form) != declared {
+		t.Fatalf("the body is %d bytes, want %d", len(form), declared)
+	}
+
+	// Each body sends all but the last byte of its eighth, holding room for
+	// that eighth, and then that byte, under way.
+	conns := make([]*idleBody, bodies)
+	for i, client := range clients {
+		conns[i] = rawUpload(t, h.base, client, declared, false)
+		if _, err := conns[i].conn.Write(form[:admit-1]); err != nil {
+			t.Fatalf("send the start of body %d: %v", i, err)
+		}
+		awaitShare(t, h, client, admit)
+	}
+	for i := range conns {
+		if _, err := conns[i].conn.Write(form[admit-1 : admit]); err != nil {
+			t.Fatalf("send the last byte of body %d's eighth: %v", i, err)
+		}
+	}
+
+	// The waiting posts hold no more than the waiting room, and the first of
+	// them has the rest of its room at once, the others waiting behind it.
+	type state struct{ waiting, taken, away int }
+	look := func() (state, int64) {
+		h.app.uploadShares.mu.Lock()
+		defer h.app.uploadShares.mu.Unlock()
+		var st state
+		for _, c := range clients {
+			switch {
+			case h.app.uploadShares.waiting[c]:
+				st.waiting++
+			case h.app.uploadShares.held[c] == declared:
+				st.taken++
+			case h.app.uploadShares.held[c] == 0:
+				st.away++
+			}
+		}
+		return st, h.app.uploadShares.waitHeld
+	}
+	// A post counts as having its room once it holds all of its share and does
+	// not wait, which it also does for the moment between taking its share and
+	// joining the queue: the state is read until it holds still.
+	var st, last state
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		var held int64
+		st, held = look()
+		if held > room {
+			t.Fatalf("the posts waiting for room hold %d bytes between them, more than the waiting room, %d", held, room)
+		}
+		if st == last && st.taken > 0 && st.waiting+st.taken+st.away == bodies {
+			break
+		}
+		last = st
+		if time.Now().After(deadline) {
+			t.Fatalf("%d bodies under way wait for the rest of their room holding %d bytes between them, "+
+				"%d have it and %d were turned away; want the first of them to have it at once",
+				st.waiting, held, st.taken, st.away)
+		}
+	}
+	if st.away > bodies-int(room/admit) {
+		t.Errorf("%d bodies turned away, want no more than the %d past what the waiting room holds",
+			st.away, bodies-int(room/admit))
+	}
+
+	// The bodies go on, at full speed, and are taken in turn; those turned
+	// away are read past and answered busy.
+	start := time.Now()
+	for i := range conns {
+		go func(i int) { _, _ = conns[i].conn.Write(form[admit:]) }(i)
+	}
+	type answer struct {
+		status int
+		text   string
+		took   time.Duration
+	}
+	answers := make([]answer, bodies)
+	var wg sync.WaitGroup
+	for i := range conns {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			status, text := conns[i].answer(t, time.Minute)
+			answers[i] = answer{status, text, time.Since(start)}
+		}(i)
+	}
+	wg.Wait()
+	busy := 0
+	for i, a := range answers {
+		switch a.status {
+		case http.StatusCreated:
+		case http.StatusServiceUnavailable:
+			busy++
+		default:
+			t.Errorf("body %d: status %d (%s) after %v, want 201, or 503 for one turned away",
+				i, a.status, a.text, a.took)
+		}
+	}
+	if busy != st.away {
+		t.Errorf("%d bodies answered 503, want the %d turned away", busy, st.away)
+	}
+	awaitBudgetFree(t, media.UploadBudget)
+	// What the posts waiting held goes back once they no longer wait, which
+	// each does before it reads on, let alone answers: kept, it would add up
+	// over the life of the process until every post that holds room and finds
+	// none free was turned away busy at once.
+	h.app.uploadShares.mu.Lock()
+	held, waiting := h.app.uploadShares.waitHeld, len(h.app.uploadShares.waiting)
+	h.app.uploadShares.mu.Unlock()
+	if held != 0 || waiting != 0 {
+		t.Errorf("once every post is answered, %d posts wait for room holding %d bytes between them, want none and 0",
+			waiting, held)
+	}
 }
 
 // trickle sends body in pieces of at most size bytes with pause after each,
@@ -991,10 +1606,10 @@ func TestABodyAheadOfItsPaceMayPause(t *testing.T) {
 // in a read deadline, for which net/http cancels the request's context, and the
 // busy refusal, then mapped as a failure, took that for a client gone and
 // answered nothing: net/http sent 200 with an empty body, and the web client
-// took the post as made and cleared its form. Such a body is answered 408 now,
-// as it is with room to read it, whatever the post was turned away for, and one
-// whose client stops sending is answered 503 for the busy server, not 200,
-// though the context ended with it too.
+// took the post as made and cleared its form. Such a body is answered upload
+// too slow now, as it is with room to read it, whatever the post was turned
+// away for, and one whose client stops sending is answered 503 for the busy
+// server, not 200, though the context ended with it too.
 func TestATurnedAwayBodyIsAnsweredWhateverItsPace(t *testing.T) {
 	busy := func(t *testing.T) *harness {
 		h := testServer(t, nil)
@@ -1015,7 +1630,7 @@ func TestATurnedAwayBodyIsAnsweredWhateverItsPace(t *testing.T) {
 	body := boundForm(t, 1<<20, "turned away", pngBytes(t, 32, 32))
 	const sent = 64 << 10 // of the body, before it stops
 
-	t.Run("one that falls behind its pace is answered 408", func(t *testing.T) {
+	t.Run("one that falls behind its pace is answered upload too slow", func(t *testing.T) {
 		h := busy(t)
 		// Told to go on once the post has been turned away and its body is
 		// being read past.
@@ -1024,9 +1639,8 @@ func TestATurnedAwayBodyIsAnsweredWhateverItsPace(t *testing.T) {
 			t.Fatal("the start of the body was not taken")
 		}
 		status, text := b.answer(t, 10*time.Second)
-		var out busyPost
-		if err := json.Unmarshal([]byte(text), &out); err != nil || status != http.StatusRequestTimeout || out.Error != uploadTooSlow {
-			t.Fatalf("a turned-away body that fell behind its pace: status %d (%q), want 408 %q", status, text, uploadTooSlow)
+		if !answeredTooSlow(status, text) {
+			t.Fatalf("a turned-away body that fell behind its pace: status %d (%q), want 400 %q", status, text, uploadTooSlow)
 		}
 		if n := storedFiles(t, h.app.cfg.UploadDir); n != 0 {
 			t.Errorf("%d files stored, want none", n)
@@ -1036,7 +1650,7 @@ func TestATurnedAwayBodyIsAnsweredWhateverItsPace(t *testing.T) {
 	// A post over its client's share is answered 429 at its body's end; one
 	// whose body fell behind on the way is answered for that instead, as the
 	// thing the poster has to change.
-	t.Run("one over its client's share that falls behind is answered 408", func(t *testing.T) {
+	t.Run("one over its client's share that falls behind is answered upload too slow", func(t *testing.T) {
 		h := testServer(t, nil)
 		h.addBoard("general")
 		h.app.uploadPaceGrace = 300 * time.Millisecond
@@ -1053,8 +1667,8 @@ func TestATurnedAwayBodyIsAnsweredWhateverItsPace(t *testing.T) {
 			t.Fatal("the start of the body was not taken")
 		}
 		status, text := b.answer(t, 10*time.Second)
-		if status != http.StatusRequestTimeout || !strings.Contains(text, uploadTooSlow) {
-			t.Fatalf("a body over its client's share that fell behind its pace: status %d (%q), want 408 %q", status, text, uploadTooSlow)
+		if !answeredTooSlow(status, text) {
+			t.Fatalf("a body over its client's share that fell behind its pace: status %d (%q), want 400 %q", status, text, uploadTooSlow)
 		}
 	})
 
@@ -1080,8 +1694,9 @@ func TestATurnedAwayBodyIsAnsweredWhateverItsPace(t *testing.T) {
 // A part's header line cut short reached the form's reader as a malformed
 // header, because bufio's ReadLine, which reads header lines, hands back what
 // it has of a line and drops the error that cut it: so a body that stopped
-// inside a header's name was answered 400 (invalid form data), not 408 for
-// stopping, and one the body limit cut there 400, not what the limit answers.
+// inside a header's name was answered invalid form data, not upload too slow
+// for stopping, and one the body limit cut there invalid form data, not what
+// the limit answers.
 // When the body's own read failed, that failure is the answer.
 func TestABodyCutOffInsideAPartHeaderIsAnsweredForTheCut(t *testing.T) {
 	// Where the image part's first header line is cut: inside its name, so
@@ -1096,9 +1711,9 @@ func TestABodyCutOffInsideAPartHeaderIsAnsweredForTheCut(t *testing.T) {
 	for _, sized := range []bool{true, false} {
 		// A body without a length is read only with uploads off: with them
 		// on, its post is refused on its headers (refuseUnsized).
-		name := "a chunked body that stops there, with uploads off, is answered 408"
+		name := "a chunked body that stops there, with uploads off, is answered upload too slow"
 		if sized {
-			name = "a body with a length that stops there is answered 408"
+			name = "a body with a length that stops there is answered upload too slow"
 		}
 		t.Run(name, func(t *testing.T) {
 			h := testServer(t, func(cfg *Config) { cfg.UploadsEnabled = sized })
@@ -1119,8 +1734,8 @@ func TestABodyCutOffInsideAPartHeaderIsAnsweredForTheCut(t *testing.T) {
 			if !b.trickle(body[:cutIn(body)], len(body), 0) {
 				t.Fatal("the start of the body was not taken")
 			}
-			if status, text := b.answer(t, 20*time.Second); status != http.StatusRequestTimeout {
-				t.Fatalf("a body that stopped inside a part's header: status %d (%s), want 408", status, text)
+			if status, text := b.answer(t, 20*time.Second); !answeredTooSlow(status, text) {
+				t.Fatalf("a body that stopped inside a part's header: status %d (%s), want 400 %q", status, text, uploadTooSlow)
 			}
 		})
 	}

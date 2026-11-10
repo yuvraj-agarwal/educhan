@@ -21,9 +21,18 @@ import (
 // Garbage is not counted once the collector can take it back, which a memory
 // limit (GOMEMLIMIT) makes it do before the process grows; what it cannot
 // take back is what the estimate covers, including a phase's scratch for as
-// long as a collection that began during that phase is still running. Small
-// garbage a phase makes and drops as it goes (row buffers, a GIF's LZW
-// tables) is left to the collector's pacing, beyond processingSlack.
+// long as a collection that began during that phase is still running, and
+// the garbage a phase makes and drops while a collection runs, which the
+// collection marks live until it ends. For most phases that garbage is small
+// (row buffers, a GIF's LZW tables a frame at a time), and processingSlack
+// covers it. Inflating a PNG's image data can make far more of it, tables
+// compress/flate builds afresh for every block, up to hundreds of times the
+// bytes of the blocks that make them, and how much of it a collection finds
+// grows with how long it runs, which grows with the rest of the heap. So
+// that is bounded by what is made, not by what a collection was seen to
+// find: an upload whose image data or ICC profile would make more tables
+// than its decode is charged for is refused before either is inflated
+// (pngTablesAllowed).
 //
 // TestProcessingCostCoversWhatIsHeld measures a file of each kind the model
 // distinguishes against the estimate for the whole of its processing, decoded
@@ -49,16 +58,16 @@ import (
 // is over it is refused from its header (ErrImageTooCostly); the others wait
 // for their share, for as long as their post's deadline allows
 // (processingAllowance). The uploads' own bytes are not in the estimates:
-// UploadBudget (budget.go) counts them, from before they are read. Between
-// them the two budgets hold at most 320 MiB, whatever number of requests an
-// instance is let take at once. The rest of a process is not budgeted: idle,
-// about 40 MiB, and the server's content filter keeps about 65 MiB of planned
-// searches (internal/app). Eighty 8 MiB uploads sent at once to a server run
-// with a GOMEMLIMIT of 400 MiB and one core peaked at 416–424 MiB resident
-// with the filter planned (330 MiB before it), and at about 470–540 MiB with
-// no limit (469–540 MiB over two separate measurements on a shared machine of
-// four vCPUs), which fits an instance of 512 MiB only with that limit; the
-// limit is the deployment's to set.
+// UploadBudget (budget.go) counts them, from before most of them are read.
+// Between them the two budgets hold at most 320 MiB, whatever number of
+// requests an instance is let take at once. The rest of a process is not
+// budgeted: idle, about 40 MiB, and the server's content filter keeps about
+// 65 MiB of planned searches (internal/app). Eighty 8 MiB uploads sent at once
+// to a server run with a GOMEMLIMIT of 400 MiB and one core peaked at
+// 416–424 MiB resident with the filter planned (330 MiB before it), and at
+// about 470–540 MiB with no limit (469–540 MiB over two separate measurements
+// on a shared machine of four vCPUs), which fits an instance of 512 MiB only
+// with that limit; the limit is the deployment's to set.
 const processingBudget int64 = 256 << 20
 
 // MaxUploadBytes is the most an upload size limit may be, 31 MiB: the
@@ -90,13 +99,59 @@ const cheapestRest int64 = 1 << 20
 // (applyPNGGamma, 128 KiB at most) and what is read of its ICC profile to see
 // whether a browser uses it (pngProfileUsable: iccProfileRead, 256 KiB, and an
 // inflater), the thumbnail's own pixels and encoding, and what a phase
-// allocates while a collection runs. Rows as wide as the picture are not in it,
-// because a strip as wide as Inspect admits makes them tens of megabytes:
-// image/png's decoder reads through two rows of the file (pngRowBytes), or two
-// for each pass of an interlaced one, five and a half of the picture's width in
-// all (pngPassRows), and its encoder writes through six of the stored picture
-// (pngEncoderRows); each is charged to its phase.
+// allocates and drops while a collection runs, but for the tables inflating a
+// PNG's image data makes (pngTablesAllowed). Rows as wide as the picture are
+// not in it, because a strip as wide as Inspect admits makes them tens of
+// megabytes: image/png's decoder reads through two rows of the file
+// (pngRowBytes), or two for each pass of an interlaced one, five and a half
+// of the picture's width in all (pngPassRows), and its encoder writes through
+// six of the stored picture (pngEncoderRows); each is charged to its phase.
 const processingSlack int64 = 4 << 20
+
+// pngTablesAllowed is the most compress/flate may make of tables, inflating
+// a PNG's image data and then its ICC profile, for the PNG to be processed,
+// and what its decode is charged for them: four bytes for every byte of
+// image data (pngImageDataBytes), and 4 MiB at least. A walk counts them
+// before either is inflated (pngImageDataTables, pngProfileUsable), and an
+// upload that would make more is refused (ErrImageTooCostly), so what a
+// decode holds of them is never more than were made, however long a
+// collection beside it runs. Charged a fixed 4 MiB instead, beside 128 MiB
+// of live objects a picture of one pixel and 8 MiB of blocks that make
+// nothing but tables (costlyStream) held 10.9 to 16.7 MiB as it decoded,
+// against 8 MiB charged for its decode, slack and all.
+//
+// Encoders make few tables, and the floor covers small files, which make the
+// most for their size. Of 483 zlib streams of photographs, text, gradients
+// and noise, from zlib at levels 1, 6 and 9, memory levels 1 to 9 and every
+// strategy, flushed at every row and not, and from Go's encoder at every
+// level, none made more than 0.95 bytes of tables a byte, a gradient's
+// 72 KB stream at memory level 4, and of those over 100 KB none more than
+// 0.54, a photograph's 780 KB at that memory level; of 78 PNGs from PIL,
+// ImageMagick and FFmpeg, none more than 0.82, and of those over 100 KB none
+// more than 0.12. Blocks made to make tables make about 242 a byte, so a
+// stream of them is refused at once; the floor lets about a hundred of them
+// through, 17 KB, before it is.
+//
+// The charge is on the decode, beside the picture it decodes into, so it
+// moves some large interlaced pictures over processingBudget that were under
+// it. Of pictures of every colour type at 8 and 16 bits, interlaced and not,
+// 200 to 5000 pixels a side at aspects of up to 64 to 1 and 25 megapixels at
+// most, with image data from 1 to 31 MiB that was 30, 50, 75 or 100% of the
+// rows it inflates to, 33 were moved over, from estimates of 226 to 256 MiB
+// to 256 to 295 MiB: every one interlaced, of 10 to 25 megapixels of grey
+// and alpha or of 16-bit RGB, with 13 to 20 MiB of image data, 30 or 50% of
+// its rows. From an upload of the default 8 MiB that is all image data, it
+// refuses an interlaced 8-bit colour PNG of 25 megapixels from a longer side
+// of 490,000 to 640,000 pixels, by its colour type, where it was refused
+// from about 750,000 (TestEncodingsAreJudgedAtEveryShape).
+func pngTablesAllowed(data []byte) int64 {
+	return max(pngTablesFloor, pngTablesPerByte*pngImageDataBytes(data))
+}
+
+const (
+	pngTablesFloor   int64 = 4 << 20
+	pngTablesPerByte int64 = 4
+)
 
 // gifFrameOverhead is what image/gif keeps for each frame of a GIF besides
 // its pixels: the frame's header, its palette (a local colour table, or the
@@ -124,8 +179,8 @@ const gifFramePlay int64 = 64
 // (gifFrames.many) may be stored with a table a frame, and some of its
 // frames put back, for which the player keeps what was under the stored
 // frame of the picture showing (saved), four bytes a pixel more. Its colour
-// index and its LZW compressor's tables, under 80 KiB together, are left to
-// processingSlack.
+// index (colourIndex, ~75 KiB) and its LZW compressor's tables (64 KiB),
+// under 150 KiB together, are left to processingSlack.
 func gifPlayScratch(w, h int64, frames gifFrames) int64 {
 	px := w * h
 	scratch := 4*px + 2*8*((px+63)/64) + 13*w
@@ -284,14 +339,17 @@ func decodingPhases(format Format, data []byte, cfg image.Config, frames gifFram
 		d := pngBytesPerPixel(data) * px
 		// image/png reads the file a row at a time into two buffers beside
 		// the picture, the row and the one before it, which a strip as wide
-		// as the pixel cap allows makes tens of megabytes.
-		decode := phase{first: d, alloc: d + 2*pngRowBytes(data, w), after: d}
+		// as the pixel cap allows makes tens of megabytes. The tables the
+		// inflater makes and drops as it goes are charged on top, as many
+		// as it may make (pngTablesAllowed).
+		tables := pngTablesAllowed(data)
+		decode := phase{first: d, alloc: d + 2*pngRowBytes(data, w) + tables, after: d}
 		if pngInterlaced(data) {
 			// Each of the seven passes is decoded into a picture of its own
 			// and merged into the whole; the last pass is half of it. Each
 			// pass is read through two rows of its own, as wide as the pass
 			// (pngPassRows): up to five and a half of the picture's rows.
-			decode.alloc = 2*d + pngPassRows(data, w, h)
+			decode.alloc = 2*d + pngPassRows(data, w, h) + tables
 		}
 		phases := []phase{decode}
 		if pngOrientation(data) >= 2 {
@@ -322,13 +380,18 @@ func decodingPhases(format Format, data []byte, cfg image.Config, frames gifFram
 
 // storedLimit is the most a stored original may take: four times the upload,
 // plus half a byte a pixel. Re-encoding a JPEG at its own quality and
-// subsampling (jpegQuality), a lossy WebP as a JPEG at storedJPEGQuality, or a
-// PNG or a GIF in its own format, comes to well inside that. What reaches it is
-// a file that compresses in a way Go's encoders cannot follow: a lossless WebP
-// of a pattern repeated further apart than deflate's 32 KiB window, say, which
-// as a PNG is raw pixels, or a smooth 16-bit PNG of tens of megapixels that
-// another encoder deflated to a small fraction of what deflate's fastest level,
-// at which every PNG is stored (storedPNG), makes of it. Storing that would
+// subsampling (jpegQuality), a lossy WebP as a JPEG at storedJPEGQuality, or
+// a PNG or a GIF in its own format, comes as a rule to well inside that. What
+// reaches it is a file that compresses in a way Go's encoders cannot follow:
+// a lossless WebP of a pattern repeated further apart than deflate's 32 KiB
+// window, say, which as a PNG is raw pixels; a smooth 16-bit PNG of tens of
+// megapixels that another encoder deflated to a small fraction of what
+// deflate's fastest level, at which every PNG is stored (storedPNG), makes of
+// it; or a GIF whose frames are put back over a background of many colours,
+// since with one colour table no stored frame is put back (playGIF), and each
+// has to draw again the background its sprite leaves: about nine times the
+// upload for a sprite that hops to and fro
+// (TestAGIFPutBackOverABusyBackgroundCanOutgrowItsUpload). Storing that would
 // turn a small upload into a file many times its size, so such a file is
 // refused (ErrStoredTooLarge) rather than stored.
 //
@@ -940,17 +1003,20 @@ func pngPassRows(data []byte, w, h int64) int64 {
 }
 
 // webpPhases models golang.org/x/image/webp and what sanitizeWebP does after
-// it, starting from stripWebP's copy of the file. A lossy picture decodes to
-// YCbCr at its size in whole 16-pixel macroblocks, 1.5 bytes a pixel, from a
-// copy the decoder makes of its compressed partitions. An opaque one is taken
-// to full range in those planes (expandLimitedRange) and encoded from them as
-// a JPEG; one with an alpha plane is converted to NRGBA, 4 bytes a pixel, for
-// its PNG (lossyWebPToNRGBA), which the header cannot tell apart from one
-// whose alpha turns out opaque throughout, so it is charged either way. A
-// lossless picture decodes to NRGBA, 4 bytes a pixel, and holds more than that
-// on the way (vp8lPixels). An alpha plane, decoded first, is a byte a pixel,
-// but a compressed one is decoded as a lossless picture first and copied out
-// of it, which is no more than the lossless picture's own peak.
+// it, starting from stripWebP's copy of the file, charged at the file's size:
+// stripWebP makes it at the size it writes, which is no more than that but
+// for the pad byte a last chunk may have left off, and never grows it. A
+// lossy picture decodes to YCbCr at its size in whole 16-pixel macroblocks,
+// 1.5 bytes a pixel, from a copy the decoder makes of its compressed
+// partitions. An opaque one is taken to full range in those planes
+// (expandLimitedRange) and encoded from them as a JPEG; one with an alpha
+// plane is converted to NRGBA, 4 bytes a pixel, for its PNG
+// (lossyWebPToNRGBA), which the header cannot tell apart from one whose alpha
+// turns out opaque throughout, so it is charged either way. A lossless
+// picture decodes to NRGBA, 4 bytes a pixel, and holds more than that on the
+// way (vp8lPixels). An alpha plane, decoded first, is a byte a pixel, but a
+// compressed one is decoded as a lossless picture first and copied out of it,
+// which is no more than the lossless picture's own peak.
 //
 // A lossless bitstream, and a VP8L-compressed alpha plane, also make the
 // decoder hold its Huffman groups (vp8lMemory), alive while the pixels are

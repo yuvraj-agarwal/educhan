@@ -3,13 +3,18 @@ package media
 import (
 	"bytes"
 	"compress/zlib"
+	"context"
 	"encoding/binary"
+	"hash/adler32"
 	"image"
 	"image/color"
 	"image/png"
 	"math"
+	"math/bits"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // greyRampPNG is a 256×4 grey PNG whose column x has the value x.
@@ -375,4 +380,202 @@ func TestPNGGammaConvertsColourOnly(t *testing.T) {
 			}
 		}
 	})
+}
+
+// emptyBlocks is n stored deflate blocks of no bytes, none of them the last:
+// five bytes each, which inflate to nothing.
+func emptyBlocks(n int) []byte { return bytes.Repeat([]byte{0, 0, 0, 0xFF, 0xFF}, n) }
+
+// storedStream is a zlib stream of data in a stored block, after lead empty
+// blocks and before trail more (emptyBlocks), ending in a last block of no
+// bytes and data's checksum: 16 bytes more than data and the empty blocks.
+func storedStream(lead int, data []byte, trail int) []byte {
+	s := append([]byte{0x78, 0x01}, emptyBlocks(lead)...)
+	s = binary.LittleEndian.AppendUint16(append(s, 0), uint16(len(data)))
+	s = binary.LittleEndian.AppendUint16(s, ^uint16(len(data)))
+	s = append(append(append(s, data...), emptyBlocks(trail)...), 1, 0, 0, 0xFF, 0xFF)
+	return binary.BigEndian.AppendUint32(s, adler32.Checksum(data))
+}
+
+// costlyStream is a zlib stream of data in its last block, a stored one,
+// after as many blocks as make it at least size bytes long that each hold no
+// more than their end, under codes compress/flate takes long to build: a
+// literal/length code and a distance code whose longest codes are 15 bits,
+// laid out so that as many of the inflater's 512 first-level entries as can
+// lead to codes longer than 9 bits, each such entry a table of 64 that it
+// makes afresh for every block. They are 168 bytes each, and inflate to
+// nothing at about a quarter to a third of a second of CPU a MiB; with their
+// code lengths run-length coded, as the format allows, they are a third as
+// long and cost about three quarters of a second a MiB.
+func costlyStream(size int, data []byte) []byte { return costlyBlocks(-1, size, data) }
+
+// costlyBlocks is costlyStream with n of its costly blocks, or as many as
+// make it size bytes long when n is negative, and then, for n of 0 or more,
+// empty stored blocks to make it at least size bytes long before the last.
+func costlyBlocks(n, size int, data []byte) []byte {
+	var (
+		out       = []byte{0x78, 0x01}
+		acc       uint64
+		have      uint
+		put, code func(v uint64, n uint)
+	)
+	put = func(v uint64, n uint) { // least significant bit first
+		acc |= v << have
+		for have += n; have >= 8; have -= 8 {
+			out, acc = append(out, byte(acc)), acc>>8
+		}
+	}
+	code = func(c uint64, n uint) { // a Huffman code: most significant bit first
+		put(uint64(bits.Reverse16(uint16(c)))>>(16-n), n)
+	}
+	// lengths is a complete code of n symbols at most: L of the 512
+	// first-level entries lead to longer codes, one to a chain of 10 to 15
+	// bits and the rest to pairs of 10, and the others to as few codes of 1
+	// to 9 bits as cover them.
+	lengths := func(n int) []int {
+		L := 1
+		for 7+2*L+bits.OnesCount(uint(512-L-1)) <= n {
+			L++
+		}
+		var l []int
+		for i := 0; i < 2*(L-1); i++ {
+			l = append(l, 10)
+		}
+		l = append(l, 10, 11, 12, 13, 14, 15, 15)
+		for b := 8; b >= 0; b-- {
+			if (512-L)>>b&1 != 0 {
+				l = append(l, 9-b)
+			}
+		}
+		return append(l, make([]int, n-len(l))...)
+	}
+	lit, dist := lengths(286), lengths(30)
+	// next comes to the end of block's code: symbol 256's in the canonical
+	// code of lit (RFC 1951 3.2.2), the first of its length after those of
+	// the symbols before it.
+	var count [16]int
+	for _, l := range lit {
+		count[l]++
+	}
+	count[0] = 0
+	next := 0
+	for l := 1; l <= lit[256]; l++ {
+		next = (next + count[l-1]) << 1
+	}
+	for s := 0; s < 256; s++ {
+		if lit[s] == lit[256] {
+			next++
+		}
+	}
+	for k := 0; n < 0 && len(out) < size || k < n; k++ {
+		put(0b100, 3) // not the last; dynamic codes
+		put(286-257, 5)
+		put(30-1, 5)
+		put(19-4, 4)
+		// The code lengths' code: symbols 0 to 15 of four bits each, which
+		// are their own codes, and none for the repeats, 16 to 18, which come
+		// first in the order lengths are given in.
+		for i := 0; i < 19; i++ {
+			put(uint64(4*min(1, max(0, i-2))), 3)
+		}
+		for _, l := range append(append([]int(nil), lit...), dist...) {
+			code(uint64(l), 4)
+		}
+		code(uint64(next), uint(lit[256]))
+	}
+	if n >= 0 && len(out)+16+len(data) < size {
+		put(0, 3) // not the last; stored, of no bytes
+		if have > 0 {
+			put(0, 8-have)
+		}
+		out = append(out, 0, 0, 0xFF, 0xFF)
+		if fill := size - len(out) - 9 - len(data); fill > 0 {
+			out = append(out, emptyBlocks((fill+4)/5)...)
+		}
+	}
+	put(1, 3) // the last block; stored
+	if have > 0 {
+		put(0, 8-have)
+	}
+	out = binary.LittleEndian.AppendUint16(out, uint16(len(data)))
+	out = binary.LittleEndian.AppendUint16(out, ^uint16(len(data)))
+	return binary.BigEndian.AppendUint32(append(out, data...), adler32.Checksum(data))
+}
+
+// pngProfileUsable inflates no more of a profile's stream than its first
+// iccStreamRead bytes, and takes a longer stream as inflating whole to no
+// more than maxICCProfile: a profile whose header inflates from those bytes
+// is taken as used, checksum or no checksum, and one that comes only after
+// them is not. Chromium reads the whole stream, so it would apply the gAMA
+// beside the first and use the second; a profile's stream is a few hundred
+// bytes to a few dozen kilobytes, and only a stream crafted to be long, as
+// empty blocks that cost CPU to inflate can make it, is read differently.
+func TestAProfilesStreamIsReadNoFurtherThanIccStreamRead(t *testing.T) {
+	profile := sRGBProfile(nil)
+	// fill is how many empty blocks, and how many bytes after the profile,
+	// make its stream iccStreamRead bytes long.
+	fill := iccStreamRead - 16 - len(profile)
+	blocks, after := fill/5, fill%5
+	// broken is a stream with its checksum changed.
+	broken := func(s []byte) []byte {
+		s = append([]byte(nil), s...)
+		s[len(s)-1] ^= 1
+		return s
+	}
+	padded := func(extra int) []byte { return append(append([]byte(nil), profile...), make([]byte, after+extra)...) }
+	if n := len(storedStream(0, padded(0), blocks)); n != iccStreamRead {
+		t.Fatalf("the stream meant to be iccStreamRead (%d) bytes long is %d", iccStreamRead, n)
+	}
+	for _, c := range []struct {
+		name   string
+		stream []byte
+		used   bool
+	}{
+		{"a profile and empty blocks to iccStreamRead", storedStream(0, padded(0), blocks), true},
+		{"a profile and empty blocks to a byte past iccStreamRead", storedStream(0, padded(1), blocks), true},
+		{"a profile and empty blocks to iccStreamRead, its checksum wrong", broken(storedStream(0, padded(0), blocks)), false},
+		{"a profile and empty blocks to a byte past iccStreamRead, its checksum wrong", broken(storedStream(0, padded(1), blocks)), true},
+		{"empty blocks and a profile, to iccStreamRead", storedStream(blocks, padded(0), 0), true},
+		{"empty blocks to iccStreamRead and a profile", storedStream(iccStreamRead/5, profile, 0), false},
+		{"empty blocks past iccStreamRead and not a profile", storedStream(iccStreamRead/5, []byte("not a profile"), 0), false},
+	} {
+		used, err := pngProfileUsable(context.Background(), append([]byte("x\x00\x00"), c.stream...), pngTablesFloor)
+		if err != nil || used != c.used {
+			t.Errorf("%s (%d bytes): used %v (%v), want %v", c.name, len(c.stream), used, err, c.used)
+		}
+	}
+}
+
+// A profile's stream costs no more CPU to read than its first iccStreamRead
+// bytes do, however long it is: read whole, a stream of empty blocks that
+// compress/flate takes long to inflate (costlyStream) would cost about three
+// quarters of a second of CPU a MiB, which in an upload of 31 MiB came to
+// over 20 s. This one is four times iccStreamRead and holds no profile, and
+// it is given all the room for tables it would make, so that only the cut
+// keeps it short: what the room lets through is
+// TestAPNGThatWouldMakeMoreTablesIsRefusedBeforeItIsInflated's to hold.
+func TestALongProfileStreamCostsNoMoreThanItsStart(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	stream := costlyStream(4*iccStreamRead, []byte("not a profile"))
+	chunk := func(stream []byte) []byte { return append([]byte("x\x00\x00"), stream...) }
+	whole, start := time.Duration(math.MaxInt64), time.Duration(math.MaxInt64)
+	for round := 0; round < 3; round++ {
+		for _, run := range []struct {
+			chunk []byte
+			best  *time.Duration
+		}{{chunk(stream[:iccStreamRead]), &start}, {chunk(stream), &whole}} {
+			runtime.GC()
+			began := threadCPU()
+			if used, err := pngProfileUsable(context.Background(), run.chunk, math.MaxInt64); used || err != nil {
+				t.Fatalf("a stream of %d bytes of empty blocks is used (%v, %v)", len(run.chunk), used, err)
+			}
+			*run.best = min(*run.best, threadCPU()-began)
+		}
+	}
+	t.Logf("a stream of %d bytes took %v of CPU, its first %d %v", len(stream), whole, iccStreamRead, start)
+	if whole > 2*start+10*time.Millisecond {
+		t.Errorf("a stream of %d bytes took %v of CPU, against %v for its first %d; want no more than twice as long", len(stream), whole, start, iccStreamRead)
+	}
 }

@@ -1039,22 +1039,24 @@ server that would refuse what it sends.
   `image resolution is too large`), a GIF whose frames add up to more than four times that
   (a frame narrower than 64 pixels counting as 64 wide), or an image that would take more
   memory to process than the server sets aside for all of them at once (`image too large
-  to process`), and a GIF whose blocks cannot be read through to its end or whose first
-  frame reaches past its canvas (browsers disagree on how to show that one), an animated
-  WebP, or a WebP whose chunks do not make one picture of the size its header gives — cut
-  short, its RIFF running past the end of the file, its picture a different size from its
-  canvas, or with no picture or two (`image could not be decoded`) — is refused with `400`
-  before anything is decoded and before flood control. A GIF that ends after its last
-  frame without the closing byte, or whose later frames reach past its canvas, is stored
-  as browsers show it: whole, and with each frame cut to the part on the canvas. Two
-  kinds of GIF that browsers show are refused only once they are decoded, and so after
-  flood control (`image could not be decoded`), because Go's decoder refuses them: one
-  whose pixels index past their colour table, and one with more data after a frame's end
-  code than Go's decoder takes (*GIF*, below). The memory depends on the encoding as well
-  as the size, and on the shape: a longer, thinner picture costs more for its pixels,
-  because a JPEG's sides are rounded up to whole blocks and making the thumbnail takes 64
-  bytes and more for every pixel of the longer side. At the full 25 megapixels, from an
-  upload of up to the default 8 MiB, at any shape the format allows:
+  to process`), and a GIF whose blocks cannot be read through to its end, whose first
+  frame reaches past its canvas (browsers disagree on how to show that one), or with a
+  frame that has no colour table at all (Go's decoder refuses it; Chromium shows it
+  black), an animated WebP, or a WebP whose chunks do not make one picture of the size its
+  header gives — cut short, its RIFF running past the end of the file, its picture a
+  different size from its canvas, or with no picture or two (`image could not be decoded`)
+  — is refused with `400` before anything is decoded and before flood control. A GIF that
+  ends after its last frame without the closing byte, or whose later frames reach past its
+  canvas, is stored as browsers show it: whole, and with each frame cut to the part on the
+  canvas. Some GIFs that browsers show are refused only once they are decoded, and so
+  after flood control (`image could not be decoded`), because Go's decoder refuses them;
+  those found so far are one whose pixels index past their colour table, one whose
+  compressed pixels go on after a frame's last pixel, and one with more data after a
+  frame's end code than Go's decoder takes (*GIF*, below). The memory depends on the
+  encoding as well as the size, and on the shape: a longer, thinner picture costs more for
+  its pixels, because a JPEG's sides are rounded up to whole blocks and making the
+  thumbnail takes 64 bytes and more for every pixel of the longer side. At the full 25
+  megapixels, from an upload of up to the default 8 MiB, at any shape the format allows:
   - *accepted*: every baseline JPEG, in colour at any chroma subsampling or in grey,
     whether or not it has to be turned upright, and progressive ones whose colour is at
     a quarter resolution or less (4:2:0, 4:1:1, 4:1:0) or grey, but for a 4:2:0 or
@@ -1063,10 +1065,10 @@ server that would refuse what it sends.
     unless they are interlaced and have to be turned; and opaque lossy WebPs, stored as
     JPEGs. A grey PNG with a transparent colour or an alpha channel counts as a colour
     PNG throughout here, since it decodes the same way — four bytes a pixel at 8 bits,
-    eight at 16. The PNGs are accepted until their longer side passes about 750,000
-    pixels in colour, or 1.3 to 1.5 million otherwise: at this size, tens of thousands
-    of times longer than they are wide, which only a PNG can be (a JPEG's sides stop at
-    65,535 pixels and a WebP's at 16,383).
+    eight at 16. The PNGs are accepted until their longer side passes about 750,000 pixels
+    in colour, 490,000 to 640,000 if they are interlaced (below), or 1.3 to 1.5 million
+    otherwise: at this size, thousands of times longer than they are wide, which only a
+    PNG can be (a JPEG's sides stop at 65,535 pixels and a WebP's at 16,383).
   - *refused*: progressive JPEGs with full-resolution colour or in CMYK; CMYK, RGB and
     progressive 4:2:2 and 4:4:0 JPEGs, and interlaced 8-bit colour PNGs, that have to be
     turned; 16-bit colour PNGs that are interlaced or have to be turned; and lossy WebPs
@@ -1098,6 +1100,26 @@ server that would refuse what it sends.
   CPU to decode and 5.5 to 7.5 s to process, and a progressive one, which the memory
   estimate holds to fewer blocks, to about 3 to 4 s to decode.
 
+  A PNG's image data is inflated by Go's `compress/flate`, which for every compressed
+  block whose codes run past nine bits makes lookup tables and lets them go at the block's
+  end, up to 41 KiB of them for a block of under 200 bytes. The garbage collector keeps
+  what is made while it runs, and it runs for longer the more the server holds: beside 128
+  MiB of other objects, a picture of one pixel and 8 MiB of such blocks held up to 16.7
+  MiB as it decoded, where its decode was charged 8. So before anything is inflated, the
+  image data is read through as `compress/flate` reads it, making none of the tables, at
+  about the CPU inflating it takes or less, and a PNG whose image data would make more of
+  them than four bytes for every byte of it, or 4 MiB for a MiB of it or less, is refused
+  with `400` after flood control (`image too large to process`), as is one whose colour
+  profile would make more than its image data left of that. What encoders write makes far
+  fewer: of 483 streams from zlib, at levels 1, 6 and 9 with every memory level and
+  strategy, and from Go's encoder at every level, none made more than 0.95 bytes of tables
+  for every byte, and of 78 PNGs from PIL, ImageMagick and FFmpeg none more than 0.82.
+  Every other PNG's decode is charged all the tables it may make, beside the picture it
+  decodes into, which is what holds an interlaced 8-bit colour PNG whose 8 MiB are all
+  image data to a longer side of 490,000 to 640,000 pixels (above); from an upload larger
+  than the default limit, the charge also refuses some interlaced pictures of 10
+  megapixels or more with 13 to 20 MiB of image data that would fit without it.
+
   At a quarter of the size, every kind is accepted at any shape up to a thousand to one,
   and a PNG of any size is refused once its longer side passes 2.2 to 3.7 million pixels,
   by its kind and which way it lies, however narrow it is. A GIF of many thousands of
@@ -1110,8 +1132,9 @@ server that would refuse what it sends.
   pixel is refused with `400` after flood control, once it is encoded (`image would be too
   large once re-encoded for storage`), which a file made to compress in a way Go's
   encoders cannot follow reaches, as can a PNG that another encoder compressed far smaller
-  than the fastest level it is stored at (see the PNG bullet below), and so, once it is
-  played, is a GIF that cannot be stored one frame to a picture (`image too large to
+  than the fastest level it is stored at (see the PNG bullet below) and a GIF whose frames
+  are put back over a background of many colours (see the GIF bullet below); and so, once
+  it is played, is a GIF that cannot be stored one frame to a picture (`image too large to
   process`; see the GIF bullet below). A lossy WebP with transparency is held instead to
   what a PNG of its size can come to, because stored losslessly it is meant to be many
   times the size it came in at; it is refused from its header when that is too large to
@@ -1193,60 +1216,72 @@ server that would refuse what it sends.
     reads it where Go's decoder reads it otherwise: a frame with no graphic control
     extension is left in place, a frame's transparent colour is the one the last extension
     before it names, and an index past the end of a frame's colour table shows opaque
-    black, but for the transparent one. Two kinds of GIF that browsers show are refused as
-    Go's decoder refuses them, once they are decoded and so after flood control (`image
-    could not be decoded`): one whose pixels index past their table, but for indices up to
-    a transparent index that is itself past it, which Go's decoder takes; and one with more
-    data after a frame's end code than Go's decoder takes, which is the rest of the
-    sub-block the code ends in and, when the code ends a sub-block, one more sub-block of a
-    single byte, where browsers show the frame and read on. A GIF with an extension the two
-    end in different places is refused from its header (a plain-text one whose block size
-    is not 12, an application one of no bytes, or a loop extension with nothing in it),
-    because past it Chromium shows no more frames and Go's decoder reads on. How the
-    frames make those pictures shows nothing, so it could carry anything: frames that draw
-    nothing, or draw the same picture again after clearing it, could spell a message in
-    their positions, delays and disposal methods, and the pixels a frame repaints in the
-    colour already under them, rather than leaving them transparent, could hold a file of
-    tens of kilobytes. So the stored file is written from the pictures by one rule, and
-    two GIFs that show the same pictures for the same times, played as many times over,
-    are stored as the same bytes. Each picture is one frame, which draws exactly the
-    pixels that differ from what the frame before it left, cut to the rectangle around
-    them and around any the next picture has transparent where this one does not; it is
-    cleared once its time is over when there are such pixels, and left in place otherwise.
-    A delay is written as browsers show it — 0 and 1 show for a tenth of a second and are
-    written as 10 — and time past the 655 seconds one delay can say is held by frames
-    after it that draw nothing. The last picture of a GIF that plays once is given no
-    delay, because it stays on screen, and a GIF of one picture is stored as a still, with
-    no loop count. The colours are the ones the pictures show, in order of their values:
-    one global table when there are 255 or fewer, and otherwise a table for each frame of
-    the colours it draws. A frame that draws 256 has no room for a transparent entry, so
-    the pixels it leaves as they were are written in the colour they already show. With a
-    table a frame, a frame left in place or cleared can leave the next one more colours to
-    draw than its table holds — the ones it covered, back again, and the next picture's
-    own — so there a frame is left in place, or else cleared, only where both can still be
-    written, and is otherwise put back, which leaves what was there before it was drawn,
-    as ImageMagick's frame optimisation does (a frame put back is not cut to take in
-    pixels to clear, and is drawn again, rather than followed by frames that draw nothing,
-    for time past one delay). A GIF where none of the three will do cannot be stored one
-    frame to a picture and is refused (`image too large to process`): for instance one
-    whose frames are put back two in a row, the second to the picture from before the
-    first, which the stored file, having left the first in place, cannot go back to. Only
-    frames that clear or put back what earlier ones drew can bring that about, since a
-    frame on its own draws from one table. None of 126 GIFs made with ffmpeg, ImageMagick
-    and Pillow is refused, nor any of 1,500 of many colours made to test it; of 5,000
-    random GIFs of up to 256 colours a frame and every disposal method, one is, and of
-    2,000 random animations of sprites of up to 256 colours each put back, cleared or left
-    over a background of 256, 75 are. A GIF whose stored frames would add up to more
-    pixels than four 25-megapixel canvases (a frame narrower than 64 pixels counting as 64
-    wide) is refused too, which takes frames that jump across the canvas from one picture
-    to the next; with a table a frame, a rectangle looked at for a way of disposing of a
-    frame that is not taken counts as a frame, so that the work of looking is bounded as
-    the work of writing is. Neither refusal can be read from the header, only found by
-    playing the GIF, so a file the header check admits is turned away only after it has
-    been decoded and its thumbnail made, and after flood control. It costs the post its
-    cooldown, and nothing is stored: the renditions are written only once processing has
-    succeeded. Comments and application data such as XMP are dropped, and the background
-    colour, which browsers never draw, is written as the first entry.
+    black, but for the transparent one. Some GIFs that browsers show are refused as Go's
+    decoder refuses them, once they are decoded and so after flood control (`image could
+    not be decoded`); those found so far are one whose compressed pixels stop, with the
+    end code, short of a frame's last pixel, too soon for Go's decoder, while Chromium
+    shows the rest of the frame transparent; one whose pixels index past their table, but
+    for indices up to a transparent index that is itself past it, which Go's decoder
+    takes; one whose compressed pixels go on after a frame's last pixel, before its end
+    code, with another pixel or a code that is not valid, where Chromium stops reading the
+    frame once it has its pixels; and one with more data after a frame's end code than
+    Go's decoder takes, which is the rest of the sub-block the code ends in and, when the
+    code ends a sub-block, one more sub-block of a single byte, where browsers show the
+    frame and read on. A GIF with a frame that has no colour table at all, neither its own
+    nor the global one, which Go's decoder refuses too and Chromium shows black, is
+    refused from its header, as is one with an extension the two end in different places
+    (a plain-text one whose block size is not 12, an application one of no bytes, or a
+    loop extension with nothing in it), because past it Chromium shows no more frames and
+    Go's decoder reads on. How the frames make those pictures shows nothing, so it could
+    carry anything: frames that draw nothing, or draw the same picture again after
+    clearing it, could spell a message in their positions, delays and disposal methods,
+    and the pixels a frame repaints in the colour already under them, rather than leaving
+    them transparent, could hold a file of tens of kilobytes. So the stored file is
+    written from the pictures by one rule, and two GIFs that show the same pictures for
+    the same times, played as many times over, are stored as the same bytes. Each picture
+    is one frame, which draws exactly the pixels that differ from what the frame before it
+    left, cut to the rectangle around them and around any the next picture has transparent
+    where this one does not; it is cleared once its time is over when there are such
+    pixels, and left in place otherwise. A delay is written as browsers show it — 0 and 1
+    show for a tenth of a second and are written as 10 — and time past the 655 seconds one
+    delay can say is held by frames after it that draw nothing. The last picture of a GIF
+    that plays once is given no delay, because it stays on screen, and a GIF of one
+    picture is stored as a still, with no loop count. The colours are the ones the
+    pictures show, in order of their values: one global table when there are 255 or fewer,
+    and otherwise a table for each frame of the colours it draws. A frame that draws 256
+    has no room for a transparent entry, so the pixels it leaves as they were are written
+    in the colour they already show. With a table a frame, a frame left in place or
+    cleared can leave the next one more colours to draw than its table holds — the ones it
+    covered, back again, and the next picture's own — so there a frame is left in place,
+    or else cleared, only where both can still be written, and is otherwise put back,
+    which leaves what was there before it was drawn, as ImageMagick's frame optimisation
+    does (a frame put back is not cut to take in pixels to clear, and is drawn again,
+    rather than followed by frames that draw nothing, for time past one delay). A GIF
+    where none of the three will do cannot be stored one frame to a picture and is refused
+    (`image too large to process`): for instance one whose frames are put back two in a
+    row, the second to the picture from before the first, which the stored file, having
+    left the first in place, cannot go back to. Only frames that clear or put back what
+    earlier ones drew can bring that about, since a frame on its own draws from one table.
+    None of 126 GIFs made with ffmpeg, ImageMagick and Pillow is refused, nor any of 1,500
+    of many colours made to test it; of 5,000 random GIFs of up to 256 colours a frame and
+    every disposal method, one is, and of 2,000 random animations of sprites of up to 256
+    colours each put back, cleared or left over a background of 256, 75 are. A GIF whose
+    stored frames would add up to more pixels than four 25-megapixel canvases (a frame
+    narrower than 64 pixels counting as 64 wide) is refused too, which takes frames that
+    jump across the canvas from one picture to the next; with a table a frame, a rectangle
+    looked at for a way of disposing of a frame that is not taken counts as a frame, so
+    that the work of looking is bounded as the work of writing is. With one table no frame
+    is put back, so a GIF whose frames are put back over a background of many colours,
+    each drawing only a sprite, is stored with the background the sprite leaves drawn
+    again in every frame: a sprite hopping to and fro over a dithered photo comes to about
+    nine times the upload, and is refused as too large once re-encoded (see above), where
+    the same animation with every frame left in place is stored. None of the three
+    refusals can be read from the header, only found by playing the GIF, so a file the
+    header check admits is turned away only after it has been decoded and its thumbnail
+    made, and after flood control. It costs the post its cooldown, and nothing is stored:
+    the renditions are written only once processing has succeeded. Comments and
+    application data such as XMP are dropped, and the background colour, which browsers
+    never draw, is written as the first entry.
   - *WebP* cannot be encoded in Go, so it is stored as another format made from its
     pixels: a lossy, opaque WebP as a JPEG at quality 90 that keeps the WebP's own
     half-resolution (4:2:0) colour, and any other (lossless, or with transparency) as a
@@ -1298,10 +1333,12 @@ server that would refuse what it sends.
   more than 64 MiB is taken as read here, with no gamma applied, so the two disagree over
   a profile that inflates to within about the upload's own size of 64 MiB, a band of tens
   of MiB for an upload near the 31 MiB limit: see `maxICCProfile` in
-  `internal/media/gamma.go`), or the gamma is within 5% of the usual 1/2.2, which browsers
-  leave alone. The checksum recorded for an attachment is of the stored file, so it does
-  not depend on the metadata an upload arrived with, beyond an orientation that turns the
-  picture.
+  `internal/media/gamma.go`; and only the first 256 KiB of a profile's compressed stream
+  is read here, far more than a profile's needs, so a stream padded past that to keep the
+  server busy is judged by what those bytes hold, see `iccStreamRead`), or the gamma is
+  within 5% of the usual 1/2.2, which browsers leave alone. The checksum recorded for an
+  attachment is of the stored file, so it does not depend on the metadata an upload
+  arrived with, beyond an orientation that turns the picture.
 - **Files stored before this** keep their metadata: a server that took uploads before
   it rewrote them kept them as they came, and nothing rewrites them now, so they are
   served that way until their posts are deleted. The deployment in `deploy/` has kept
@@ -1333,41 +1370,57 @@ server that would refuse what it sends.
   uploads being processed at once share a fixed budget (256 MiB per process), each holding
   its share until its files are stored; one whose estimate alone is over it is refused
   (see **Formats**), and the rest wait for room in the order they arrived. The uploads'
-  own bytes have a budget of their own (64 MiB), taken before a request body is read, so
-  how many requests an instance is let take at once does not decide how many images it
-  holds. Between them that is 320 MiB at most, beside the content rules prepared at start
-  (about 65 MiB): eighty 8 MiB uploads sent at once to a server run with
-  `GOMEMLIMIT=400MiB` and one core peaked at 416–424 MiB resident, whether they came while
-  the rules were being prepared or after, so an instance of 512 MiB has room with that
-  limit set; without it the same burst reached anywhere from about 470 to 540 MiB
-  (469–540 MiB over the runs of two separate measurements, on a shared machine of four
-  vCPUs), which is no room at all. The posts of one client hold at most half the upload
-  budget at once, so a client cannot take all of it with a few connections that declare
-  large bodies and send nothing; its next image post past that answers `429`, with a
-  `Retry-After` of 10 seconds and no cooldown started. A client here is one address, as
-  flood control counts them, except that the addresses of one IPv6 /64 network count as
-  one client, since a host can usually take any address in its /64: the people on one such
-  network share that half, as those behind one IPv4 address do, while flood control still
-  counts each of their addresses apart. A post waits for room in either budget for about
-  ten seconds at most. Once there is room to read it, its body has 30 seconds to arrive,
-  at an even pace with 5 seconds to spare — a body that falls further behind the pace that
-  would bring it all in by then, sending nothing or a trickle, is cut off then and its
-  room given back — and once it has arrived its image has 25 seconds to be processed and
-  stored. A post that cannot be taken in time — no room within the wait, or its image not
-  stored within those 25 seconds — answers `503` (see [Flood control](#flood-control))
-  with nothing stored, rather than being made after its answer could no longer be sent. A
-  body that takes longer than its 30 seconds, or falls behind its pace, is the
-  connection's doing, not the server's, and answers `408` with `{"error":"upload too
-  slow"}`, with nothing stored and no cooldown started; the time a post spent waiting for
-  room is not counted against its body. A post turned away, busy or over its client's
-  share, still has its body read, unkept and at the same pace, so that the answer reaches
-  the poster rather than a connection closed under the upload; if the body falls behind on
-  the way, the answer is `408` too, rather than `503` or `429`. A form has to say how long
-  its body is, as browsers' forms do: one sent without a `Content-Length` (chunked), whose
-  length the server would learn only at its end, answers `411` at once, before any room is
-  taken for it or any of it read, with nothing stored and no cooldown started: the room it
-  took would have to be the most a body may be, and a few such bodies trickling a few
-  bytes a second could hold the whole budget for their 30 seconds.
+  own bytes have a budget of their own (64 MiB), taken as a request body is read, so how
+  many requests an instance is let take at once does not decide how many images it holds.
+  Between them that is 320 MiB at most, beside the content rules prepared at start (about
+  65 MiB): eighty 8 MiB uploads sent at once to a server run with `GOMEMLIMIT=400MiB` and
+  one core peaked at 416–424 MiB resident, whether they came while the rules were being
+  prepared or after, so an instance of 512 MiB has room with that limit set; without it
+  the same burst reached anywhere from about 470 to 540 MiB (469–540 MiB over the runs of
+  two separate measurements, on a shared machine of four vCPUs), which is no room at all.
+  The posts of one client hold at most half the upload budget at once, so a client cannot
+  take all of it with a few connections that declare large bodies and send nothing; its
+  next image post past that answers `429`, with a `Retry-After` of 10 seconds and no
+  cooldown started. A client here is one address, as flood control counts them, except
+  that the addresses of one IPv6 /64 network count as one client, since a host can
+  usually take any address in its /64: the people on one such network share that half, as
+  those behind one IPv4 address do, while flood control still counts each of their
+  addresses apart. A body takes no room until its first bytes arrive, and
+  one that sends none within 5 seconds answers `400` as below, having held none; it then
+  takes room for what it has sent, a little ahead of it, until an eighth of it has
+  arrived, and only then, in one go, as much as it says it is and that eighth again, which
+  is in memory twice until the form has been read, so a body that stops holds at most
+  twice what it has sent or, if that is more, 4 KiB. A post waits for room in either
+  budget for about ten seconds at most, and a client has one image post waiting for room
+  for its body at a time: its next that finds none answers `429` at once, as one past its
+  share does. The posts waiting for more room hold no more of the upload budget between
+  them than leaves room for the largest body there may be (55 MiB of the 64 at the default
+  limit), so that the first of them always gets its room once the bodies being read have
+  been answered; a post that holds room and would wait past that answers `503` at once.
+  Its body has 30 seconds to arrive from its first bytes, the time it waits for room
+  aside, at an even pace with up to 5 seconds to spare — a body that falls further behind
+  the pace that would bring it all in by then, sending nothing or a trickle, is cut off
+  then and its room given back — and once it has arrived its image has 25 seconds to be
+  processed and stored. A post that cannot be taken in time — no room within the wait, or
+  its image not stored within those 25 seconds — answers `503` (see [Flood
+  control](#flood-control)) with nothing stored, rather than being made after its answer
+  could no longer be sent. A body that takes longer than its 30 seconds, or falls behind
+  its pace, is the connection's doing, not the server's, and answers `400` with
+  `{"error":"upload too slow"}`, with nothing stored and no cooldown started; the time a
+  post spent waiting for room is not counted against its body. It is not
+  `408 Request Timeout`, because Chromium takes a `408` that arrives on a reused HTTP/1.1
+  connection for an idle connection closed, and sends the whole post again, without
+  telling the page, until a `408` comes on a fresh connection: a poster too slow to send
+  the image once would send it several times, and wait that much longer, before being
+  told. A post turned away, busy or over its client's share, still has its body read,
+  unkept and at the same pace, so that the answer reaches the poster rather than a
+  connection closed under the upload; if the body falls behind on the way, the answer is
+  `upload too slow` too, rather than `503` or `429`. A form has to say how long its body
+  is, as browsers' forms do: one sent without a `Content-Length` (chunked), whose length
+  the server would learn only at its end, answers `411` at once, before any room is taken
+  for it or any of it read, with nothing stored and no cooldown started: the room it took
+  would have to be the most a body may be, and a few such bodies trickling a few bytes a
+  second could hold the whole budget for their 30 seconds.
 - **Spoilers**: a `spoiler` field (`1`, `true`, or `on` in a form; a boolean in JSON) marks
   the image to be covered until it is clicked. The attachment comes back with
   `"spoiler": true`; the thumbnail is made exactly as for any other image, because covering
@@ -1727,15 +1780,17 @@ A refused request answers `429` with a `Retry-After` header in seconds and a
 `retry_after` field in the body. Set a cooldown to `0` to switch it off.
 
 A post with an image the server is too busy to take in time — no room to read or process
-it within about ten seconds, or its image not stored within 25 seconds of its body
-arriving (see **Memory** under [Image attachments](#image-attachments)) — answers `503`
-the same way, with a `Retry-After` and `retry_after` of 10 seconds. Nothing is stored for
-it, and a cooldown it started is given back, so it can be sent again as soon as the wait
-is over. A post with an image from a client whose other image posts already hold half the
-room for upload bodies answers `429` the same way, at once, with a `Retry-After` and
-`retry_after` of 10 seconds and no cooldown started. A post whose body takes longer than
-30 seconds to arrive, counted from when there was room to read it, or falls more than 5
-seconds behind the even pace that would bring it in by then, answers `408` with
+it within about ten seconds, room it would wait for while the posts waiting already hold
+all they may, or its image not stored within 25 seconds of its body arriving (see
+**Memory** under [Image attachments](#image-attachments)) — answers `503` the same way,
+with a `Retry-After` and `retry_after` of 10 seconds. Nothing is stored for it, and a
+cooldown it started is given back, so it can be sent again as soon as the wait is over. A
+post with an image from a client whose other image posts already hold half the room for
+upload bodies, or one of which already waits for room, answers `429` the same way, at
+once, with a `Retry-After` and `retry_after` of 10 seconds and no cooldown started. A post
+whose body sends nothing within 5 seconds, takes longer than 30 seconds to arrive, counted
+from when there was room to read it, or falls further behind the even pace that would
+bring it in by then than the 5 seconds it has to spare, answers `400` with
 `{"error":"upload too slow"}` and no `Retry-After`, since waiting does not make a
 connection faster — one turned away as busy or over its share included, whose body is
 still read past at that pace — and, with uploads on, a form sent without a
@@ -1765,8 +1820,8 @@ it. `0` switches it off.
 The cooldowns and the refusal budget are keyed on client addresses, and so are the upload
 shares (see **Memory** under [Image attachments](#image-attachments)), by the address or,
 for IPv6, by its /64 network; those are the only places the server holds one. A client's
-share is held only while its image posts hold room for their bodies, from when their
-headers arrive until they are answered, and it is dropped as soon as the last of them is,
+share is held only while its image posts hold room for their bodies, from when their first
+bytes arrive until they are answered, and it is dropped as soon as the last of them is,
 with no sweep to wait for: the post's deadlines bound that to about a minute (some ten
 seconds' wait for room, 30 seconds for the body and 25 for the image) besides the time the
 database takes to store the post. A sweep runs once a minute and drops every cooldown and
@@ -1911,10 +1966,13 @@ file; the flags (`sage`, `badge`, `spoiler`, `support_seen`) accept `1`, `true`,
 budget (`429`) and a post turned away because the server is too busy (`503`) add
 `retry_after` plus a `Retry-After` header; the other `429` and `503`, too many wrong
 verification codes and `/healthz` with the database down, carry neither. An image post
-whose body does not arrive within 30 seconds of there being room to read it answers `408`
-(`upload too slow`). With uploads on, a `multipart/form-data` post has to send a
-`Content-Length`, as browsers do: one sent without (chunked) answers `411` (`a post with a
-file needs a Content-Length`) before any of its body is read.
+whose body sends nothing within 5 seconds, does not arrive within 30 seconds of there
+being room to read it, or falls further behind the even pace that would bring it in by
+then than the 5 seconds it has to spare, answers `400` (`upload too slow`), not `408`,
+which Chromium answers on a reused connection by sending the post again. With uploads
+on, a `multipart/form-data` post has to send a `Content-Length`, as browsers do: one sent
+without (chunked) answers `411` (`a post with a file needs a Content-Length`) before any
+of its body is read.
 
 ```bash
 curl -s localhost:8080/api/boards

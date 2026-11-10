@@ -15,12 +15,19 @@ import (
 	"github.com/yuvraj-agarwal/educhan/internal/media"
 )
 
-// The timeouts cmd/server gives its http.Server. They govern a GET and a text
-// post; an image post sets its own read and write deadlines through an
-// http.ResponseController once it knows it is reading a body (parseSubmission,
-// processContext), because its body may legitimately take uploadReadTimeout to
-// arrive and its image then postDeadline to process, more than one WriteTimeout
-// from the end of its headers covers.
+// The timeouts cmd/server gives its http.Server. net/http applies
+// ReadHeaderTimeout and IdleTimeout before any handler runs, so they govern
+// every request: its headers are read within ReadHeaderTimeout, a multipart
+// post's included, and a kept-alive connection waits IdleTimeout for the next
+// one. ReadTimeout and WriteTimeout govern every request but a multipart post,
+// which is how app.js sends an image: once its headers are in,
+// parseSubmission and processContext replace its body's read deadline and its
+// answer's write deadline through an http.ResponseController, because its
+// body may legitimately take uploadReadTimeout to arrive and its image then
+// postDeadline to process, more than one WriteTimeout from the end of its
+// headers covers. Any other request's answer is written within WriteTimeout of
+// its headers or not at all, which is what app.js's VERIFY_TIMEOUT_MS is held
+// to (TestVerifyAnswersBelongToTheStepTheyWereSentFrom).
 const (
 	ReadHeaderTimeout = 10 * time.Second
 	ReadTimeout       = 30 * time.Second
@@ -58,7 +65,7 @@ type App struct {
 	schemaAhead []int
 
 	// postDeadline is postDeadline, uploadReadTimeout is uploadReadTimeout and
-	// uploadPaceGrace is uploadPaceGrace, which tests shorten.
+	// uploadPaceGrace is uploadPaceGrace, which tests change.
 	postDeadline      time.Duration
 	uploadReadTimeout time.Duration
 	uploadPaceGrace   time.Duration

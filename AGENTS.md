@@ -392,12 +392,15 @@ needs a browser check before the test changes.
   what was refused: `/verify` passes `errorMessage` `{ action: "code" }`, so a code
   request is told to wait and request a code again, never to post again. A `503` with
   `retry_after` is a post the server was too busy to take, worded as that and not as flood
-  control; the form keeps the post, image included, and nothing was charged for it. A
-  not-found page names and links a board only when it is in `state.boards`: the slug comes
-  from the address, and echoing any slug would let a crafted link write the page's copy. A
-  history change that keeps the rendered path (a same-thread quote link) only calls
-  `focusHash()`, so revealed spoilers stay revealed. A disabled file input is left out of
-  `FormData`, and `submit` posts as JSON when it is.
+  control; the form keeps the post, image included, and nothing was charged for it. An
+  image that did not finish arriving in time is a `400` known by the server's words,
+  `UPLOAD_TOO_SLOW`, and worded as the connection's doing; the server never answers it
+  `408`, which Chromium replays (see **Attachments**); nothing in `app.js` looks for one.
+  A not-found page names and links a board only when it is in `state.boards`: the slug
+  comes from the address, and echoing any slug would let a crafted link write the page's
+  copy. A history change that keeps the rendered path (a same-thread quote link) only
+  calls `focusHash()`, so revealed spoilers stay revealed. A disabled file input is left
+  out of `FormData`, and `submit` posts as JSON when it is.
 - **A server that takes no images.** `loadSite` reads `GET /api/site`
   (`{"uploads","max_upload_bytes"}`) into `state.site`. With `uploads` false, `formHTML`
   draws no image field at all — no picker, no drop hint, no Spoiler image box — a file
@@ -1307,18 +1310,27 @@ posting form (see **The content rules' answers** under Front end conventions).
   the last one's; its transparent index is the last extension's alone, where `image/gif`
   keeps one an earlier extension before the same frame named; and an index past the end of
   its colour table is opaque black but for the transparent one, where `image/gif` makes
-  all of them up to a transparent index past the table transparent. Two more kinds of file
-  browsers play and `image/gif` refuses are refused by the decoder, in `Process` and so
-  after flood control (`image could not be decoded`): one with a frame whose pixels index
-  past their table, but for indices up to a transparent index that is itself past it,
-  which `image/gif` takes, where Chromium shows those pixels black; and one with more data
-  after a frame's LZW end code than `image/gif` takes, which is the rest of the sub-block
-  the code ends in and, when the code ends a sub-block, one more sub-block of one byte
-  (golang.org/issue/16146), where Chromium shows the frame and reads on from its
-  terminator (`TestGIFsImageGIFRefusesAreRefusedOnceDecoded`, which also has what
-  `image/gif` takes stored as the file without it). `TestGIFIsReadAsChromiumReadsIt`
-  holds files to the pictures Chromium was seen to show of them, and `chromiumReads` in
-  the tests is that reading.
+  all of them up to a transparent index past the table transparent. Other files browsers
+  play and `image/gif` refuses are refused by the decoder, in `Process` and so after flood
+  control (`image could not be decoded`); the kinds found so far are one with a frame
+  whose LZW data ends, with the end code, before the frame's last pixel is coded, which
+  `image/gif` refuses as not enough image data, where Chromium's `<img>` shows the rest of
+  the frame transparent and WebCodecs' `ImageDecoder` fails the frame; one with a frame
+  whose pixels index past their table, but for indices up to a transparent index that is
+  itself past it, which `image/gif` takes, where Chromium shows those pixels black; one
+  whose LZW data goes on after a frame's last pixel, before its end code, with another
+  pixel or a code that is not valid, where Chromium stops reading the frame's codes once
+  it has its pixels; and one with more data after a frame's LZW end code than `image/gif`
+  takes, which is the rest of the sub-block the code ends in and, when the code ends a
+  sub-block, one more sub-block of one byte (golang.org/issue/16146), where Chromium shows
+  the frame and reads on from its terminator
+  (`TestGIFsImageGIFRefusesAreRefusedOnceDecoded`, which also has what `image/gif` takes
+  stored as the file without it). A frame with no colour table at all, neither its own nor
+  a global one, which `image/gif` refuses too and Chromium shows black, `walkGIF` refuses
+  from its descriptor, before anything is decoded
+  (`TestGIFFramePixelsReadsWhatTheDecoderReads`). `TestGIFIsReadAsChromiumReadsIt` holds
+  files to the pictures Chromium was seen to show of them, and `chromiumReads` in the
+  tests is that reading.
 - **What is stored is never the upload.** `media.Process` rewrites every image without its
   metadata before `Save` hands it to a backend, so both backends store the same file
   (`internal/media/sanitize.go`). Files stored before this release are the exception: they
@@ -1418,6 +1430,12 @@ posting form (see **The content rules' answers** under Front end conventions).
   1,525 frames a pixel wide and 65,535 tall took 21 seconds of CPU to play
   (`TestGIFFrameRowsAreChargedAsAtLeastGIFRowPixels`,
   `TestGIFStoredFramesAreChargedByTheirRows`, `TestGIFWaysNotTakenAreChargedByTheirRows`).
+  A frame of no width is charged its rows as well, which image/gif goes through one at a
+  time when the frame is interlaced: charged nothing, 15,963 interlaced frames 0×65,535
+  after a 1×1 picture, 191,591 B, came within the processing budget on their overhead
+  alone and took 2.5-2.8 s of CPU to decode. They are refused from the header now, as is
+  any GIF admitted before whose frames of no width take it past the cap
+  (`TestGIFFramesOfNoWidthAreChargedTheirRows`).
   Both refusals are known only by playing the GIF: `Inspect` reads the header, where
   `gifFramePixels` holds the declared frames to `maxGIFFramePixels`, but the put-back,
   restore-chain and widened-clear work shows only as the frames are played, so a GIF the
@@ -1499,12 +1517,13 @@ posting form (see **The content rules' answers** under Front end conventions).
   count (`TestWebPStillWithAFrameAfterItsPictureIsStoredAsAStill`). `Inspect` also reads
   every other WebP's chunks as `stripWebP` does, without writing the file (`webpKept`),
   and refuses whatever `stripWebP` would refuse once processed: a RIFF that runs past the
-  end of the file or a chunk that does, no bitstream, and in a simple-format file an ALPH
-  before its bitstream, or in an extended one a bitstream that does not match the canvas,
-  a second bitstream, an ALPH after its bitstream, beside a lossless one or after another
-  ALPH, a second VP8X or an ANIM. Before that `Inspect`'s own checks caught only the RIFF
-  of these, leaving the rest to x/image's `DecodeConfig`, which reads no further than a
-  VP8X or, in a file without one, the bitstream, so in an extended file any of the rest, a
+  end of the file or a chunk that does, no bitstream or one whose header cannot be read,
+  and in a simple-format file an ALPH before its bitstream, or in an extended one a VP8X
+  that is not 10 bytes, a bitstream that does not match the canvas, a second bitstream, an
+  ALPH after its bitstream, beside a lossless one or after another ALPH, a second VP8X or
+  an ANIM. Before that `Inspect`'s own checks caught only the RIFF of these, leaving the
+  rest to x/image's `DecodeConfig`, which reads no further than a VP8X or, in a file
+  without one, the bitstream, so in an extended file any of the rest past its VP8X, a
   chunk that runs past the end wherever it lies among them, passed `Inspect` and was
   refused after flood control, and so was a chunk after the picture that runs past the end
   in a simple-format file (`TestMalformedWebPIsRefused`, whose cases `Inspect` must
@@ -1607,19 +1626,30 @@ posting form (see **The content rules' answers** under Front end conventions).
   profile from a 64 MiB budget its own buffers share, which left about 480 KiB less for a
   291 KB chunk and 7 to 8 MiB less for a 6.5 MB upload of random bytes, so a profile
   within that of 64 MiB is taken as used here, where Chromium applies the `gAMA` or does
-  not show the picture (`maxICCProfile`). An `sRGB` or `iCCP` chunk Chromium cannot read
-  takes nothing's place there, and the `gAMA` beside it is applied; a `cICP` chunk, which
-  Chromium reads before them all, is not read here. `applyPNGGamma` converts the colour
-  samples, never alpha, to the sRGB values that show the same light, at the picture's own
-  depth, before `reduceHiddenColour`. `TestPNGGammaIsShownAsBrowsersShowIt` holds a stored
-  grey ramp to within a level of what Chromium 141 drew for each tag, and has a case for
-  each of those rules, for a profile broken in each way `iccProfileUsable` refuses one
-  (the one whose tag table runs past it is refused by its tags' bounds as well, so
-  `TestICCTagTableMustFitTheProfile` has one only the table's length refuses), and for the
-  sound grey, RGB and `cicp`-tagged profiles those differ from; none has a lookup table
-  (`A2B0` or `A2B1`), which stands in here for the curves and colourants without being
-  read. `TestPNGGammaConvertsColourOnly` covers every picture type `image/png` decodes to.
-  A change there needs the same browser comparison.
+  not show the picture (`maxICCProfile`). Only the first 256 KiB of a profile's stream is
+  walked and inflated (`iccStreamRead`), through the request's context: a profile's stream
+  is a few dozen kilobytes at most, and empty deflate blocks slow to inflate cost about
+  three quarters of a second of CPU a MiB, which read whole went on past the deadline. The
+  walk refuses an upload whose profile would make more of `compress/flate`'s tables than
+  its image data left of what its decode is charged for (`pngTablesAllowed`, below), and
+  stops as soon as the context ends (`TestWalkingStopsWhenTheContextEndsPartway`); 256 KiB
+  of the costliest blocks it lets through took 43 ms of CPU to walk and inflate. A longer
+  stream is taken as inflating whole, so a profile whose header is in what those bytes
+  inflate to is taken as used, its checksum unread, and one after them is not, where
+  Chromium reads on (`TestAProfilesStreamIsReadNoFurtherThanIccStreamRead`,
+  `TestReadingAProfileStopsWhenTheContextEndsPartway`). An `sRGB` or `iCCP` chunk Chromium
+  cannot read takes nothing's place there, and the `gAMA` beside it is applied; a `cICP`
+  chunk, which Chromium reads before them all, is not read here. `applyPNGGamma` converts
+  the colour samples, never alpha, to the sRGB values that show the same light, at the
+  picture's own depth, before `reduceHiddenColour`. `TestPNGGammaIsShownAsBrowsersShowIt`
+  holds a stored grey ramp to within a level of what Chromium 141 drew for each tag, and
+  has a case for each of those rules, for a profile broken in each way `iccProfileUsable`
+  refuses one (the one whose tag table runs past it is refused by its tags' bounds as
+  well, so `TestICCTagTableMustFitTheProfile` has one only the table's length refuses),
+  and for the sound grey, RGB and `cicp`-tagged profiles those differ from; none has a
+  lookup table (`A2B0` or `A2B1`), which stands in here for the curves and colourants
+  without being read. `TestPNGGammaConvertsColourOnly` covers every picture type
+  `image/png` decodes to. A change there needs the same browser comparison.
 - **Memory.** `MaxPixels` is 25 megapixels, so that the 24-megapixel photos phones and
   cameras save are taken whole (an iPhone's are 5712×4284, 24.5 million pixels;
   `TestTwentyFourMegapixelPhotosAreAccepted`), and a GIF's frames together may not be
@@ -1642,7 +1672,10 @@ posting form (see **The content rules' answers** under Front end conventions).
   encoder's output buffer (`storedBuffer`, which refuses to grow past `storedLimit` with
   `ErrStoredTooLarge`: four times the upload plus half a byte a pixel, so a file Go's
   encoders cannot compress the way it came is refused rather than stored many times
-  larger; a lossy WebP with transparency, stored as a PNG and so meant to grow, is held to
+  larger, as is a GIF whose frames are put back over a background of many colours, since
+  with one table `playGIF` puts no frame back and draws that background again each frame
+  (about nine times the upload, `TestAGIFPutBackOverABusyBackgroundCanOutgrowItsUpload`);
+  a lossy WebP with transparency, stored as a PNG and so meant to grow, is held to
   `pngLimit` of its size instead, which the header gives, so its cost refuses it up front
   rather than after decoding), the six rows of the stored picture `image/png`'s encoder
   writes a PNG through (`pngEncoderRows`, all made before the first row is written, so
@@ -1693,17 +1726,18 @@ posting form (see **The content rules' answers** under Front end conventions).
   the library's default is a 16 MiB buffer for every object, kept only for retries a write
   without preconditions never makes (`TestGCSPutAllocatesNoBufferOfItsOwn`). The uploads'
   own bytes have a budget of their own, `media.UploadBudget` (64 MiB), which
-  `parseSubmission` takes from (`media.ReserveUpload`) before it reads a multipart body,
-  as much as the request's `Content-Length` says, up to the most a body may be, and which
-  the handler gives back when the post is answered (`submission.release`). For that to be
-  what the body costs, `readMultipart` reads the body itself rather than through
-  `ParseMultipartForm`, which keeps a file over its memory limit in a temporary file
-  (memory again on Cloud Run) and then hands it over to be copied: the image is read once
-  into a buffer the size of what is left of the body (`TestAnUploadIsReadOnce`). Its text
-  fields may come to `maxRequestBytes` between them, as a JSON post may, the first value
-  of each name is the one read, and parts past `maxFormParts` refuse the form
-  (`TestMultipartPostsAreReadAsTheFormSendsThem`). A body holds its room in the upload
-  budget from before it is read, and a post whose body never arrives never reaches flood
+  `parseSubmission` takes from (`media.ReserveUpload`) as it reads a multipart body, for
+  twice what has arrived at most, or 4 KiB, until an eighth of it has, then for as much as
+  the request's `Content-Length` says, up to the most a body may be (`admitBody`, below),
+  and which the handler gives back when the post is answered (`submission.release`). For
+  that to be what the body costs, `readMultipart` reads the body itself rather than
+  through `ParseMultipartForm`, which keeps a file over its memory limit in a temporary
+  file (memory again on Cloud Run) and then hands it over to be copied: the image is read
+  once into a buffer the size of what is left of the body (`TestAnUploadIsReadOnce`). Its
+  text fields may come to `maxRequestBytes` between them, as a JSON post may, the first
+  value of each name is the one read, and parts past `maxFormParts` refuse the form
+  (`TestMultipartPostsAreReadAsTheFormSendsThem`). A body held its room in the upload
+  budget from before it was read, and a post whose body never arrives never reaches flood
   control, so before the share one client's eight connections declaring 8 MiB bodies and
   sending nothing held the whole budget for the read timeout, turned every other image
   post away `503`, and were charged nothing. Now `reserveUpload` takes from the client's
@@ -1713,18 +1747,60 @@ posting form (see **The content rules' answers** under Front end conventions).
   host can usually take any address in its /64 and counted per address the share would
   bound nothing, while flood control stays per address, its cooldowns being a wait a whole
   network would feel), and a post past it is read to its end unkept and answered `429`
-  (`errUploadShare`, `busyRetryAfter` to wait, nothing charged) without waiting, or `408`
-  if its body falls behind on the way (`turnAway`); and `pacedBody` holds the body to an
-  even pace through its read window, moving the read deadline before every read to
-  `uploadPaceGrace` (5 s) past when what has arrived would have at the pace that brings it
-  all in by the window's end, so a body that sends nothing or a trickle is answered `408`
+  (`errUploadShare`, `busyRetryAfter` to wait, nothing charged) without waiting, or `400`
+  `upload too slow` if its body falls behind on the way (`turnAway`); and `pacedBody`
+  holds the body to an even pace through its read window, moving the read deadline before
+  every read to a grace past when what has arrived would have at the pace that brings it
+  all in by the window's end, so a body that sends nothing or a trickle is answered `400`
   and gives its room back after the grace, not at the window's end
-  (`TestIdleUploadsCannotHoldTheUploadBudget`). A body without a `Content-Length`
-  (chunked) would have to reserve the most a body may be, and could then be held only to
-  the pace of that, which cut a small one sent slowly off, or to none, which let seven
-  trickles from three addresses hold the whole budget for the window; so, with uploads on,
-  such a post is answered `411` on its headers (`refuseUnsized`), before anything is
-  reserved for it or read of it, charged nothing, its connection closed
+  (`TestIdleUploadsCannotHoldTheUploadBudget`). That still let sixteen addresses, each
+  within its share with three connections that declared the largest body and sent none of
+  it, keep the budget full and its queue for room long, each body holding its room for the
+  whole grace (`uploadPaceGrace`, 5 s) and coming straight back once cut off: an honest
+  image post waited 8 to 11 s behind them, or was turned away `503`. So a body's first
+  bytes are read before anything is reserved for it (`startBody`), one that sends none
+  within `uploadPaceGrace` answered `400` having held neither room nor a place in the
+  queue, and one post of a client waits for room at a time, the client's next post that
+  finds none answered `429` at once (`reserveUpload`), so a few clients cannot fill the
+  queue ahead of everyone else. A grace that began at a second and grew as the body
+  arrived then gave the room of a body that sent its first bytes and stopped back after a
+  second; but such a hold still cost its sender a boundary line, and a hundred /64s of one
+  /48, each its own client with its one post in the queue, kept an honest image post
+  waiting ten seconds, and that grace refused an 8 MB image sent over a round trip of 0.65
+  s or more, which TCP's slow start keeps far behind the pace in its first seconds. So a
+  body holds room for what it has sent (`admitBody`): a piece at a time, each taken before
+  it is read into and as large as all before it, until an eighth of the body has arrived,
+  and only then its declared size, so that holding that costs an eighth of it sent and a
+  body that stops sooner holds at most twice what it sent, or `uploadHeadBytes` (4 KiB) if
+  that is more, as one that has sent a single byte does; what has arrived is held in
+  memory until the read of the form has copied it into the image's buffer, so until then
+  the upload budget, though not the client's share, holds room for it twice, taken in the
+  same ask as the rest of the body (`bodyRoom.takeRest`), after which the body asks for no
+  more: asked for apart, the second room let eight honest 8 MiB bodies whose rests were
+  granted together hold the whole budget, each waiting for its copy, until the first gave
+  up and was answered `503` (`TestBodiesUnderWayDoNotWaitOnEachOthersRoom`); a body being
+  read holds nine eighths of its size of the budget, so seven are read at once at the
+  default limit and one at the largest (`clientUploadShare`); a body waits for a piece
+  holding what it has sent and for its rest holding its eighth, so posts that waited
+  holding room waited on one another, and fifty-seven 8 MiB bodies sent at once, each with
+  its eighth in, held 57 MiB, left too little for the rest of any, and all waited out
+  their ten seconds, most to be answered `503`: now the posts waiting hold no more of the
+  budget between them than `waitingRoom`, the budget less the most a body may be (55 MiB
+  at the default limit), so the first of them gets its room once the posts not waiting
+  have given theirs back, and a post that holds room and would wait past that is turned
+  away at once as busy, answered `503`
+  (`TestBodiesWaitingForRoomLeaveRoomForTheFirstOfThem`), and a post is no longer counted
+  as waiting however its wait ends, with its room or without it, or what those that gave
+  up held would fill the waiting room for good
+  (`TestUploadWaitsThatGiveUpGiveBackWhatTheyHeld`); a wait for a piece is the server's,
+  and moves the body's deadlines on by as long (`pacedBody.pause`); and the grace is the
+  whole 5 s from the first byte (`TestIdleBodiesDoNotHoldUpOtherImagePosts`,
+  `TestABodyOverALongRoundTripIsTaken`). A body without a `Content-Length` (chunked) would
+  have to reserve the most a body may be, and could then be held only to the pace of that,
+  which cut a small one sent slowly off, or to none, which let seven trickles from three
+  addresses hold the whole budget for the window; so, with uploads on, such a post is
+  answered `411` on its headers (`refuseUnsized`), before anything is reserved for it or
+  read of it, charged nothing, its connection closed
   (`TestPostsWithoutALengthAreRefused`), and every body that holds room is held to its own
   pace. Browsers send a `Content-Length` with every form. Between them the two budgets
   hold 320 MiB at most, whatever `containerConcurrency` lets in; beside them the
@@ -1745,55 +1821,87 @@ posting form (see **The content rules' answers** under Front end conventions).
   held decided how long deflate searched them, and crafted rows took a 16-bit picture of
   1.4 MB about 17 s; the price is size, the 16-bit synthetic pictures tried stored up to
   14 times larger, so a PNG the default level stored near `storedLimit` can now be refused
-  `ErrStoredTooLarge`) — a 25-megapixel 16-bit PNG takes 4 to 5 s of CPU on one core, an
-  8-bit transparent one 2 to 3, the slowest GIF about 4 (25 frames of a 2000×2000 canvas
-  each with a table of its own and a pixel to clear), a lossless WebP of 25 megapixels,
+  `ErrStoredTooLarge`) — a 16-bit PNG at the most pixels the memory estimate admits (about
+  23 megapixels as a square, up to the 25-megapixel cap as a narrow strip) takes 4 to 5 s
+  of CPU on one core opaque and 6.5 to 7.5 with a partial alpha in every pixel and rows
+  filtered by Paeth, the slowest PNG (each pixel's colour is cut to what its alpha shows,
+  the picture is written at 8 bytes a pixel rather than 6 and its thumbnail scaled through
+  the alpha, and Paeth doubles the decode; both on the scale on which the CMYK JPEG below
+  takes 8.5 to 10 s, not its 5.5 to 7.5: beside it the two took about half and three
+  quarters of its time), an 8-bit transparent one 2 to 3, the slowest GIF about 5 (4.9 to
+  4.95 the best of three runs on a quiet core, single runs up to 5.7; 25 frames of a
+  2000×2000 canvas each with a table of its own of 256 colours, which each leave pixels
+  undrawn, whose colours `undrawnInTable` goes over the rows again to find, looking up
+  those pixels' alone (`TestOnlyUndrawnPixelsAreLookedForInTheTable`; looking up every
+  pixel's took 5 to 6.5); 4 to 4.5 when they draw every pixel, whichever colours they are:
+  `colourIndex` finds each in the same three steps, where a hash let a GIF choose colours
+  that all fell in one place and took up to a minute), a lossless WebP of 25 megapixels,
   which a crafted file of a few dozen bytes can be, 4 to 6.5, a lossy WebP with
   transparency at the most pixels the memory estimate admits (19 megapixels square, 21 in
-  a strip) 4.5 to 9.5 by what its alpha holds, which with the CMYK JPEG below makes it the
-  slowest kind (it was measured in runs in which that JPEG took 8.5 to 10 s, see
-  `processingAllowance`), and a JPEG is held to `maxJPEGScanRevisits` passes' work over
-  its blocks (`jpegScanBlockVisits`, which weighs a baseline scan's visit at six
-  first-pass visits and an AC refinement scan's at two, for what the decoder does on
-  each), so the worst admitted one, a 25-megapixel baseline file of four full-resolution
-  components, is about 5 to 6 s to decode and 5.5 to 7.5 s to process, and a progressive
-  one, which the memory estimate holds to fewer blocks, about 3 to 4 s to decode, rather
-  than the thousands of seconds a repeated cheap scan would take) before that deadline,
-  with `media.ErrBusy`, and room that is there is taken however near the deadline. Its
-  body then has `uploadReadTimeout` (30 s) to arrive, counted from when the wait ends, so
-  time spent waiting for room is not taken out of the body's: a read deadline set on the
-  connection through an `http.ResponseController` once `ReserveUpload` has returned,
+  a strip) 1.5 to 9.5 by what its alpha holds and the colour under it, which with the CMYK
+  JPEG below makes it the slowest kind (it was measured in runs in which that JPEG took
+  8.5 to 10 s, see `processingAllowance`), and a JPEG is held to `maxJPEGScanRevisits`
+  passes' work over its blocks (`jpegScanBlockVisits`, which weighs a baseline scan's
+  visit at six first-pass visits and an AC refinement scan's at two, for what the decoder
+  does on each), so the worst admitted one, a 25-megapixel baseline file of four
+  full-resolution components, is about 5 to 6 s to decode and 5.5 to 7.5 s to process, and
+  a progressive one, which the memory estimate holds to fewer blocks, about 3 to 4 s to
+  decode, rather than the thousands of seconds a repeated cheap scan would take; what
+  follows an upload's size instead is inflating a PNG's image data, which `image/png` does
+  whatever it holds: empty deflate blocks with codes `compress/flate` builds tables for
+  afresh cost about three quarters of a second of CPU a MiB, 6 to 7 s for a picture of one
+  pixel at the default 8 MiB limit and 20 to 24 s at the largest, 31 MiB, but they make
+  tables hundreds of times their size, so the walk of the image data before it is inflated
+  (`pngImageDataTables`) refuses that picture in about 4 ms at 8 MiB and 15 ms at 31 MiB,
+  and the costliest blocks it lets through, a dozen bytes each that hold nothing but their
+  end under codes of a bit (`cheapCodes`), took about 1.5 s of CPU to process at 8 MiB and
+  6 s at 31 MiB, a quarter of it the walk's; an `iCCP` profile's stream is walked and
+  inflated no further than its first 256 KiB, 43 ms of the costliest blocks let through
+  (`iccStreamRead`, `TestALongProfileStreamCostsNoMoreThanItsStart`)) before that
+  deadline, with `media.ErrBusy`, and room that is there is taken however near
+  the deadline. Its body has `uploadReadTimeout` (30 s) to arrive, counted from its first
+  bytes and moved on by each wait for room, so time spent waiting for room is not taken
+  out of the body's: read deadlines set on the connection through an
+  `http.ResponseController` (`pacedBody`), moved on once `ReserveUpload` has returned,
   whatever it returned (the logging middleware's `statusRecorder` carries an `Unwrap` so
   the controller reaches the connection underneath); a body slower than that is the
-  client's doing, answered `408` (`upload too slow`, `isReadTimeout`), as is one that
-  falls behind its pace (`pacedBody`), not the `503` a server with no room gives, and a
-  body that waited for room is not answered `408` for the server's load. A turned-away
-  post's body is read past at the same pace, and `turnAway` answers it from how that read
-  ended, never from the request's context, which net/http cancels for a read deadline as
-  for a client gone: mapped through `fail`, a busy refusal whose body fell behind answered
-  nothing, which net/http sent as an empty `200` that the web client took for a post made
-  (`TestATurnedAwayBodyIsAnsweredWhateverItsPace`). Once the body is read, the image has a
-  fresh `postDeadline` (25 s, `processContext`) to be processed and both renditions stored
-  — measured from after the body, not from the start of the handler, so a slow body no
-  longer spends the time the image has and is no longer mistaken for a busy server
-  (`TestSlowUploadBodyIsNotMistakenForABusyServer`); `processContext` also resets the
-  response's write deadline to cover that processing and the answer, the body read having
-  possibly used more than one `WriteTimeout` (30 s, `app.WriteTimeout`, which `cmd/server`
-  uses) from the end of the headers. `Save` writes nothing once that processing deadline
-  has passed, on either backend (`LocalStore.Put` honours an ended context as Cloud
-  Storage does, pinned in `testStoreContract`), and removes a written original on a
-  context that has not ended (`context.WithoutCancel`). Decoding, re-encoding and playing
-  a GIF each watch that context as they run — a reader that fails once it is done, a check
-  straight after each decode, a stored-buffer write that refuses once it is done (and
-  `jpegenc`, refused, stops at the end of the row of units it is coding), a check before
-  each GIF frame, and one before the thumbnail — so a cancelled or timed-out upload stops
-  partway rather than running to the end. A decode that has already read its whole input
-  is the exception: image/jpeg reads a small progressive file whole, and x/image a lossy
-  WebP's partitions, before their costly work, which then runs to its end — a few seconds
-  of CPU at most within the caps, holding its share of the budget until then — and nothing
-  more is done after it. `cancel_test.go` pins each check on its own by ending the context
-  the moment that check asks (`askedContext`), so none of it rests on timing. The database
-  commit runs on the request's own context, never a deadline: a deadline passing
+  client's doing, answered `400` (`upload too slow`, `uploadTooSlowStatus`,
+  `isReadTimeout`), as is one that falls behind its pace (`pacedBody`), not the `503` a
+  server with no room gives, and a body that waited for room is not answered `upload too
+  slow` for the server's load. It is not `408`: Chromium takes a `408` on a reused
+  HTTP/1.1 keep-alive connection for an idle connection closed and sends the whole post
+  again, without telling the page, until a `408` comes on a fresh connection, so a poster
+  too slow to send the image once sent it once per idle connection and once more, waited
+  that much longer to be told, and held room in the budget and the share for each sending.
+  No header stops that, only the status; `app.js` knows the refusal by its words
+  (`UPLOAD_TOO_SLOW`), which `TestClientKnowsTheServersImageRefusals` checks against the
+  server's answer. A turned-away post's body is read past at the same pace, and `turnAway`
+  answers it from how that read ended, never from the request's context, which net/http
+  cancels for a read deadline as for a client gone: mapped through `fail`, a busy refusal
+  whose body fell behind answered nothing, which net/http sent as an empty `200` that the
+  web client took for a post made (`TestATurnedAwayBodyIsAnsweredWhateverItsPace`). Once
+  the body is read, the image has a fresh `postDeadline` (25 s, `processContext`) to be
+  processed and both renditions stored — measured from after the body, not from the start
+  of the handler, so a slow body no longer spends the time the image has and is no longer
+  mistaken for a busy server (`TestSlowUploadBodyIsNotMistakenForABusyServer`);
+  `processContext` also resets the response's write deadline to cover that processing and
+  the answer, the body read having possibly used more than one `WriteTimeout` (30 s,
+  `app.WriteTimeout`, which `cmd/server` uses) from the end of the headers. `Save` writes
+  nothing once that processing deadline has passed, on either backend (`LocalStore.Put`
+  honours an ended context as Cloud Storage does, pinned in `testStoreContract`), and
+  removes a written original on a context that has not ended (`context.WithoutCancel`).
+  Decoding, re-encoding and playing a GIF each watch that context as they run — a reader
+  that fails once it is done, a check straight after each decode, a stored-buffer write
+  that refuses once it is done (and `jpegenc`, refused, stops at the end of the row of
+  units it is coding), a check before each GIF frame and every `haltEvery` pixels it goes
+  through within one, and one before the thumbnail — so a cancelled or timed-out upload
+  stops partway rather than running to the end. A decode that has already read its whole
+  input is the exception: image/jpeg reads a small progressive file whole, and x/image a
+  lossy WebP's partitions, before their costly work, which then runs to its end — a few
+  seconds of CPU at most within the caps, holding its share of the budget until then — and
+  nothing more is done after it. `cancel_test.go` pins each check on its own by ending the
+  context the moment that check asks (`askedContext`), so none of it rests on timing. The
+  database commit runs on the request's own context, never a deadline: a deadline passing
   mid-commit could otherwise leave a post made and its image removed. A budget wait or a
   processing deadline that runs out is `tooBusy`, sent to `answerBusy`: `503` with a
   `Retry-After` of `busyRetryAfter` (10 s) and `retry_after`, logged by the request log as
@@ -1823,10 +1931,46 @@ posting form (see **The content rules' answers** under Front end conventions).
   every test still passes. So they guard against a term left out, not against every
   under-estimate, as the comment at the top of `cost.go` says, and a new term needs a
   fixture where it is megabytes over the slack, as the comment on `costFixtures` sets out.
-  `TestProcessingCostCoversWhatIsHeld` is the package's slowest test, about five minutes
-  under `-race`. A change to a decode path, to `orient`, to the stored buffer or to the
-  thumbnail changes `cost.go` in the same commit. A CMYK JPEG is turned into RGBA where it
-  lies (`rgbaOfCMYK`), not into a second picture. Tests narrow the budget with
+  Garbage a phase makes and drops while a collection runs is marked live with it, which
+  the slack covers for most phases, but not for a PNG's decode: `compress/flate` makes
+  tables afresh for every block of the image data, about 242 bytes of them for every byte
+  of blocks that hold nothing but codes, and how much of them a collection marks follows
+  how long it runs, which grows with the rest of the heap: charged a fixed 4 MiB for them,
+  beside 128 MiB of live objects a picture of one pixel and 8 MiB of such blocks held 10.9
+  to 16.7 MiB as it decoded, over the 8 MiB it was charged, slack and all. So before the
+  image data is inflated it is walked (`pngImageDataTables`, `inflate.go`), counting the
+  tables `compress/flate` would make without making any, and a PNG whose image data, or
+  ICC profile after it, would make more than four bytes of them for every byte of image
+  data, and 4 MiB at least, is refused `ErrImageTooCostly` (`pngTablesAllowed`); its
+  decode is charged all it may make, so what it holds of them is never more than were
+  made, whatever the collector does. Encoders make few: of 483 zlib streams from zlib at
+  levels 1, 6 and 9, every memory level and strategy, and Go's encoder at every level,
+  none made more than 0.95 bytes of tables a byte, and of 78 PNGs from PIL, ImageMagick
+  and FFmpeg none more than 0.82. Charging it moved 33 of a grid of picture shapes over
+  `processingBudget` that were under it, all interlaced, of 10 to 25 megapixels of grey
+  and alpha or 16-bit RGB with 13 to 20 MiB of image data, and it holds an interlaced
+  8-bit colour PNG of 25 megapixels from 8 MiB of image data to a longer side of 490,000
+  to 640,000 pixels, where it was about 750,000 (`TestEncodingsAreJudgedAtEveryShape`,
+  whose PNGs `headerUpload` makes up with image data). The walk follows
+  `compress/flate` as Go 1.22 to 1.25 have it, failing where it fails
+  (`TestTheWalkReadsStreamsAsCompressFlateDoes`) and counting what it allocates
+  (`TestTheWalkCountsTheTablesCompressFlateMakes`), at no more CPU than inflating
+  (`TestAWalkCostsNoMoreThanInflating`), so a Go release that changes how `compress/flate`
+  builds its tables changes the walk with it. Fixtures cannot pin the charge, because what
+  a collection finds of the tables changes from run to run: beside the cost test's heap
+  the fixture `PNG of costly blocks`, which makes all the 32 MiB it may, held 1.2 to 8.3
+  MiB as it decoded, so with the term left out it is caught only in runs over the slack,
+  and with the fixed 4 MiB charge put back it held 4.2 MiB as it decoded beside 128 MiB of
+  live objects, within the 8.0 MiB that charge came to
+  (`TestAPNGsTablesAreChargedBesideALargeHeap`). The bound rests on the refusal and the
+  charge, which `TestAPNGThatWouldMakeMoreTablesIsRefusedBeforeItIsInflated` and
+  `TestPNGDecodeIsChargedTheTablesItIsAllowed` pin. `TestProcessingCostCoversWhatIsHeld`
+  is the package's slowest test: under `-race` it took 1.7 to 3.2 minutes in CI over eight
+  runs, before the fixture `PNG of costly blocks`, which takes about 2 seconds of it under
+  `-race` (the costly empty blocks it replaced took about 22), and 3.3 to 5 minutes on a
+  busy shared machine. A change to a decode path, to `orient`, to the stored buffer or
+  to the thumbnail changes `cost.go` in the same commit. A CMYK JPEG is turned into RGBA
+  where it lies (`rgbaOfCMYK`), not into a second picture. Tests narrow the budget with
   `narrowBudget`. x/image's VP8L decoder allocates its Huffman groups — a 167.5 MiB
   backing array at most (one `hGroup` per meta-image index, `vp8lGroupBacking`), plus a
   node slice per tree — from counts deep inside the compressed bitstream that no header or
@@ -2130,7 +2274,7 @@ posting form (see **The content rules' answers** under Front end conventions).
   `Config.cooldownSweepEvery`). The record-time sweep past `cooldownSweepThreshold` only
   bounds a burst between two ticks. The upload shares (`uploadShares`) are keyed on client
   addresses too, by `shareKey` (the address, or an IPv6 address's /64), and need no sweep:
-  a client's entry is taken by `reserveUpload` once a multipart post's headers have
+  a client's entry is taken by `reserveUpload` once a multipart post's first bytes have
   arrived, given back by `submission.release` when the post is answered, and deleted once
   it holds nothing (`TestUploadSharesForgetAClientOnceItHoldsNothing`), so it is held for
   about a minute at most, the wait for room, `uploadReadTimeout` and `processContext`
@@ -2557,18 +2701,19 @@ posting form (see **The content rules' answers** under Front end conventions).
   `internal/app/busy_test.go`, `internal/app/filter_api_test.go`, and
   `TestClientKnowsTheServersImageRefusals`,
   `TestClientReadsTheContentRulesAnswersTheServerGives`,
-  `TestClientKnowsWhenNoCodeIsPending` and `TestAnExpiredCodeIsSaidToHaveExpired` in
-  `internal/app/web_invariants_test.go`) run the whole app against an isolated schema in
-  `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so they are safe to run against
-  the development database. `testServer` builds its `Config` directly, which leaves every
-  cooldown at zero unless a test asks for one, and gives the client a cookie jar so the
-  two-step verification exchange behaves as it does in a browser. `verifyServer` adds a
-  secret and a capturing `mailer.Sender`, which is how a test reads the code back; the
-  credential it returns is then presented explicitly with `postWithCredential`, because
-  nothing attaches it on a caller's behalf. Poster ID tests post through `browser`
-  (`poster_id_test.go`), which sends what the client sends: the credential alone on a post
-  that asks for a badge, and the poster key on any other. A post carrying both is never
-  sent by the client, and the tests that cover it set the headers explicitly.
+  `TestThePostFormIsClearedOnlyForAPostMade`, `TestClientKnowsWhenNoCodeIsPending` and
+  `TestAnExpiredCodeIsSaidToHaveExpired` in `internal/app/web_invariants_test.go`) run the
+  whole app against an isolated schema in `TEST_DATABASE_URL` (falling back to
+  `DATABASE_URL`), so they are safe to run against the development database. `testServer`
+  builds its `Config` directly, which leaves every cooldown at zero unless a test asks for
+  one, and gives the client a cookie jar so the two-step verification exchange behaves as
+  it does in a browser. `verifyServer` adds a secret and a capturing `mailer.Sender`,
+  which is how a test reads the code back; the credential it returns is then presented
+  explicitly with `postWithCredential`, because nothing attaches it on a caller's behalf.
+  Poster ID tests post through `browser` (`poster_id_test.go`), which sends what the
+  client sends: the credential alone on a post that asks for a badge, and the poster key
+  on any other. A post carrying both is never sent by the client, and the tests that cover
+  it set the headers explicitly.
   Tests post to boards they create with `addBoard` (`api_test.go`), never to seeded
   ones, so they do not depend on which boards the migrations seed;
   `TestBoardsAreSeeded` is the one test that names the seeded set.

@@ -12,6 +12,7 @@ import (
 	"image/gif"
 	"math"
 	"math/rand"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -178,7 +179,7 @@ func pictureRows(pic *image.NRGBA) []string {
 // cannot make: frames with no graphic control extension or with two, a
 // transparent index past the colour table, a table with its colours in any
 // order or repeated, extensions between a frame's control and its pixels,
-// data after a frame's end code.
+// data after a frame's end code, LZW codes of the writer's choosing.
 type rawGIF struct {
 	w, h      int
 	global    [][3]byte // the global colour table, or none
@@ -212,11 +213,41 @@ type rawFrame struct {
 	local     [][3]byte // its own colour table, or none
 	interlace bool
 	pix       []uint8 // at.Dx()×at.Dy() indices, row by row
+	// codes, when there are any, are its LZW data in place of what
+	// compress/lzw writes of pix, each code at the width given; pix is
+	// still what chromiumReads shows of the frame.
+	codes []lzwCode
 	// Bytes after its LZW data, which ends with the end code: tail in the
 	// sub-block the end code ends (the data is short enough to share it),
 	// and then sub-blocks of their own before the terminator.
 	tail  []byte
 	after [][]byte
+}
+
+// lzwCode is an LZW code and the width it is written at, for LZW data
+// written code by code (rawFrame.codes).
+type lzwCode struct {
+	code  uint16
+	width uint
+}
+
+// packLZW is LZW data of the codes given, packed as a GIF packs them, least
+// significant bit first.
+func packLZW(codes []lzwCode) []byte {
+	var out []byte
+	var bits uint32
+	var n uint
+	for _, c := range codes {
+		bits |= uint32(c.code) << n
+		for n += c.width; n >= 8; n -= 8 {
+			out = append(out, byte(bits))
+			bits >>= 8
+		}
+	}
+	if n > 0 {
+		out = append(out, byte(bits))
+	}
+	return out
 }
 
 // rawTable appends a colour table, padded with black to a power of two, and
@@ -306,9 +337,13 @@ func (g rawGIF) bytes() []byte {
 			}
 		}
 		var lzwData bytes.Buffer
-		lw := lzw.NewWriter(&lzwData, lzw.LSB, lit)
-		lw.Write(pix)
-		lw.Close()
+		if f.codes != nil {
+			lzwData.Write(packLZW(f.codes))
+		} else {
+			lw := lzw.NewWriter(&lzwData, lzw.LSB, lit)
+			lw.Write(pix)
+			lw.Close()
+		}
 		out = append(out, byte(lit))
 		for d := append(lzwData.Bytes(), f.tail...); len(d) > 0; {
 			n := min(255, len(d))
@@ -537,18 +572,30 @@ func TestGIFIsReadAsChromiumReadsIt(t *testing.T) {
 	}
 }
 
-// Two kinds of GIF that browsers show image/gif refuses, and so they are
-// refused once decoded, after flood control (`image could not be decoded`),
-// as README.md and AGENTS.md say. One has more data after a frame's LZW end
-// code than image/gif takes: the rest of the sub-block the end code ends in,
-// and, when it ends one, one more sub-block of a single byte
-// (golang.org/issue/16146); past that image/gif reports too much image data,
-// where Chromium shows the frame and reads on from its terminator (a reviewer
-// had it show such a file). The other has pixels on an index past the end of
-// their colour table, which Chromium shows black, and image/gif refuses but
-// for indices up to a transparent index that is itself past the table
+// The kinds of GIF found that browsers show, image/gif refuses, and the walk
+// cannot tell from their blocks are refused once decoded, after flood control
+// (`image could not be decoded`), as README.md and AGENTS.md say. One has LZW
+// data that reaches its end code before a frame's last pixel: image/gif
+// reports not enough image data, where Chromium's <img> shows the pixels
+// coded and the rest of the frame transparent, and its ImageDecoder fails the
+// frame (a reviewer had both show such a file). One has more data after a
+// frame's LZW end code than image/gif takes: the rest of the sub-block the
+// end code ends in, and, when it ends one, one more sub-block of a single
+// byte (golang.org/issue/16146); past that image/gif reports too much image
+// data, where Chromium shows the frame and reads on from its terminator (a
+// reviewer had it show such a file). One has LZW data that goes on after a
+// frame's last pixel, before its end code: another pixel, or a code that is
+// not valid. image/gif reports too much image data or an invalid code, where
+// Chromium stops reading the frame's codes once it has its pixels (each case
+// below was seen in Chromium 141's ImageDecoder to play as the plain file
+// does). And one has pixels on an index past the end of their colour table,
+// which Chromium shows black, and image/gif refuses but for indices up to a
+// transparent index that is itself past the table
 // (TestGIFTransparentIndexPastItsTable). Each case is the two-frame GIF the
-// controls are stored as when the data image/gif takes is left out.
+// controls are stored as, its first frame changed as the case's name says. A
+// frame with no colour table at all, which image/gif refuses too, the walk
+// can tell from its descriptor, and refuses before anything is decoded
+// (TestGIFFramePixelsReadsWhatTheDecoderReads).
 func TestGIFsImageGIFRefusesAreRefusedOnceDecoded(t *testing.T) {
 	table := [][3]byte{{0, 0, 0}, {255, 0, 0}, {0, 255, 0}, {0, 0, 255}}
 	upload := func(first func(*rawFrame)) rawGIF {
@@ -569,11 +616,30 @@ func TestGIFsImageGIFRefusesAreRefusedOnceDecoded(t *testing.T) {
 		upload(func(f *rawFrame) { f.after = [][]byte{filler(1)} }),
 	)
 
+	// The red frame's four pixels code by code, at the width image/gif reads
+	// each at (a 2-bit minimum: clear is 4, the end code 5, and the width
+	// grows to 4 bits as the fourth code is read); then image/gif has made
+	// codes up to 8, and 9 is the one it makes next. The codes it takes after
+	// the last pixel, the end code, a clear code and then the end code, or
+	// none at all, are stored as the plain file, which shows the codes are
+	// read as written here.
+	redCodes := []lzwCode{{4, 3}, {1, 3}, {1, 3}, {1, 3}, {1, 4}}
+	coded := func(after ...lzwCode) func(*rawFrame) {
+		return func(f *rawFrame) { f.codes = append(slices.Clone(redCodes), after...) }
+	}
+	requireStoredAlike(t, "codes image/gif takes after the last pixel", upload(nil),
+		upload(coded(lzwCode{5, 4})),
+		upload(coded(lzwCode{4, 4}, lzwCode{5, 3})),
+		upload(coded()),
+	)
+
 	for _, tc := range []struct {
 		name  string
 		first func(*rawFrame)
 		err   string // image/gif's error
 	}{
+		{"the end code after two of the four pixels",
+			func(f *rawFrame) { f.codes = append(slices.Clone(redCodes[:3]), lzwCode{5, 3}) }, "not enough image data"},
 		{"a sub-block of two bytes after an end code that ends its sub-block",
 			func(f *rawFrame) { f.after = [][]byte{{0x00, 0x01}} }, "too much image data"},
 		{"a sub-block of 255 bytes after an end code that ends its sub-block",
@@ -582,6 +648,14 @@ func TestGIFsImageGIFRefusesAreRefusedOnceDecoded(t *testing.T) {
 			func(f *rawFrame) { f.after = [][]byte{filler(1), filler(1)} }, "too much image data"},
 		{"a sub-block of one byte after an end code within its sub-block",
 			func(f *rawFrame) { f.tail, f.after = filler(1), [][]byte{filler(1)} }, "too much image data"},
+		{"more pixels than the frame holds, then the end code",
+			func(f *rawFrame) { f.pix = []uint8{1, 1, 1, 1, 2, 2} }, "too much image data"},
+		{"a pixel after the last pixel, then the end code",
+			coded(lzwCode{2, 4}, lzwCode{5, 4}), "too much image data"},
+		{"a clear code and a pixel after the last pixel, then the end code",
+			coded(lzwCode{4, 4}, lzwCode{2, 3}, lzwCode{5, 3}), "too much image data"},
+		{"a code that is not valid after the last pixel, then the end code",
+			coded(lzwCode{15, 4}, lzwCode{5, 4}), "lzw: invalid code"},
 		{"a pixel past the colour table, with no transparent index past it",
 			func(f *rawFrame) { f.pix = []uint8{1, 5, 1, 1} }, "invalid pixel value"},
 	} {
@@ -2369,5 +2443,295 @@ func TestCoveredRowsAreTheRowsARectangleCovers(t *testing.T) {
 		if walked != len(covered) {
 			t.Fatalf("%v: coveredRows gives %d rows, want %d (the rows a rectangle covers)", rects, walked, len(covered))
 		}
+	}
+}
+
+/* Colours an upload chooses ----------------------------------------------- */
+
+// oneSlotColours is n colours, in order of their values, that the hash the
+// colour index once used — a key k in slot (k*0x9E3779B1)>>23 of 512, and
+// on to the next free one — put in one slot: about 32,000 colours fall in
+// each, and a GIF chooses its own.
+func oneSlotColours(n int) [][3]byte {
+	var out [][3]byte
+	for rgb := uint32(0); len(out) < n; rgb++ {
+		if (opaqueKey|rgb)*0x9E3779B1>>23 == 0 {
+			out = append(out, [3]byte{byte(rgb >> 16), byte(rgb >> 8), byte(rgb)})
+		}
+	}
+	return out
+}
+
+// spreadColours is n colours, in order of their values, that the same hash
+// put each in a slot of its own.
+func spreadColours(n int) [][3]byte {
+	var out [][3]byte
+	used := map[uint32]bool{}
+	for rgb := uint32(0); len(out) < n; rgb += 7919 {
+		if s := (opaqueKey | rgb) * 0x9E3779B1 >> 23; !used[s] {
+			used[s] = true
+			out = append(out, [3]byte{byte(rgb >> 16), byte(rgb >> 8), byte(rgb)})
+		}
+	}
+	return out
+}
+
+func colourKey(c [3]byte) uint32 {
+	return opaqueKey | uint32(c[0])<<16 | uint32(c[1])<<8 | uint32(c[2])
+}
+
+// TestColourIndexHoldsWhatItIsGiven holds colourIndex to a map of the same
+// keys: each key added is found at its index and nothing else is, add
+// reports only a key it did not hold, sorted is the keys in order of their
+// values, and a reset leaves nothing behind for the set after it. The sets
+// are as full as it is ever filled (colourIndexKeys) and shaped to fill each
+// part of it: random colours; colours that differ only in their last six
+// bits, all in one node of low; colours that share their highest twelve, in
+// one node of mid; black and the colours next to it, which share the top
+// entry the transparent key 0 would have, though that is never in the set;
+// and the colours a fixed hash put in one slot (oneSlotColours).
+func TestColourIndexHoldsWhatItIsGiven(t *testing.T) {
+	rng := rand.New(rand.NewSource(16))
+	var random, oneLow, oneMid, black, slot []uint32
+	for len(random) < colourIndexKeys {
+		random = append(random, opaqueKey|rng.Uint32()&0xFFFFFF)
+	}
+	for v := uint32(0); v < 64; v++ {
+		oneLow = append(oneLow, opaqueKey|0x5A5A40|v)
+	}
+	for _, v := range rng.Perm(1 << 12)[:colourIndexKeys] {
+		oneMid = append(oneMid, opaqueKey|0xC3A000|uint32(v))
+	}
+	for v := uint32(0); v < colourIndexKeys; v++ {
+		black = append(black, opaqueKey|v*7)
+	}
+	for _, c := range oneSlotColours(colourIndexKeys) {
+		slot = append(slot, colourKey(c))
+	}
+	sets := []struct {
+		name string
+		keys []uint32
+	}{{"random colours", random}, {"one node of low", oneLow}, {"one node of mid", oneMid}, {"black and its neighbours", black}, {"one slot of a fixed hash", slot}}
+
+	var c colourIndex // one index, reset between sets, as the player uses it
+	for round := 0; round < 2; round++ {
+		for _, set := range sets {
+			c.reset()
+			want := map[uint32]uint8{}
+			for i, k := range set.keys {
+				// Some keys twice, out of turn, as a frame's pixels give them.
+				for _, k := range []uint32{k, set.keys[rng.Intn(i+1)]} {
+					_, held := want[k]
+					if added := c.add(k, uint8(i)); added == held {
+						t.Fatalf("%s: add(%#x) = %v with the key held %v", set.name, k, added, held)
+					}
+					if !held {
+						want[k] = uint8(i)
+					}
+				}
+			}
+			if c.n != len(want) {
+				t.Errorf("%s: holds %d keys, want %d", set.name, c.n, len(want))
+			}
+			for _, k := range set.keys {
+				if i, ok := c.lookup(k); !ok || i != want[k] {
+					t.Errorf("%s: lookup(%#x) = %d, %v; want %d, true", set.name, k, i, ok, want[k])
+				}
+			}
+			var absent []uint32
+			for _, other := range sets {
+				absent = append(absent, other.keys...)
+			}
+			for i := 0; i < 1000; i++ {
+				absent = append(absent, opaqueKey|rng.Uint32()&0xFFFFFF)
+			}
+			for _, k := range set.keys {
+				absent = append(absent, k&^opaqueKey) // not opaque, though its colour is held
+			}
+			absent = append(absent, 0)
+			for _, k := range absent {
+				if _, held := want[k]; held {
+					continue
+				}
+				if i, ok := c.lookup(k); ok {
+					t.Errorf("%s: lookup(%#x) = %d, true; it was never added", set.name, k, i)
+				}
+			}
+			keys := make([]uint32, 0, len(want))
+			for k := range want {
+				keys = append(keys, k)
+			}
+			slices.Sort(keys)
+			if got := c.sorted(nil); !slices.Equal(got, keys) {
+				t.Errorf("%s: sorted gives %d keys, not the %d held in order", set.name, len(got), len(keys))
+			}
+		}
+	}
+}
+
+// TestGIFColoursCannotChooseHowLongTheyTake holds what playing a GIF and
+// walking its colour tables cost to what its frames are, whatever colours
+// they are in. A GIF's colours are its own to choose, and the colour index
+// once hashed them with a fixed hash into 512 slots, where about 32,000
+// colours fall in each: a GIF of 255 colours of one slot, its pixels
+// alternating between the two it held last, sent every lookup through all of
+// them, so that a 150 KB file of four 5000×5000 frames took 25 s of CPU to
+// play, against 3 s for the same frames in colours the hash spread out, and
+// one of 25 frames of 2000×2000, each with a table of its own, 62 s.
+//
+// Each GIF here, in colours of one slot (oneSlotColours), is timed against
+// the same frames in colours of a slot each (spreadColours) — CPU time of the
+// test's own thread, the least of three runs of each — and must take no more
+// than twice as long, and 10 ms. With the hash those in one slot took 6 to 13
+// times as long to process, and the walk of their tables 60 to 90 times.
+func TestGIFColoursCannotChooseHowLongTheyTake(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	// alternating is a GIF of four full frames on one global table of the
+	// 255 colours given and a copy of the first. The first frame's first
+	// row shows each colour once; every other pixel shows the two largest
+	// in turn, swapped in each frame after it, so that each frame draws
+	// every pixel and no two pixels in a row are looked up alike.
+	alternating := func(colours [][3]byte) []byte {
+		const w, h = 512, 256
+		g := rawGIF{w: w, h: h, global: append(slices.Clone(colours), colours[0])}
+		for j := 0; j < 4; j++ {
+			pix := make([]uint8, w*h)
+			for i := range pix {
+				pix[i] = uint8(253 + (i+j)&1)
+				if j == 0 && i < 255 {
+					pix[i] = uint8(i)
+				}
+			}
+			g.frames = append(g.frames, rawFrame{at: image.Rect(0, 0, w, h), pix: pix})
+		}
+		return g.bytes()
+	}
+	// ownTables is a GIF of four full frames, each with a table of its own
+	// of the 256 colours given, so that it is stored with a table a frame
+	// and each pixel each frame draws is added to the frame's table and
+	// looked up in it. The first row's first 254 pixels show the 254
+	// smallest colours, a place further on in each frame; every other pixel
+	// shows the two largest in turn, swapped in each frame.
+	ownTables := func(colours [][3]byte) []byte {
+		const w, h = 320, 320
+		g := rawGIF{w: w, h: h}
+		for j := 0; j < 4; j++ {
+			pix := make([]uint8, w*h)
+			for i := range pix {
+				x, y := i%w, i/w
+				pix[i] = uint8(254 + (x+y+j)&1)
+				if y == 0 && x < 254 {
+					pix[i] = uint8((x + j) % 254)
+				}
+			}
+			g.frames = append(g.frames, rawFrame{controls: []rawControl{{keepFrame, 10, -1}}, at: image.Rect(0, 0, w, h), local: colours, pix: pix})
+		}
+		return g.bytes()
+	}
+	// tables is a GIF of 500 frames of a pixel, each with a table of its
+	// own of the 255 colours given and a copy of the first, every one of
+	// which the walk reads (gifFrames.many) before anything is admitted.
+	tables := func(colours [][3]byte) []byte {
+		g := rawGIF{w: 1, h: 1}
+		local := append(slices.Clone(colours), colours[0])
+		for len(g.frames) < 500 {
+			g.frames = append(g.frames, rawFrame{at: image.Rect(0, 0, 1, 1), local: local, pix: []uint8{0}})
+		}
+		return g.bytes()
+	}
+	processes := func(data []byte) func() error {
+		return func() error { _, err := Process(context.Background(), data); return err }
+	}
+	inspects := func(data []byte) func() error {
+		return func() error {
+			for i := 0; i < 10; i++ {
+				if _, err := Inspect(data); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}
+
+	for _, c := range []struct {
+		name          string
+		chosen, apart func() error
+	}{
+		{"a global table, processed", processes(alternating(oneSlotColours(255))), processes(alternating(spreadColours(255)))},
+		{"a table a frame, processed", processes(ownTables(oneSlotColours(256))), processes(ownTables(spreadColours(256)))},
+		{"tables of 255 colours, walked ten times", inspects(tables(oneSlotColours(255))), inspects(tables(spreadColours(255)))},
+	} {
+		chosen, apart := time.Duration(math.MaxInt64), time.Duration(math.MaxInt64)
+		for round := 0; round < 3; round++ {
+			for _, run := range []struct {
+				f    func() error
+				best *time.Duration
+			}{{c.apart, &apart}, {c.chosen, &chosen}} {
+				runtime.GC()
+				start := threadCPU()
+				if err := run.f(); err != nil {
+					t.Fatalf("%s: %v", c.name, err)
+				}
+				*run.best = min(*run.best, threadCPU()-start)
+			}
+		}
+		t.Logf("%s: %v in colours of one slot, %v in colours of a slot each", c.name, chosen, apart)
+		if chosen > 2*apart+10*time.Millisecond {
+			t.Errorf("%s: took %v of CPU in colours a fixed hash puts in one slot, against %v in colours it spreads out; want no more than twice as long", c.name, chosen, apart)
+		}
+	}
+}
+
+// TestOnlyUndrawnPixelsAreLookedForInTheTable holds that undrawnInTable,
+// ownTable's second look at the rows of a stored frame of 256 colours that
+// leaves some pixels undrawn, looks for the colours of those pixels alone in
+// the frame's table, not for every pixel's: a look at a frame of 2000×2000
+// pixels in 256 colours with one pixel a row undrawn must take no more than
+// three quarters of the CPU of the look at the same frame with every pixel
+// undrawn (CPU time of the test's own thread, the least of three runs of
+// each). It took about half. Looking every pixel up, it took about one and a
+// half times as long, and a GIF of 25 frames of 2000×2000 that each left
+// every other row undrawn took 5 to 5.5 s to process rather than 4.5 to 5
+// (processingAllowance).
+func TestOnlyUndrawnPixelsAreLookedForInTheTable(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	const w, h = 2000, 2000
+	colours := spreadColours(256)
+	p := &gifPlayer{w: w, ctx: context.Background()}
+	p.index.reset()
+	for i, c := range colours {
+		p.index.add(colourKey(c), uint8(i))
+	}
+	// Each row shows the 256 colours over and over in an order of its own, so
+	// that no pixel is looked up as the one before it was.
+	rows := make([][]uint32, h)
+	for y := range rows {
+		rows[y] = make([]uint32, w)
+		for x := range rows[y] {
+			rows[y][x] = colourKey(colours[(x*37+y*101)&255])
+		}
+	}
+	row := func(y int) []uint32 { return rows[y] }
+	look := func(drawn func(i int) bool) time.Duration {
+		best := time.Duration(math.MaxInt64)
+		for round := 0; round < 3; round++ {
+			runtime.GC()
+			start := threadCPU()
+			if !p.undrawnInTable(image.Rect(0, 0, w, h), row, drawn) {
+				t.Fatal("a colour the table holds was not found in it")
+			}
+			best = min(best, threadCPU()-start)
+		}
+		return best
+	}
+	undrawn := look(func(int) bool { return false })
+	drawn := look(func(i int) bool { return i%w != 0 })
+	t.Logf("every pixel undrawn: %v; one a row undrawn: %v", undrawn, drawn)
+	if drawn > undrawn*3/4 {
+		t.Errorf("a look at a frame with one pixel a row undrawn took %v of CPU, against %v with every pixel undrawn; want no more than three quarters as long", drawn, undrawn)
 	}
 }

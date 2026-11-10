@@ -1413,32 +1413,47 @@ func TestGIFFrameBudget(t *testing.T) {
 // where by their pixels alone 1,525 were admitted, and took 21 seconds of
 // CPU on one core to play. A frame 63 pixels wide is charged as one of 64,
 // and one 64 wide or wider by its pixels, as before (four canvases' worth of
-// 5000×5000 frames still come to the cap exactly, TestGIFFrameBudget).
+// 5000×5000 frames still come to the cap exactly, TestGIFFrameBudget). A
+// frame of no width is charged its rows too, interlaced or not: image/gif
+// goes through an interlaced one's rows one at a time whatever their width
+// (TestGIFFramesOfNoWidthAreChargedTheirRows).
 func TestGIFFrameRowsAreChargedAsAtLeastGIFRowPixels(t *testing.T) {
 	const h = 65535
 	for _, c := range []struct {
 		w, n            int
+		interlaced      bool
 		pixels, charged int64
 		admitted        bool
 	}{
-		{1, 23, 23 * h, 23 * 64 * h, true},
-		{1, 24, 0, 0, false},
-		{63, 23, 23 * 63 * h, 23 * 64 * h, true},
-		{64, 23, 23 * 64 * h, 23 * 64 * h, true},
-		{64, 24, 0, 0, false},
+		{1, 23, false, 23 * h, 23 * 64 * h, true},
+		{1, 24, false, 0, 0, false},
+		{63, 23, false, 23 * 63 * h, 23 * 64 * h, true},
+		{64, 23, false, 23 * 64 * h, 23 * 64 * h, true},
+		{64, 24, false, 0, 0, false},
+		{0, 23, false, 0, 23 * 64 * h, true},
+		{0, 24, false, 0, 0, false},
+		{0, 23, true, 0, 23 * 64 * h, true},
+		{0, 24, true, 0, 0, false},
+		{1, 23, true, 23 * h, 23 * 64 * h, true},
+		{1, 24, true, 0, 0, false},
 	} {
 		name := fmt.Sprintf("%d frames %d×%d", c.n, c.w, h)
+		var flags byte
+		if c.interlaced {
+			name, flags = name+" interlaced", 0x40
+		}
 		// Each frame's pixel data is one sub-block of nonsense the walk
-		// never looks at, as in TestGIFFrameBudget.
+		// never looks at, as in TestGIFFrameBudget. The canvas is a pixel
+		// wide at least, for frames of none.
 		data := []byte("GIF89a")
-		data = binary.LittleEndian.AppendUint16(data, uint16(c.w))
+		data = binary.LittleEndian.AppendUint16(data, uint16(max(c.w, 1)))
 		data = binary.LittleEndian.AppendUint16(data, h)
 		data = append(data, 0x80, 0, 0, 0, 0, 0, 255, 255, 255)
 		for i := 0; i < c.n; i++ {
 			data = append(data, 0x21, 0xF9, 4, 0, 10, 0, 0, 0, 0x2C, 0, 0, 0, 0)
 			data = binary.LittleEndian.AppendUint16(data, uint16(c.w))
 			data = binary.LittleEndian.AppendUint16(data, h)
-			data = append(data, 0, 2, 1, 0x44, 0)
+			data = append(data, flags, 2, 1, 0x44, 0)
 		}
 		data = append(data, 0x3B)
 		frames, err := gifFramePixels(data, maxGIFFramePixels)
@@ -1455,6 +1470,50 @@ func TestGIFFrameRowsAreChargedAsAtLeastGIFRowPixels(t *testing.T) {
 		if frames.pixels != c.pixels || frames.charged != c.charged {
 			t.Errorf("%s: pixels %d, charged %d; want %d and %d", name, frames.pixels, frames.charged, c.pixels, c.charged)
 		}
+	}
+}
+
+// A GIF of a 1×1 picture and then 15,963 interlaced frames of no width and
+// 65,535 rows, 191,591 bytes, was admitted when a frame of no width was
+// charged nothing for its rows (gifCharge), its frames' overhead alone coming
+// within the processing budget. image/gif puts an interlaced frame's rows in
+// order one at a time whatever their width, so decoding it went through a
+// billion empty rows, 2.5-2.8 s of CPU on one core, where the same frames
+// not interlaced took 0.14 s. Charged 64 pixels a row, it is refused from its
+// header at its 24th such frame, and the 23 the cap admits are decoded and
+// stored, in a few milliseconds.
+func TestGIFFramesOfNoWidthAreChargedTheirRows(t *testing.T) {
+	var picture bytes.Buffer
+	if err := gif.Encode(&picture, image.NewPaletted(image.Rect(0, 0, 1, 1), color.Palette{color.Black, color.White}), nil); err != nil {
+		t.Fatal(err)
+	}
+	head := bytes.TrimSuffix(picture.Bytes(), gifTrailer)
+	// A frame at the corner, 0×65,535, interlaced, with no table of its own
+	// (the 1×1 picture's is global) and no pixels: an LZW minimum code size
+	// of 2 and no sub-blocks.
+	frame := []byte{0x2C, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF, 0x40, 2, 0}
+	withFrames := func(n int) []byte {
+		data := append([]byte(nil), head...)
+		for i := 0; i < n; i++ {
+			data = append(data, frame...)
+		}
+		return append(data, gifTrailer...)
+	}
+	data := withFrames(15_963)
+	if len(data) != 191_591 {
+		t.Fatalf("the GIF is %d bytes, want 191,591", len(data))
+	}
+	if _, err := Inspect(data); !errors.Is(err, ErrImageTooCostly) {
+		t.Errorf("Inspect(15,963 interlaced frames 0×65,535) = %v, want ErrImageTooCostly", err)
+	}
+	if _, err := Process(context.Background(), data); !errors.Is(err, ErrImageTooCostly) {
+		t.Errorf("Process(15,963 interlaced frames 0×65,535) = %v, want ErrImageTooCostly", err)
+	}
+	if _, err := Inspect(withFrames(24)); !errors.Is(err, ErrImageTooCostly) {
+		t.Errorf("Inspect(24 interlaced frames 0×65,535) = %v, want ErrImageTooCostly", err)
+	}
+	if _, err := Process(context.Background(), withFrames(23)); err != nil {
+		t.Errorf("Process(23 interlaced frames 0×65,535) = %v, want it stored", err)
 	}
 }
 
@@ -1786,6 +1845,35 @@ func TestGIFFramePixelsReadsWhatTheDecoderReads(t *testing.T) {
 		}
 		if _, err := Inspect(data); !errors.Is(err, ErrCorruptImage) {
 			t.Errorf("%s: Inspect = %v, want ErrCorruptImage", name, err)
+		}
+	}
+
+	// A frame with no colour table at all, neither its own nor a global one,
+	// image/gif refuses once it has decoded the frames before it, and
+	// Chromium (141's ImageDecoder) shows its pixels opaque black, and a
+	// frame of no pixels as nothing. The walk refuses it from its
+	// descriptor, before anything is decoded and before flood control. The
+	// same frames with a global table are taken.
+	table := [][3]byte{{0, 0, 0}, {255, 0, 0}, {0, 255, 0}, {0, 0, 255}}
+	tabled := rawFrame{local: table, at: image.Rect(0, 0, 4, 1), pix: []uint8{1, 1, 1, 1}}
+	bare := rawFrame{at: image.Rect(1, 0, 3, 1), pix: []uint8{2, 3}}
+	for name, frames := range map[string][]rawFrame{
+		"a still with no colour table":              {{at: image.Rect(0, 0, 4, 1), pix: []uint8{0, 1, 2, 3}}},
+		"a later frame with no colour table":        {tabled, bare},
+		"a frame of no pixels with no colour table": {tabled, {at: image.Rect(1, 0, 1, 0)}, tabled},
+	} {
+		data := rawGIF{w: 4, h: 1, frames: frames}.bytes()
+		if _, err := gif.DecodeAll(bytes.NewReader(data)); err == nil || !strings.Contains(err.Error(), "no color table") {
+			t.Fatalf("%s: image/gif reads the fixture with %v, want no color table: the case would prove nothing", name, err)
+		}
+		if _, err := gifFramePixels(data, math.MaxInt64); !errors.Is(err, ErrCorruptImage) {
+			t.Errorf("%s: gifFramePixels error = %v, want ErrCorruptImage", name, err)
+		}
+		if _, err := Inspect(data); !errors.Is(err, ErrCorruptImage) {
+			t.Errorf("%s: Inspect = %v, want ErrCorruptImage before any cooldown", name, err)
+		}
+		if _, err := Inspect(rawGIF{w: 4, h: 1, global: table, frames: frames}.bytes()); err != nil {
+			t.Errorf("%s: Inspect of the frames with a global table = %v, want nil", name, err)
 		}
 	}
 }
@@ -2514,8 +2602,14 @@ func TestMalformedWebPIsRefused(t *testing.T) {
 	brokenAfter := append(append(append([]byte(nil), clean...), "EXIF"...), 100, 0, 0, 0)
 	brokenAfter = append(brokenAfter, make([]byte, 10)...)
 	binary.LittleEndian.PutUint32(brokenAfter[4:8], uint32(len(brokenAfter)-8))
-	// An extended file whose chunk after the VP8X, before the picture,
-	// claims 100000 bytes, inside a RIFF that covers the file.
+	// Extended files with a chunk after the VP8X that claims 100000 bytes,
+	// inside a RIFF that covers the file. After the picture, it is refused
+	// only because the walk of the chunks does not hold together; before
+	// it, it hides the bitstream too, so the file has none.
+	brokenAfterExtended := append(webpFile(vp8xChunk(0, 320, 200), bitstream), "EXIF"...)
+	brokenAfterExtended = binary.LittleEndian.AppendUint32(brokenAfterExtended, 100000)
+	brokenAfterExtended = append(brokenAfterExtended, make([]byte, 10)...)
+	binary.LittleEndian.PutUint32(brokenAfterExtended[4:8], uint32(len(brokenAfterExtended)-8))
 	brokenBefore := webpFile(vp8xChunk(0, 320, 200), riffChunk{id: "ICCP", payload: []byte("icc")}, bitstream)
 	binary.LittleEndian.PutUint32(brokenBefore[12+8+10+4:], 100000)
 	// lossy-alpha.webp is VP8X, ALPH and VP8, 64×48.
@@ -2537,20 +2631,24 @@ func TestMalformedWebPIsRefused(t *testing.T) {
 		"chunk past the end":     chunkPastEnd,
 		// The canvas says 10×10 and the bitstream 320×200; decoders size
 		// their buffers from one or the other.
-		"canvas and bitstream disagree":       webpFile(vp8xChunk(0, 10, 10), bitstream),
-		"canvas two pixels wider":             webpFile(vp8xChunk(0, 322, 200), bitstream),
-		"VP8X of the wrong length":            webpFile(riffChunk{id: "VP8X", payload: make([]byte, 9)}, bitstream),
-		"two bitstreams":                      webpFile(vp8xChunk(0, 320, 200), bitstream, bitstream),
-		"extended, no bitstream":              webpFile(vp8xChunk(0, 320, 200)),
-		"no bitstream":                        webpFile(riffChunk{id: "EXIF", payload: []byte("x")}),
-		"alpha in the simple format":          webpFile(riffChunk{id: "ALPH", payload: []byte{0}}, bitstream),
-		"a malformed chunk after the picture": brokenAfter,
-		"a malformed chunk after the VP8X":    brokenBefore,
-		"alpha after the bitstream":           webpFile(vp8xChunk(vp8xFlagAlpha, 64, 48), vp8, alph),
-		"two alpha planes":                    webpFile(vp8xChunk(vp8xFlagAlpha, 64, 48), alph, alph, vp8),
-		"alpha beside a lossless bitstream":   webpFile(vp8xChunk(vp8xFlagAlpha, 320, 200), alph, bitstream),
-		"a second VP8X":                       webpFile(vp8xChunk(0, 320, 200), vp8xChunk(0, 320, 200), bitstream),
-		"ANIM in a still":                     webpFile(vp8xChunk(0, 320, 200), riffChunk{id: "ANIM", payload: make([]byte, 6)}, bitstream),
+		"canvas and bitstream disagree": webpFile(vp8xChunk(0, 10, 10), bitstream),
+		"canvas two pixels wider":       webpFile(vp8xChunk(0, 322, 200), bitstream),
+		"VP8X of the wrong length":      webpFile(riffChunk{id: "VP8X", payload: make([]byte, 9)}, bitstream),
+		"two bitstreams":                webpFile(vp8xChunk(0, 320, 200), bitstream, bitstream),
+		"extended, no bitstream":        webpFile(vp8xChunk(0, 320, 200)),
+		"no bitstream":                  webpFile(riffChunk{id: "EXIF", payload: []byte("x")}),
+		"alpha in the simple format":    webpFile(riffChunk{id: "ALPH", payload: []byte{0}}, bitstream),
+		// A lossless bitstream's signature is 0x2f.
+		"a bitstream whose header cannot be read":           webpFile(riffChunk{id: "VP8L", payload: []byte{0x2e, 0, 0, 0, 0}}),
+		"extended, a bitstream whose header cannot be read": webpFile(vp8xChunk(0, 320, 200), riffChunk{id: "VP8L", payload: []byte{0x2e, 0, 0, 0, 0}}),
+		"a malformed chunk after the picture":               brokenAfter,
+		"extended, a malformed chunk after the picture":     brokenAfterExtended,
+		"extended, a malformed chunk before the picture":    brokenBefore,
+		"alpha after the bitstream":                         webpFile(vp8xChunk(vp8xFlagAlpha, 64, 48), vp8, alph),
+		"two alpha planes":                                  webpFile(vp8xChunk(vp8xFlagAlpha, 64, 48), alph, alph, vp8),
+		"alpha beside a lossless bitstream":                 webpFile(vp8xChunk(vp8xFlagAlpha, 320, 200), alph, bitstream),
+		"a second VP8X":                                     webpFile(vp8xChunk(0, 320, 200), vp8xChunk(0, 320, 200), bitstream),
+		"ANIM in a still":                                   webpFile(vp8xChunk(0, 320, 200), riffChunk{id: "ANIM", payload: make([]byte, 6)}, bitstream),
 		"frame outside the canvas": webpFile(vp8xChunk(vp8xFlagAnimation, 320, 200),
 			riffChunk{id: "ANIM", payload: make([]byte, 6)}, anmfChunk(2, 0, 320, 200, bitstream)),
 	}

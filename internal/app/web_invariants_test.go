@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -472,19 +474,37 @@ func jsString(t *testing.T, script, name string) string {
 // off and keeping the text, and it knows them by the server's own words. If
 // those words drifted apart, a page would show the raw refusal and leave the
 // image on the form to be refused again, so they are checked against what the
-// server actually answers.
+// server actually answers. So is a third, an image whose body fell behind its
+// pace, which the server answers 400 rather than 408 Request Timeout: Chromium
+// sends a request answered 408 on a reused keep-alive connection again, the
+// whole body with it and without telling the page, until a 408 comes on a
+// fresh connection. The page knows that refusal by its words, and looks for no
+// 408, which nothing answers now.
 func TestClientKnowsTheServersImageRefusals(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
 	limitReached := jsString(t, script, "IMAGE_LIMIT_REACHED")
 	switchedOff := jsString(t, script, "UPLOADS_SWITCHED_OFF")
-	for name, words := range map[string]string{"IMAGE_LIMIT_REACHED": limitReached, "UPLOADS_SWITCHED_OFF": switchedOff} {
+	tooSlow := jsString(t, script, "UPLOAD_TOO_SLOW")
+	for name, words := range map[string]string{"IMAGE_LIMIT_REACHED": limitReached, "UPLOADS_SWITCHED_OFF": switchedOff,
+		"UPLOAD_TOO_SLOW": tooSlow} {
 		if n := strings.Count(code, `"`+words+`"`); n != 1 {
 			t.Errorf("app.js spells out %q %d times; want once, as %s", words, n, name)
 		}
+	}
+	for _, name := range []string{"IMAGE_LIMIT_REACHED", "UPLOADS_SWITCHED_OFF"} {
 		if n := strings.Count(code, "err.message === "+name); n != 2 {
 			t.Errorf("app.js compares a refusal with %s %d times; want twice, in errorMessage and in the submit handler", name, n)
 		}
+	}
+	errMsg := withoutComments(jsFunction(t, script, "errorMessage"))
+	if n := strings.Count(code, "UPLOAD_TOO_SLOW"); n != 2 ||
+		!strings.Contains(errMsg, "if (err.status === 400 && err.message === UPLOAD_TOO_SLOW) {") {
+		t.Errorf("app.js names UPLOAD_TOO_SLOW %d times; want its definition and errorMessage's "+
+			"if (err.status === 400 && err.message === UPLOAD_TOO_SLOW)", n)
+	}
+	if strings.Contains(code, "408") {
+		t.Error("app.js looks for a 408; the server answers a slow upload 400 with UPLOAD_TOO_SLOW's words")
 	}
 
 	on := testServer(t, nil)
@@ -501,6 +521,15 @@ func TestClientKnowsTheServersImageRefusals(t *testing.T) {
 	if status := off.upload("/api/boards/words/threads", map[string]string{"body": "pic"},
 		"pic.png", pngBytes(t, 24, 24), &refused); status != http.StatusForbidden || refused.Error != switchedOff {
 		t.Errorf("image post with uploads off: %d %q, want 403 %q", status, refused.Error, switchedOff)
+	}
+
+	slow := testServer(t, nil)
+	slow.addBoard("general")
+	slow.app.uploadReadTimeout = 400 * time.Millisecond
+	status, text := stalledUpload(t, slow.client.base)
+	var stalled createdPost
+	if err := json.Unmarshal([]byte(text), &stalled); err != nil || status != http.StatusBadRequest || stalled.Error != tooSlow {
+		t.Errorf("an image post whose body stopped: %d %q, want 400 %q", status, text, tooSlow)
 	}
 }
 
@@ -2754,8 +2783,9 @@ func holdVerifyRequestsToADeadline(t *testing.T, script string) {
 				name, name, name)
 		}
 	}
-	// A request's headers are read within ReadHeaderTimeout, and its answer
-	// is written within WriteTimeout of that or not at all.
+	// A Verify request's headers are read within ReadHeaderTimeout, and its
+	// answer is written within WriteTimeout of that or not at all: it is not
+	// a multipart post, which sets deadlines of its own.
 	server := int((ReadHeaderTimeout + WriteTimeout).Milliseconds())
 	if deadline <= server {
 		t.Errorf("VERIFY_TIMEOUT_MS is %d; the server can still be answering until %d ms, and a badge it issues "+

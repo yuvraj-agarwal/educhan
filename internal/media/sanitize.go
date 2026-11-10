@@ -171,16 +171,24 @@ const maxGIFFramePixels = 4 * MaxPixels
 // much of as a wide one. Charged by its pixels alone, a GIF of the cap's
 // worth of frames a pixel wide and 65,535 tall, 1,525 of them and 100
 // million rows, took 21 seconds of CPU to play, where four 5000×5000 frames
-// take under three. At 64 pixels a row a GIF has at most 1.56 million rows,
+// take about three. At 64 pixels a row a GIF has at most 1.56 million rows,
 // whose setting up comes to a few tenths of a second whatever the path, and
 // a frame at least 64 pixels wide is charged its pixels, as before.
+//
+// A frame of no width has rows as well, and is charged them: image/gif puts
+// an interlaced frame's rows in order one at a time whatever their width
+// (uninterlace). Charged nothing, 15,963 interlaced frames 0×65,535 after a
+// 1×1 picture came within the processing budget on their overhead alone,
+// and decoding them went through a billion empty rows, 2.5-2.8 s of CPU on
+// one core; at 64 pixels a row the cap admits 23 of them, a few
+// milliseconds' work.
 const gifRowPixels = 64
 
 // gifCharge is what a GIF's frame, or a rectangle playGIF stores or looks
 // at, of w×h pixels is charged against maxGIFFramePixels: its pixels, with
-// each row charged as at least gifRowPixels.
+// each row charged as at least gifRowPixels, a frame of no width included.
 func gifCharge(w, h int64) int64 {
-	if w <= 0 || h <= 0 {
+	if h <= 0 {
 		return 0
 	}
 	return max(w, gifRowPixels) * h
@@ -196,10 +204,13 @@ func gifCharge(w, h int64) int64 {
 // run out of time, rather than running to the end and only then finding
 // nothing wants it. The encoders stop at the first write refused them, or
 // soon after: jpegenc at the end of the row of units it is coding
-// (TestEncodeStopsAtAFailedWrite), image/png and image/gif once their own
-// buffers next pass a write on. While the context is live the check is the
-// one comparison and the bytes written are exactly what they would be
-// without it.
+// (TestEncodeStopsAtAFailedWrite), image/png once its own buffer next passes
+// a write on, and playGIF at the end of the row it is writing, its LZW
+// compressor passing its codes on 255 bytes at a time (subBlocks) — and
+// playGIF asks the context itself as it goes through a frame's rows, since
+// it may look at a frame's rows a few times before it writes any of them.
+// While the context is live the check is the one comparison and the bytes
+// written are exactly what they would be without it.
 type storedBuffer struct {
 	ctx   context.Context
 	buf   []byte
@@ -387,8 +398,20 @@ func rgbaOfCMYK(m *image.CMYK) *image.RGBA {
 // (reduceHiddenColour), so a palette may be stored at a lower bit depth. A
 // picture with an EXIF orientation in an eXIf chunk is turned upright first, as
 // for a JPEG, because browsers show it turned. An animated PNG keeps its still
-// image, which is what a viewer without APNG support has always shown.
+// image, which is what a viewer without APNG support has always shown. Before
+// anything is decoded, the image data is walked (pngImageDataTables), and a
+// PNG whose image data would have compress/flate make more tables than its
+// decode is charged for (pngTablesAllowed) is refused as too costly to
+// process (ErrImageTooCostly), as is one whose ICC profile would make more
+// than the image data left of that (pngGamma).
 func sanitizePNG(ctx context.Context, data []byte, limit int64) (sanitized, error) {
+	allowed := pngTablesAllowed(data)
+	tables, err := pngImageDataTables(ctx, data, allowed)
+	if errors.Is(err, errTooManyTables) {
+		return sanitized{}, ErrImageTooCostly
+	} else if err != nil {
+		return sanitized{}, err
+	}
 	src, err := png.Decode(ctxReader{ctx, bytes.NewReader(data)})
 	if err != nil {
 		return sanitized{}, ErrCorruptImage
@@ -396,7 +419,11 @@ func sanitizePNG(ctx context.Context, data []byte, limit int64) (sanitized, erro
 	if err := ctx.Err(); err != nil {
 		return sanitized{}, err
 	}
-	if gamma, ok := pngGamma(data); ok {
+	gamma, ok, err := pngGamma(ctx, data, allowed-tables)
+	if err != nil {
+		return sanitized{}, err
+	}
+	if ok {
 		applyPNGGamma(src, gamma)
 	}
 	reduceHiddenColour(src)
@@ -418,23 +445,23 @@ func sanitizePNG(ctx context.Context, data []byte, limit int64) (sanitized, erro
 // try them all at almost every byte: measured in CPU time on one core, a
 // 25-megapixel 16-bit PNG of 1.4 MB took 16 to 18 s to process that way, and an
 // 8-bit one of 0.7 MB 8 to 9 s. At BestSpeed each takes under 3 s, and the
-// slowest PNG measured, a 16-bit one of 25 megapixels, 4 to 5 s
-// (processingAllowance). The cost is size, and with it some pictures the
-// default level stored. The PNGs of photos and screenshots tried were stored 1%
-// to 80% larger than at the default level, most of them about a tenth; of the
-// 573 PNGs stored from a mixed corpus of 14,015 uploads, PNG uploads a median
-// of 5% larger and at most 2.2 times, and WebPs stored as PNGs a median of 11%.
-// Synthetic pictures grow more: grey 16-bit ones of 25 megapixels 1.3 times
-// when flat or graded along one axis, 1.6 times graded radially and up to 7
-// times graded across both axes, by the slope (6.9 rising twice as fast across
-// as down); smaller ones graded across both axes up to 14 times; and rows
-// crafted for it 11 times. So a picture the default level stored close to
-// storedLimit can come out past it here, and is refused (ErrStoredTooLarge)
-// where it was stored before: a 10000×2500 16-bit gradient of 1.7 MB, its rows
-// filtered Up and deflated at zlib's highest level, came to 97% of its limit at
-// the default level, in 12 s of CPU, and comes to 159% of it here. A
-// thumbnail's rows are a few hundred kilobytes at most, and it keeps the
-// default level.
+// slowest PNG measured, a 16-bit one of 23 to 25 megapixels with a partial
+// alpha in every pixel, 6.5 to 7.5 s (processingAllowance). The cost is size,
+// and with it some pictures the default level stored. The PNGs of photos and
+// screenshots tried were stored 1% to 80% larger than at the default level,
+// most of them about a tenth; of the 573 PNGs stored from a mixed corpus of
+// 14,015 uploads, PNG uploads a median of 5% larger and at most 2.2 times, and
+// WebPs stored as PNGs a median of 11%. Synthetic pictures grow more: grey
+// 16-bit ones of 25 megapixels 1.3 times when flat or graded along one axis,
+// 1.6 times graded radially and up to 7 times graded across both axes, by the
+// slope (6.9 rising twice as fast across as down); smaller ones graded across
+// both axes up to 14 times; and rows crafted for it 11 times. So a picture the
+// default level stored close to storedLimit can come out past it here, and is
+// refused (ErrStoredTooLarge) where it was stored before: a 10000×2500 16-bit
+// gradient of 1.7 MB, its rows filtered Up and deflated at zlib's highest
+// level, came to 97% of its limit at the default level, in 12 s of CPU, and
+// comes to 159% of it here. A thumbnail's rows are a few hundred kilobytes at
+// most, and it keeps the default level.
 var storedPNG = png.Encoder{CompressionLevel: png.BestSpeed}
 
 // sanitizeGIF decodes every frame of a GIF and stores what they show, and
@@ -462,14 +489,19 @@ var storedPNG = png.Encoder{CompressionLevel: png.BestSpeed}
 // transparent. image/gif takes such an index only up to a transparent index
 // that is itself past the table: a frame whose pixels index past their table
 // otherwise is refused here (ErrCorruptImage), as the decoder refuses it,
-// though Chromium shows those pixels black. So is a frame with more data
-// after its LZW end code than image/gif takes, which is the rest of the
-// sub-block the code ends in and, when the code ends a sub-block, one more
-// sub-block of one byte, though Chromium shows the frame and reads on from
-// its terminator (TestGIFsImageGIFRefusesAreRefusedOnceDecoded). Two kinds
-// of file image/gif refuses and browsers show are read as browsers read them
-// as well. A file that ends after its last block without a trailer plays in
-// a browser, and is decoded with one put after it; a frame after the first
+// though Chromium shows those pixels black. So is a frame whose LZW data goes
+// on after its last pixel, before its end code, with another pixel or a code
+// that is not valid, though Chromium stops reading a frame's codes once it
+// has its pixels and shows the frame; and a frame with more data after its
+// LZW end code than image/gif takes, which is the rest of the sub-block the
+// code ends in and, when the code ends a sub-block, one more sub-block of one
+// byte, though Chromium shows the frame and reads on from its terminator
+// (TestGIFsImageGIFRefusesAreRefusedOnceDecoded). Those are the kinds found
+// so far that only decoding shows; a frame with no colour table at all, which
+// image/gif also refuses, gifFramePixels refuses from its descriptor. Two
+// kinds of file image/gif refuses and browsers show are read as browsers read
+// them as well. A file that ends after its last block without a trailer plays
+// in a browser, and is decoded with one put after it; a frame after the first
 // that reaches past the canvas is drawn by a browser only where it overlaps
 // the canvas, which is all playGIF plays of it, and image/gif, which refuses
 // the whole file, is told the logical screen takes in every frame
@@ -1050,6 +1082,11 @@ type gifFrames struct {
 // because browsers disagree on what to show for it (Chromium widens the
 // canvas to hold it, Firefox moves it to the corner and makes the canvas its
 // size), and so is a frame reaching past the 65,535 pixels a header can say.
+// A frame with no colour table at all, neither its own nor a global one, is
+// refused as image/gif refuses it, though Chromium shows its pixels opaque
+// black: the walk sees it in the frame's descriptor, so the file is refused
+// here, before anything is decoded, rather than by the decoder once it has
+// decoded the frames before it.
 //
 // It returns ErrImageTooCostly as soon as the charge passes limit, and
 // ErrCorruptImage when the walk does not end at the trailer or at the end of
@@ -1071,8 +1108,8 @@ type gifFrameHead struct {
 	transparent bool // whether it names a transparent index,
 	ti          byte // which is this
 	// table is the colour table the frame's pixels index, three bytes an
-	// entry: its own, or the global one; nil when there is neither, which
-	// image/gif refuses.
+	// entry: its own, or the global one. The walk refuses a frame with
+	// neither before it makes the frame's head.
 	table []byte
 }
 
@@ -1216,6 +1253,10 @@ func walkGIF(data []byte, limit int64, frame func(gifFrameHead)) (gifFrames, err
 				i += 3 << (1 + flags&0x07)
 				head.table = data[at:min(i, len(data))]
 				gather(head.table, head.transparent, head.ti)
+			} else if global == nil {
+				// No colour table at all, which image/gif refuses once it
+				// has made the frame.
+				return f, ErrCorruptImage
 			} else if g := b2i(head.transparent) * (1 + int(head.ti)); !gathered[g] {
 				gathered[g] = true
 				gather(global, head.transparent, head.ti)
