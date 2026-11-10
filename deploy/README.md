@@ -502,11 +502,12 @@ gcloud logging sinks update _Default \
 ```
 
 Check it took: the first command lists the exclusion, and the second, run after
-a few requests to the service, prints nothing.
+a few requests to the service, prints nothing. It looks for a request log entry
+of either kind.
 
 ```bash
 gcloud logging sinks describe _Default --format='yaml(exclusions)'
-gcloud logging read 'LOG_ID("run.googleapis.com/requests")' --freshness=10m --limit=1
+gcloud logging read 'httpRequest.remoteIp:*' --freshness=10m --limit=1
 ```
 
 An exclusion stops entries from being stored; it does not delete the ones
@@ -720,9 +721,14 @@ The script checks this itself. On every run with a domain it looks both names
 up, as Cloud Shell sees them, and warns about one that does not lead to the
 load balancer's address and to no other, which is how a proxied record looks
 from outside. It moves visitors to the domain only once the bare name does. It
-warns as well about an `AAAA` record on either name: a visitor whose network
-has IPv6, as many mobile networks do, goes to that record first, and the load
-balancer does not answer there.
+warns as well about an `AAAA` record on either name: at the end of every run
+and, while the site is still on `run.app`, before it starts to wait for the
+domain. Google issues and renews no certificate for a name that resolves
+anywhere but the load balancer, which has no IPv6 address, and a visitor whose
+network has IPv6, as many mobile networks do, goes to an `AAAA` record first.
+A proxied record shows up in that warning too: Cloudflare answers for it with
+IPv6 addresses of its own (`2606:4700:…`), which are no record of yours and go
+when the record is **DNS only**.
 
 Two settings in Cloudflare are worth changing once the site answers on the
 domain. Raise the TTL of both records from **Auto**, which is five minutes, to
@@ -735,10 +741,12 @@ Without that certificate it fails at once. The warning Cloudflare shows there
 is about sites it proxies, and it serves nothing of this one.
 
 The load balancer answers on IPv4 only for now, so there is no `AAAA` record
-to add. Flood control counts by address, the app's cooldowns and Cloud Armor's
-limit alike, and an IPv6 subscriber usually holds a whole `/64` of addresses
-to move between, so over IPv6 one client could take a fresh allowance with
-every request. IPv6 waits until the app counts an IPv6 client by its `/64`.
+to add. The app is ready for IPv6: it counts an IPv6 client by its `/64`, the
+block of addresses a subscriber usually holds and can move between
+([Flood control](../README.md#flood-control)). Cloud Armor's limit is not: it
+counts every address apart, so over IPv6 it would hold only a client that
+stays on one address. IPv6 follows as a change of its own, which has to answer
+that and check the count of `X-Forwarded-For` entries over IPv6 as well.
 Nobody is shut out meanwhile: a network that gives its subscribers IPv6 only,
 as many mobile networks do, carries them to IPv4 sites itself. What IPv4 alone
 does cost is sharing. Such a network puts many subscribers behind a few IPv4
@@ -760,19 +768,26 @@ What the run builds, all named so a later run finds it again:
 | Global address | `educhan-ip` | The IPv4 address the DNS records point at |
 | Serverless network endpoint group | `educhan-neg` (in `REGION`) | How the load balancer reaches the Cloud Run service |
 | Backend service | `educhan-backend` | `EXTERNAL_MANAGED`, request logging off, the Armor policy attached, and `Strict-Transport-Security: max-age=31536000` on every answer from the service |
-| Cloud Armor policy | `educhan-edge` | One rule at priority 1000: more than `EDGE_RATE` requests a minute from one address get `429`. A new policy starts at 1200; a later run keeps the limit the rule has unless `EDGE_RATE` is given |
+| Cloud Armor policy | `educhan-edge` | One rule at priority 1000: more than 1200 requests a minute from one address get `429`. The script makes the rule once and then leaves it as it stands, so a rule changed by hand stays changed; a run with `EDGE_RATE=n` writes the script's rule again, with `n` requests a minute |
 | Certificates | `educhan-cert`, `educhan-cert-www` | Google-managed, one per name, so each goes live with its own DNS record |
 | SSL policy | `educhan-tls` | `MODERN`, TLS 1.2 and up |
 | URL maps | `educhan`, `educhan-http` | Everything goes to the service, except that `www.` is redirected to the bare name and `http://` to `https://`, both with `301` |
 | Target proxies | `educhan-https`, `educhan-http` | Hold the certificates and the URL maps |
 | Forwarding rules | `educhan-https`, `educhan-http` | Ports 443 and 80 on the address |
 
+All of these belong to Compute Engine, so with `DOMAIN` the script enables one
+more API than section 2.1 lists: `compute.googleapis.com`.
+
 **Nothing here keeps a visitor's address.** A load balancer's request log has
 an entry for every request with the visitor's address and the time (section
 2.8), so on every run, not only the first, the script switches the backend's
-request logging off again, puts its policy and header back, and puts the
-exclusion of section 2.8 back, enabled and with its filter, in case any of
-them was changed by hand. Cloud Armor, as this policy is built, writes no log
+request logging off again, puts its policy and its `Strict-Transport-Security`
+header back, and puts the exclusion of section 2.8 back, enabled and with its
+filter, in case any of them was changed by hand. Any other response header
+that someone added to the backend is kept. The Armor rule is the one thing
+here that a run does not put back: where the rule no longer has the shape the
+script gave it, the run says so in a note at the end, and `EDGE_RATE` writes
+the script's own again. Cloud Armor, as this policy is built, writes no log
 entry of its own: what it decides goes into that same request log, so with
 the log off it uses the visitor's address for the count and the address goes
 into no log. (Adaptive Protection is a separate switch on the policy, which
@@ -796,12 +811,29 @@ own flood-control bucket. One with `run.app` closed is the lesser fault: every
 visitor shares the load balancer's bucket, so one person's post holds up
 everyone else's for the cooldown. So the script closes `run.app` first, with
 `--ingress internal-and-cloud-load-balancing`, which answers outside requests
-to `run.app` with `404` and lets the load balancer's through. It waits until
-Cloud Run reports the setting in force and a request from Cloud Shell to
-`run.app` is refused, and only then raises the count to two. For the minute
-in between, visitors share one bucket; at no point can a client choose its
-own. A run that stops between the two leaves `run.app` closed with the count
-at one, and the next run finishes the move.
+to `run.app` with `404` and lets the load balancer's through. It waits, five
+minutes at most, until Cloud Run reports the setting in force and a request
+from Cloud Shell to `run.app` is refused, and only then raises the count to
+two. For the few minutes in between, visitors share one bucket; at no point
+can a client choose its own. A run that stops between the two leaves `run.app`
+closed with the count at one, and the next run finishes the move.
+
+Every later run makes the same two checks before it deploys, and the count is
+two only where both pass: Cloud Run reports `run.app` closed, and a request
+from Cloud Shell to it is refused. A run that cannot confirm that deploys with
+the count at one and says why. It then checks the site through the load
+balancer and, where the site answers, finishes the move as the first run made
+it, raising the count once the closing is confirmed. If it still cannot
+confirm it, the run ends with a warning that says what it saw, and this shows
+what Cloud Run reports, the setting (`run.googleapis.com/ingress`) and the one
+in force (`run.googleapis.com/ingress-status`):
+
+```bash
+gcloud run services describe educhan --region asia-south1 --format='yaml(metadata.annotations)'
+```
+
+A last request to `run.app` follows each deploy that counts two. If the site
+answers that one, the run puts the count back to one and stops there.
 
 The script makes the move only once the bare name resolves to the load
 balancer and to nowhere else (above), and a request through the load balancer
@@ -818,9 +850,10 @@ through it shares one flood-control bucket with everyone else who does.
 
 The move is also where a browser starts again. What it kept under the
 `run.app` address stays there: the poster key, so the same person's later
-posts carry a new poster ID; the answer to the age screen; and a verification
-badge, where verification is on. None of it follows a reader to the domain,
-so move before the site has readers to lose it.
+posts carry a new poster ID; the remembered name, with its tripcode secret;
+the answer to the age screen; and a verification badge, where verification is
+on. None of it follows a reader to the domain, so move before the site has
+readers to lose it.
 
 **Certificates.** Google renews each certificate by itself for as long as its
 name's record leads to the load balancer. This lists them, with the state of
@@ -831,34 +864,45 @@ gcloud compute ssl-certificates list --global \
   --format='table(name,managed.status,managed.domainStatus)'
 ```
 
-`ACTIVE` is issued and in use. `PROVISIONING` is Google still at work, and
-`PROVISIONING_FAILED` a try that failed and will be made again; for both, the
-name's own state says what is in the way. `FAILED_NOT_VISIBLE` means Google
-does not see the name resolving to the load balancer: check its record, and
-that it is **DNS only**. `FAILED_CAA_FORBIDDEN` means a `CAA` record leaves
-Google out (above). `FAILED_RATE_LIMITED` means too many certificates were
-issued for the domain lately, and passes with time. Two states do not mend by
+`ACTIVE` is issued, and the load balancer can take half an hour more to start
+serving a certificate that has only just become `ACTIVE`. `PROVISIONING` is
+Google still at work, and `PROVISIONING_FAILED` a try that failed and will be
+made again; for both, the name's own state says what is in the way.
+`FAILED_NOT_VISIBLE` means Google does not see the name resolving to the load
+balancer and nowhere else: check its record, that it is **DNS only**, and that
+the name has no `AAAA` record. `FAILED_CAA_FORBIDDEN` means a `CAA` record
+leaves Google out (above), and `FAILED_CAA_CHECKING` that Google could not
+read the zone's `CAA` records at all, which is a fault in the zone's DNS and
+not in a record. `FAILED_RATE_LIMITED` means too many certificates were issued
+for the domain lately, and passes with time. Two states do not mend by
 themselves: `PROVISIONING_FAILED_PERMANENTLY`, which Google does not try
 again, and `RENEWAL_FAILED`, where the old certificate goes on serving until
-it expires and no new one follows it. Once the site is on the domain, the
-script lists any certificate that is not `ACTIVE` at the end of every run, so
-a renewal that failed shows there.
+it expires and no new one follows it.
+
+Once the site is on the domain, the script lists any certificate that is not
+`ACTIVE` at the end of every run, so a renewal that failed shows there, but
+only when the script runs. A certificate lasts 90 days, and Google starts
+renewing it about a month before it expires. So where weeks pass between
+deploys, run the list above about once a month.
 
 **Replacing a certificate** in either of those two states starts with putting
 its name's record right, since nothing is issued until it is. Then a spare
-serves beside the failed certificate while a new one is made, so that the
-name is never without one. That matters for `RENEWAL_FAILED`, where the old
-certificate is still what visitors get. The lines below are for a failed
-`educhan-cert`:
+for that name serves beside the failed certificate while a new one is made,
+so that the name is never without one. That matters for `RENEWAL_FAILED`,
+where the old certificate is still what visitors get. `ACTIVE` is not yet
+served (above), so each wait below ends half an hour after the state turns
+`ACTIVE`, and a certificate comes off the proxy only then. The lines below
+are for a failed `educhan-cert`:
 
 ```bash
-# 1. A spare for both names, on the proxy beside the two it already holds.
+# 1. A spare for the failed certificate's name, on the proxy beside the two it
+#    already holds.
 gcloud compute ssl-certificates create educhan-cert-spare --global \
-  --domains educhan.org,www.educhan.org
+  --domains educhan.org
 gcloud compute target-https-proxies update educhan-https --global \
   --ssl-certificates educhan-cert,educhan-cert-www,educhan-cert-spare
 
-# 2. Wait until this says ACTIVE.
+# 2. Wait until this says ACTIVE, and then half an hour more.
 gcloud compute ssl-certificates describe educhan-cert-spare --global \
   --format='value(managed.status,managed.domainStatus)'
 
@@ -869,19 +913,22 @@ gcloud compute target-https-proxies update educhan-https --global \
 gcloud compute ssl-certificates delete educhan-cert --global --quiet
 bash deploy/first-deploy.sh YOUR_PROJECT_ID
 
-# 4. Once the list above shows all three ACTIVE, take the spare off the proxy
-#    and delete it.
+# 4. Once the list above shows all three ACTIVE, and half an hour more has
+#    passed, take the spare off the proxy and delete it.
 gcloud compute target-https-proxies update educhan-https --global \
   --ssl-certificates educhan-cert,educhan-cert-www
 gcloud compute ssl-certificates delete educhan-cert-spare --global --quiet
 ```
 
-For a failed `educhan-cert-www`, exchange the names `educhan-cert` and
-`educhan-cert-www` in step 3. If both have failed, do step 3 once for each. A
-`www.` `DOMAIN` has one name and only `educhan-cert`: give the spare that name
-alone, leave `educhan-cert-www` out of every line, and put `DOMAIN=` and the
-name in front of the script in step 3, as on the first run, because the script
-finds its load balancer by its own certificates and that step leaves it none.
+For a failed `educhan-cert-www`, give the spare `--domains www.educhan.org`
+in step 1 and exchange the names `educhan-cert` and `educhan-cert-www` in
+step 3. If both have failed, give the spare both names (`--domains
+educhan.org,www.educhan.org`), which Google issues only once both records are
+right, and do step 3 once for each. A `www.` `DOMAIN` has one name and only
+`educhan-cert`: give the spare that name alone, leave `educhan-cert-www` out
+of every line, and put `DOMAIN=` and the name in front of the script in step
+3, as on the first run, because the script finds its load balancer by its own
+certificates and that step leaves it none.
 Until step 4 the script notes, at the end of every run, that the proxy holds a
 certificate it did not make.
 
@@ -891,8 +938,10 @@ keep the service behind it, so `DOMAIN` can be left off. A run with a
 different `DOMAIN` stops instead (below). The `run.app` address stays enabled:
 with this ingress setting it already refuses the internet, which the script
 checks on every run, and disabling it as well (`--no-default-url`) would close
-nothing more. The other ways of deploying each treat the two settings
-differently:
+nothing more. Where it has been disabled after the move, the script has no
+address to check and says so. Disabled before the move, it stops the script,
+which moves a site only from a `run.app` address that answers. The other ways
+of deploying each treat the two settings differently:
 
 - `make cloud-deploy` only changes the image, so it keeps both, and so does
   going back to an older image with it.
@@ -939,11 +988,15 @@ and, within 30 seconds of those, post the thread on the other device.
 | `201` | `429` | refused as too quick | The app is not finding the visitor's address, and every visitor shares one bucket |
 
 A first `post` that is not `201` is another matter, and its answer says what.
-The second or third row means the count is wrong for this service, and the
-site should not be opened to the public until the count the script sets
-behind the load balancer is corrected. Go back to `run.app` meanwhile, with
-the first block of commands under "Going back to `run.app`" below. Delete the
-test threads afterwards, with each one's number:
+The second or third row means the count the script sets behind the load
+balancer is wrong for this service. That is a fault in
+`deploy/first-deploy.sh` to report, not a setting to change, and the site
+should not be opened to the public as it stands. Go back to `run.app`
+meanwhile, with the first block of commands under "Going back to `run.app`"
+below, and then either take the load balancer down with the second block or
+leave the script alone until it is mended: a run of it moves visitors behind
+the load balancer again. Delete the test threads afterwards, with each one's
+number:
 
 ```bash
 MOD_KEY="$(gcloud secrets versions access latest --secret=educhan-mod-key)"
@@ -963,13 +1016,18 @@ Armor](https://cloud.google.com/armor/pricing) have the current ones. A
 billing account still in its free trial can have no Cloud Armor allowance at
 all. The policy then fails with a quota error that names a limit of 0, and the
 script stops there, with the site still at the address it had; activating the
-full account is the thing to try.
+full account is the thing to try. The address that run reserved stays
+reserved, and one that no forwarding rule uses is billed by the hour. A later
+run without `DOMAIN` notes it and says how to give it up safely.
 
 **Moving to another domain** is not a re-run, because the badge, the poster key
 and anything else a browser keeps belong to the address it was kept under, and
-none of it follows readers to a new one. If that is still what you want, take
-the load balancer down as below, then run the script with the new `DOMAIN` and
-add the DNS records it prints.
+none of it follows readers to a new one. If that is still what you want, run
+both blocks under "Going back to `run.app`" below, the two updates and then
+the deletions, and only then run the script with the new `DOMAIN` and add the
+DNS records it prints. The address can stay reserved meanwhile, and the new
+records then point at the same one; the old domain's records are yours to
+delete.
 
 **Going back to `run.app`** is the move in reverse: the count is lowered
 first, and only then is `run.app` opened.
@@ -1009,7 +1067,8 @@ gcloud compute addresses delete educhan-ip --global --quiet
 
 Released while a record still points at it, the address can go to someone
 else's project, and the domain's visitors with it. Left reserved with no
-forwarding rule using it, it is billed by the hour.
+forwarding rule using it, it is billed by the hour, and a run of the script
+in between notes it and gives the same order.
 
 **Not built here yet:** IPv6 (above), Cloud CDN for `/media/` (it waits for
 image uploads), the moderators' `mod.` hostname behind Identity-Aware Proxy
