@@ -719,16 +719,19 @@ var spellingFolds = map[string]string{
 
 // shouldWords, after "sh'd", make it "should": "sh'd have", "sh'd not go".
 // "Not" before a stretch of time or a reason does not ("i sh'd not long
-// ago", "sh'd not because i wanted to", notLongAgo).
+// ago", "sh'd not because i wanted to", notLongAgo), nor "have" before a
+// mark it left ("i sh'd have scars all over my arm", marksAfter).
 var shouldWords = map[string]bool{"have": true, "hav": true, "ve": true, "been": true, "be": true, "not": true,
 	"never": true, "of": true}
 
 // notLongAgo reports, in s after "sh'd not", a stretch of time: "long", or
 // "too", "that" or "so" before it ("not long ago", "not that long ago", "not
-// long after the fight"), or "ago" within four words, a number counted as
-// one and fillers (notFillers) not counted ("not even a week ago", "not even
-// like 2 days ago", "not even a couple of days ago"); or a reason, one of
-// notReasons first: "not because i wanted to", "not once but twice".
+// long after the fight"), a unit of time first ("not even a day after
+// promising"), or "ago" within four words, a number counted as one and
+// fillers (notFillers) not counted ("not even a week ago", "not even like 2
+// days ago", "not more than an hour ago"); or what "should not" is never
+// followed by, one of notReasons first: "not because i wanted to", "not once
+// but twice", "not for attention", "not gonna lie", "not too deep".
 func notLongAgo(s string) bool {
 	var ws []string
 	for i, read := 0, 0; i < len(s) && len(ws) < 4 && read < 8; read++ {
@@ -748,7 +751,7 @@ func notLongAgo(s string) bool {
 		i = j
 	}
 	switch {
-	case len(ws) > 0 && notReasons[ws[0]]:
+	case len(ws) > 0 && (notReasons[ws[0]] || notUnits[ws[0]]):
 		return true
 	case len(ws) > 0 && ws[0] == "long":
 		return true
@@ -759,11 +762,31 @@ func notLongAgo(s string) bool {
 }
 
 var (
-	notFillers = map[string]bool{"even": true, "like": true, "just": true, "only": true, "a": true, "couple": true,
-		"of": true, "few": true}
+	notFillers = map[string]bool{"even": true, "like": true, "just": true, "only": true, "a": true, "an": true,
+		"couple": true, "of": true, "few": true, "more": true, "than": true}
 	notReasons = map[string]bool{"because": true, "cause": true, "cuz": true, "coz": true, "bc": true, "once": true,
-		"twice": true}
+		"twice": true, "for": true, "gonna": true, "too": true}
+	notUnits = map[string]bool{"day": true, "days": true, "week": true, "weeks": true, "hour": true, "hours": true,
+		"hr": true, "hrs": true, "min": true, "mins": true, "minute": true, "minutes": true, "month": true,
+		"months": true, "night": true, "nights": true}
+	// shdMarks, after "sh'd have", are what the harm left.
+	shdMarks = map[string]bool{"scars": true, "scar": true, "marks": true, "cuts": true, "bruises": true,
+		"wounds": true}
 )
+
+// marksAfter reports one of shdMarks as the first word of s, after "sh'd
+// have": "i sh'd have scars all over my arm", not "i sh'd have studied".
+func marksAfter(s string) bool {
+	i := 0
+	for i < len(s) && s[i] == ' ' {
+		i++
+	}
+	j := i
+	for j < len(s) && 'a' <= s[j] && s[j] <= 'z' {
+		j++
+	}
+	return shdMarks[s[i:j]]
+}
 
 // foldSpellings reads v's words of spellingFolds as what they stand for. A
 // word is a run of ASCII letters, joined by an apostrophe or a hyphen with a
@@ -793,7 +816,7 @@ func foldSpellings(v view) view {
 			for e < len(t) && letter(t[e]) {
 				e++
 			}
-			ok = !shouldWords[t[k:e]] || t[k:e] == "not" && notLongAgo(t[e:])
+			ok = !shouldWords[t[k:e]] || t[k:e] == "not" && notLongAgo(t[e:]) || t[k:e] == "have" && marksAfter(t[e:])
 		}
 		if ok && !(j < len(t) && (t[j] >= utf8.RuneSelf || isASCIIDigit(t[j]))) {
 			if b == nil {
@@ -14672,7 +14695,8 @@ func accidentClause(ws []string, strict bool) bool {
 	}
 	for i, w := range ws {
 		switch {
-		case activities[w] && !(strict && activityPlaces[w]) && !(i > 0 && activitiesLeft[ws[i-1]]),
+		case activities[w] && !(strict && activityPlaces[w]) && !(i > 0 && activitiesLeft[ws[i-1]]) &&
+			!(i > 1 && determiners[ws[i-1]] && activitiesLeft[ws[i-2]]),
 			accidentObjects[w], accidentVerbs[w],
 			i < 4 && activityGerunds[w]:
 			return true
@@ -14691,9 +14715,9 @@ var (
 		training gym match game pe sports sport nets workout lab kitchen work rehearsal practical practicals
 		dissection woodwork carpentry garden ballet jump burpees pushups squats drills art`)
 	activityPlaces = canonSetOf(`kitchen lab gym work garden`)
-	// activitiesLeft, before an activity, say it was over: "when I got
-	// home from practice".
-	activitiesLeft = canonSetOf(`from after`)
+	// activitiesLeft, before an activity or its determiner, say it was
+	// over: "when I got home from practice", "when I lost the match".
+	activitiesLeft = canonSetOf(`from after lost lose losing`)
 	// activityGerunds are what someone was doing when they got hurt:
 	// "shaving", "cooking", "chopping onions". Cutting and burning are not
 	// among them, being what "hurt myself cutting" means.
@@ -14910,7 +14934,7 @@ var (
 	selfIdiomTimes = canonSetOf(`when whenever while during this these next every in at on before after for if until
 		till`)
 	selfBody = canonSetOf(`arm arms wrist wrists thigh thighs leg legs skin stomach belly hip hips ankle ankles chest
-		neck face hand hands finger fingers knee knees shoulder shoulders body`)
+		neck face hand hands palm palms finger fingers knee knees shoulder shoulders body`)
 	selfMarks = func() map[string]bool {
 		m := canonSetOf(`visibly visible obviously obvious noticeably unseen secretly quietly secret hidden hide
 			hiding sight see sees seeing notice notices noticing know knows knowing find finds finding nobody deep
@@ -14925,18 +14949,19 @@ var (
 	// selfHiddenAfter after "without" hide the harm ("without getting
 	// caught"), where another activity does not ("without failing");
 	// selfHarmings are no activity a phrasal verb or a degree is set in, but
-	// the harm or the handling of what does it ("less bleeding", "out using
-	// a lighter", "less pressing the blade"); a degree is set only in an
+	// the harm or the handling of what does it ("less bleeding", "out using a
+	// lighter", "less pressing the blade"); a degree is set only in an
 	// activity named, activityGerunds or selfSports ("less playing", "less
-	// jogging"). Later in the clause the harm is a method's anywhere ("less
-	// after cutting"), but the handling, selfHandlings, only of a tool of
-	// harm or the body, harmHandled: "less when using my nails", "less when
-	// hitting my head", not "less when holding the kettle". selfHarmObjects
-	// are such things beside selfTools, weaponHeads, bluntHeads, selfBody
-	// and bodyHeads. selfTools anywhere after either are a method's ("less
-	// when i use a blade"), plainTools in a clause of their own only without
-	// one of toolUses after them ("less when using a knife to cut
-	// vegetables"). selfAmounts start an amount after "down to" or "back to".
+	// jogging"), or selfPostures with words after them. Later in the clause
+	// the harm is a method's anywhere ("less after cutting"), but the
+	// handling, selfHandlings, only of a tool of harm or the body,
+	// harmHandled: "less when using my nails", "less when hitting my head",
+	// not "less when holding the kettle". selfHarmObjects are such things
+	// beside selfTools, weaponHeads, bluntHeads, selfBody and bodyHeads.
+	// selfTools anywhere after either are a method's ("less when i use a
+	// blade"), plainTools in a clause of their own only without one of
+	// toolUses after them ("less when using a knife to cut vegetables").
+	// selfAmounts start an amount after "down to" or "back to".
 	selfClauses     = canonSetOf(`when whenever while if because cause cuz since as until till`)
 	selfHiddenAfter = canonSetOf(`getting being leaving letting anyone anybody anything telling`)
 	selfHarmings    = canonSetOf(`bleeding scarring cutting burning hurting showing using holding pressing
@@ -14965,17 +14990,23 @@ var (
 	holdForms  = canonSetOf(`holding hold holds held`)
 	handsUsed  = canonSetOf(`using holding hold holds held`)
 	flameWords = canonSetOf(`diya diyas candle candles stove stoves gas flame flames fire fires`)
-	hairPulls  = canonSetOf(`pulling pull pulls`)
-	hairWords  = canonSetOf(`hair hairs eyelashes lashes eyebrows brows`)
-	putForms   = canonSetOf(`put puts putting`)
-	putOnto    = canonSetOf(`on in into onto over under against through`)
+	// hotSurfaces burn the body put on them as a flame does: "put my hand on
+	// the iron".
+	hotSurfaces = canonSetOf(`iron irons tawa`)
+	hairPulls   = canonSetOf(`pulling pull pulls`)
+	hairWords   = canonSetOf(`hair hairs eyelashes lashes eyebrows brows`)
+	putForms    = canonSetOf(`put puts putting`)
+	putOnto     = canonSetOf(`on in into onto over under against through`)
 	// selfOften, after "every" with nothing after it, are how often the
 	// harm comes: "hurt myself less every time", "every day".
 	selfOften  = canonSetOf(`time day night week morning evening`)
-	selfSports = canonSetOf(`jogging sprinting exercising wrestling tackling skiing straightening curling
-		heading carrying sitting`)
-	doForms   = canonSetOf(`do does did doing`)
-	selfTools = canonSetOf(`blade blades razor razors lighter lighters compass compasses knife knives scissors
+	selfSports = canonSetOf(`jogging sprinting exercising wrestling tackling skiing straightening curling`)
+	// selfPostures set a degree only with what they are doing after them:
+	// "less carrying heavy bags", "less sitting at my desk", "less heading
+	// the ball", not "less carrying" alone.
+	selfPostures = canonSetOf(`heading carrying sitting`)
+	doForms      = canonSetOf(`do does did doing`)
+	selfTools    = canonSetOf(`blade blades razor razors lighter lighters compass compasses knife knives scissors
 		sharpener sharpeners needle needles`)
 	plainTools = canonSetOf(`knife knives scissors`)
 	toolUses   = canonSetOf(`vegetables vegetable veggies veg fruit fruits onion onions potato potatoes tomato
@@ -18114,7 +18145,10 @@ func methodCheck(v *view, m []int) bool {
 	case is(first, "die") && (is(ws[len(ws)-1], "wrist") || is(ws[len(ws)-1], "wrists")):
 		// "can you die from cutting your wrists", not "you can die from
 		// cutting your wrists, so" or "on a tin can".
-		return dieAsked(wordsBefore(text, m[0], 3)) && !hurtByAccident(next, false) && !accidentAhead(next)
+		// A cut said to be bad is no accident there: "really badly in the
+		// kitchen".
+		return dieAsked(wordsBefore(text, m[0], 3)) && !(hurtByAccident(next, false) &&
+			!(len(next) > 0 && hurtDegrees[next[0]])) && !accidentAhead(next)
 	case len(ws) >= 3 && searchKinds[first] && (is(ws[1], "to") || is(ws[1], "of") || is(ws[1], "for")):
 		// "self harm" is two words: "tips for self harm recovery".
 		return searchedMethod(ws[2], next)
@@ -18360,6 +18394,8 @@ func selfIdiom(ws, next []string) bool {
 	}
 	rest := next[1:]
 	switch {
+	case phrasal && len(rest) > 1 && is(rest[0], "of") && lifeLeft(rest[1:]):
+		return false // "cut myself out of this world"
 	case phrasal && len(rest) > 0 && is(rest[0], "from"),
 		phrasal && len(rest) > 1 && is(rest[0], "of") && selfObject(rest[1:]):
 		return true // "cut myself off from social media", "cut myself out of the photo"
@@ -18377,8 +18413,8 @@ func selfIdiom(ws, next []string) bool {
 	case phrasal && (is(rest[0], "of") || selfObject(rest)):
 		return true // "cut myself off social media"
 	case phrasal && len(rest[0]) > 4 && strings.HasSuffix(rest[0], "ing") && !selfHarmings[rest[0]],
-		is(next[0], "less") && (activityGerunds[rest[0]] || selfSports[rest[0]]) && !selfHarmings[rest[0]] &&
-			!harmWith(rest[1:]):
+		is(next[0], "less") && (activityGerunds[rest[0]] || selfSports[rest[0]] ||
+			selfPostures[rest[0]] && len(rest) > 1) && !selfHarmings[rest[0]] && !harmWith(rest[1:]):
 		return true // "burn myself out studying", "hurt myself less playing football"
 	case is(next[0], "out") && len(rest[0]) > 4 && strings.HasSuffix(rest[0], "ly"):
 		return true // "burn myself out completely"
@@ -18490,7 +18526,8 @@ func harmHandled(handling string, ws []string) bool {
 				return false
 			}
 			if selfBody[w] || bodyHeads[w] {
-				return i+1 < len(ws) && putOnto[ws[i+1]] && anyBefore(ws[i+2:], flameWords, selfClauses)
+				return i+1 < len(ws) && putOnto[ws[i+1]] && (anyBefore(ws[i+2:], flameWords, selfClauses) ||
+					anyBefore(ws[i+2:], hotSurfaces, selfClauses))
 			}
 		}
 		return false
@@ -18645,6 +18682,22 @@ func selfObject(ws []string) bool {
 	}
 	return true
 }
+
+// lifeLeft reports, at the start of ws after "out of", life itself as what
+// is left: "this world", "my life", "existence"; not someone else's life
+// ("out of his life") or a world of something ("the world of social media").
+func lifeLeft(ws []string) bool {
+	i := 0
+	if len(ws) > 0 && lifeOwners[ws[0]] {
+		i = 1
+	}
+	return i < len(ws) && selfLives[ws[i]] && !(i+1 < len(ws) && is(ws[i+1], "of"))
+}
+
+var (
+	selfLives  = canonSetOf(`world life existence earth`)
+	lifeOwners = canonSetOf(`this the my`)
+)
 
 // selfAmount reports a word that starts an amount: a number, in digits or
 // spelled ("2 hours", "one coffee a day", "half").
