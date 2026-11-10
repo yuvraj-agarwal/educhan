@@ -25,9 +25,14 @@ import (
 // the garbage a phase makes and drops while a collection runs, which the
 // collection marks live until it ends. For most phases that garbage is small
 // (row buffers, a GIF's LZW tables a frame at a time), and processingSlack
-// covers it. Inflating a PNG's image data can make megabytes of it, tables
-// compress/flate builds afresh for every block, as many blocks as the upload
-// has bytes for, so the decode is charged for it (pngInflateChurn).
+// covers it. Inflating a PNG's image data can make far more of it, tables
+// compress/flate builds afresh for every block, up to hundreds of times the
+// bytes of the blocks that make them, and how much of it a collection finds
+// grows with how long it runs, which grows with the rest of the heap. So
+// that is bounded by what is made, not by what a collection was seen to
+// find: an upload whose image data or ICC profile would make more tables
+// than its decode is charged for is refused before either is inflated
+// (pngTablesAllowed).
 //
 // TestProcessingCostCoversWhatIsHeld measures a file of each kind the model
 // distinguishes against the estimate for the whole of its processing, decoded
@@ -91,7 +96,7 @@ const cheapestRest int64 = 1 << 20
 // whether a browser uses it (pngProfileUsable: iccProfileRead, 256 KiB, and an
 // inflater), the thumbnail's own pixels and encoding, and what a phase
 // allocates and drops while a collection runs, but for the tables inflating a
-// PNG's image data makes (pngInflateChurn). Rows as wide as the picture are
+// PNG's image data makes (pngTablesAllowed). Rows as wide as the picture are
 // not in it, because a strip as wide as Inspect admits makes them tens of
 // megabytes: image/png's decoder reads through two rows of the file
 // (pngRowBytes), or two for each pass of an interlaced one, five and a half
@@ -99,26 +104,50 @@ const cheapestRest int64 = 1 << 20
 // six of the stored picture (pngEncoderRows); each is charged to its phase.
 const processingSlack int64 = 4 << 20
 
-// pngInflateChurn is what decoding a PNG is charged for the tables
-// compress/flate builds as it inflates the image data, which image/png does
-// whole whatever the picture. For every block whose codes run past nine bits
-// it makes a table of up to 64 entries for each of the 512 first-level entries
-// that leads to a longer code, and lets them go at the block's end: a block
-// that holds nothing but its codes (costlyStream) is 168 bytes and makes
-// 39.7 KiB of them, 242 MiB for every MiB of image data, at about a gigabyte a
-// second on one core. A collection marks live everything made while it runs,
-// so with the collector running continually a picture of one pixel whose image
-// data was 8 MiB of such blocks measured 1.7 to 4.8 MiB held as it decoded,
-// and one of 31 MiB up to 4.9 MiB on a busy machine, where processingSlack,
-// 4 MiB, was all it was charged; under -race 1.0 to 5.0 MiB, the most with the
-// other packages' tests running beside it. What a collection marks follows how
-// fast the tables are made and how long it runs, not the picture or how much
-// of the file the blocks are, so the charge is the same for every PNG: with
-// processingSlack it comes to 8 MiB, three over the most measured. It is
-// charged once. The profile pngProfileUsable inflates after the decode, at
-// most iccStreamRead of such blocks, makes them as fast, but while only the
-// decoded picture is held, which the decode's own charge is above.
-const pngInflateChurn int64 = 4 << 20
+// pngTablesAllowed is the most compress/flate may make of tables, inflating
+// a PNG's image data and then its ICC profile, for the PNG to be processed,
+// and what its decode is charged for them: four bytes for every byte of
+// image data (pngImageDataBytes), and 4 MiB at least. A walk counts them
+// before either is inflated (pngImageDataTables, pngProfileUsable), and an
+// upload that would make more is refused (ErrImageTooCostly), so what a
+// decode holds of them is never more than were made, however long a
+// collection beside it runs. Charged a fixed 4 MiB instead, beside 128 MiB
+// of live objects a picture of one pixel and 8 MiB of blocks that make
+// nothing but tables (costlyStream) held 10.9 to 16.7 MiB as it decoded,
+// against 8 MiB charged for its decode, slack and all.
+//
+// Encoders make few tables, and the floor covers small files, which make the
+// most for their size. Of 483 zlib streams of photographs, text, gradients
+// and noise, from zlib at levels 1, 6 and 9, memory levels 1 to 9 and every
+// strategy, flushed at every row and not, and from Go's encoder at every
+// level, none made more than 0.95 bytes of tables a byte, a gradient's
+// 72 KB stream at memory level 4, and of those over 100 KB none more than
+// 0.54, a photograph's 780 KB at that memory level; of 78 PNGs from PIL,
+// ImageMagick and FFmpeg, none more than 0.82, and of those over 100 KB none
+// more than 0.12. Blocks made to make tables make about 242 a byte, so a
+// stream of them is refused at once; the floor lets about a hundred of them
+// through, 17 KB, before it is.
+//
+// The charge is on the decode, beside the picture it decodes into, so it
+// moves some large interlaced pictures over processingBudget that were under
+// it. Of pictures of every colour type at 8 and 16 bits, interlaced and not,
+// 200 to 5000 pixels a side at aspects of up to 64 to 1 and 25 megapixels at
+// most, with image data from 1 to 31 MiB that was 30, 50, 75 or 100% of the
+// rows it inflates to, 33 were moved over, from estimates of 226 to 256 MiB
+// to 256 to 295 MiB: every one interlaced, of 10 to 25 megapixels of grey
+// and alpha or of 16-bit RGB, with 13 to 20 MiB of image data, 30 or 50% of
+// its rows. From an upload of the default 8 MiB that is all image data, it
+// refuses an interlaced 8-bit colour PNG of 25 megapixels from a longer side
+// of 490,000 to 640,000 pixels, by its colour type, where it was refused
+// from about 750,000 (TestEncodingsAreJudgedAtEveryShape).
+func pngTablesAllowed(data []byte) int64 {
+	return max(pngTablesFloor, pngTablesPerByte*pngImageDataBytes(data))
+}
+
+const (
+	pngTablesFloor   int64 = 4 << 20
+	pngTablesPerByte int64 = 4
+)
 
 // gifFrameOverhead is what image/gif keeps for each frame of a GIF besides
 // its pixels: the frame's header, its palette (a local colour table, or the
@@ -307,15 +336,16 @@ func decodingPhases(format Format, data []byte, cfg image.Config, frames gifFram
 		// image/png reads the file a row at a time into two buffers beside
 		// the picture, the row and the one before it, which a strip as wide
 		// as the pixel cap allows makes tens of megabytes. The tables the
-		// inflater makes and drops as it goes are charged on top
-		// (pngInflateChurn).
-		decode := phase{first: d, alloc: d + 2*pngRowBytes(data, w) + pngInflateChurn, after: d}
+		// inflater makes and drops as it goes are charged on top, as many
+		// as it may make (pngTablesAllowed).
+		tables := pngTablesAllowed(data)
+		decode := phase{first: d, alloc: d + 2*pngRowBytes(data, w) + tables, after: d}
 		if pngInterlaced(data) {
 			// Each of the seven passes is decoded into a picture of its own
 			// and merged into the whole; the last pass is half of it. Each
 			// pass is read through two rows of its own, as wide as the pass
 			// (pngPassRows): up to five and a half of the picture's rows.
-			decode.alloc = 2*d + pngPassRows(data, w, h) + pngInflateChurn
+			decode.alloc = 2*d + pngPassRows(data, w, h) + tables
 		}
 		phases := []phase{decode}
 		if pngOrientation(data) >= 2 {

@@ -44,9 +44,11 @@ import (
 // are, whatever follows it, and an iCCP chunk when it holds a profile
 // Chromium uses (pngProfileUsable). Chromium reads every sRGB chunk until
 // one will do but only the first iCCP that is not empty, so a profile that
-// will not do keeps a later one from being read. The profile is read under
-// ctx, and only ctx's error is returned, once it has ended.
-func pngGamma(ctx context.Context, data []byte) (gamma float64, ok bool, err error) {
+// will not do keeps a later one from being read. The profile is walked and
+// read under ctx, with room for no more than tables bytes of compress/flate's
+// tables (pngProfileUsable): the error is ctx's once it has ended, or
+// ErrImageTooCostly for a profile whose stream would make more.
+func pngGamma(ctx context.Context, data []byte, tables int64) (gamma float64, ok bool, err error) {
 	var (
 		value   uint32
 		tagged  bool   // a gAMA chunk has been read
@@ -87,7 +89,7 @@ func pngGamma(ctx context.Context, data []byte) (gamma float64, ok bool, err err
 		return 0, false, nil
 	}
 	if profile != nil {
-		used, err := pngProfileUsable(ctx, profile)
+		used, err := pngProfileUsable(ctx, profile, tables)
 		if err != nil || used {
 			return 0, false, err
 		}
@@ -117,16 +119,19 @@ const maxICCProfile = 64 << 20
 const iccProfileRead = 256 << 10
 
 // iccStreamRead is how much of an iCCP chunk's compressed stream
-// pngProfileUsable inflates. What inflating costs follows the stream's
-// length, not the profile's: a stream of empty blocks, each with codes that
-// compress/flate builds tables for afresh, inflates to nothing at about three
-// quarters of a second of CPU on one core for every MiB, and read whole, an
-// upload of one pixel and 8 MiB of such blocks took 6 to 7 s to process, one
-// of 31 MiB 20 to 24 s, and went on after its context had ended. A profile's
-// stream is a few hundred bytes to a few dozen kilobytes (a stream of 64 MiB
-// of zeros, more than a profile Chromium uses may be, is 81 KB), and this
-// much of the costliest blocks takes about a fifth of a second
-// (TestALongProfileStreamCostsNoMoreThanItsStart,
+// pngProfileUsable walks and inflates. What inflating costs follows the
+// stream's length, not the profile's: a stream of empty blocks, each with
+// codes that compress/flate builds tables for afresh, inflates to nothing at
+// about three quarters of a second of CPU on one core for every MiB, and read
+// whole, an upload of one pixel and 8 MiB of such blocks took 6 to 7 s to
+// process, one of 31 MiB 20 to 24 s, and went on after its context had
+// ended. Such blocks are now let through only as far as the room for tables
+// the image data leaves (zlibTables). A profile's stream is a few hundred
+// bytes to a few dozen kilobytes (a stream of 64 MiB of zeros, more than a
+// profile Chromium uses may be, is 81 KB), and this much of the costliest
+// blocks that are let through, blocks that hold nothing but their end under
+// codes of a bit each (cheapCodes), took 43 ms of CPU on one core to walk
+// and inflate (TestALongProfileStreamCostsNoMoreThanItsStart,
 // TestAProfilesStreamIsReadNoFurtherThanIccStreamRead).
 const iccStreamRead = 256 << 10
 
@@ -145,9 +150,13 @@ const iccStreamRead = 256 << 10
 // iccProfileUsable takes from them is taken as used, though Chromium, reading
 // on, might find the stream broken or too long and apply the gAMA, and one
 // whose header does not inflate from them is not, though Chromium might use
-// it. The stream is read through ctx, and the error is ctx's once it has
-// ended, which stops the inflating.
-func pngProfileUsable(ctx context.Context, chunk []byte) (bool, error) {
+// it. Before it is inflated, what is read of the stream is walked
+// (zlibTables), and one that would have compress/flate make more than tables
+// bytes of tables, what the walk of the image data left of what the decode
+// is charged for (pngTablesAllowed), is refused with ErrImageTooCostly. The
+// stream is walked and read through ctx, and the error is ctx's once it has
+// ended, which stops either.
+func pngProfileUsable(ctx context.Context, chunk []byte, tables int64) (bool, error) {
 	name := bytes.IndexByte(chunk[:min(len(chunk), 81)], 0)
 	if name < 1 || name+3 >= len(chunk) || chunk[name+1] != 0 {
 		return false, nil
@@ -159,6 +168,11 @@ func pngProfileUsable(ctx context.Context, chunk []byte) (bool, error) {
 	cut := len(stream) > iccStreamRead
 	if cut {
 		stream = stream[:iccStreamRead]
+	}
+	if _, err := zlibTables(ctx, stream, tables); errors.Is(err, errTooManyTables) {
+		return false, ErrImageTooCostly
+	} else if err != nil {
+		return false, err
 	}
 	z, err := zlib.NewReader(ctxReader{ctx, bytes.NewReader(stream)})
 	if err != nil {

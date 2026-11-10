@@ -398,8 +398,20 @@ func rgbaOfCMYK(m *image.CMYK) *image.RGBA {
 // (reduceHiddenColour), so a palette may be stored at a lower bit depth. A
 // picture with an EXIF orientation in an eXIf chunk is turned upright first, as
 // for a JPEG, because browsers show it turned. An animated PNG keeps its still
-// image, which is what a viewer without APNG support has always shown.
+// image, which is what a viewer without APNG support has always shown. Before
+// anything is decoded, the image data is walked (pngImageDataTables), and a
+// PNG whose image data would have compress/flate make more tables than its
+// decode is charged for (pngTablesAllowed) is refused as too costly to
+// process (ErrImageTooCostly), as is one whose ICC profile would make more
+// than the image data left of that (pngGamma).
 func sanitizePNG(ctx context.Context, data []byte, limit int64) (sanitized, error) {
+	allowed := pngTablesAllowed(data)
+	tables, err := pngImageDataTables(ctx, data, allowed)
+	if errors.Is(err, errTooManyTables) {
+		return sanitized{}, ErrImageTooCostly
+	} else if err != nil {
+		return sanitized{}, err
+	}
 	src, err := png.Decode(ctxReader{ctx, bytes.NewReader(data)})
 	if err != nil {
 		return sanitized{}, ErrCorruptImage
@@ -407,7 +419,7 @@ func sanitizePNG(ctx context.Context, data []byte, limit int64) (sanitized, erro
 	if err := ctx.Err(); err != nil {
 		return sanitized{}, err
 	}
-	gamma, ok, err := pngGamma(ctx, data)
+	gamma, ok, err := pngGamma(ctx, data, allowed-tables)
 	if err != nil {
 		return sanitized{}, err
 	}

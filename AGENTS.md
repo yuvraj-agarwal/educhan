@@ -1062,9 +1062,13 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   291 KB chunk and 7 to 8 MiB less for a 6.5 MB upload of random bytes, so a profile
   within that of 64 MiB is taken as used here, where Chromium applies the `gAMA` or does
   not show the picture (`maxICCProfile`). Only the first 256 KiB of a profile's stream is
-  inflated (`iccStreamRead`), through the request's context: a profile's stream is a few
-  dozen kilobytes at most, and empty deflate blocks slow to inflate cost about three
-  quarters of a second of CPU a MiB, which read whole went on past the deadline. A longer
+  walked and inflated (`iccStreamRead`), through the request's context: a profile's stream
+  is a few dozen kilobytes at most, and empty deflate blocks slow to inflate cost about
+  three quarters of a second of CPU a MiB, which read whole went on past the deadline. The
+  walk refuses an upload whose profile would make more of `compress/flate`'s tables than
+  its image data left of what its decode is charged for (`pngTablesAllowed`, below), and
+  stops as soon as the context ends (`TestWalkingStopsWhenTheContextEndsPartway`); 256 KiB
+  of the costliest blocks it lets through took 43 ms of CPU to walk and inflate. A longer
   stream is taken as inflating whole, so a profile whose header is in what those bytes
   inflate to is taken as used, its checksum unread, and one after them is not, where
   Chromium reads on (`TestAProfilesStreamIsReadNoFurtherThanIccStreamRead`,
@@ -1276,10 +1280,15 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   follows an upload's size instead is inflating a PNG's image data, which `image/png` does
   whatever it holds: empty deflate blocks with codes `compress/flate` builds tables for
   afresh cost about three quarters of a second of CPU a MiB, 6 to 7 s for a picture of one
-  pixel at the default 8 MiB limit and 20 to 24 s at the largest, 31 MiB, which its
-  deadline may cut short, and an `iCCP` profile is inflated no further than the first 256
-  KiB of its stream (`iccStreamRead`, `TestALongProfileStreamCostsNoMoreThanItsStart`))
-  before that deadline, with `media.ErrBusy`, and room that is there is taken however near
+  pixel at the default 8 MiB limit and 20 to 24 s at the largest, 31 MiB, but they make
+  tables hundreds of times their size, so the walk of the image data before it is inflated
+  (`pngImageDataTables`) refuses that picture in about 4 ms at 8 MiB and 15 ms at 31 MiB,
+  and the costliest blocks it lets through, a dozen bytes each that hold nothing but their
+  end under codes of a bit (`cheapCodes`), took about 1.5 s of CPU to process at 8 MiB and
+  6 s at 31 MiB, a quarter of it the walk's; an `iCCP` profile's stream is walked and
+  inflated no further than its first 256 KiB, 43 ms of the costliest blocks let through
+  (`iccStreamRead`, `TestALongProfileStreamCostsNoMoreThanItsStart`)) before that
+  deadline, with `media.ErrBusy`, and room that is there is taken however near
   the deadline. Its body has `uploadReadTimeout` (30 s) to arrive, counted from its first
   bytes and moved on by each wait for room, so time spent waiting for room is not taken
   out of the body's: read deadlines set on the connection through an
@@ -1354,20 +1363,41 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   fixture where it is megabytes over the slack, as the comment on `costFixtures` sets out.
   Garbage a phase makes and drops while a collection runs is marked live with it, which
   the slack covers for most phases, but not for a PNG's decode: `compress/flate` makes
-  tables afresh for every block of the image data, 242 MiB of them for a MiB of blocks
-  that hold nothing but codes, so a picture of one pixel padded with such blocks
-  measured up to 5.0 MiB held as it decoded, over the 4 MiB of slack that was all it
-  was charged, and the decode is charged `pngInflateChurn` (4 MiB) for them now. How
-  much of them a collection marks follows how long it runs: left out, the term failed
-  their fixture (`PNG of costly empty blocks`) in four runs of five without `-race` on
-  one machine and in neither of two runs of the test alone under it, as CI runs the
-  tests, though two runs of the whole suite under `-race` measured 4.6 and 5.0 MiB, so
-  the fixture does not catch it in every run. `TestPNGDecodeIsChargedTheInflatersTables`
-  holds it in every PNG's decode phase, and holds `compress/flate` to making the tables
-  a block at a time, which is what the term is for.
-  `TestProcessingCostCoversWhatIsHeld` is the package's slowest test: under `-race` it
-  took 1.7 to 3.2 minutes in CI over eight runs, before the fixture `PNG of costly empty
-  blocks`, which takes about 22 seconds of it under `-race`, and 3.3 to 5 minutes on a
+  tables afresh for every block of the image data, about 242 bytes of them for every byte
+  of blocks that hold nothing but codes, and how much of them a collection marks follows
+  how long it runs, which grows with the rest of the heap: charged a fixed 4 MiB for them,
+  beside 128 MiB of live objects a picture of one pixel and 8 MiB of such blocks held 10.9
+  to 16.7 MiB as it decoded, over the 8 MiB it was charged, slack and all. So before the
+  image data is inflated it is walked (`pngImageDataTables`, `inflate.go`), counting the
+  tables `compress/flate` would make without making any, and a PNG whose image data, or
+  ICC profile after it, would make more than four bytes of them for every byte of image
+  data, and 4 MiB at least, is refused `ErrImageTooCostly` (`pngTablesAllowed`); its
+  decode is charged all it may make, so what it holds of them is never more than were
+  made, whatever the collector does. Encoders make few: of 483 zlib streams from zlib at
+  levels 1, 6 and 9, every memory level and strategy, and Go's encoder at every level,
+  none made more than 0.95 bytes of tables a byte, and of 78 PNGs from PIL, ImageMagick
+  and FFmpeg none more than 0.82. Charging it moved 33 of a grid of picture shapes over
+  `processingBudget` that were under it, all interlaced, of 10 to 25 megapixels of grey
+  and alpha or 16-bit RGB with 13 to 20 MiB of image data, and it holds an interlaced
+  8-bit colour PNG of 25 megapixels from 8 MiB of image data to a longer side of 490,000
+  to 640,000 pixels, where it was about 750,000 (`TestEncodingsAreJudgedAtEveryShape`,
+  whose PNGs `headerUpload` makes up with image data). The walk follows
+  `compress/flate` as Go 1.22 to 1.25 have it, failing where it fails
+  (`TestTheWalkReadsStreamsAsCompressFlateDoes`) and counting what it allocates
+  (`TestTheWalkCountsTheTablesCompressFlateMakes`), at no more CPU than inflating
+  (`TestAWalkCostsNoMoreThanInflating`), so a Go release that changes how `compress/flate`
+  builds its tables changes the walk with it. Fixtures cannot pin the charge, because what
+  a collection finds of the tables changes from run to run: beside the cost test's heap
+  the fixture `PNG of costly blocks`, which makes all the 32 MiB it may, held 1.2 to 8.3
+  MiB as it decoded, so with the term left out it is caught only in runs over the slack,
+  and with the fixed 4 MiB charge put back it held 4.2 MiB as it decoded beside 128 MiB of
+  live objects, within the 8.0 MiB that charge came to
+  (`TestAPNGsTablesAreChargedBesideALargeHeap`). The bound rests on the refusal and the
+  charge, which `TestAPNGThatWouldMakeMoreTablesIsRefusedBeforeItIsInflated` and
+  `TestPNGDecodeIsChargedTheTablesItIsAllowed` pin. `TestProcessingCostCoversWhatIsHeld`
+  is the package's slowest test: under `-race` it took 1.7 to 3.2 minutes in CI over eight
+  runs, before the fixture `PNG of costly blocks`, which takes about 2 seconds of it under
+  `-race` (the costly empty blocks it replaced took about 22), and 3.3 to 5 minutes on a
   busy shared machine. A change to a decode path, to `orient`, to the stored buffer or
   to the thumbnail changes `cost.go` in the same commit. A CMYK JPEG is turned into RGBA
   where it lies (`rgbaOfCMYK`), not into a second picture. Tests narrow the budget with

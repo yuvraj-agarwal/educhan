@@ -403,11 +403,16 @@ func storedStream(lead int, data []byte, trail int) []byte {
 // literal/length code and a distance code whose longest codes are 15 bits,
 // laid out so that as many of the inflater's 512 first-level entries as can
 // lead to codes longer than 9 bits, each such entry a table of 64 that it
-// makes afresh for every block. They are about 170 bytes each, and inflate to
+// makes afresh for every block. They are 168 bytes each, and inflate to
 // nothing at about a quarter to a third of a second of CPU a MiB; with their
 // code lengths run-length coded, as the format allows, they are a third as
 // long and cost about three quarters of a second a MiB.
-func costlyStream(size int, data []byte) []byte {
+func costlyStream(size int, data []byte) []byte { return costlyBlocks(-1, size, data) }
+
+// costlyBlocks is costlyStream with n of its costly blocks, or as many as
+// make it size bytes long when n is negative, and then, for n of 0 or more,
+// empty stored blocks to make it at least size bytes long before the last.
+func costlyBlocks(n, size int, data []byte) []byte {
 	var (
 		out       = []byte{0x78, 0x01}
 		acc       uint64
@@ -462,7 +467,7 @@ func costlyStream(size int, data []byte) []byte {
 			next++
 		}
 	}
-	for len(out) < size {
+	for k := 0; n < 0 && len(out) < size || k < n; k++ {
 		put(0b100, 3) // not the last; dynamic codes
 		put(286-257, 5)
 		put(30-1, 5)
@@ -477,6 +482,16 @@ func costlyStream(size int, data []byte) []byte {
 			code(uint64(l), 4)
 		}
 		code(uint64(next), uint(lit[256]))
+	}
+	if n >= 0 && len(out)+16+len(data) < size {
+		put(0, 3) // not the last; stored, of no bytes
+		if have > 0 {
+			put(0, 8-have)
+		}
+		out = append(out, 0, 0, 0xFF, 0xFF)
+		if fill := size - len(out) - 9 - len(data); fill > 0 {
+			out = append(out, emptyBlocks((fill+4)/5)...)
+		}
 	}
 	put(1, 3) // the last block; stored
 	if have > 0 {
@@ -524,7 +539,7 @@ func TestAProfilesStreamIsReadNoFurtherThanIccStreamRead(t *testing.T) {
 		{"empty blocks to iccStreamRead and a profile", storedStream(iccStreamRead/5, profile, 0), false},
 		{"empty blocks past iccStreamRead and not a profile", storedStream(iccStreamRead/5, []byte("not a profile"), 0), false},
 	} {
-		used, err := pngProfileUsable(context.Background(), append([]byte("x\x00\x00"), c.stream...))
+		used, err := pngProfileUsable(context.Background(), append([]byte("x\x00\x00"), c.stream...), pngTablesFloor)
 		if err != nil || used != c.used {
 			t.Errorf("%s (%d bytes): used %v (%v), want %v", c.name, len(c.stream), used, err, c.used)
 		}
@@ -535,7 +550,10 @@ func TestAProfilesStreamIsReadNoFurtherThanIccStreamRead(t *testing.T) {
 // bytes do, however long it is: read whole, a stream of empty blocks that
 // compress/flate takes long to inflate (costlyStream) would cost about three
 // quarters of a second of CPU a MiB, which in an upload of 31 MiB came to
-// over 20 s. This one is four times iccStreamRead and holds no profile.
+// over 20 s. This one is four times iccStreamRead and holds no profile, and
+// it is given all the room for tables it would make, so that only the cut
+// keeps it short: what the room lets through is
+// TestAPNGThatWouldMakeMoreTablesIsRefusedBeforeItIsInflated's to hold.
 func TestALongProfileStreamCostsNoMoreThanItsStart(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -550,7 +568,7 @@ func TestALongProfileStreamCostsNoMoreThanItsStart(t *testing.T) {
 		}{{chunk(stream[:iccStreamRead]), &start}, {chunk(stream), &whole}} {
 			runtime.GC()
 			began := threadCPU()
-			if used, err := pngProfileUsable(context.Background(), run.chunk); used || err != nil {
+			if used, err := pngProfileUsable(context.Background(), run.chunk, math.MaxInt64); used || err != nil {
 				t.Fatalf("a stream of %d bytes of empty blocks is used (%v, %v)", len(run.chunk), used, err)
 			}
 			*run.best = min(*run.best, threadCPU()-began)

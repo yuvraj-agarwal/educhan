@@ -808,10 +808,10 @@ server that would refuse what it sends.
     unless they are interlaced and have to be turned; and opaque lossy WebPs, stored as
     JPEGs. A grey PNG with a transparent colour or an alpha channel counts as a colour
     PNG throughout here, since it decodes the same way — four bytes a pixel at 8 bits,
-    eight at 16. The PNGs are accepted until their longer side passes about 750,000
-    pixels in colour, or 1.3 to 1.5 million otherwise: at this size, tens of thousands
-    of times longer than they are wide, which only a PNG can be (a JPEG's sides stop at
-    65,535 pixels and a WebP's at 16,383).
+    eight at 16. The PNGs are accepted until their longer side passes about 750,000 pixels
+    in colour, 490,000 to 640,000 if they are interlaced (below), or 1.3 to 1.5 million
+    otherwise: at this size, thousands of times longer than they are wide, which only a
+    PNG can be (a JPEG's sides stop at 65,535 pixels and a WebP's at 16,383).
   - *refused*: progressive JPEGs with full-resolution colour or in CMYK; CMYK, RGB and
     progressive 4:2:2 and 4:4:0 JPEGs, and interlaced 8-bit colour PNGs, that have to be
     turned; 16-bit colour PNGs that are interlaced or have to be turned; and lossy WebPs
@@ -842,6 +842,26 @@ server that would refuse what it sends.
   one with four components at full resolution (an Adobe CMYK file), to about 5 to 6 s of
   CPU to decode and 5.5 to 7.5 s to process, and a progressive one, which the memory
   estimate holds to fewer blocks, to about 3 to 4 s to decode.
+
+  A PNG's image data is inflated by Go's `compress/flate`, which for every compressed
+  block whose codes run past nine bits makes lookup tables and lets them go at the block's
+  end, up to 41 KiB of them for a block of under 200 bytes. The garbage collector keeps
+  what is made while it runs, and it runs for longer the more the server holds: beside 128
+  MiB of other objects, a picture of one pixel and 8 MiB of such blocks held up to 16.7
+  MiB as it decoded, where its decode was charged 8. So before anything is inflated, the
+  image data is read through as `compress/flate` reads it, making none of the tables, at
+  about the CPU inflating it takes or less, and a PNG whose image data would make more of
+  them than four bytes for every byte of it, or 4 MiB for a MiB of it or less, is refused
+  with `400` after flood control (`image too large to process`), as is one whose colour
+  profile would make more than its image data left of that. What encoders write makes far
+  fewer: of 483 streams from zlib, at levels 1, 6 and 9 with every memory level and
+  strategy, and from Go's encoder at every level, none made more than 0.95 bytes of tables
+  for every byte, and of 78 PNGs from PIL, ImageMagick and FFmpeg none more than 0.82.
+  Every other PNG's decode is charged all the tables it may make, beside the picture it
+  decodes into, which is what holds an interlaced 8-bit colour PNG whose 8 MiB are all
+  image data to a longer side of 490,000 to 640,000 pixels (above); from an upload larger
+  than the default limit, the charge also refuses some interlaced pictures of 10
+  megapixels or more with 13 to 20 MiB of image data that would fit without it.
 
   At a quarter of the size, every kind is accepted at any shape up to a thousand to one,
   and a PNG of any size is refused once its longer side passes 2.2 to 3.7 million pixels,

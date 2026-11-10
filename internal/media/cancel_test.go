@@ -18,9 +18,12 @@ import (
 	"github.com/yuvraj-agarwal/educhan/internal/media/jpegenc"
 )
 
-// Processing stops once its context is done wherever it asks: the decode
-// reads through a ctxReader, and so does the inflating of a PNG's ICC profile
-// after it (pngProfileUsable); each format checks once its decode is done;
+// Processing stops once its context is done wherever it asks: the walks over
+// a PNG's image data before its decode and over its ICC profile's stream
+// before that is inflated (inflateWalk) ask before their first block and
+// every haltEveryWork of work after; the decode reads through a ctxReader,
+// and so does the inflating of the profile after it (pngProfileUsable); each
+// format checks once its decode is done;
 // the encode writes into a storedBuffer — and the JPEG encoder stops working,
 // not only writing, once a write is refused; playGIF checks before each
 // frame, and within one every haltEvery pixels of the rows it looks at for
@@ -158,6 +161,10 @@ const (
 	askFrame  = "playGIF"
 	askThumb  = "processHeld"
 	askBudget = "(*budget).acquireParts"
+	// The walk over a PNG's image data, before its decode, or over its ICC
+	// profile's stream, before that is inflated (inflateWalk), asks before
+	// its first block and every haltEveryWork of work after.
+	askWalk = "(*inflateWalk).ask"
 	// Within a frame, playGIF's player asks as it looks at a stored frame's
 	// rows for its table (ownTable, through halted), again as it looks at
 	// them a second time, for a frame of 256 colours that does not draw them
@@ -247,30 +254,46 @@ func sanitizeUnder(t *testing.T, name string, ctx context.Context, data []byte) 
 }
 
 // TestSanitizeStopsAtOnceWhenTheContextIsAlreadyDone holds that sanitize,
-// given a context that is already done, stops at its first read — the
-// decode's, through ctxReader — and returns the context's error, not
-// ErrCorruptImage, for every format, without encoding anything. Process
+// given a context that is already done, stops at the first place that asks —
+// the decode's first read, through ctxReader, or for a PNG the walk over its
+// image data, before its first block, so that nothing is read — and returns
+// the context's error, not ErrCorruptImage, for every format, without
+// encoding anything. The small PNG's image data is walked with less than
+// haltEveryWork of work, so only the walk's ask before its first block can
+// see the context there: without it, the decode's first read would. Process
 // refuses such a context while it waits for the budget, before sanitize
 // (TestProcessStopsWhenTheContextIsAlreadyDone), so this calls sanitize
 // itself.
 func TestSanitizeStopsAtOnceWhenTheContextIsAlreadyDone(t *testing.T) {
-	uploads := map[string][]byte{
-		"JPEG": photoJPEG(t),
-		"PNG":  photoPNG(t),
-		"GIF":  flatGIF(t, 64, 64, 4),
-		"WebP": readTestdata(t, "sample.webp"),
+	small := encodePNG(t, 64, 64)
+	if n, _ := sanitizeLive(t, "small PNG", small).asked(askWalk); n != 1 {
+		t.Errorf("small PNG: the walk over its image data asked %d times under a live context, want once, before its first block, and no more over less than haltEveryWork of work", n)
 	}
-	for name, data := range uploads {
+	for _, c := range []struct {
+		name         string
+		data         []byte
+		first        string
+		reads, walks int // how many times the decode reads and the walk asks
+	}{
+		{"JPEG", photoJPEG(t), askRead, 1, 0},
+		{"PNG", photoPNG(t), askWalk, 0, 1},
+		{"small PNG", small, askWalk, 0, 1},
+		{"GIF", flatGIF(t, 64, 64, 4), askRead, 1, 0},
+		{"WebP", readTestdata(t, "sample.webp"), askRead, 1, 0},
+	} {
 		ctx := newAskedContext("", 0)
-		sanitizeUnder(t, name, ctx, data)
-		if first := ctx.first(); first != askRead {
-			t.Errorf("%s: %s asked first, want the decode's read (%s)", name, first, askRead)
+		sanitizeUnder(t, c.name, ctx, c.data)
+		if first := ctx.first(); first != c.first {
+			t.Errorf("%s: %s asked first, want %s", c.name, first, c.first)
 		}
-		if n, _ := ctx.asked(askRead); n != 1 {
-			t.Errorf("%s: the decode read %d times through a done context, want 1", name, n)
+		if n, _ := ctx.asked(askWalk); n != c.walks {
+			t.Errorf("%s: the walk over the image data asked %d times, want %d", c.name, n, c.walks)
+		}
+		if n, _ := ctx.asked(askRead); n != c.reads {
+			t.Errorf("%s: the decode read %d times through a done context, want %d", c.name, n, c.reads)
 		}
 		if n, _ := ctx.asked(askWrite); n != 0 {
-			t.Errorf("%s: the encode wrote %d times, though the decode should have stopped", name, n)
+			t.Errorf("%s: the encode wrote %d times, though the decode should have stopped", c.name, n)
 		}
 	}
 }
@@ -297,19 +320,26 @@ func TestDecodingStopsWhenTheContextEndsPartway(t *testing.T) {
 	}
 }
 
+// profilePNG is photoPNG with a gAMA chunk that is to be applied unless a
+// profile takes its place, and an iCCP chunk whose stream holds a profile
+// after 40 blocks that compress/flate takes long to inflate (costlyBlocks),
+// as many as the room the decode is charged for leaves, and empty blocks to
+// a quarter of iccStreamRead: what an upload made to keep a core busy might
+// hold, its stream read and walked in many pieces.
+func profilePNG(t *testing.T) []byte {
+	t.Helper()
+	stream := costlyBlocks(40, iccStreamRead/4, sRGBProfile(nil))
+	return withPNGChunks(photoPNG(t), gAMAChunk(100000), iCCPChunk("x", 0, stream))
+}
+
 // TestReadingAProfileStopsWhenTheContextEndsPartway holds that inflating a
 // PNG's ICC profile to see whether a browser uses it (pngProfileUsable),
 // which comes after the decode, stops at the first read of the profile's
 // stream after the context ends, with the context's error, and that nothing
-// is encoded: the profile's own ctxReader, on its own. The stream is a
-// profile after empty blocks that compress/flate takes long to inflate
-// (costlyStream), as an upload made to keep a core busy would hold; read to
-// its end, which once nothing stopped, a stream of 31 MiB of such blocks took
-// over 20 s.
+// is encoded: the profile's own ctxReader, on its own.
 func TestReadingAProfileStopsWhenTheContextEndsPartway(t *testing.T) {
 	const at = 2
-	stream := costlyStream(iccStreamRead/4, sRGBProfile(nil))
-	data := withPNGChunks(photoPNG(t), gAMAChunk(100000), iCCPChunk("x", 0, stream))
+	data := profilePNG(t)
 	// The decode's reads are those before sanitizePNG asks, once it is done;
 	// the profile's, those after.
 	decode, profile, decoded := 0, 0, false
@@ -333,6 +363,61 @@ func TestReadingAProfileStopsWhenTheContextEndsPartway(t *testing.T) {
 	}
 	if n, _ := ctx.asked(askWrite); n != 0 {
 		t.Errorf("the encode wrote %d times after the profile's reading was cut short", n)
+	}
+	if _, late := ctx.asked(askWalk); late != 0 {
+		t.Errorf("the walk asked %d times after the context ended", late)
+	}
+}
+
+// TestWalkingStopsWhenTheContextEndsPartway holds that the walks that count
+// the tables inflating would make (inflateWalk) stop at their first ask
+// after the context ends, with the context's error: the walk over a PNG's
+// image data before anything of it is read or decoded, and the walk over its
+// ICC profile's stream, after the decode, before anything of the profile is
+// read. Each asks before its first block and every haltEveryWork of work
+// after; the profile's stream is walked in many pieces of that (profilePNG).
+func TestWalkingStopsWhenTheContextEndsPartway(t *testing.T) {
+	const at = 2
+	data := profilePNG(t)
+	// The image data's walk asks before the decode's first read, and the
+	// profile's after sanitizePNG asks, once the decode is done.
+	image, profile, reads, decoded := 0, 0, 0, false
+	for _, a := range sanitizeLive(t, "PNG", data).asks {
+		switch {
+		case a.fn == "sanitizePNG":
+			decoded = true
+		case a.fn == askRead && !decoded:
+			reads++
+		case a.fn == askWalk && reads > 0 && !decoded:
+			t.Fatalf("the image data was walked after the decode began reading it")
+		case a.fn == askWalk && decoded:
+			profile++
+		case a.fn == askWalk:
+			image++
+		}
+	}
+	for _, c := range []struct {
+		name         string
+		walked, asks int // asks of a whole walk, and before it
+		reads        int // reads before it
+	}{
+		{"the image data", image, 0, 0},
+		{"the profile's stream", profile, image, reads},
+	} {
+		if c.walked <= at {
+			t.Fatalf("%s's walk asks %d times; the fixture must have it ask more than %d for the context to end part way", c.name, c.walked, at)
+		}
+		ctx := newAskedContext(askWalk, c.asks+at)
+		sanitizeUnder(t, "PNG", ctx, data)
+		if n, late := ctx.asked(askWalk); n != c.asks+at || late != 0 {
+			t.Errorf("%s: the walks asked %d times (%d after the context ended), want %d before and %d of the %d of its walk, and none after", c.name, n, late, c.asks, at, c.walked)
+		}
+		if n, _ := ctx.asked(askRead); n != c.reads {
+			t.Errorf("%s: read %d times, want %d, before its walk", c.name, n, c.reads)
+		}
+		if n, _ := ctx.asked(askWrite); n != 0 {
+			t.Errorf("%s: the encode wrote %d times after the walk was cut short", c.name, n)
+		}
 	}
 }
 

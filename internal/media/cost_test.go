@@ -402,14 +402,16 @@ func greyQuadrants(w, h int) *image.Gray {
 // of its rows as well, which only reading the orientation charges. The 16-bit
 // RGBA strip, a row of 1048576 pixels, is decoded through two rows of the
 // file of 8 MiB each beside its picture (pngRowBytes). The PNG of a pixel has
-// image data of 8 MiB, the default size limit, of blocks that hold nothing but
-// codes compress/flate builds tables for afresh (costlyStream), which it makes
-// and drops at every block: what it holds as it decodes is those tables, as
-// many as a collection running while they are made marks live
-// (pngInflateChurn). That comes to a few megabytes: left out, the term failed
-// this fixture in four runs of five without -race and in neither of two runs
-// of the test alone with it, so the fixture does not catch it in every run,
-// and TestPNGDecodeIsChargedTheInflatersTables holds it in the model as well.
+// image data of 8 MiB, the default size limit, that starts with as many
+// blocks that hold nothing but codes compress/flate builds tables for afresh
+// (costlyStream) as the tables it is let make allow, 32 MiB of them
+// (pngTablesAllowed, allowedPNG), which it makes and drops at every block:
+// what it holds as it decodes is those tables, as many as a collection
+// running while they are made marks live. Beside this test's heap that came
+// to 1.2 to 8.3 MiB, so left out, the term is caught only in the runs where
+// it comes to more than the slack; TestPNGDecodeIsChargedTheTablesItIsAllowed
+// holds it in the model as well, and TestAPNGsTablesAreChargedBesideALargeHeap
+// holds the fixture to its estimate beside a heap of 128 MiB.
 // Two more JPEGs of YCbCr samples, both turned on their side, are converted to
 // RGB, a copy of 4 bytes a pixel that the turn copies again whole, by segments
 // image/jpeg reads where a walk that stopped at the first scan would not see
@@ -453,7 +455,7 @@ func costFixtures(t *testing.T) map[string][]byte {
 		"PNG strip o6": withPNGChunks(rawPNG(t, 1<<19, 4, 0, 8, false, false),
 			pngChunk("eXIf", orientationTIFF(binary.BigEndian, 6))),
 		"PNG RGBA 16-bit strip":        rawPNG(t, 1<<20, 1, 6, 16, false, false),
-		"PNG of costly empty blocks":   costlyPNG(8 << 20),
+		"PNG of costly blocks":         allowedPNG(t, 8<<20, 0),
 		"GIF of four frames":           gifOfFrames(t, w, h, 4),
 		"GIF of two interlaced frames": interlaced(t, gifOfFrames(t, large, tall, 2)),
 		"GIF past its canvas":          interlaced(t, gifPastCanvas(t, large, tall)),
@@ -1130,11 +1132,11 @@ func TestPNGDecoderRowsAreCharged(t *testing.T) {
 			t.Fatalf("%s: inspect = %v, want it admitted", name, err)
 		}
 		cfg := image.Config{Width: w, Height: k.h}
-		// The phase is charged as well for the tables the inflater makes
-		// and drops at every block (pngInflateChurn), which a blank
+		// The phase is charged as well for the tables the inflater may make
+		// and drop at every block (pngTablesAllowed), which a blank
 		// picture's few blocks make next to none of, so they are left out
 		// of what its rows are held to.
-		charged := decodingPhases(in.format, data, cfg, in.frames)[0].alloc - pngInflateChurn
+		charged := decodingPhases(in.format, data, cfg, in.frames)[0].alloc - pngTablesAllowed(data)
 
 		runtime.GC()
 		before := heapAllocs()
@@ -1159,47 +1161,61 @@ func TestPNGDecoderRowsAreCharged(t *testing.T) {
 // costlyPNG is a PNG of one grey pixel whose image data is at least size
 // bytes of blocks that hold nothing but codes compress/flate builds tables for
 // afresh, before the pixel's row (costlyStream).
-func costlyPNG(size int) []byte {
-	data := append(pngHeader(1, 1, 0, 8, false), pngChunk("IDAT", costlyStream(size, []byte{0, 0x80}))...)
+func costlyPNG(size int) []byte { return pixelPNG(costlyStream(size, []byte{0, 0x80})) }
+
+// pixelPNG is a PNG of one grey pixel whose image data is stream.
+func pixelPNG(stream []byte) []byte {
+	data := append(pngHeader(1, 1, 0, 8, false), pngChunk("IDAT", stream)...)
 	return append(data, pngChunk("IEND", nil)...)
 }
 
-// For every block of a PNG's image data whose codes run past nine bits,
-// compress/flate makes tables for them afresh and lets them go at the block's
-// end, so image data of blocks that hold nothing but such codes makes hundreds
-// of times its bytes of them: a collection that runs while they are made marks
-// megabytes of them live, as many as it lasts, and every PNG's decode phase is
-// charged pngInflateChurn for them, interlaced or not, turned or not, whatever
-// its picture. What a collection marks depends on how long it runs, which
-// depends on the machine: the PNG of a pixel and 8 MiB of such blocks
-// (TestProcessingCostCoversWhatIsHeld) measured 1.7 to 4.8 MiB held as it
-// decoded, and under -race, as CI runs it, 1.0 to 5.0 MiB, so left out the
-// term failed that fixture in four runs of five without -race and in neither
-// of two runs of the test alone under -race, though two runs of the whole
-// suite under -race measured more than the slack. It is held here as well: on
-// top of each kind's picture and rows, its decode phase is charged enough that
-// with processingSlack the decode of a pixel comes to 2 MiB more than the most
-// such a decode was measured to hold, 5.0 MiB as logged, in a run of the whole
-// suite under -race. What the inflater allocates is the same on every run:
-// held to at least a hundred and twenty-eight times the image data's bytes, it
-// says the tables are still made a block at a time, which if they ever were
-// not would leave the term with nothing to charge for.
-func TestPNGDecodeIsChargedTheInflatersTables(t *testing.T) {
-	const size = 1 << 20
-	data := costlyPNG(size)
-	runtime.GC()
-	before := heapAllocs()
-	if _, err := png.Decode(bytes.NewReader(data)); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	allocated := heapAllocs() - before
-	t.Logf("inflating %d bytes of costly blocks allocated %.1f MiB", size, float64(allocated)/(1<<20))
-	if allocated < 128*size {
-		t.Errorf("inflating %d bytes of costly blocks allocated %d bytes, under 128 times as many: compress/flate no longer makes their tables afresh at every block", size, allocated)
-	}
+// costlyBlockTables is what compress/flate makes of tables for each of
+// costlyStream's blocks, as a walk counts it.
+func costlyBlockTables(t testing.TB) int64 {
+	t.Helper()
+	one, _, _ := walked(costlyBlocks(1, 0, nil))
+	none, _, _ := walked(costlyBlocks(0, 0, nil))
+	return one - none
+}
 
-	// mostHeld is the 5.0 MiB logged (to a tenth), rounded up.
-	const mostHeld, spare = 51 << 20 / 10, 2 << 20
+// allowedPNG is a PNG of one grey pixel whose image data is size bytes or
+// up to three more: as many of costlyStream's blocks as make no more tables
+// than pngTablesAllowed lets the PNG make, and extra more, then empty stored
+// blocks, then the pixel's row in the last (costlyBlocks).
+func allowedPNG(t testing.TB, size, extra int) []byte {
+	t.Helper()
+	per := costlyBlockTables(t)
+	n := int(max(pngTablesFloor, pngTablesPerByte*int64(size)) / per)
+	for {
+		data := pixelPNG(costlyBlocks(n+extra, size, []byte{0, 0x80}))
+		tables, err := pngImageDataTables(context.Background(), data, math.MaxInt64)
+		if err != nil {
+			t.Fatalf("allowedPNG: walking its image data: %v", err)
+		}
+		switch allowed := pngTablesAllowed(data); {
+		case int64(n)*per > allowed:
+			n--
+		case int64(n+1)*per <= allowed:
+			n++
+		default:
+			if tables != int64(n+extra)*per {
+				t.Fatalf("allowedPNG: its image data makes %d bytes of tables, want %d blocks' %d", tables, n+extra, int64(n+extra)*per)
+			}
+			return data
+		}
+	}
+}
+
+// Every PNG's decode is charged for the tables compress/flate may make as it
+// inflates the image data, interlaced or not, turned or not, whatever its
+// picture: all that it is let make (pngTablesAllowed), four bytes of them for
+// every byte of image data and 4 MiB at least, which a walk of the image data
+// holds it to before it is inflated (pngImageDataTables;
+// TestAPNGThatWouldMakeMoreTablesIsRefusedBeforeItIsInflated). A collection
+// that runs while they are made marks them live until it ends, and how long
+// it runs follows the rest of the heap, not the upload, so nothing less than
+// all of them bounds what it can find (TestAPNGsTablesAreChargedBesideALargeHeap).
+func TestPNGDecodeIsChargedTheTablesItIsAllowed(t *testing.T) {
 	for _, k := range []struct {
 		name          string
 		w, h          int
@@ -1212,24 +1228,115 @@ func TestPNGDecodeIsChargedTheInflatersTables(t *testing.T) {
 		{"16-bit RGBA", 1200, 900, 6, 16, false, false},
 		{"turned", 1200, 900, 2, 8, false, true},
 	} {
-		data := pngHeader(k.w, k.h, k.colour, k.depth, k.interlaced)
-		if k.turned {
-			data = append(data, pngChunk("eXIf", orientationTIFF(binary.BigEndian, 6))...)
-		}
-		w, h := int64(k.w), int64(k.h)
-		d := pngBytesPerPixel(data) * w * h
-		rows := 2 * pngRowBytes(data, w)
-		if k.interlaced {
-			d, rows = 2*d, pngPassRows(data, w, h)
-		}
-		phases := decodingPhases(FormatPNG, data, image.Config{Width: k.w, Height: k.h}, gifFrames{})
-		if k.turned != (len(phases) == 2) {
-			t.Errorf("%s: %d decoding phases, want the decode and, turned, the turn", k.name, len(phases))
-		}
-		if extra := phases[0].alloc - d - rows; extra+processingSlack < mostHeld+spare {
-			t.Errorf("%s: the decode phase is charged %d beyond its picture and rows, which with processingSlack is %d, under the %d a decode of costly blocks was measured to hold and %d to spare", k.name, extra, extra+processingSlack, int64(mostHeld), int64(spare))
+		for _, c := range []struct {
+			name string
+			idat []byte
+			want int64
+		}{
+			{"no image data", nil, pngTablesFloor},
+			{"a MiB of image data", pngChunk("IDAT", make([]byte, 1<<20)), pngTablesFloor},
+			{"8 MiB of image data in two chunks", append(pngChunk("IDAT", make([]byte, 4<<20)), pngChunk("IDAT", make([]byte, 4<<20))...), 32 << 20},
+		} {
+			name := k.name + ", " + c.name
+			data := pngHeader(k.w, k.h, k.colour, k.depth, k.interlaced)
+			if k.turned {
+				data = append(data, pngChunk("eXIf", orientationTIFF(binary.BigEndian, 6))...)
+			}
+			data = append(data, c.idat...)
+			w, h := int64(k.w), int64(k.h)
+			d := pngBytesPerPixel(data) * w * h
+			rows := 2 * pngRowBytes(data, w)
+			if k.interlaced {
+				d, rows = 2*d, pngPassRows(data, w, h)
+			}
+			phases := decodingPhases(FormatPNG, data, image.Config{Width: k.w, Height: k.h}, gifFrames{})
+			if k.turned != (len(phases) == 2) {
+				t.Errorf("%s: %d decoding phases, want the decode and, turned, the turn", name, len(phases))
+			}
+			if allowed := pngTablesAllowed(data); allowed != c.want {
+				t.Errorf("%s: pngTablesAllowed = %d, want %d", name, allowed, c.want)
+			}
+			if extra := phases[0].alloc - d - rows; extra != c.want {
+				t.Errorf("%s: the decode phase is charged %d beyond its picture and rows, want the %d of tables it may make", name, extra, c.want)
+			}
 		}
 	}
+}
+
+// A PNG whose image data would have compress/flate make more tables than its
+// decode is charged for is refused as too costly to process before any of it
+// is inflated, and so is one whose ICC profile, inflated after the decode to
+// see whether a browser uses it, would make more than the image data left:
+// a block of tables more than allowed is refused, and the PNG that stops a
+// block short is processed. Refused, it is inflated no further than the
+// block that would take it past, so a picture of one pixel and 8 MiB of such
+// blocks, which made 1.9 GiB of tables and took 1.6 s of CPU on one core to
+// decode, is refused having allocated next to nothing, in about 4 ms.
+func TestAPNGThatWouldMakeMoreTablesIsRefusedBeforeItIsInflated(t *testing.T) {
+	const size = 2 << 20
+	if _, err := Process(context.Background(), allowedPNG(t, size, 0)); err != nil {
+		t.Errorf("image data of as many tables as allowed: Process = %v, want it processed", err)
+	}
+	if _, err := Process(context.Background(), allowedPNG(t, size, 1)); !errors.Is(err, ErrImageTooCostly) {
+		t.Errorf("image data of a block of tables more than allowed: Process = %v, want ErrImageTooCostly", err)
+	}
+
+	// Ten blocks in the image data, and the rest of what is allowed, or a
+	// block more, in a profile the gAMA beside it has read.
+	per := costlyBlockTables(t)
+	image := pixelPNG(costlyBlocks(10, 0, []byte{0, 0x80}))
+	left := int(pngTablesAllowed(image)/per) - 10
+	for _, c := range []struct {
+		blocks int
+		want   error
+	}{{left, nil}, {left + 1, ErrImageTooCostly}} {
+		profile := iCCPChunk("x", 0, costlyBlocks(c.blocks, 0, sRGBProfile(nil)))
+		data := withPNGChunks(image, gAMAChunk(100000), profile)
+		if _, err := Process(context.Background(), data); !errors.Is(err, c.want) {
+			t.Errorf("a profile of %d blocks after image data of 10, %d allowed in all: Process = %v, want %v", c.blocks, left+10, err, c.want)
+		}
+	}
+
+	// Process walks on this goroutine, which threadCPU counts the work of
+	// only while it stays on one thread.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	data := costlyPNG(8 << 20)
+	runtime.GC()
+	before, began := heapAllocs(), threadCPU()
+	_, err := Process(context.Background(), data)
+	cpu := threadCPU() - began
+	runtime.GC() // counts what the allocator's caches still held
+	allocated := heapAllocs() - before
+	t.Logf("8 MiB of costly blocks refused after %v of CPU, having allocated %d bytes", cpu, allocated)
+	if !errors.Is(err, ErrImageTooCostly) {
+		t.Errorf("8 MiB of costly blocks: Process = %v, want ErrImageTooCostly", err)
+	}
+	if allocated > 1<<20 {
+		t.Errorf("8 MiB of costly blocks: refusing them allocated %d bytes, over a MiB: they were inflated", allocated)
+	}
+}
+
+// What a PNG holds of compress/flate's tables as it decodes stays within
+// what its decode is charged for them however long a collection runs, which
+// grows with the rest of the heap: beside about two million live objects
+// (128 MiB of 64-byte ones), the picture of one pixel and 8 MiB of costly
+// blocks held 10.9 to 16.7 MiB as it decoded, when the decode was charged 8
+// MiB for every PNG, slack and all. The PNG here makes all the tables it is
+// let make, 32 MiB of them, and is held to its estimates beside as many
+// objects, each linked to the next so that a collection marks them one after
+// another, and the longest it can.
+func TestAPNGsTablesAreChargedBesideALargeHeap(t *testing.T) {
+	type node struct {
+		next *node
+		_    [7]uintptr
+	}
+	var heap *node
+	for i := 0; i < 128<<20/64; i++ {
+		heap = &node{next: heap}
+	}
+	checkProcessingCost(t, "PNG of costly blocks beside a large heap", allowedPNG(t, 8<<20, 0), nil)
+	runtime.KeepAlive(heap)
 }
 
 // What image/gif keeps of each frame besides its pixels fits in
@@ -1309,8 +1416,11 @@ func pngHeader(w, h int, colour, depth byte, interlaced bool) []byte {
 
 // headerUpload is a header from jpegHeader, pngHeader or webpHeader turned
 // by EXIF orientation o (none for 1) and made up to an upload of size bytes,
-// which is what the stored file's limit, and so the cost, grows with. Nothing
-// it is made up with is a picture's data.
+// which is what the stored file's limit, and so the cost, grows with. A JPEG
+// or a WebP is made up with what is not a picture's data, and a PNG with
+// image data, which the decode's charge for compress/flate's tables grows
+// with as well (pngTablesAllowed), so that it is the dearest PNG of its size;
+// none of it is data a decoder could make pixels of.
 func headerUpload(head []byte, o uint16, size int) []byte {
 	png := head[0] == 0x89
 	switch {
@@ -1325,10 +1435,9 @@ func headerUpload(head []byte, o uint16, size int) []byte {
 		if head[25] == 3 { // a palette, which image/png reads for the header
 			out = append(out, pngChunk("PLTE", []byte{0, 0, 0, 255, 255, 255})...)
 		}
-		// A chunk image/png skips, then the pixels: no tRNS for the cost to
-		// assume.
-		out = append(out, pngChunk("zzzz", make([]byte, max(size-len(out)-24, 0)))...)
-		return append(out, pngChunk("IDAT", nil)...)
+		// The pixels, with no tRNS before them for the cost to assume: one
+		// IDAT chunk that makes the upload up to size.
+		return append(out, pngChunk("IDAT", make([]byte, max(size-len(out)-12, 0)))...)
 	}
 	if head[0] == 0xFF {
 		// Comments make a JPEG up to size, then the start of a scan, where
@@ -1800,11 +1909,13 @@ func jpegFrameAt(data []byte) int {
 // (eachShape) and at every orientation it is listed at, from an upload of
 // the default 8 MiB: a progressive 4:2:0 or 4:1:1 JPEG that a turn stores at
 // 4:4:4 is accepted up to about 8:1 or 2:1, a progressive 4:2:2 or 4:4:0 one
-// that is not turned up to about 60:1, and a PNG until its longer side passes
-// about 750,000 pixels in colour or 1.3 to 1.5 million otherwise; everything
-// else in the accepted list at every shape. At a quarter of the size, every
-// kind is accepted at every shape up to a thousand to one, and a PNG of any
-// size is refused once its longer side passes 2.2 to 3.7 million.
+// that is not turned up to about 60:1, and a PNG, made up with image data as
+// headerUpload makes it, the dearest way (pngTablesAllowed), until its longer
+// side passes about 750,000 pixels in colour, 490,000 to 640,000 if it is
+// interlaced, or 1.3 to 1.5 million otherwise; everything else in the
+// accepted list at every shape. At a quarter of the size, every kind is
+// accepted at every shape up to a thousand to one, and a PNG of any size is
+// refused once its longer side passes 2.2 to 3.7 million.
 //
 // That is millions of shapes, so this reads the estimate Inspect compares
 // with the budget (processingCost), with a JPEG's frame header rewritten in
@@ -1841,9 +1952,9 @@ func TestEncodingsAreJudgedAtEveryShape(t *testing.T) {
 		{name: "8-bit RGBA PNG", head: headPNG(6, 8, false), format: png, turns: everyTurn, longest: 750_000},
 		{name: "8-bit grey+alpha PNG", head: headPNG(4, 8, false), format: png, turns: everyTurn, longest: 750_000},
 		{name: "8-bit grey+tRNS PNG", head: headPNGWithTRNS(0, 8, false), format: png, turns: everyTurn, longest: 750_000},
-		{name: "interlaced 8-bit RGB PNG", head: headPNG(2, 8, true), format: png, turns: []uint16{1}, longest: 750_000},
-		{name: "interlaced 8-bit RGBA PNG", head: headPNG(6, 8, true), format: png, turns: []uint16{1}, longest: 750_000},
-		{name: "interlaced 8-bit grey+alpha PNG", head: headPNG(4, 8, true), format: png, turns: []uint16{1}, longest: 750_000},
+		{name: "interlaced 8-bit RGB PNG", head: headPNG(2, 8, true), format: png, turns: []uint16{1}, longest: 550_000},
+		{name: "interlaced 8-bit RGBA PNG", head: headPNG(6, 8, true), format: png, turns: []uint16{1}, longest: 490_000},
+		{name: "interlaced 8-bit grey+alpha PNG", head: headPNG(4, 8, true), format: png, turns: []uint16{1}, longest: 640_000},
 		{name: "lossy WebP", head: headWebP("lossy"), format: webp, turns: []uint16{1}},
 	}
 	// The refused kinds, and the 16-bit colour PNGs that are refused or
@@ -1875,16 +1986,25 @@ func TestEncodingsAreJudgedAtEveryShape(t *testing.T) {
 		// file's, ending in its last chunk or the start of its scan, and
 		// the rest is nothing a picture is made of: zeros to 4 KiB and
 		// comments after them (jpegComments), as headerUpload makes it up
-		// with comments and zeros, but for a PNG's filler chunk. What the
-		// estimate reads of a file is its header and its length, and of a
-		// JPEG the application segments after its scans as well, of which
-		// comments are none.
+		// with comments and zeros, but for a PNG, whose last chunk, of
+		// image data, is made to run over the rest to the end, as
+		// headerUpload makes a PNG up with image data. What the estimate
+		// reads of a file is its header and its length, of a PNG how long
+		// its image data is, and of a JPEG the application segments after
+		// its scans as well, of which comments are none.
+		place := func(head []byte) {
+			clear(data[:4<<10])
+			copy(data, head)
+			if k.format == png {
+				i := pngFirstIDAT(data)
+				binary.BigEndian.PutUint32(data[i:], uint32(len(data)-i-12))
+			}
+		}
 		head := headerUpload(k.head(1000, 1000), o, 0)
 		if len(head) > 4<<10 {
 			return []string{"a header over 4 KiB"}
 		}
-		clear(data[:4<<10])
-		copy(data, head)
+		place(head)
 		frame := -1
 		if k.format == jpg {
 			if frame = jpegFrameAt(data); frame < 0 {
@@ -1953,17 +2073,15 @@ func TestEncodingsAreJudgedAtEveryShape(t *testing.T) {
 		// The estimate of the shapes above, read with the frame header
 		// rewritten, is the estimate of a header made at that size, and
 		// Inspect refuses by it, at the dearest shape and the least
-		// elongated refused. Once for each kind, the header comes with the
-		// rest of the upload as headerUpload makes it, too.
+		// elongated refused. At each kind's first orientation, the header
+		// comes with the rest of the upload as headerUpload makes it, too.
 		for p, cost := range map[image.Point]int64{dearest: dearestCost, leastShape: leastCost} {
 			if p == (image.Point{}) {
 				continue
 			}
-			head := headerUpload(k.head(p.X, p.Y), o, 0)
-			clear(data[:4<<10])
-			copy(data, head)
+			place(headerUpload(k.head(p.X, p.Y), o, 0))
 			files := [][]byte{data}
-			if ratio == 0 && o == k.turns[0] && p == dearest {
+			if ratio == 0 && o == k.turns[0] {
 				files = append(files, headerUpload(k.head(p.X, p.Y), o, upload))
 			}
 			for _, file := range files {

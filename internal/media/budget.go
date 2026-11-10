@@ -107,12 +107,20 @@ const UploadBudget int64 = 64 << 20
 // Inflating a PNG's image data follows its size, not its shape: image/png
 // inflates the whole stream, and empty deflate blocks, each with codes that
 // compress/flate builds tables for afresh, inflate to nothing at about three
-// quarters of a second of CPU on one core for every MiB. A picture of one
+// quarters of a second of CPU on one core for every MiB: a picture of one
 // pixel padded with them took ~6-7 s at the default size limit (8 MiB) and
-// ~20-24 s at MaxUploadBytes (31 MiB), more than processingAllowance, so its
-// deadline may come first; the decode reads through a ctxReader, and stopped
-// within a few milliseconds of its context ending. An ICC profile's stream is
-// inflated no further than iccStreamRead, a fifth of a second of such blocks
+// ~20-24 s at MaxUploadBytes (31 MiB). Such blocks make tables hundreds of
+// times their size, and the image data is walked before it is inflated
+// (pngImageDataTables), which now refuses that picture in ~4 ms at 8 MiB and
+// ~15 ms at 31 MiB. The costliest blocks it lets through are a dozen bytes
+// each that hold nothing but their end, under codes of a bit each that make
+// no tables (cheapCodes): a picture of one pixel padded with them took
+// ~1.5 s at 8 MiB and ~6 s at 31 MiB, a quarter of it the walk's (the
+// process's CPU, GOMAXPROCS=1 on one core, best of three). The walk asks its
+// context at least every half a millisecond of CPU (haltEveryWork), and the
+// decode reads through a ctxReader and stopped within a few milliseconds of
+// its context ending. An ICC profile's stream is walked and inflated no
+// further than iccStreamRead, ~43 ms of the costliest blocks let through
 // (pngProfileUsable).
 //
 // A slower core, or other uploads beside it, makes that longer (with the
