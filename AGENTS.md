@@ -1415,6 +1415,10 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   - Flood control stays on `clientIP`. The key is client-chosen, so a limit keyed on it
     is one any client can step around; for the same reason a poster ID is a courtesy for
     following a thread, not proof of anything.
+  - A post with no poster key takes its ID from the client address, which for an IPv6
+    client is its /64 (see the flood-control bullet), so everyone in one /64 who posts in
+    a thread without a key shares one ID there, as everyone behind one IPv4 NAT address
+    does.
   - A badged post's ID comes from the raw credential id as presented, never from
     `credential_id_hash` or any other stored value: an ID derived from stored data could
     be recomputed by anyone holding the database and the salt, for every credential in
@@ -1488,6 +1492,21 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   after `allow` too. State is per process and in memory, the captcha's challenge count
   (`captchaMeter`) included — a shared backend means replacing `cooldownLimiter`, which
   nothing else depends on, and the meter.
+  The client is whatever `clientIP` returns, and that is what "client address" means
+  everywhere in the code and the docs: an IPv4 address as it is, or an IPv6 address cut by
+  `addressKey` in `middleware.go` to the first address of its /64 (`2001:db8:1:2::`),
+  which is all an in-memory key holds for an IPv6 client. Every limit that takes
+  `clientIP` is keyed on it (today the posting and upload cooldowns, the captcha's
+  challenge meter and the per-client half of the code-request cooldown, whose other half
+  is keyed on the email's hash), and so is the poster ID of a post with no poster key. A
+  subscriber is normally handed at least a /64 and can use any address in it, so keyed
+  on the whole address one client could take a fresh key with every request. Everyone in
+  one /64 shares those keys, as everyone behind one IPv4 NAT address does
+  (`TestClientIP`, and through the handlers `ipv6_grouping_test.go`). The forwarded
+  entry and the peer both go through `addressKey`; a path into `clientIP` that skipped
+  it would give an IPv6 client a fresh key per request again. A holder of a shorter
+  prefix, a /56 or a /48, still has many /64s, and so many keys: a known limit, stated
+  in the README, that the code does not close.
   The keys carry client addresses, so the limiters are also a privacy surface: `New`
   builds a `cooldownSweep` over all four limiters and the captcha's challenge meter
   (`captchaMeter`, anything with `sweepExpired` is `expiring`) and starts its timer,

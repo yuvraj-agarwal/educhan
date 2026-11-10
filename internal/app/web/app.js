@@ -3401,8 +3401,10 @@ const FAQ_SECTIONS = [
           connection. They aren't written to its logs or its database, and posts aren't
           stored with one. When you post, ask for a badge code or start the
           <a href="#faq-check">anti-spam check</a>, the server holds your IP address in its
-          memory, and only there, so it can stop anyone doing any of these too often. Once it
-          no longer needs it for that, it clears it out the next time it tidies up.</li>
+          memory, and only there, so it can stop anyone doing any of these too often. For a
+          newer (IPv6) address it holds only the first part, the part that names your home or
+          campus network. Once it no longer needs it for that, it clears it out the next time
+          it tidies up.</li>
         <li>educhan never asks for your email address unless you want a badge, and even then
           it keeps only a scrambled fingerprint of it, never the address itself
           (<a href="#faq-badge">more about the badge</a>).</li>
