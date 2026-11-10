@@ -11,6 +11,7 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -663,7 +664,7 @@ func drainShares(t *testing.T, h *harness, clients ...string) {
 // connections declaring 8 MiB bodies and sending nothing held the whole budget
 // for the read timeout, turned every other image post away 503, and cost their
 // client nothing. Now one client's posts, an IPv6 client's counted by its /64
-// (shareKey), hold at most clientUploadShare, half the budget, its next post
+// (clientIP), hold at most clientUploadShare, half the budget, its next post
 // refused 429 at once; and a body that falls behind an even pace through its
 // read window by more than its grace is cut off and answered upload too slow,
 // giving its room back, whether it stops or trickles. A body holds its
@@ -717,10 +718,10 @@ func TestIdleUploadsCannotHoldTheUploadBudget(t *testing.T) {
 		h.app.uploadReadTimeout = time.Minute
 		h.app.postDeadline = 16 * time.Second // a wait for room gives up after a second
 		const network, other = "2001:db8:0:1::", "2001:db8:0:2::1"
-		drainShares(t, h, shareKey(network+"1"), shareKey(other))
+		drainShares(t, h, addressKey(netip.MustParseAddr(network+"1")), addressKey(netip.MustParseAddr(other)))
 		for i := 1; i <= perClient; i++ {
 			underwayUpload(t, h.base, network+strconv.Itoa(i), declared)
-			awaitShare(t, h, shareKey(network+"1"), int64(i)*declared)
+			awaitShare(t, h, addressKey(netip.MustParseAddr(network+"1")), int64(i)*declared)
 		}
 
 		var created createdPost
@@ -942,10 +943,11 @@ func TestIdleBodiesDoNotHoldUpOtherImagePosts(t *testing.T) {
 		h.addBoard("general")
 		h.app.uploadPaceGrace = 6 * time.Second
 		h.app.uploadReadTimeout = time.Minute
-		// A hundred /64s of one /48, each its own client (shareKey), with as
-		// many bodies as its share would hold whole: each body sends its first
-		// boundary line and stops. Held whole, eight of them would fill the
-		// budget, and the rest would each put a post in the queue for room.
+		// A hundred /64s of one /48, each its own client (clientIP), with as
+		// many bodies as its share would hold whole, each from another address
+		// of its /64: each body sends its first boundary line and stops. Held
+		// whole, eight of them would fill the budget, and the rest would each
+		// put a post in the queue for room.
 		var clients []string
 		for i := 1; i <= 100; i++ {
 			clients = append(clients, fmt.Sprintf("2001:db8:abcd:%x::1", i))
@@ -953,19 +955,20 @@ func TestIdleBodiesDoNotHoldUpOtherImagePosts(t *testing.T) {
 		const other = "198.51.100.2"
 		keys := []string{other}
 		for _, client := range clients {
-			keys = append(keys, shareKey(client))
+			keys = append(keys, addressKey(netip.MustParseAddr(client)))
 		}
 		drainShares(t, h, keys...)
 		var stalled []*idleBody
-		for _, client := range clients {
-			for j := 0; j < perClient; j++ {
-				stalled = append(stalled, startedUpload(t, h.base, client, declared))
+		for i := range clients {
+			for j := 1; j <= perClient; j++ {
+				address := fmt.Sprintf("2001:db8:abcd:%x::%x", i+1, j)
+				stalled = append(stalled, startedUpload(t, h.base, address, declared))
 			}
 		}
 		// Each holds the first piece of room its body takes, for the buffer
 		// its first bytes were read into.
 		for _, client := range clients {
-			awaitShare(t, h, shareKey(client), int64(perClient)*uploadHeadBytes)
+			awaitShare(t, h, addressKey(netip.MustParseAddr(client)), int64(perClient)*uploadHeadBytes)
 		}
 
 		body := boundForm(t, 2<<20, "from another client", pngBytes(t, 32, 32))

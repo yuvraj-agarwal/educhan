@@ -1178,16 +1178,15 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   post away `503`, and were charged nothing. Now `reserveUpload` takes from the client's
   share first (`clientUploadShare`, half the budget and room for the largest body
   `maxUploadLimit` allows, which `TestConfigFromEnvRejectsInvalidValues` holds; counted in
-  `uploadShares` per `clientIP`, but per /64 for an IPv6 address (`shareKey`), since its
-  host can usually take any address in its /64 and counted per address the share would
-  bound nothing, while flood control stays per address, its cooldowns being a wait a whole
-  network would feel), and a post past it is read to its end unkept and answered `429`
-  (`errUploadShare`, `busyRetryAfter` to wait, nothing charged) without waiting, or `400`
-  `upload too slow` if its body falls behind on the way (`turnAway`); and `pacedBody`
-  holds the body to an even pace through its read window, moving the read deadline before
-  every read to a grace past when what has arrived would have at the pace that brings it
-  all in by the window's end, so a body that sends nothing or a trickle is answered `400`
-  and gives its room back after the grace, not at the window's end
+  `uploadShares` per client address, the same key flood control uses (`clientIP`, an IPv6
+  client being its /64: see the flood-control bullet), so the people on one /64 share it
+  as those behind one IPv4 address do), and a post past it is read to its end unkept and
+  answered `429` (`errUploadShare`, `busyRetryAfter` to wait, nothing charged) without
+  waiting, or `400` `upload too slow` if its body falls behind on the way (`turnAway`);
+  and `pacedBody` holds the body to an even pace through its read window, moving the read
+  deadline before every read to a grace past when what has arrived would have at the pace
+  that brings it all in by the window's end, so a body that sends nothing or a trickle is
+  answered `400` and gives its room back after the grace, not at the window's end
   (`TestIdleUploadsCannotHoldTheUploadBudget`). That still let sixteen addresses, each
   within its share with three connections that declared the largest body and sent none of
   it, keep the budget full and its queue for room long, each body holding its room for the
@@ -1712,14 +1711,14 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `TestFloodControlForgetsAddressesBeforeTheNextRequest`, which shorten the period through
   `Config.cooldownSweepEvery`). The record-time sweep past `cooldownSweepThreshold` only
   bounds a burst between two ticks. The upload shares (`uploadShares`) are keyed on client
-  addresses too, by `shareKey` (the address, or an IPv6 address's /64), and need no sweep:
-  a client's entry is taken by `reserveUpload` once a multipart post's first bytes have
-  arrived, given back by `submission.release` when the post is answered, and deleted once
-  it holds nothing (`TestUploadSharesForgetAClientOnceItHoldsNothing`), so it is held for
-  about a minute at most, the wait for room, `uploadReadTimeout` and `processContext`
-  together, besides the time the database takes to store the post. The README's Flood
-  control section says so; a share kept past its post, or keyed on anything that outlives
-  it, would hold an address beyond that.
+  addresses too, by `clientIP` as the cooldowns are, and need no sweep: a client's entry
+  is taken by `reserveUpload` once a multipart post's first bytes have arrived, given back
+  by `submission.release` when the post is answered, and deleted once it holds nothing
+  (`TestUploadSharesForgetAClientOnceItHoldsNothing`), so it is held for about a minute at
+  most, the wait for room, `uploadReadTimeout` and `processContext` together, besides the
+  time the database takes to store the post. The README's Flood control section says so; a
+  share kept past its post, or keyed on anything that outlives it, would hold an address
+  beyond that.
 - `EDUCHAN_TRUST_PROXY` is a hop count, not a boolean (`true` still means 1). `clientIP`
   in `middleware.go` reads the Nth `X-Forwarded-For` entry **from the right**, because each
   proxy appends and everything to the left is client-supplied; a chain shorter than the

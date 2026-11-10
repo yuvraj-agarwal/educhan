@@ -1119,31 +1119,29 @@ server that would refuse what it sends.
   with that limit set. The posts of one client hold at most half the upload budget at
   once, so a client cannot take all of it with a few connections that declare large bodies
   and send nothing; its next image post past that answers `429`, with a `Retry-After` of
-  10 seconds and no cooldown started. A client here is one address, as flood control
-  counts them, except that the addresses of one IPv6 /64 network count as one client,
-  since a host can usually take any address in its /64: the people on one such network
-  share that half, as those behind one IPv4 address do, while flood control still counts
-  each of their addresses apart. A body takes no room until its first bytes arrive, and
-  one that sends none within 5 seconds answers `400` as below, having held none; it then
-  takes room for what it has sent, a little ahead of it, until an eighth of it has
-  arrived, and only then, in one go, as much as it says it is and that eighth again, which
-  is in memory twice until the form has been read, so a body that stops holds at most
-  twice what it has sent or, if that is more, 4 KiB. A post waits for room in either
-  budget for about ten seconds at most, and a client has one image post waiting for room
-  for its body at a time: its next that finds none answers `429` at once, as one past its
-  share does. The posts waiting for more room hold no more of the upload budget between
-  them than leaves room for the largest body there may be (55 MiB of the 64 at the default
-  limit), so that the first of them always gets its room once the bodies being read have
-  been answered; a post that holds room and would wait past that answers `503` at once.
-  Its body has 30 seconds to arrive from its first bytes, the time it waits for room
-  aside, at an even pace with up to 5 seconds to spare — a body that falls further behind
-  the pace that would bring it all in by then, sending nothing or a trickle, is cut off
-  then and its room given back — and once it has arrived its image has 25 seconds to be
-  processed and stored. A post that cannot be taken in time — no room within the wait, or
-  its image not stored within those 25 seconds — answers `503` (see [Flood
-  control](#flood-control)) with nothing stored, rather than being made after its answer
-  could no longer be sent. A body that takes longer than its 30 seconds, or falls behind
-  its pace, is the connection's doing, not the server's, and answers `400` with
+  10 seconds and no cooldown started. A client here is one client address, the same key
+  flood control uses (see [Flood control](#flood-control)), so the people on one IPv6 /64
+  network share that half, as those behind one IPv4 address do. A body takes no room until
+  its first bytes arrive, and one that sends none within 5 seconds answers `400` as below,
+  having held none; it then takes room for what it has sent, a little ahead of it, until
+  an eighth of it has arrived, and only then, in one go, as much as it says it is and that
+  eighth again, which is in memory twice until the form has been read, so a body that
+  stops holds at most twice what it has sent or, if that is more, 4 KiB. A post waits for
+  room in either budget for about ten seconds at most, and a client has one image post
+  waiting for room for its body at a time: its next that finds none answers `429` at once,
+  as one past its share does. The posts waiting for more room hold no more of the upload
+  budget between them than leaves room for the largest body there may be (55 MiB of the 64
+  at the default limit), so that the first of them always gets its room once the bodies
+  being read have been answered; a post that holds room and would wait past that answers
+  `503` at once. Its body has 30 seconds to arrive from its first bytes, the time it waits
+  for room aside, at an even pace with up to 5 seconds to spare — a body that falls
+  further behind the pace that would bring it all in by then, sending nothing or a
+  trickle, is cut off then and its room given back — and once it has arrived its image has
+  25 seconds to be processed and stored. A post that cannot be taken in time — no room
+  within the wait, or its image not stored within those 25 seconds — answers `503` (see
+  [Flood control](#flood-control)) with nothing stored, rather than being made after its
+  answer could no longer be sent. A body that takes longer than its 30 seconds, or falls
+  behind its pace, is the connection's doing, not the server's, and answers `400` with
   `{"error":"upload too slow"}`, with nothing stored and no cooldown started; the time a
   post spent waiting for room is not counted against its body. It is not
   `408 Request Timeout`, because Chromium takes a `408` that arrives on a reused HTTP/1.1
@@ -1542,24 +1540,23 @@ playing it can find, and those two are the cost the upload cooldown is there for
 loser of two replies racing for a thread's last image slot (see the HTTP API).
 
 The cooldowns are keyed on client addresses, and so are the upload shares (see **Memory**
-under [Image attachments](#image-attachments)), by the address or, for IPv6, by its /64
-network; those are the only places the server holds one. A client's share is held only
-while its image posts hold room for their bodies, from when their first bytes arrive until
-they are answered, and it is dropped as soon as the last of them is, with no sweep to wait
-for: the post's deadlines bound that to about a minute (some ten seconds' wait for room,
-30 seconds for the body and 25 for the image) besides the time the database takes to store
-the post. A sweep runs once a minute and drops every cooldown that has run out, so **an
-address is held in memory no longer than the longest cooldown that applies to it plus one
-minute**, counted from its last post (or code request, for verification's cooldown),
-whether or not anyone else posts in the meantime, **as long as the process has CPU between
-requests**. A host that gives it CPU only while it answers a request, which is Cloud Run's
-default (request-based billing), holds the sweep's timer back while an instance is idle.
-The first request to arrive after a sweep fell due runs it before it is handled, but until
-one arrives, or the instance is shut down, an idle instance's memory still holds the
-addresses it last saw. On Cloud Run the one-minute bound needs CPU allocated for the
-instance's whole life, which is also how it is then billed:
-`run.googleapis.com/cpu-throttling: "false"` on the revision, or `--no-cpu-throttling` on
-`gcloud run deploy`.
+under [Image attachments](#image-attachments)); those are the only places the server holds
+one. A client's share is held only while its image posts hold room for their bodies, from
+when their first bytes arrive until they are answered, and it is dropped as soon as the
+last of them is, with no sweep to wait for: the post's deadlines bound that to about a
+minute (some ten seconds' wait for room, 30 seconds for the body and 25 for the image)
+besides the time the database takes to store the post. A sweep runs once a minute and
+drops every cooldown that has run out, so **an address is held in memory no longer than
+the longest cooldown that applies to it plus one minute**, counted from its last post (or
+code request, for verification's cooldown), whether or not anyone else posts in the
+meantime, **as long as the process has CPU between requests**. A host that gives it CPU
+only while it answers a request, which is Cloud Run's default (request-based billing),
+holds the sweep's timer back while an instance is idle. The first request to arrive after
+a sweep fell due runs it before it is handled, but until one arrives, or the instance is
+shut down, an idle instance's memory still holds the addresses it last saw. On Cloud Run
+the one-minute bound needs CPU allocated for the instance's whole life, which is also how
+it is then billed: `run.googleapis.com/cpu-throttling: "false"` on the revision, or
+`--no-cpu-throttling` on `gcloud run deploy`.
 
 The address itself is never written to the database or the logs. A post from a
 client that sends no poster key does store a poster ID derived from it (see
