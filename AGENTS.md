@@ -1060,7 +1060,7 @@ joke about dying with no cause or laugh beside it shown the support message). Th
 matched and a hold waits for a person.
 
 **The corpus** (`testdata/filter_corpus/{academic,life,contact,risk}{,_2,_3}.jsonl`) is
-4,537 made-up posts in three parts, one JSON object a line: `id` (unique across the
+4,937 made-up posts in three parts, one JSON object a line: `id` (unique across the
 files), `body`, `subject`, `name`, `expect` (`publish`, `block`, `support` or `hold`; a
 method question that shows support and is then held meets `hold`), `why`, and, only
 together, `known_miss: true` and a `note` saying why the miss is accepted rather than
@@ -1105,12 +1105,12 @@ still happen to be someone's, as with the unit tests' examples. Label a post by 
 filter should do, not by what it does. A rule change that turns a labelled post wrong is a
 regression to fix, or a label to correct with the reason in `why`; a `known_miss` is for a
 miss whose fix would cost more than it buys, and its `note` says what. **The rules have
-been fitted to all 4,537 posts**, all three parts: the `_2` part was written apart from
+been fitted to all 4,937 posts**, all three parts: the `_2` part was written apart from
 the rules, then used to rewrite the hold rules to read grammar and, after that, the
 contact and support rules to read verb classes, apps with their objects, the poster's own
 voice in any tense, number layouts and quotation; the `_3` part was written apart from
 them too, measured unseen (the README gives the figures), and then used to put right the
-ordinary posts it stopped and to widen each family cause by cause; the last 1,652 pin
+ordinary posts it stopped and to widen each family cause by cause; the last 2,052 pin
 what a review of the rules found they missed or stopped wrongly, each written beside the
 change that put it right; so the rates `-v` logs describe how closely the rules fit these
 posts and are no measurement of anything else. The README says so, and a claim about how
@@ -1123,10 +1123,14 @@ label lets through a statement, a "why" or a topic, never the dose asked. In `_3
 anyone, as a bare "dm me" does not), and each doubt about a label that was settled the
 other way says so with "kept": a Zoom meeting ID with its passcode and a Meet link stay
 `block`, a plan or a time in the poster's own voice stays `support` (only a method
-question goes on to a hold), and "kms" over a mishap got over stays `publish`. Twelve
+question goes on to a hold), and "kms" over a mishap got over stays `publish`. Fifteen
 known misses are left, each with its note: an address in base64, a number given as a sum
 in `[math]`, a request in Bengali, eight risky posts whose harm is implied or written as
-code, and a crisis post that never names the act.
+code, a threat to blow up a lab "and then" a name in small letters at the end of the
+sentence (read as often as the poster's next act), two reports of a threat that are held
+because "scratched into my desk" and "these messages won't stop" are not read as the
+poster receiving it (the two ordinary posts the test logs as stopped), and a crisis post
+that never names the act.
 
 **API contract** (`refuseContent` and `heldResponse` in `handlers.go`). Both posting
 endpoints take `support_seen` (JSON boolean; multipart through `isTruthy`). The check runs
