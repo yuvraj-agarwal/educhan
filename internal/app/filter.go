@@ -567,8 +567,9 @@ type view struct {
 	runLine, runFirst int
 	// armedAt caches explodeArmedFrom: where the last word in the text that
 	// arms a bomb starts, plus two, 1 when no word does, 0 when not yet
-	// looked for.
-	armedAt int
+	// looked for; madeAt is the same for the last word that arms one or is a
+	// bomb said in praise of something made (madePraise).
+	armedAt, madeAt int
 	// loose is set for the loose view, which a window search is read on in
 	// the loose form of its pattern.
 	loose bool
@@ -8476,8 +8477,11 @@ func (f *scannedField) threatComingCheck(v *view, m []int) bool {
 			return false
 		}
 	case ruin:
-		armed := is(last, "explode") && explodeArmedFrom(v, m[1])
-		if !armed && (untimed(sentence, stageWords) || untimed(sentence, eventWords)) {
+		armed := is(last, "explode") && explodeArmedFrom(v, m[1], false)
+		// A bomb said in praise of something made is excused by news only:
+		// not "the school will explode tomorrow, my project is a bomb".
+		made := is(last, "explode") && explodeArmedFrom(v, m[1], true)
+		if !made && (untimed(sentence, stageWords) || untimed(sentence, eventWords)) {
 			return false // not "the hall will explode tomorrow, the bomb is under the stage"
 		}
 		if is(last, "burn") && len(next) > 0 && (!nounEnds[next[0]] || is(next[0], "through")) {
@@ -8732,29 +8736,55 @@ func explodeTaken(ws []string) bool {
 }
 
 // explodeArmedFrom reports a bomb or the poster arming one (explodeArms) in
-// the words of v's text from i on, to the end of the post. Neither news in
-// the clause after "explode" nor a stage or an event in the sentence excuses
-// them: "when the results come out, i planted it in the staffroom", "when
-// they give the prizes, the bomb is under the stage". Where the last word
-// that arms one starts is read once for each view (armedAt), so a post that
-// says "will explode" again and again costs no more for it.
-func explodeArmedFrom(v *view, i int) bool {
+// the words of v's text from i on, to the end of the post, and, with made, a
+// bomb said in praise of something made as well (madePraise: "our project is
+// a bomb", "my art project is a bomb"), which news excuses but a stage or an
+// event in the sentence does not ("the school will explode tomorrow, my
+// project is a bomb"). Neither news in the clause after "explode" nor a
+// stage or an event in the sentence excuses a bomb armed: "when the results
+// come out, i planted it in the staffroom", "when they give the prizes, the
+// bomb is under the stage". Where the last word that arms one starts, and
+// the last that does or is praised so, is read once for each view (armedAt,
+// madeAt), so a post that says "will explode" again and again costs no more
+// for it.
+func explodeArmedFrom(v *view, i int, made bool) bool {
 	if v.armedAt == 0 {
 		v.work += len(v.text)
-		v.armedAt = 1
+		v.armedAt, v.madeAt = 1, 1
 		sp := wordSpans(v.text)
 		ws := make([]string, len(sp))
 		for k, s := range sp {
 			ws[k] = v.text[s[0]:s[1]]
 		}
-		for k := len(ws) - 1; k >= 0; k-- {
+		for k := len(ws) - 1; k >= 0 && v.armedAt == 1; k-- {
 			if explodeArms(ws, k) {
 				v.armedAt = sp[k][0] + 2
-				break
+			}
+			if v.madeAt == 1 && (v.armedAt > 1 || madePraise(ws, k)) {
+				v.madeAt = sp[k][0] + 2
 			}
 		}
 	}
+	if made {
+		return v.madeAt-2 >= i
+	}
 	return v.armedAt-2 >= i
+}
+
+// madePraise reports a bomb at ws[i] said in praise (explodePraise) of
+// something made (explodeMade) or of a work named with a word before it
+// (workSubject): "our project is a bomb", "our project is bomb", "my art
+// project is a bomb", "the stage setup is a bomb", not "our dance is the
+// bomb" or "my results are a bomb".
+func madePraise(ws []string, i int) bool {
+	if !explodeDevices[ws[i]] || !explodePraise(ws, i) {
+		return false
+	}
+	k := i - 1
+	if is(ws[k], "a") {
+		k--
+	}
+	return k > 0 && (explodeMade[ws[k-1]] || workSubject(ws[:k]))
 }
 
 // explodeArms reports that ws[i] arms a bomb: a bomb or what sets one off
@@ -8912,13 +8942,16 @@ func phraseHead(ws []string) string {
 // explodePraise reports explodeDevices at ws[i] said in praise of what was
 // just named: "the bomb" after explodeIs or a possessive ("our dance is the
 // bomb", "the dj's the bomb"), "a bomb" after explodeIs or "be" with
-// something named as the subject (ownedSubject) or "of" after it ("my
-// results are a bomb", "the lineup is a bomb", "it'll be a bomb of a day"),
-// and so is a second subject after it (soIsNamed: "the lineup is a bomb and
-// so is the food"), not "there is a bomb", "the package is a bomb", "my bag
-// is a bomb", "my tiffin is a bomb" or "my results are a bomb and so is my
-// bag"; and "explosive" after explodeIs or "be" said of explodeMoods ("the
-// atmosphere will be explosive").
+// something named as the subject (ownedSubject, or workSubject for a work
+// named with a word before it) or "of" after it ("my results are a bomb",
+// "the lineup is a bomb", "my art project is a bomb", "it'll be a bomb of a
+// day"), "bomb" after explodeIs said of something made or such a work ("our
+// project is bomb"), and so is a second subject after it (soIsNamed: "the
+// lineup is a bomb and so is the food"), not "there is a bomb", "the package
+// is a bomb", "my bag is a bomb", "my tiffin is a bomb", "the lineup is
+// bomb" or "my results are a bomb and so is my bag"; and "explosive" after
+// explodeIs or "be" said of explodeMoods ("the atmosphere will be
+// explosive").
 func explodePraise(ws []string, i int) bool {
 	if i < 2 {
 		return false
@@ -8932,11 +8965,15 @@ func explodePraise(ws []string, i int) bool {
 		return !pointed || i+1 == len(ws) || !explodeUnder[ws[i+1]] && !explodeAt[ws[i+1]] && !is(ws[i+1], "next")
 	case is(ws[i-1], "a") && be && i+1 < len(ws) && is(ws[i+1], "of"):
 		return true
-	case is(ws[i-1], "a") && be && ownedSubject(ws[:i-2]) && soIsNamed(ws[i+1:]):
-		// Something made or given is praised unless it is said to be one
-		// truly or somewhere: "our project is a bomb", not "my project is a
-		// bomb, literally".
-		return !explodeMade[ws[i-3]] || !explodeLiteral(ws[i+1:])
+	case is(ws[i-1], "a") && be && (ownedSubject(ws[:i-2]) || workSubject(ws[:i-2])) && soIsNamed(ws[i+1:]):
+		// Something made or given, or a work named with a word before it, is
+		// praised unless it is said to be one truly or somewhere: "our
+		// project is a bomb", "my art project is a bomb", not "my project is
+		// a bomb, literally".
+		return !explodeMade[ws[i-3]] && !workSubject(ws[:i-2]) || !explodeLiteral(ws[i+1:])
+	case explodeIs[ws[i-1]] && (explodeMade[ws[i-2]] && ownedSubject(ws[:i-1]) || workSubject(ws[:i-1])) &&
+		soIsNamed(ws[i+1:]):
+		return !explodeLiteral(ws[i+1:]) // "our project is bomb"
 	case is(ws[i], "explosive") && (explodeIs[ws[i-1]] || is(ws[i-1], "be")):
 		k := i - 2
 		for k >= 0 && (is(ws[k], "will") || is(ws[k], "gonna") || is(ws[k], "be")) {
@@ -9004,6 +9041,24 @@ func ownedSubject(ws []string) bool {
 	h := ws[n-1]
 	return !explodeHidden[h] && !explodeVessels[h] && !explodeSpots[h] && !threatPlaceWords[h] && !explodeIts[h] &&
 		!is(h, "thing")
+}
+
+// workSubject reports the words before a verb ending in a work (explodeWorks)
+// of someone's, or "the", "this" or "that" work, named with one word before
+// it that is no bomb and holds nothing ("my art project", "our science
+// model", "the stage setup", "my dance performance"), not "my bomb project",
+// "the gift box" or "my lunch bag".
+func workSubject(ws []string) bool {
+	n := len(ws)
+	if n < 3 || !explodeWorks[ws[n-1]] {
+		return false
+	}
+	o, w := ws[n-3], ws[n-2]
+	if !ownerWord(o) && !is(o, "the") && !is(o, "this") && !is(o, "that") {
+		return false
+	}
+	return !ownerWord(w) && !explodeArticles[w] && !explodeDevices[w] && !explodeHidden[w] && !explodeVessels[w] &&
+		!explodeHolds[w] && !explodeIts[w] && !is(w, "thing")
 }
 
 // explodeShown reports, after the poster setting or putting "it", a place it
@@ -9194,9 +9249,11 @@ var (
 	// before "is a bomb" ("my lunchbox is a bomb", ownedSubject); explodeMade
 	// are things made or given, praise unless explodeTruly or a place follow
 	// (explodeLiteral: "our project is a bomb", not "my project is a bomb,
-	// literally"); explodeHolds hold or carry something too, though no one
-	// praises them; explodeFed are places where food is served, not hidden
-	// ("what's in the canteen today").
+	// literally"), and so are explodeWorks named with a word before them
+	// (workSubject: "my art project", "the stage setup"); explodeHolds hold
+	// or carry something too, though no one praises them; explodeFed are
+	// places where food is served, not hidden ("what's in the canteen
+	// today").
 	explodeArticles  = canonSetOf(`the a an this that some`)
 	explodeHides     = canonSetOf(`hid hidden plant rig wire`)
 	explodeParticles = canonSetOf(`all up together`)
@@ -9207,6 +9264,8 @@ var (
 	explodeVessels = canonSetOf(`lunchbox lunchboxes tiffin tiffins dabba gift gifts present presents bottle
 		bottles`)
 	explodeMade  = canonSetOf(`project projects model models`)
+	explodeWorks = canonSetOf(`project projects model models performance performances setup presentation
+		presentations dance song speech essay poster`)
 	explodeTruly = canonSetOf(`literally actually really real actual fr`)
 	explodeHolds = canonSetOf(`van vans car cars bus buses truck trucks jeep auto rickshaw scooty dicky dickey
 		trolley trolleys cart carts boot trunk drawer drawers cupboard cupboards closet closets cabinet cabinets
