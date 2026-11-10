@@ -19,9 +19,12 @@ import (
 )
 
 // Verified Anonymity: a poster proves they hold an address at a real
-// institution and may carry a badge for it, while the server stays unable to
-// say which address wrote which post — or, without guessing the address, which
-// address any record belongs to at all.
+// institution and may carry a badge for it, while nothing educhan keeps says
+// which address wrote which post — or, without testing a guessed address,
+// which address any record belongs to at all. That is a property of what is
+// kept, with the limits README.md sets out under "The privacy property,
+// exactly": timing, a guessed address tested with the secret, and whoever
+// changes the server or records the requests it is sent.
 //
 // Three rules hold that up, and every function in this file is written to keep
 // them true:
@@ -31,9 +34,13 @@ import (
 //     kept is HMAC(EDUCHAN_VERIFY_SECRET, normalised address), which exists
 //     only to stop one mailbox minting unlimited identities.
 //  2. The credential carries no trace of the address. It is a signed blob
-//     holding a badge label, an expiry, and a random identifier — nothing that
-//     can be reversed or correlated back to the mailbox that earned it.
-//  3. Nothing links a credential to a post. The badge is copied onto the post
+//     holding a badge label, an expiry, and a random identifier — nothing
+//     derived from the address but the institution its label names, so
+//     nothing that can be reversed to the mailbox that earned it. Its random
+//     id is, as its SHA-256, the key of the stored row that also holds the
+//     address's keyed hash, so whoever sees a credential and holds the
+//     database can find that row.
+//  3. Nothing stored with a post links it to a credential. The badge is copied onto the post
 //     as text, the verification tables reference no post, and using a
 //     credential updates no row, so there is no timestamp to line up against.
 //     A badged post's poster ID is derived from the random id inside the

@@ -984,10 +984,10 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   states it in full.** Three rules make it true, and a change that breaks any of them
   breaks the promise rather than just the code: the address is never written anywhere
   (only `HMAC(EDUCHAN_VERIFY_SECRET, normalised address)` is, as a uniqueness key); the
-  credential carries only a label, an expiry, and a random id; and nothing links a
-  credential to a post. Practical consequences when editing `verify.go`, `store.go`,
-  `0004_verification.sql`, `0015_verification_statistics.sql`, or
-  `0016_vacuum_probe.sql`:
+  credential carries only a label, an expiry, and a random id; and nothing stored links
+  a credential to a post (within the limits the README states). Practical consequences
+  when editing `verify.go`, `store.go`, `0004_verification.sql`,
+  `0015_verification_statistics.sql`, or `0016_vacuum_probe.sql`:
   - Never add a column to `verification_pending` or `verification_credentials` that could
     be joined to a post, and never add `created_at` or a "last used" — an issuance or use
     timestamp correlates with the posts around it. `CredentialLabel` is a read and has to

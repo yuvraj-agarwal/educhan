@@ -204,9 +204,16 @@ backups and its logs) and what can be worked out from them. It is not a promise
 about an operator, or an intruder, who changes the server or records requests as
 they arrive: a code request carries the address, and every badged post carries
 the credential, whose random id is the key (as its SHA-256) of the stored row
-that also holds the address's keyed hash. Whoever records that header can tie
-each badged post they see to that row, test a guessed address against it and,
-with the poster-ID salt, find that credential's badged posts in every thread.
+that also holds the address's keyed hash. Whoever records that header and
+holds the database can tie each badged post they see to that row; with the
+server secret they can test a guessed address against it, and with the
+poster-ID salt find that credential's badged posts in every thread. Nor is what
+follows a promise about a database set to log statements with their parameters
+(`log_statement`, `log_min_duration_statement`, or an extension such as
+pgaudit): every badged post looks its row up by the SHA-256 of its
+credential's id, and every code request and confirmation writes the address's
+keyed hash, so such a log ties each of them to its row, with a time.
+PostgreSQL leaves all of these off by default; leave them off.
 
 **What they can see**
 
@@ -248,7 +255,11 @@ with the poster-ID salt, find that credential's badged posts in every thread.
   second too. So an issuance followed by a badged post ties that post to its
   stored record — the one row with that label and that expiry day — on any day
   its institution issued only one credential, however many other institutions
-  issued that day. The posts' gaps keep that possible for as long as the posts
+  issued that day; and on any day while the row still carries its own
+  transaction id (until the next sweep, in a backup taken before it, and in the
+  write-ahead log), since that id dates the row to just before the post. The
+  post brings the poster's other badged posts in its thread with it, by their
+  shared poster ID. The posts' gaps keep that possible for as long as the posts
   are kept; the request log adds the second for as long as it is kept.
 - Which posts carry which badge, because a badge is displayed on the post.
 - Which badged posts in one thread came from the same credential, because they
@@ -256,11 +267,14 @@ with the poster-ID salt, find that credential's badged posts in every thread.
   threads the same credential's IDs differ.
 - **Confirmation of a guess.** The email hash is keyed, not encrypted: holding
   the secret, an operator who suspects a particular address can recompute the
-  HMAC and check whether that person is verified. This is inherent to a
-  uniqueness key and is the sharpest edge of the design. It answers "is
-  ana@iitb.ac.in verified?" — it does not answer "who is verified?", nor
-  "which posts are theirs?" except for a post tied to its record by the
-  issuance times above.
+  HMAC and check whether that person is verified. Nothing limits how many
+  addresses they try: with the secret and the database, any list they can draw
+  up — a class roster, a staff directory, a pattern of roll numbers — can be
+  hashed and matched offline. This is inherent to a uniqueness key and is the
+  sharpest edge of the design. It answers "is ana@iitb.ac.in verified?" and
+  "who on this list is verified?" — it does not answer "who is verified?" for
+  an address nobody thought to list, nor "which posts are theirs?" except for a
+  post tied to its record by the issuance times above.
 
 **What they cannot do**
 
@@ -287,7 +301,8 @@ with the poster-ID salt, find that credential's badged posts in every thread.
   above are enough on some days:
   neither the gaps among the posts' transaction ids nor the log's lines name an
   institution, but a badged post soon after an issuance does, and that ties the
-  post to a single record on a day its institution issued only one credential.
+  post to a single record on a day its institution issued only one credential,
+  or on any day while the record still carries its own transaction id.
 - Group a poster's requests by their badge. The credential is sent only on the
   posts that carry one, so an operator watching the request layer sees it on
   exactly the posts that already display it, and on nothing else. On those posts
@@ -699,14 +714,15 @@ often monitored and closed when a pupil leaves. That limits the badge, not who
 may use the site. The aim is that every badge names a university or college, but
 that is a goal, not a guarantee: `ac.uk` also admits sixth-form colleges, and no
 suffix maps exactly onto higher education. Suffixes known to be shared with
-schools are either guarded by denials (`edu.au`, and `ac.in` through
-`!kvs.ac.in`) or left out in favour of named universities (`edu.in`, `ac.jp`,
-`edu.sg`, `edu.hk`); `ac.th` is left out too, because it has not been checked;
-and `sch.uk` is not listed. Every suffix in the file is marked reviewed or not
-checked yet: 4 of its 34 suffixes are reviewed (`edu`, `ac.uk`, `ac.in` and
-`edu.au`), and the other 30 are not checked yet, which in the file's words means
-they were not checked and may still admit schools. No EU member-state suffixes
-are listed while the site does not target the EU.
+schools are either guarded by denials (`edu.au`, `ac.in` through `!kvs.ac.in`,
+and `edu.my`, which is not checked yet, through `!moe-dl.edu.my`) or left out
+in favour of named universities (`edu.in`, `ac.jp`, `edu.sg`, `edu.hk`); `ac.th`
+is left out too, because it has not been checked; and `sch.uk` is not listed.
+Every suffix in the file is marked reviewed or not checked yet: 4 of its 34
+suffixes are reviewed (`edu`, `ac.uk`, `ac.in` and `edu.au`), and the other 30
+are not checked yet, which in the file's words means they were not checked and
+may still admit schools. No EU member-state suffixes are listed while the site
+does not target the EU.
 `EDUCHAN_VERIFY_DOMAINS` points at a file that **replaces** the
 built-in list rather than extending it, so a deployment sees exactly what it
 configured.
@@ -862,7 +878,7 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Index | Paginated, newest bump first, showing each thread's opening post and last three replies |
 | Catalog | Every live thread on one page as excerpt tiles with thumbnails; an excerpt shows a spoiler as `[spoiler]`, never what it hides |
 | Attachments | One image per post and a per-board cap per thread, validated by magic bytes, thumbnailed at upload, served from `/media/…`; off unless switched on, and `GET /api/site` says which |
-| Verification | Optional institutional badge from a six-digit code handed to a mail sender. No mail is sent yet: the only sender in the repository is the development one, which prints the code and the address to the server's stdout and needs `EDUCHAN_MAIL_DEV=1`, and the deploy script leaves verification switched off. The address is never written to the database, only a keyed hash of it, and nothing stored with a post points to its verification record, though timing can tie the two on a day an institution issues a single credential ([The privacy property, exactly](#the-privacy-property-exactly)) |
+| Verification | Optional institutional badge from a six-digit code handed to a mail sender. No mail is sent yet: the only sender in the repository is the development one, which prints the code and the address to the server's stdout and needs `EDUCHAN_MAIL_DEV=1`, and the deploy script leaves verification switched off. The address is never written to the database, only a keyed hash of it, and nothing stored with a post points to its verification record, though timing can tie the two: until the nightly sweep, in backups taken before it, and afterwards on a day an institution issues a single credential ([The privacy property, exactly](#the-privacy-property-exactly)) |
 | Moderation | Sticky, lock, and delete a post or a whole thread, plus creating and reconfiguring boards, behind a shared moderation key |
 | Archive | Threads pushed past a board's thread limit are archived rather than deleted: they leave the index and the catalog, refuse replies, and still load by number |
 | Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed, then rewrites the verification credentials so that every credential issued before the sweep carries the sweep's transaction id rather than its own ([Transaction ids, and the nightly rewrite](#transaction-ids-and-the-nightly-rewrite)); per-client cooldowns limit new threads, replies, and uploads, and forget each address within a minute of its cooldown ending while the process has CPU between requests (see Flood control for an idle Cloud Run instance) |
