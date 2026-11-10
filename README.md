@@ -1099,6 +1099,20 @@ cooldowns apply:
 | Replying | `EDUCHAN_POST_COOLDOWN` | client and board |
 | Attaching an image | `EDUCHAN_UPLOAD_COOLDOWN` | client, across every board |
 
+Here and everywhere else in this README, a client address is an IPv4 address as
+it is or, for IPv6, the /64 network the address belongs to. Wherever the server
+keys on the client (the posting and upload cooldowns above, verification's
+code-request cooldown, and the poster ID of a post sent with no poster key) it
+cuts an IPv6 address to the first address of its /64, so
+`2001:db8:1:2:aaaa:bbbb:cccc:dddd` becomes `2001:db8:1:2::`, and that is all the
+key held in memory carries for an IPv6 client. A subscriber is normally handed
+at least a /64 and can use any address in it, so keyed on the whole address one
+client could take a fresh key with every request and no cooldown would ever
+apply. Everyone in one /64, such as a household or a campus subnet, shares those
+cooldowns and that poster ID, as everyone behind one IPv4 NAT address always
+has. A client that holds a shorter prefix, a /56 or a /48, still has many /64s
+and so many keys; nothing in the server stops that.
+
 Posting is counted per board so one client can follow a conversation on two
 boards at once. Uploads are counted across the whole server instead, because
 decoding, thumbnailing, and storing an image costs the same wherever the post

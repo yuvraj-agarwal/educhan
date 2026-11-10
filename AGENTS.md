@@ -851,6 +851,19 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   - Flood control stays on `clientIP`. The key is client-chosen, so a limit keyed on it
     is one any client can step around; for the same reason a poster ID is a courtesy for
     following a thread, not proof of anything.
+  - What `clientIP` returns is what "client address" means everywhere in the code and the
+    docs: an IPv4 address as it is, or an IPv6 address cut by `addressKey` in
+    `middleware.go` to the first address of its /64 (`2001:db8:1:2::`), which is all the
+    in-memory key holds for an IPv6 client. It keys every cooldown (posting, upload, code
+    requests) and the poster ID of a post with no poster key. A subscriber is normally
+    handed at least a /64 and can use any address in it, so keyed on the whole address one
+    client could take a fresh key with every request. Everyone in one /64 shares those
+    keys, as everyone behind one IPv4 NAT address does (`TestClientIP`, and through the
+    handlers `ipv6_grouping_test.go`). The forwarded entry and the peer both go through
+    `addressKey`; a path into `clientIP` that skipped it would give an IPv6 client a fresh
+    key per request again. A holder of a shorter prefix, a /56 or a /48, still has many
+    /64s, and so many keys: a known limit, stated in the README, not something the code
+    claims to close.
   - A badged post's ID comes from the raw credential id as presented, never from
     `credential_id_hash` or any other stored value: an ID derived from stored data could
     be recomputed by anyone holding the database and the salt, for every credential in
