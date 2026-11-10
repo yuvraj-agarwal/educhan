@@ -5178,7 +5178,7 @@ func threatExcused(text string, m []int, cm string, ws, next []string, sentence 
 			is(last, "jumped") && len(next) > 0 && jumpedNotHarm[next[0]],
 			is(last, "stabbed") && len(next) > 2 && is(next[0], "in") && is(next[2], "back"),
 			is(last, "killed") && len(next) > 0 && is(next[0], "off"),
-			habitual(sws), anyIn(sws, storyWords), gamesIn(sws),
+			habitual(sws), storyNamed(sws), gamesIn(sws),
 			// "our class is getting killed in the test tomorrow": an exam's
 			// hyperbole, with no weapon named.
 			(is(last, "killed") || is(last, "murdered") || is(last, "slaughtered") || is(last, "massacred")) &&
@@ -5200,9 +5200,9 @@ func threatExcused(text string, m []int, cm string, ws, next []string, sentence 
 		// is not who pays.
 		return mine && !relative || anyIn(sws, karmaWords)
 	case hasWord(ws, "with") && (hasWord(ws, "end") || hasWord(ws, "ends")):
-		return anyIn(ws, firstPerson) || anyIn(sws, storyWords) || len(next) > 0 && endsWithErrand[next[0]]
+		return anyIn(ws, firstPerson) || storyNamed(sws) || len(next) > 0 && endsWithErrand[next[0]]
 	case is(last, "alive"):
-		return anyIn(sws, storyWords) || gamesIn(sws)
+		return storyNamed(sws) || gamesIn(sws)
 	case is(last, "die") && everyoneIn.MatchString(cm):
 		return anyIn(ws, eventWords) || anyIn(ws, foodWords)
 	case hinglishCarry.MatchString(cm):
@@ -6623,14 +6623,48 @@ var (
 
 // storyNamed reports a story named in ws: a film, a show, a book. "Shows
 // up" is no show.
+//
+// A story word names no story where it is the poster's own thing ("he tore
+// my book"), a time ("after the show", "before the film"), an outing ("movie
+// night", "comic con") or a fuss ("so much drama in our class", "i'm done
+// with the drama"), so the act round it is read as it would be without it.
 func storyNamed(ws []string) bool {
 	for i, w := range ws {
-		if storyWords[w] && !((is(w, "show") || is(w, "shows")) && i+1 < len(ws) && is(ws[i+1], "up")) {
-			return true
+		if !storyWords[w] || (is(w, "show") || is(w, "shows")) && i+1 < len(ws) && is(ws[i+1], "up") {
+			continue
 		}
+		prev, prev2 := "", ""
+		if i > 0 {
+			prev = ws[i-1]
+		}
+		if i > 1 {
+			prev2 = ws[i-2]
+		}
+		switch {
+		case myWords[prev], is(prev, "the") && storyTimes[prev2], storyTimes[prev],
+			i+1 < len(ws) && storyOutings[ws[i+1]], is(w, "drama") && dramaFussAt(ws, i):
+			continue
+		}
+		return true
 	}
 	return false
 }
+
+// dramaFussAt reports that "drama" at k of ws is a fuss, not a play: "so
+// much drama", "enough drama", "done with the drama".
+func dramaFussAt(ws []string, k int) bool {
+	return k > 0 && (dramaFuss[ws[k-1]] || k > 1 && is(ws[k-1], "the") && dramaFuss[ws[k-2]])
+}
+
+var (
+	// storyTimes before a story word make it a time: "after the show".
+	storyTimes = canonSetOf(`after before during till until`)
+	// storyOutings after one make it an outing: "movie night", "comic con".
+	storyOutings = canonSetOf(`night nights con convention marathon screening club`)
+	// dramaFuss before "drama" makes it a fuss: "so much drama", "enough
+	// drama", "done with the drama".
+	dramaFuss = canonSetOf(`much enough more no with all this such any`)
+)
 
 // dreamWords make an act one in a dream or a game of pretend.
 var dreamWords = canonSetOf(`dream dreams dreamt dreamed nightmare nightmares fantasy fantasise fantasize
@@ -6888,6 +6922,10 @@ func (f *scannedField) threatFrame(v *view, verb, after string, at int) (end int
 		}
 		if bum(ws) {
 			return act(2)
+		}
+		// "knock out Kabir tomorrow", the particle first.
+		if np := object(1); verb == "knock" && word(0, "out") && np.people(true) && !np.mine {
+			return act(np.n)
 		}
 		np := object(0)
 		if !np.people(true) || np.mine {
@@ -8246,6 +8284,9 @@ func unnegatedIn(ws []string, sets ...map[string]bool) bool {
 		in := false
 		for _, set := range sets {
 			in = in || set[w]
+		}
+		if in && is(w, "drama") && dramaFussAt(ws, k) {
+			in = false // "so much drama in our class": a fuss, no play
 		}
 		if in {
 			if anyIn(ws[max(0, k-3):k], excuseNegators) {
