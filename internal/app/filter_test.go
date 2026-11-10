@@ -3589,13 +3589,16 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"hinglish":         rep("usko kal maar dunga "),
 		// The threat grammar's openings next to a place or a time, which is
 		// when what follows them is read: a speaker and a verb, harm said
-		// to be coming, a place said to burn, a day someone won't see, a
+		// to be coming, a place said to burn or to explode at news and what
+		// is read after it, a day someone won't see, a
 		// bomb left or made, a name in small letters, a shooting on a day,
 		// and Hinglish pronouns with a time between; and an act urged, and a
 		// reader's grade asked about beside a cue.
 		"frame by a place":  rep("school i'm going to "),
 		"coming harm":       rep("everyone in the lab will get hurt tomorrow "),
 		"burning place":     rep("the hostel will burn "),
+		"explode at news":   rep("the hall will explode when they see what's in the back of the van, i put it in room 12 "),
+		"explode then harm": rep("the hall will explode when sir announces the toppers, all of you will burn with jealousy "),
 		"won't see":         rep("the warden won't see monday "),
 		"bomb left":         rep("school i'll leave a bomb under the "),
 		"bomb made":         rep("i made a bomb at school "),

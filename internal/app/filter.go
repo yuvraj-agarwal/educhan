@@ -565,6 +565,10 @@ type view struct {
 	// holding the line that starts at runLine starts at runFirst (both 0
 	// when not yet asked, which is the answer for the first line).
 	runLine, runFirst int
+	// armedAt caches explodeArmedFrom: where the last word in the text that
+	// arms a bomb starts, plus two, 1 when no word does, 0 when not yet
+	// looked for.
+	armedAt int
 	// loose is set for the loose view, which a window search is read on in
 	// the loose form of its pattern.
 	loose bool
@@ -8277,7 +8281,7 @@ func (f *scannedField) threatComingCheck(v *view, m []int) bool {
 			return false
 		}
 	case ruin:
-		armed := is(last, "explode") && explodeArmed(wordsIn(text[m[1]:min(len(text), m[1]+160)]))
+		armed := is(last, "explode") && explodeArmedFrom(v, m[1])
 		if !armed && (untimed(sentence, stageWords) || untimed(sentence, eventWords)) {
 			return false // not "the hall will explode tomorrow, the bomb is under the stage"
 		}
@@ -8287,7 +8291,8 @@ func (f *scannedField) threatComingCheck(v *view, m []int) bool {
 		if len(next) > 1 && is(next[0], "with") && notRuin[next[1]] {
 			return false // "the hall will blow up with cheers"
 		}
-		if is(last, "explode") && !armed && explodesAtNews(wordsIn(clauseAfter(text, m[1]))) {
+		if is(last, "explode") && !armed && explodesAtNews(wordsIn(clauseAfter(text, m[1]))) &&
+			!explodeHarmAfter(wordsIn(explodeRest(text, m[1]))) {
 			return false // "the class will explode tomorrow when sir announces the results"
 		}
 	default:
@@ -8334,9 +8339,9 @@ func (f *scannedField) threatComingCheck(v *view, m []int) bool {
 // Something unnamed seen or heard on a day named, before "when" or after it,
 // is no news (explodeSees, seenUnnamed): "tomorrow when he sees it", "when
 // they see it tomorrow", not "when they see this lol" or "tomorrow when ma'am
-// sees this meme". "What's in" something printed, posted or shown, or where
-// food is served, is no hidden thing (hiddenIn): "when they see what's in the
-// yearbook", "what's in the timetable".
+// sees this meme". "What's in" only something that holds a thing, or a
+// place, is hidden (hiddenIn): "when they see what's in the bag", not "what's
+// in the yearbook" or "what's in the new dress code".
 func explodesAtNews(ws []string) bool {
 	for i, w := range ws {
 		if !explodeWhen[w] {
@@ -8394,41 +8399,222 @@ func explodesAtNews(ws []string) bool {
 	return false
 }
 
-// explodeArmed reports, in the words after "will explode" to the end of the
-// post, a bomb or what sets one off (explodeDevices), or the poster arming
-// it: a first-person subject with explodeRigs in the two words after it, or
-// explodePlants before "it" or "something" ("i put it", not "i put in so
-// much work") where it would go off (explodePlaced), and not a device named
-// in praise (explodePraise: "our dance is the bomb", "my results are a
-// bomb"). Neither news in the clause after "explode" nor a stage or an event
-// in the sentence excuses them: "when the results come out, i planted it in
-// the staffroom", "when they give the prizes, the bomb is under the stage".
-func explodeArmed(ws []string) bool {
+// explodeRest is what of the text after "will explode" at i the news
+// let-off is read against (explodeHarmAfter): the rest of its sentence and
+// the next sentence, each read for threatWindow bytes.
+func explodeRest(text string, i int) string {
+	end := min(len(text), i+threatWindow)
+	if j := strings.IndexAny(text[i:end], ".!?\n"); j >= 0 {
+		end = i + j
+	}
+	k := end
+	for k < len(text) && strings.IndexByte(".!?\n ", text[k]) >= 0 {
+		k++
+	}
+	if k == end {
+		return text[i:end]
+	}
+	next := min(len(text), k+threatWindow)
+	if j := strings.IndexAny(text[k:next], ".!?\n"); j >= 0 {
+		next = k + j
+	}
+	return text[i:next]
+}
+
+// explodeHarmAfter reports, in the words ws after "will explode"
+// (explodeRest), what no news excuses: harm named outright (explicitHarm,
+// with a bomb left to explodeArmedFrom, which reads its praise: "nobody will
+// survive", "they'll never know it was me", "bring a knife"); people other than
+// the poster's own, or "they" or "you", harmed, in the place or going with it
+// ("all of you will burn", "they will all burn", "everyone will be in the
+// hall", "and so will everyone in it",
+// explodeTaken); or a warning to keep away (explodeWarnings: "so don't
+// come", "stay home if you want to live", "i'm not joking"). Not "we're all
+// dead lol", "everyone will die laughing", "all of you will burn with
+// jealousy", the poster not found out for a meme or a video seen ("when
+// they see the meme on the notice board, they'll never know it was me"), or
+// everyone in a place cheering a win or a score with it ("when india wins
+// and so will everyone in it").
+func explodeHarmAfter(ws []string) bool {
+	if harmDone(ws) || concealed(ws) && !anyIn(ws, explodeMedia) {
+		return true
+	}
 	for i, w := range ws {
-		if explodeDevices[w] && !explodePraise(ws, i) {
+		if weaponHeads[w] && !explodeDevices[w] {
+			return true // a bomb is read with its praise (explodeArmedFrom)
+		}
+		if explodeWarnings[w] && explodeWarned(ws[i:]) {
 			return true
 		}
-		for k := i + 1; firstPersonSubjects[w] && k < len(ws) && k <= i+2; k++ {
-			if explodeRigs[ws[k]] || explodePlants[ws[k]] && k+1 < len(ws) && explodeIts[ws[k+1]] &&
-				explodePlaced(ws[k], ws[k+2:]) {
-				return true
+		if is(w, "so") && i+2 < len(ws) && explodeSoWill[ws[i+1]] && !labSelves[ws[i+2]] &&
+			readNoun(ws[i+2:]).people(true) && !explodeCheered(ws[:i]) {
+			return true // "and so will everyone in it"
+		}
+		if i > 0 && (labSelves[ws[i-1]] || firstPersonSubjects[ws[i-1]]) {
+			continue // "we're all dead lol"
+		}
+		np := readNoun(ws[i:])
+		if explodeTheys[w] {
+			np = nounPhrase{kind: nounPerson, head: w, n: 1}
+		}
+		if np.people(true) && !anyIn(ws[i:i+np.n], explodeOurs) && explodeTaken(ws[i+np.n:min(len(ws), i+np.n+8)]) {
+			return true
+		}
+	}
+	return false
+}
+
+// explodeWarned reports a warning to keep away at the start of ws, one of
+// explodeWarnings first: "don't come", "stay home", "stay away", "not
+// joking", "not kidding", "want to live", "wanna live", "been warned", "be
+// warned", "im serious".
+func explodeWarned(ws []string) bool {
+	if len(ws) < 2 {
+		return false
+	}
+	next := ws[1]
+	switch w := ws[0]; {
+	case is(w, "don't") || is(w, "dont"):
+		return is(next, "come") || is(next, "go")
+	case is(w, "stay"):
+		return is(next, "home") || is(next, "away") || is(next, "out")
+	case is(w, "not"):
+		return is(next, "joking") || is(next, "kidding")
+	case is(w, "want") || is(w, "wanna"):
+		return is(next, "live") || is(next, "to") && len(ws) > 2 && is(ws[2], "live")
+	case is(w, "been") || is(w, "be"):
+		return is(next, "warned")
+	default: // "i'm serious", "im serious"
+		return is(next, "serious")
+	}
+}
+
+// explodeCheered reports a win or a score in ws, which everyone in a place
+// cheers: "when india wins", "when kohli hits a six".
+func explodeCheered(ws []string) bool {
+	for i, w := range ws {
+		if explodeWins[w] || explodeHits[w] && i+2 < len(ws) && explodeScores[ws[i+2]] {
+			return true
+		}
+	}
+	return false
+}
+
+// explodeTaken reports, in the words after people (explodeHarmAfter), the
+// verb of their own clause (one of explodeVerbStarts first, or after where
+// they are: "everyone in the hall will burn") with them
+// harmed, trapped or gone with the place (labTrapped: "will burn", "will be
+// stuck inside", "won't get out") or in it (explodeBe before "in", "at",
+// "inside" or "there": "will be in the hall", "is in the hall"). Not someone
+// else's clause after them ("when they announce the toppers, i put the
+// trophy next to the stage") or burning with a feeling (explodeFeelings:
+// "will burn with jealousy").
+func explodeTaken(ws []string) bool {
+	k := 0
+	if len(ws) > 0 && (is(ws[0], "in") || is(ws[0], "at") || is(ws[0], "inside")) {
+		for k = 1; k < len(ws) && k < 4 && !explodeVerbStarts[ws[k]]; k++ {
+		} // "everyone in the hall will burn"
+	}
+	if k == len(ws) || !explodeVerbStarts[ws[k]] {
+		return false
+	}
+	ws = ws[k:]
+	for i, w := range ws {
+		if strings.HasPrefix(w, "burn") && i+2 < len(ws) && is(ws[i+1], "with") && explodeFeelings[ws[i+2]] {
+			return false
+		}
+	}
+	if labTrapped(ws) {
+		return true
+	}
+	for i, w := range ws {
+		if explodeBe[w] && i+1 < len(ws) && (is(ws[i+1], "in") || is(ws[i+1], "at") || is(ws[i+1], "inside") ||
+			is(ws[i+1], "there")) {
+			return true
+		}
+	}
+	return false
+}
+
+// explodeArmedFrom reports a bomb or the poster arming one (explodeArms) in
+// the words of v's text from i on, to the end of the post. Neither news in
+// the clause after "explode" nor a stage or an event in the sentence excuses
+// them: "when the results come out, i planted it in the staffroom", "when
+// they give the prizes, the bomb is under the stage". Where the last word
+// that arms one starts is read once for each view (armedAt), so a post that
+// says "will explode" again and again costs no more for it.
+func explodeArmedFrom(v *view, i int) bool {
+	if v.armedAt == 0 {
+		v.work += len(v.text)
+		v.armedAt = 1
+		sp := wordSpans(v.text)
+		ws := make([]string, len(sp))
+		for k, s := range sp {
+			ws[k] = v.text[s[0]:s[1]]
+		}
+		for k := len(ws) - 1; k >= 0; k-- {
+			if explodeArms(ws, k) {
+				v.armedAt = sp[k][0] + 2
+				break
 			}
+		}
+	}
+	return v.armedAt-2 >= i
+}
+
+// explodeArms reports that ws[i] arms a bomb: a bomb or what sets one off
+// (explodeDevices, with "'s" after it too: "the bomb's under the stage"),
+// not named in praise (explodePraise: "our dance is the bomb", "my results
+// are a bomb"); or the poster, ws[i], arming it: explodeRigs in the two words
+// after, or explodePlants there before "it" or "something" ("i put it", not
+// "i put in so much work"), or before "the", "a" or "this" and something
+// that holds one (explodeHidden, explodeVessels: "i put the bag in the
+// staffroom", not "i left my bag there"), where it would go off
+// (explodePlaced). "It" or "them" put, set or left, not under or behind
+// something, after a thing seen that holds nothing stands for that thing
+// (explodeReferent): "when they see the cake, i left it in the staffroom
+// fridge", not "when ma'am sees this meme, i hid it in the lab" or "when
+// they see the trophy, i put it under the stage".
+func explodeArms(ws []string, i int) bool {
+	w := ws[i]
+	if (explodeDevices[w] || strings.HasSuffix(w, "'s") && explodeDevices[w[:len(w)-2]]) && !explodePraise(ws, i) {
+		return true
+	}
+	for k := i + 1; firstPersonSubjects[w] && k < len(ws) && k <= i+2; k++ {
+		if explodeRigs[ws[k]] {
+			return true
+		}
+		if !explodePlants[ws[k]] || k+1 == len(ws) {
+			continue
+		}
+		at := k + 2
+		if !explodeIts[ws[k+1]] {
+			if j := k + 2; !explodeArticles[ws[k+1]] || j == len(ws) || !explodeHidden[ws[j]] && !explodeVessels[ws[j]] {
+				continue
+			}
+			at = k + 3
+		} else if (is(ws[k+1], "it") || is(ws[k+1], "them")) && !explodeHides[ws[k]] &&
+			!anyIn(ws[k+2:min(len(ws), k+5)], explodeUnder) && explodeReferent(ws[max(0, i-12):i]) {
+			continue // not "when they see the trophy, i put it under the stage"
+		}
+		if explodePlaced(ws[k], ws[at:]) {
+			return true
 		}
 	}
 	return false
 }
 
 // explodePlaced reports, in the words ws after the poster's plant (one of
-// explodePlants) and "it", the thing armed: hidden (explodeHides) anywhere
-// but where it is shown (explodeShown: "i hid it", not "i hid it as my
-// wallpaper"); or put, set or left with nothing after it or "there" ("i put
-// it there", "i set it"), under or behind something (explodeUnder), with a
-// device ("i set it up with a timer") or to go off, or in or on a place, a
-// spot or something that holds it (explodeSpots, threatPlaceWords but home,
-// explodeHidden, explodeVessels: "on the stage", "on the bench in the hall",
-// "in her bag"). Not "i set it up for the dj", "i set it all up", "i put it
-// together", "i put them on the class gc" or "i left it on the teacher's
-// desk".
+// explodePlants) and what it plants, the thing armed: hidden (explodeHides)
+// anywhere but where it is shown (explodeShown: "i hid it", not "i hid it as
+// my wallpaper"); or put, set or left with nothing after it or "there" ("i
+// put it there", "i set it"), under or behind something (explodeUnder), with
+// a device ("i set it up with a timer") or to go off, or somewhere after
+// explodeAt or "next to" (explodeSomewhere): "on the stage", "in the car
+// park", "in room 12", "on her desk", "next to the stage", "outside the
+// staffroom". Not "i set it up for the dj", "i set it all up", "i put it
+// together", "i set it as my wallpaper", "i put them on the class gc" or "i
+// left it at home".
 func explodePlaced(plant string, ws []string) bool {
 	if explodeHides[plant] {
 		return !explodeShown(ws)
@@ -8448,14 +8634,65 @@ func explodePlaced(plant string, ws []string) bool {
 		if explodeDevices[w] || explodeUnder[w] || is(w, "off") || is(w, "blow") {
 			return true // "with a timer", "under the notice board", "to go off at 9"
 		}
-		if explodeAt[w] {
-			if h := phraseHead(ws[i+1:]); explodeSpots[h] || explodeHidden[h] || explodeVessels[h] ||
-				threatPlaceWords[h] && !is(h, "home") && !is(h, "ghar") {
-				return true // "on the stage", "in the staffroom", "on the bench in the hall"
+		at := i + 1
+		if is(w, "next") && at < len(ws) && is(ws[at], "to") {
+			at++
+		} else if !explodeAt[w] {
+			continue
+		}
+		if explodeSomewhere(ws[at:]) && !explodeSeenBy(ws[at:min(len(ws), at+10)]) {
+			return true // "on the stage", "in the car park", "next to the stage"
+		}
+	}
+	return false
+}
+
+// explodeReferent reports, in the words ws before the poster's plant, a
+// thing seen that "it" stands for and that holds nothing, after explodeSees:
+// a cake, a poster, a trophy or a meme (explodeShowables, explodeMedia).
+func explodeReferent(ws []string) bool {
+	for i, w := range ws {
+		if !explodeSees[w] {
+			continue
+		}
+		for _, x := range ws[i+1 : min(len(ws), i+4)] {
+			if explodeShowables[x] || explodeMedia[x] {
+				return true
 			}
 		}
 	}
 	return false
+}
+
+// explodeSeenBy reports, in the words ws after where the poster put it, that
+// it is put there for someone to see or find, and not to go off: "so she
+// sees it first", "so they find it", not "so everyone sees it go off".
+func explodeSeenBy(ws []string) bool {
+	if anyIn(ws, explodeGoesOff) {
+		return false
+	}
+	for i, w := range ws {
+		if !is(w, "so") {
+			continue
+		}
+		for _, x := range ws[i+1 : min(len(ws), i+4)] {
+			if explodeSees[x] || explodeFinds[x] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// explodeSomewhere reports somewhere a thing put would go off, read from the
+// head of the noun phrase at the start of ws (phraseHead): anywhere but
+// where it is posted, printed or shown (explodeShows, explodePrints,
+// explodeMedia: "on the class gc", "in the comments"), the poster's home,
+// or a way of playing or keeping it (explodeKept: "on repeat", "on read").
+func explodeSomewhere(ws []string) bool {
+	h := phraseHead(ws)
+	return h != "" && !explodeShows[h] && !explodePrints[h] && !explodeMedia[h] && !explodeKept[h] && !is(h, "home") &&
+		!is(h, "ghar")
 }
 
 // phraseHead is the head of the noun phrase at the start of ws, after
@@ -8494,9 +8731,17 @@ func explodePraise(ws []string, i int) bool {
 	be := explodeIs[ws[i-2]] || is(ws[i-2], "be")
 	switch {
 	case is(ws[i-1], "the") && (explodeIs[ws[i-2]] || strings.HasSuffix(ws[i-2], "'s")):
+		// Not what is pointed at and then placed: "it's the bomb under the
+		// stage", "that's the bomb in the staffroom".
+		pointed := explodePointers[ws[i-2]] || explodeIs[ws[i-2]] && i > 2 && explodeUnnamed[ws[i-3]]
+		return !pointed || i+1 == len(ws) || !explodeUnder[ws[i+1]] && !explodeAt[ws[i+1]] && !is(ws[i+1], "next")
+	case is(ws[i-1], "a") && be && i+1 < len(ws) && is(ws[i+1], "of"):
 		return true
-	case is(ws[i-1], "a") && be && (i+1 < len(ws) && is(ws[i+1], "of") || ownedSubject(ws[:i-2]) && soIsNamed(ws[i+1:])):
-		return true
+	case is(ws[i-1], "a") && be && ownedSubject(ws[:i-2]) && soIsNamed(ws[i+1:]):
+		// Something made or given is praised unless it is said to be one
+		// truly or somewhere: "our project is a bomb", not "my project is a
+		// bomb, literally".
+		return !explodeMade[ws[i-3]] || !explodeLiteral(ws[i+1:])
 	case is(ws[i], "explosive") && (explodeIs[ws[i-1]] || is(ws[i-1], "be")):
 		k := i - 2
 		for k >= 0 && (is(ws[k], "will") || is(ws[k], "gonna") || is(ws[k], "be")) {
@@ -8528,6 +8773,26 @@ func soIsNamed(ws []string) bool {
 		return explodeMines[ws[2]] // "so is yours"
 	}
 	return ownedSubject([]string{ws[2], ws[j-1]}) // "so is the stage setup", not "so is my school bag"
+}
+
+// explodeLiteral reports, in the two words after "a bomb", that it is meant
+// truly (explodeTruly: "literally", "for real"), or that it is put somewhere,
+// there or after "and" or "it's" ("under the stage", "in the hall", "and
+// it's in the hall", explodeSomewhere).
+func explodeLiteral(ws []string) bool {
+	if anyIn(ws[:min(len(ws), 2)], explodeTruly) {
+		return true
+	}
+	k := 0
+	if k < len(ws) && is(ws[k], "and") {
+		k++
+	}
+	if k < len(ws) && (is(ws[k], "it's") || is(ws[k], "its")) {
+		k++
+	} else if k+1 < len(ws) && is(ws[k], "it") && is(ws[k+1], "is") {
+		k += 2
+	}
+	return k+1 < len(ws) && (explodeUnder[ws[k]] || explodeAt[ws[k]] && explodeSomewhere(ws[k+1:]))
 }
 
 // ownedSubject reports the words before a verb ending in something of
@@ -8577,14 +8842,19 @@ func seenUnnamed(clause []string, j int) bool {
 	return is(clause[j+1], "it") || j+2 >= len(clause) || !explodeMedia[clause[j+2]]
 }
 
-// hiddenIn reports, after "what's" or "what is", what is inside, in "it" or
-// in anything but something printed, posted or shown (explodePrints,
-// explodeMedia, explodeNewsHeads: "the date sheet") or a place where food is
-// served (explodeFed), read from the head of its noun phrase (phraseHead):
-// "what's in the bag", "what's in the yearbook box", "what's in the van",
-// "what's in the hall", "what's inside", not "what's in the yearbook",
-// "what's in the timetable", "what's in the video" or "what's in the canteen
-// today".
+// hiddenIn reports, after "what's" or "what is", what is inside "it" or
+// something that holds or hides it (explodeHidden, explodeVessels,
+// explodeHolds), or a spot or a place (explodeSpots, threatPlaceWords) but
+// one where food is served (explodeFed), read from the head of its noun
+// phrase (phraseHead), or from its first word before a number, a code or a
+// word of where it stands ("room 12", "the car parked outside"), past a side
+// of it ("the back of the van"): "what's in the
+// bag", "what's in the yearbook box", "what's in the van", "what's in the
+// drawer", "what's in the gas cylinder", "what's in the hall", "what's
+// inside"; not what is in anything
+// else, printed, planned or bought, nor "what's in store": "what's in the
+// yearbook", "what's in the new dress code", "what's in the fee structure",
+// "what's in the squad", "what's in the canteen today".
 func hiddenIn(ws []string) bool {
 	k := 0
 	for k < len(ws) && k < 2 && (is(ws[k], "is") || is(ws[k], "was")) {
@@ -8596,8 +8866,31 @@ func hiddenIn(ws []string) bool {
 	if k+1 == len(ws) || is(ws[k+1], "it") || is(ws[k+1], "there") {
 		return true
 	}
-	h := phraseHead(ws[k+1:])
-	return !explodePrints[h] && !explodeMedia[h] && !explodeNewsHeads[h] && !explodeFed[h]
+	if is(ws[k+1], "store") {
+		return false // "what's in store for them"
+	}
+	ws = ws[k+1:]
+	for j := 1; j < len(ws) && j < 3; j++ {
+		if is(ws[j], "of") && explodeSides[ws[j-1]] {
+			ws = ws[j+1:] // "the back of the van"
+			break
+		}
+	}
+	if len(ws) == 0 {
+		return false
+	}
+	h := phraseHead(ws)
+	if n := strings.IndexFunc(h, unicode.IsDigit); n >= 0 || len(h) == 1 || strings.HasSuffix(h, "ed") {
+		// A number or a code after a place, or where it stands: "room 12",
+		// "block b", "the car parked outside".
+		n = 0
+		for n < len(ws)-1 && (determiners[ws[n]] || ownerWord(ws[n])) {
+			n++
+		}
+		h = ws[n]
+	}
+	return explodeHidden[h] || explodeVessels[h] || explodeHolds[h] || explodeSpots[h] ||
+		threatPlaceWords[h] && !explodeFed[h]
 }
 
 // peopleSubject reports, in the words of a clause before its verb, someone
@@ -8692,36 +8985,82 @@ var (
 	// explodeDevices are a bomb or what sets one off, unless "the" and
 	// explodeIs come before it, and explodeRigs, or explodePlants before
 	// explodeIts, after the poster, arming it, anywhere after "will explode"
-	// (explodeArmed).
+	// (explodeArms).
 	explodeDevices = canonSetOf(`bomb bombs button timer detonate detonator detonators fuse fuses explosive
-		explosives ied device devices`)
+		explosives ied device devices c4 tnt grenade grenades`)
 	explodeRigs   = canonSetOf(`planted rigged wired`)
 	explodePlants = canonSetOf(`put set hid hidden placed left plant rig wire`)
-	// explodeHides are the explodePlants that hide what they put; the rest
-	// put it where explodePlaced reads, after explodeParticles ("i set it
-	// all up"): explodeUnder, or explodeAt before explodeSpots,
-	// threatPlaceWords, explodeHidden or explodeVessels, and phraseEnds end
-	// the noun phrase phraseHead reads. explodeVessels hold something, and
-	// so are no praise before "is a bomb" ("my lunchbox is a bomb",
-	// ownedSubject); explodeFed are places where food is served, not
-	// hidden ("what's in the canteen today").
+	// explodeArticles, after a plant, come before something that holds a
+	// bomb ("i put the bag"). explodeHides are the explodePlants that hide
+	// what they put; the rest put it where explodePlaced reads, after
+	// explodeParticles ("i set it all up"): explodeUnder, or somewhere after
+	// explodeAt (explodeSomewhere), and phraseEnds end the noun phrase
+	// phraseHead reads. explodeVessels hold something, and so are no praise
+	// before "is a bomb" ("my lunchbox is a bomb", ownedSubject); explodeMade
+	// are things made or given, praise unless explodeTruly or a place follow
+	// (explodeLiteral: "our project is a bomb", not "my project is a bomb,
+	// literally"); explodeHolds hold or carry something too, though no one
+	// praises them; explodeFed are places where food is served, not hidden
+	// ("what's in the canteen today").
+	explodeArticles  = canonSetOf(`the a an this that some`)
 	explodeHides     = canonSetOf(`hid hidden plant rig wire`)
 	explodeParticles = canonSetOf(`all up together`)
 	explodeUnder     = canonSetOf(`under underneath beneath behind inside below`)
-	explodeAt        = canonSetOf(`in on at into onto near beside`)
+	explodeAt        = canonSetOf(`in on at into onto near beside outside`)
 	explodeSpots     = canonSetOf(`stage backstage roof rooftop ceiling vent vents basement bench benches podium
 		cupboard cupboards stairs staircase stairwell gate gates pillar pillars`)
-	explodeVessels = canonSetOf(`lunchbox lunchboxes tiffin tiffins dabba gift gifts present presents project
-		projects model models bottle bottles`)
-	explodeFed = canonSetOf(`canteen cafeteria mess`)
-	phraseEnds = canonSetOf(`in on at into onto near beside under underneath beneath behind inside below with for
-		to from of by over and but so or lol`)
+	explodeVessels = canonSetOf(`lunchbox lunchboxes tiffin tiffins dabba gift gifts present presents bottle
+		bottles`)
+	explodeMade  = canonSetOf(`project projects model models`)
+	explodeTruly = canonSetOf(`literally actually really real actual fr`)
+	explodeHolds = canonSetOf(`van vans car cars bus buses truck trucks jeep auto rickshaw scooty dicky dickey
+		trolley trolleys cart carts boot trunk drawer drawers cupboard cupboards closet closets cabinet cabinets
+		almirah wardrobe safe shed sheds storeroom storerooms garage cylinder cylinders can cans tank tanks drum drums
+		barrel barrels crate crates carton cartons container containers bin bins dustbin sack sacks bucket buckets
+		jar jars tin tins pipe pipes drain drains cooler coolers fridge fridges freezer cooker cookers pocket pockets
+		pouch duffel duffle briefcase case cases envelope envelopes shoebox toolbox speaker speakers amp amps
+		projector projectors garden field fields ground grounds park lot`)
+	// explodeShowables are things seen that hold nothing, which "it" after
+	// the poster's plant stands for (explodeReferent); explodeFinds, after
+	// "so", put a thing where it is found (explodeSeenBy).
+	explodeShowables = canonSetOf(`cake cakes poster posters banner banners trophy trophies card cards painting
+		paintings drawing drawings decorations rangoli mural murals chart charts artwork costume costumes outfit
+		outfits medal medals certificate certificates`)
+	explodeFinds   = canonSetOf(`find finds gets reads notices`)
+	explodeGoesOff = canonSetOf(`off blow blows explode explodes boom burn burns`)
+	explodeFed     = canonSetOf(`canteen cafeteria mess`)
+	// explodeSides, before "of", are a part of what holds something ("the
+	// back of the van", hiddenIn).
+	explodeSides = canonSetOf(`back front boot bottom top inside side corner`)
+	phraseEnds   = canonSetOf(`in on at into onto near beside outside under underneath beneath behind inside below
+		with for to from of by over and but so or lol`)
 	// explodeShows, after "on", are where a thing put is shown, not hidden
-	// (explodeShown); explodeMoods are what is "explosive" in praise
-	// (explodePraise).
+	// (explodeShown), and where it is posted, not anywhere it would go off
+	// (explodeSomewhere), and so are explodeKept, a way of playing or keeping
+	// it ("on repeat", "on read"); explodeMoods are what is "explosive" in
+	// praise (explodePraise); explodePointers point at what follows them
+	// ("it's the bomb under the stage").
 	explodeShows = canonSetOf(`story stories status insta instagram gc chat group wallpaper dp profile feed notice
-		noticeboard board website site page timeline whatsapp snap screen`)
-	explodeMoods = canonSetOf(`atmosphere vibe vibes energy crowd mood match game party night show performance`)
+		noticeboard board website site page timeline whatsapp snap screen comments comment bio description link
+		drive doc docs form notes inbox dm dms server discord telegram reddit youtube channel thread pdf file folder`)
+	explodeKept     = canonSetOf(`read repeat loop shuffle mute silent hold sale speaker speakers display`)
+	explodePointers = canonSetOf(`it's its that's thats there's theres this's`)
+	// explodeWarnings start a warning to keep away (explodeWarned) and
+	// explodeSoWill, after "so" and before people, have them go with the
+	// place (explodeHarmAfter); explodeOurs are the poster's own people.
+	explodeWarnings = canonSetOf(`don't dont stay not want wanna been be i'm im`)
+	// explodeVerbStarts begin the verb of people's own clause (explodeTaken),
+	// explodeFeelings are what one burns with and is unharmed, and
+	// explodeWins are a win cheered (explodeCheered).
+	explodeVerbStarts = canonSetOf(`will 'll won't wont would shall gonna going is are was were be can't cant cannot
+		never get gets getting`)
+	explodeFeelings = canonSetOf(`jealousy envy rage anger shame embarrassment excitement curiosity pride passion
+		desire fomo`)
+	explodeWins   = canonSetOf(`win wins won winning`)
+	explodeSoWill = canonSetOf(`will would shall does do did is are`)
+	explodeOurs   = canonSetOf(`us we ourselves`)
+	explodeTheys  = canonSetOf(`they you u y'all yall`)
+	explodeMoods  = canonSetOf(`atmosphere vibe vibes energy crowd mood match game party night show performance`)
 	// explodeClockNews are the news a clock time leaves news: an
 	// announcement, results, marks or a list.
 	explodeClockNews = canonSetOf(`announce announces announced announcing announcement announcements declare
@@ -11824,9 +12163,27 @@ func lockedFor(ws []string) bool {
 // out or escaping, the poster not being found out ("they'll never know it
 // was me"), or a lesson taught ("so they learn their lesson").
 func explicitHarm(ws []string) bool {
-	if anyIn(ws, weaponHeads) {
-		return true
+	return anyIn(ws, weaponHeads) || harmDone(ws) || concealed(ws)
+}
+
+// concealed reports the poster not being found out in ws: "they'll never
+// know it was me", "they'll never know what hit them", "and they'll never
+// know", not "i'll never know how i passed" or "never know why" (knowAsks).
+func concealed(ws []string) bool {
+	for i, w := range ws {
+		if !is(w, "never") || i+1 == len(ws) || !is(ws[i+1], "know") {
+			continue
+		}
+		if i+2 == len(ws) || !knowAsks[ws[i+2]] || is(ws[i+2], "what") && i+3 < len(ws) && is(ws[i+3], "hit") {
+			return true
+		}
 	}
+	return false
+}
+
+// harmDone is explicitHarm but for a weapon named or the poster not found
+// out (concealed).
+func harmDone(ws []string) bool {
 	for i, w := range ws {
 		rest := ws[i+1 : min(len(ws), i+4)]
 		switch {
@@ -11848,8 +12205,6 @@ func explicitHarm(ws []string) bool {
 			}
 		case cantWords[w] && len(rest) > 0 && (escapeWords[rest[0]] || len(rest) > 1 && is(rest[0], "get") &&
 			is(rest[1], "out")) && escapesHarm(rest, 2):
-			return true
-		case is(w, "never") && len(rest) > 0 && is(rest[0], "know"):
 			return true
 		case is(w, "learn") && len(rest) > 1 && (is(rest[0], "their") || is(rest[0], "a")) && is(rest[1], "lesson"):
 			return true
@@ -11897,8 +12252,11 @@ var (
 	// is not (escapesHarm), unless "alive" (escapeAlive) follows.
 	escapeOrdeals = canonSetOf(`practical practicals exam exams test tests lesson lessons lecture lectures write
 		writeup quiz quizzes viva vivas assignment assignments homework detention`)
-	escapeGrades   = canonSetOf(`pass passing marks grade grades`)
-	escapeAlive    = canonSetOf(`alive`)
+	escapeGrades = canonSetOf(`pass passing marks grade grades`)
+	escapeAlive  = canonSetOf(`alive`)
+	// knowAsks, after "never know", ask what the poster does not know rather
+	// than hide what they did (concealed): "i'll never know how i passed".
+	knowAsks       = canonSetOf(`how why when where whether if which what`)
 	lockedPurposes = canonSetOf(`test tests practical practicals revision revising meeting meetings photo photos
 		picture pictures fair marathon session sessions study studying lesson lessons review quiz quizzes class
 		classes extra rehearsal assembly`)
