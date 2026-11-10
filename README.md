@@ -1385,8 +1385,8 @@ gcloud run deploy educhan --image "$IMAGE" --region "$REGION" \
   --allow-unauthenticated
 ```
 
-One-time project setup — the APIs to enable, the repository and the account
-the service runs as, and the roles each account needs — is in
+One-time project setup — enabling the APIs, creating the repository and the
+account the service runs as, and granting the first roles — is in
 [`deploy/README.md`](deploy/README.md#21-one-time-project-setup).
 
 Cloud Run mounts the Cloud SQL instance's Unix socket at
