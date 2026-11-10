@@ -168,13 +168,15 @@ func parseClientIP(entry string) (string, bool) {
 }
 
 // peerIP is the key for whoever opened the connection, made by addressKey like
-// a forwarded entry's. A peer that is not an IP address is returned as it is.
+// a forwarded entry's: a port is dropped and brackets are trimmed exactly as
+// parseClientIP does, so no spelling of an IPv6 peer skips the /64 cut. A peer
+// whose host is not an IP address is returned as that host, port removed.
 func peerIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	addr, err := netip.ParseAddr(host)
+	addr, err := netip.ParseAddr(strings.Trim(host, "[]"))
 	if err != nil {
 		return host
 	}
