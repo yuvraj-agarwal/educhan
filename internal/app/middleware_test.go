@@ -241,6 +241,25 @@ func TestClientIP(t *testing.T) {
 			remoteAddr: "@",
 			want:       "@",
 		},
+		{
+			// A host with a port that is not an address loses the port and
+			// keeps the host, as main always has.
+			name:       "peer with a port that is not an ip address",
+			remoteAddr: "sock:1",
+			want:       "sock",
+		},
+		{
+			// net/http's TCP listeners always give host:port, but a peer
+			// handed over with no port still goes through addressKey.
+			name:       "portless ipv6 peer is cut to its /64",
+			remoteAddr: "2001:db8:1:2:aaaa:bbbb:cccc:dddd",
+			want:       "2001:db8:1:2::",
+		},
+		{
+			name:       "portless ipv4 peer is unchanged",
+			remoteAddr: "203.0.113.7",
+			want:       "203.0.113.7",
+		},
 	}
 
 	for _, tc := range cases {
