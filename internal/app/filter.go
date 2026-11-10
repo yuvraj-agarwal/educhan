@@ -1313,7 +1313,8 @@ var askRules = []rule{bothViews(`\b` + words(
 	// "whatsapp me", "kik me", "facetime me", "snap me": only a space
 	// between, so "WhatsApp, me and my friends" is a list. askCheck wants it
 	// asked, and "snap" an app: not "oh snap me too".
-	bothViews(`\b` + words(whatsApp, `kik`, `telegram`, `snapchat`, `snap`, `skype`, `insta`, `discord`, `face~?time`) +
+	bothViews(`\b` + words(whatsApp, `kik`, `telegram`, `snapchat`, `snap`, `skype`, `insta`, `discord`, `face~?time`,
+		`i~?message`) +
 		`[ \t]+me\b`),
 	// "lets facetime", "can we facetime?": askCheck wants nothing after it
 	// but the end of the ask, so "can we facetime grandma" is a family's.
@@ -1934,8 +1935,12 @@ var accountNumberRules = []rule{
 // verb of talking, or in a "we" frame with nothing after them, or asked
 // about where the post says it wants to leave the board. Threads, whose name
 // is the board's word for a conversation, counts only with a handle and its
-// "@" after it ("my threads is @x.y"); Bluesky everywhere.
-var appNameRule = bothViews(`(?:\b` + words(anyApps, `threema`, `blue~?sky`, `bsky`, `threads`) + `\b|👻)`)
+// "@" after it ("my threads is @x.y"); Bluesky everywhere. iMessage, Twitch,
+// Tumblr and Google Chat, named less often, are read only from here, not in
+// askRules, to keep the searches small ("text me on imessage", "dm me on
+// twitch").
+var appNameRule = bothViews(`(?:\b` + words(anyApps, `threema`, `blue~?sky`, `bsky`, `threads`, `i~?message`, `twitch`,
+	`tumblr`, `google~chat`, `gchat`) + `\b|👻)`)
 
 // offBoardRule is talking off the board with no app named: "anyone want to
 // text instead of posting here?", "can u text me instead?", "let's dm

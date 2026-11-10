@@ -444,3 +444,11 @@
 {"id": "contact-444", "body": "the answer is 9845012345 snap for working", "subject": "", "name": "", "expect": "block", "why": "an app named bare before \"for\" (R22V-MATHS-BARE-APP)"}
 {"id": "contact-445", "body": "the answer is 9845012345 msg for the working", "subject": "", "name": "", "expect": "block", "why": "\"msg\" used bare before \"for\" (R22V-MATHS-BARE-APP)"}
 {"id": "contact-446", "body": "the answer is 9845012345, someone posted it on whatsapp for the class", "subject": "", "name": "", "expect": "publish", "why": "the app is where the answer was posted, not a way to reach the poster (R22V-MATHS-BARE-APP control)"}
+{"id": "contact-1235", "body": "text me on imessage", "subject": "", "name": "", "expect": "block", "why": "an ask to talk on iMessage, an app off the board (F11)"}
+{"id": "contact-1236", "body": "imessage me", "subject": "", "name": "", "expect": "block", "why": "\"imessage me\" asks the reader to talk there, like \"whatsapp me\" (F11)"}
+{"id": "contact-1237", "body": "dm me on twitch", "subject": "", "name": "", "expect": "block", "why": "an ask to talk on Twitch, an app off the board (F11)"}
+{"id": "contact-1238", "body": "dm me on tumblr", "subject": "", "name": "", "expect": "block", "why": "an ask to talk on Tumblr, an app off the board (F11)"}
+{"id": "contact-1239", "body": "message me on google chat", "subject": "", "name": "", "expect": "block", "why": "an ask to talk on Google Chat, an app off the board (F11)"}
+{"id": "contact-1240", "body": "watch me on twitch tonight, i'm streaming minecraft", "subject": "", "name": "", "expect": "publish", "why": "watching a stream asks no one to talk off the board (F11 control)"}
+{"id": "contact-1241", "body": "my mum will imessage me tonight", "subject": "", "name": "", "expect": "publish", "why": "said of the poster's mum, not asked of the reader (F11 control)"}
+{"id": "contact-1242", "body": "the teacher posted the notes on google chat", "subject": "", "name": "", "expect": "publish", "why": "where the notes are, not a place to talk (F11 control)"}
