@@ -20,11 +20,12 @@ import (
 
 // Verified Anonymity: a poster proves they hold an address at a real
 // institution and may carry a badge for it, while nothing educhan keeps says
-// which address wrote which post — or, without testing a guessed address,
-// which address any record belongs to at all. That is a property of what is
-// kept, with the limits README.md sets out under "The privacy property,
-// exactly": timing, a guessed address tested with the secret, and whoever
-// changes the server or records the requests it is sent.
+// which address wrote which post — or, without testing a guessed address, which
+// address any record belongs to at all. That is a property of what is kept,
+// with the limits README.md sets out under "The privacy property, exactly":
+// timing, the label of an institution with only one stored credential, a
+// guessed address tested with the secret, and whoever changes the server or
+// records the requests it is sent.
 //
 // Three rules hold that up, and every function in this file is written to keep
 // them true:
@@ -35,20 +36,21 @@ import (
 //     only to stop one mailbox minting unlimited identities.
 //  2. The credential carries no trace of the address. It is a signed blob
 //     holding a badge label, an expiry, and a random identifier — nothing
-//     derived from the address but the institution its label names, so
-//     nothing that can be reversed to the mailbox that earned it. Its random
-//     id is, as its SHA-256, the key of the stored row that also holds the
-//     address's keyed hash, so whoever sees a credential and holds the
-//     database can find that row.
-//  3. Nothing stored with a post links it to a credential. The badge is
-//     copied onto the post as text, the verification tables reference no
-//     post, and using a credential updates no row, so there is no timestamp
-//     to line up against.
-//     A badged post's poster ID is derived from the random id inside the
-//     credential as presented, never from what the database keeps of it, so
-//     it ties a credential's posts together within one thread — as any
-//     poster's ID does — and can be recomputed only by someone holding the
-//     credential itself as well as the salt.
+//     derived from the address but the institution its label names, so nothing
+//     that can be reversed to the mailbox that earned it. Its random id is, as
+//     its SHA-256, the key of the stored row that also holds the address's
+//     keyed hash, so whoever sees a credential and holds the database can find
+//     that row.
+//  3. Nothing stored with a post refers to a credential but its badge, copied
+//     onto the post as text: a label every stored row of its institution
+//     shares, so it names a row only where the institution has no other. The
+//     verification tables reference no post, and using a credential updates no
+//     row, so there is no timestamp to line up against. A badged post's poster
+//     ID is derived from the random id inside the credential as presented,
+//     never from what the database keeps of it, so it ties a credential's posts
+//     together within one thread — as any poster's ID does — and can be
+//     recomputed only by someone holding the credential itself as well as the
+//     salt.
 //  4. The credential travels only when it is being used. It is handed to the
 //     client once and presented in a header on the posts that ask for a badge,
 //     so it is absent from every anonymous post, every page load, and every
