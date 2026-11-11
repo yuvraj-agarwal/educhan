@@ -140,12 +140,12 @@ property above, and it is worth paying here:
 - **The page runs no inline script.** The CSP in `middleware.go` is
   same-origin with no `unsafe-inline` exception, so an injected `<script>`, a
   `style` attribute, or an inline handler is refused by the browser before it
-  runs. `TestWebAssetsHaveNoInlineStylesOrScripts` fails the build if a
-  `style` attribute with a quoted value, a `<style>` block or a `<script>` tag
-  with no `src=` in it appears in `index.html`, `app.js`, `app.css` or any
-  other HTML, JavaScript or CSS file of the front end's own (the vendored files
-  under `web/lib/` are pinned by hash instead), so the exception is never
-  quietly added.
+  runs. `TestWebAssetsHaveNoInlineStylesOrScripts` fails the build if a `style`
+  attribute with a quoted value, a `<style>` block or a `<script>` tag with no
+  `src=` in it appears in `index.html`, `app.js`, `app.css` or any other HTML,
+  JavaScript or CSS file of the front end's own (the vendored files under
+  `web/lib/` are pinned by hash instead), so the exception is never quietly
+  added.
 - **A stolen credential is worth very little.** It lets its holder post under
   that institution's label until it expires, and under the poster ID the owner's
   badged posts have in each thread: in a thread the holder posts in with it, the
@@ -1319,8 +1319,11 @@ curl -s -X POST localhost:8080/api/boards/career/threads \
 # Verification, end to end. No mail is sent: the only sender in the
 # repository is the development one, which prints the code and the address to
 # the server's stdout, and the deploy script leaves verification switched off.
-# So start the server with both settings, as in
-#   EDUCHAN_VERIFY_SECRET=dev-verify-secret EDUCHAN_MAIL_DEV=1 make run
+# So start the server with both settings, and with the thread cooldown off so
+# that the badged thread at the end is not refused for following the thread
+# above within 30 seconds, as in
+#   EDUCHAN_VERIFY_SECRET=dev-verify-secret EDUCHAN_MAIL_DEV=1 \
+#     EDUCHAN_THREAD_COOLDOWN=0 make run
 # and use the code it prints in place of 481920. Without the secret these
 # requests answer 403, and with it but without EDUCHAN_MAIL_DEV the server
 # refuses to start. "adult": true says you are 18 or over; without it the
