@@ -3259,13 +3259,17 @@ func TestALinkFollowedStartsAtTheTopOfThePage(t *testing.T) {
 		t.Error("render() does not pass down the address its visit is for (visitAt), read as it starts")
 	}
 	// Kept nowhere: none of the functions it passes through assigns it, plainly,
-	// by a compound operator (visit ||= ...) or by ++ and --; visitAt is
-	// declared once, from visit. A name visit elsewhere in app.js is another
-	// function's own.
+	// by a compound operator (visit ||= ...), by ++ and --, or as the target of
+	// a destructuring ({ visit } = ..., [visit] = ...); visitAt is declared
+	// once, from visit. A name visit elsewhere in app.js is another function's
+	// own, and visit => ... is a parameter, not an assignment.
+	assigns := regexp.MustCompile(`\bvisit(?:At)?\s*(?:[-+*/%&|^]|\|\||&&|\?\?|<<|>>>?|\*\*)?=[^=>]|` +
+		`\bvisit(?:At)?\s*(?:\+\+|--)|(?:\+\+|--)\s*visit(?:At)?\b|` +
+		`[{,\[]\s*(?:\.\.\.)?visit(?:At)?\s*(?:=[^,}\]]*)?[}\],][^;=]*?[}\]]?\s*=[^=>]`)
 	for _, name := range []string{"navigate", "render", "beginLoading", "renderVerify", "startVisit"} {
 		body := strings.ReplaceAll(withoutComments(jsFunction(t, script, name)), "visit = false", "")
 		body = strings.Replace(body, "const visitAt = visit && requested;", "", 1)
-		if regexp.MustCompile(`\bvisit(?:At)?\s*(?:[-+*/%&|^]|\|\||&&|\?\?|<<|>>>?|\*\*)?=[^=]|\bvisit(?:At)?\s*(?:\+\+|--)|(?:\+\+|--)\s*visit(?:At)?\b`).MatchString(body) {
+		if assigns.MatchString(body) {
 			t.Errorf("%s assigns visit; it is passed down the one render() call that navigate() starts, and kept "+
 				"nowhere", name)
 		}
