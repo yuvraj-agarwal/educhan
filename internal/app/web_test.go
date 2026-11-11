@@ -597,3 +597,166 @@ func TestAcceptsGzip(t *testing.T) {
 		}
 	}
 }
+
+// absoluteBadgePromise is the promise the site must not make about the badge:
+// that nobody, the server included, can get from a badged post back to an
+// address. It is true of what educhan keeps, and the Verify page and the FAQ
+// say so, with its limits: whoever holds the server secret can test any address
+// they think of, timing can tie a badged post to its verification, a badge that
+// is its institution's only stored one names its row on the posts made under
+// it, and every badged post carries the credential, whose id finds the stored
+// row. Words that say no one can make that link at all or that there is no way
+// to, that the badge is not linked to its poster or to you, or that two posts
+// with the same badge are no more linked than any two, are a promise the code
+// does not keep.
+var absoluteBadgePromise = regexp.MustCompile(`(?i)\b(?:server|operator) included\b|\bwork(?:s|ed)? back from\b|\btrac(?:e|ed|ing) back\b|\b(?:cannot|can't|can never) be (?:linked|traced|connected)\b|\bnot (?:linked|traceable|connected) to (?:(?:this|the|its|a|any|your) (?:poster|post|(?:email )?address)|you)\b|\b(?:no one|nobody)\b[^.]*\bcan (?:ever )?(?:work|trace|link|connect)\b|\bno way to get from\b|\bno more linked\b`)
+
+func TestSiteNeverPromisesTheBadgeCannotBeTraced(t *testing.T) {
+	// The pattern has to catch the wording it exists for, and the wording the
+	// pages use now has to pass it.
+	for _, phrase := range []string{
+		"so no one — this server included — can work back from a post to your address",
+		"It is not made from your address, and cannot be traced back to it.",
+		"the badge cannot be linked to a post",
+		"no one, the operator included, can link a badge to an address",
+		"Institutional email verified; not linked to this poster",
+		"the badge is not linked to the post",
+		"two posts carrying the same badge are no more linked to each other than any two posts",
+		"Nobody can link a badged post to your address.",
+		"No one can connect a post to your address.",
+		"The badge is not linked to your address.",
+		"Institutional email verified; not linked to you",
+		"There is no way to get from a post to your address.",
+		"Your badge is not linked to your email address.",
+		"No one can ever link a post to you.",
+	} {
+		if !absoluteBadgePromise.MatchString(phrase) {
+			t.Fatalf("absoluteBadgePromise does not match %q", phrase)
+		}
+	}
+	for _, fine := range []string{
+		"so nothing kept with a post points to your address",
+		"So nothing stored with a badged post points to your email address",
+		"school students included",
+		"Institutional email verified; the address is not kept with the post",
+		"not linked to your other posts unless you give them the same name",
+		"nobody can crack it offline by trying guesses on their own computer",
+	} {
+		if absoluteBadgePromise.MatchString(fine) {
+			t.Fatalf("absoluteBadgePromise matches %q, which promises only what is kept", fine)
+		}
+	}
+
+	// The copy wraps wherever the source lines end, so it is read with its
+	// whitespace folded, as a browser lays it out.
+	space := regexp.MustCompile(`\s+`)
+	read := map[string]string{}
+	for _, name := range []string{"app.js", "index.html"} {
+		body, err := fs.ReadFile(webFS(), name)
+		if err != nil {
+			t.Fatalf("reading %s: %v", name, err)
+		}
+		read[name] = space.ReplaceAllString(string(body), " ")
+		for _, found := range absoluteBadgePromise.FindAllString(read[name], -1) {
+			t.Errorf("%s promises the badge cannot be traced: %q", name, found)
+		}
+	}
+	// A scan of the wrong files, or of none, would pass for the wrong reason:
+	// the copy that makes the promise has to be among what was read.
+	for name, wants := range map[string][]string{
+		"app.js": {
+			"so nothing kept with a post points to your address",
+			`title="Institutional email verified; the address is not kept with the post"`,
+		},
+		"index.html": {"The address itself is never stored."},
+	} {
+		for _, want := range wants {
+			if !strings.Contains(read[name], want) {
+				t.Errorf("%s was read without %q, which this test expects to find there", name, want)
+			}
+		}
+	}
+}
+
+// Forget this browser's confirmation is said once the page has been drawn
+// again, after it has asked the server whether verification is on. A badge
+// another tab verified while that request was out is drawn on that page, so a
+// sentence about what the browser holds now could be said beside a badge. It
+// says what was just done instead.
+func TestForgettingTheBrowserIsSaidAsDone(t *testing.T) {
+	said := jsString(t, appScript(t), "BROWSER_FORGOTTEN")
+	if !strings.HasPrefix(said, "This browser was forgotten") || strings.Contains(said, "no longer holds") {
+		t.Errorf("BROWSER_FORGOTTEN is %q; want what was forgotten, not what the browser holds now", said)
+	}
+}
+
+// The limits the Verify page and the FAQ state have to be true of a server that
+// runs only what this repository runs by itself. The nightly clean-up is
+// educhan -sweep, a separate process someone has to schedule, so the copy may
+// mention it only as something the server might run, never as "the next" one.
+// The check on a guessed address finds a stored row, which outlives a badge the
+// browser forgot or that ran out, and a code request's row too, so the copy may
+// not say it finds only who "has a badge". The address checked is one the
+// operator brings: "an address they can list" reads as if the server could list
+// addresses. After a nightly sweep, the timing match needs no other credential
+// of the institution from that day still stored, not one issuance or one
+// address that day: two confirmations from one address leave one row, and an
+// address that verifies again on a later day moves its row to a later expiry,
+// so the copy states no condition for it rather than one narrower than the
+// rows. And each stored row keeps its label, so a badge that is its
+// institution's only stored one names its row on the posts made under it, on
+// any day, while that lasts: the copy says so, with a verb of its own and not
+// as "every post", since posts under a credential since deleted carry the same
+// label. The match is made when someone looks, so it takes in every post the
+// poster has badged, those from before theirs was the only one included: the
+// copy may not read as covering only the posts made while it lasts. That label
+// is also why the hash table may not be said to have "no link to any post" or
+// "nothing in it that points" to one: it has no column that points to one, and
+// the sole-badge limit is the exception. Both places say it in the same words.
+// The address check is said in one short sentence.
+func TestBadgeLimitsSayWhatTheServerDoes(t *testing.T) {
+	said := regexp.MustCompile(`\s+`).ReplaceAllString(appScript(t), " ")
+	for _, wrong := range []string{
+		"the next nightly clean-up",
+		"has a badge.",
+		"the only badge issued",
+		"the only one at your",
+		"address they can list",
+		"works on any day",
+		"only one address",
+		"so can every post",
+		"or a list of them",
+		"the posts you badge can be tied",
+		"no link to any post",
+		"nothing in it that points",
+	} {
+		if strings.Contains(said, wrong) {
+			t.Errorf("app.js says %q", wrong)
+		}
+	}
+	cleanUp := regexp.MustCompile(`(\S+ \S+ \S+) nightly clean-up`)
+	for _, m := range cleanUp.FindAllStringSubmatch(said, -1) {
+		if !strings.HasSuffix(m[1], "runs a") {
+			t.Errorf("app.js says %q, which assumes the server runs a nightly clean-up", m[0])
+		}
+	}
+	// The Verify page and the FAQ each state the limits once, in the same words
+	// apart from who runs the site.
+	for _, want := range []string{
+		"Whoever runs this server can check any address they think of for a badge or a code request, even one since forgotten or expired.",
+		"The people who run this site can check any address they think of for a badge or a code request, even one since forgotten or expired.",
+		"and your other badged posts in that thread, to you if they check your address.",
+		"While yours is the only badge from your institution the server keeps, any post you have badged can be tied to you the same way.",
+		"While yours is the only badge from your university or college the site keeps, any post you have badged can be tied to you the same way.",
+	} {
+		if !strings.Contains(said, want) {
+			t.Errorf("app.js does not say %q", want)
+		}
+	}
+	// Both describe the hash table in the same words: a column that points to
+	// a post, not a label, is what neither may claim the table has.
+	table := "in a table with no column that points to any post or thread."
+	if n := strings.Count(said, table); n != 2 {
+		t.Errorf("app.js says %q %d times, want once on the Verify page and once in the FAQ", table, n)
+	}
+}

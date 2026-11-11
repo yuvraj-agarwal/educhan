@@ -1,14 +1,18 @@
 -- Institutional verification ("Verified Anonymity").
 --
--- The privacy property these two tables exist to hold up is that a badge can
--- never be traced back to an address or to a post. Three deliberate omissions
--- carry it:
+-- The privacy property these two tables exist to hold up is that nothing kept
+-- with a post points to an address, or to the row its badge came from beyond
+-- the label that row shares with its institution's other rows, within the
+-- limits README.md sets out under "The privacy property, exactly". Three
+-- deliberate omissions carry it:
 --
 --   * No email column. The uniqueness key is HMAC(EDUCHAN_VERIFY_SECRET,
 --     normalised address); the address itself is never written anywhere.
 --   * No reference to posts or threads. There is no foreign key, and no column
---     either table could be joined on, so a badge on a post says only what it
---     displays: somebody at that institution wrote it.
+--     either table could be joined on but the label a post's badge copies,
+--     which matches every row of that institution at once: a badge on a post
+--     says that somebody at that institution wrote it, and names the row only
+--     where the institution has no other.
 --   * No created_at, and no "last used" of any kind. An issuance timestamp
 --     correlates with the posts made just after it, and a use timestamp
 --     correlates with a specific post, so neither is recorded. expires_at is
@@ -56,6 +60,7 @@ CREATE TABLE IF NOT EXISTS verification_credentials (
 CREATE INDEX IF NOT EXISTS verification_credentials_expires_idx ON verification_credentials (expires_at);
 
 -- The badge a post was made with, copied from the credential at posting time.
--- It is a label, not a reference: many posters share one, and it points at no
--- row in either table above.
+-- It is a label, not a reference: it matches every stored row of its
+-- institution at once, and names a row only where its institution has no
+-- other.
 ALTER TABLE posts ADD COLUMN IF NOT EXISTS badge TEXT NOT NULL DEFAULT '';

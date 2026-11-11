@@ -2,9 +2,10 @@
 //
 // Sender is the seam, in the same way internal/media.Store is the seam for blob
 // storage: the development implementation prints the code instead of sending
-// it, so the feature works end to end with no provider configured, and an SMTP
-// or Google Workspace sender is another implementation of this interface rather
-// than a change to any handler.
+// it, so the feature works end to end with no provider configured (the server
+// takes EDUCHAN_MAIL_DEV=1 to use it), and a sender for a dedicated
+// transactional mail provider is another implementation of this interface
+// rather than a change to any handler.
 //
 // Nothing here persists anything. A Code exists for the length of one SendCode
 // call; educhan itself stores only an HMAC of the address it went to.

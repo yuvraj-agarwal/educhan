@@ -78,8 +78,10 @@ type Post struct {
 	OP        bool      `json:"op"`
 	CreatedAt time.Time `json:"created_at"`
 	// Badge is the institution the poster verified an address at, when they
-	// chose to post with it. It says nothing about who they are beyond that,
-	// and nothing links it back to the credential it was copied from.
+	// chose to post with it. It says nothing about who they are beyond that.
+	// It is a label, not a reference: it matches every stored credential of
+	// its institution at once, and names one only where the institution has
+	// no other (README.md, "The privacy property, exactly").
 	Badge string `json:"badge,omitempty"`
 	// Attachment is the post's image, if it has one.
 	Attachment *Attachment `json:"attachment,omitempty"`

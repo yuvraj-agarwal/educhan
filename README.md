@@ -6,7 +6,7 @@ educhan is a fast, high-signal imageboard designed for students, researchers, an
 
 ## Core Features
 
-- **Verified Anonymity** — Students aged 18 and over can optionally verify institutional email domains (`.ac.in`, `.edu`, etc.) to receive a badge naming the institution, never the person
+- **Verified Anonymity** — Students aged 18 and over can optionally verify institutional email domains (`.ac.in`, `.edu`, etc.) to receive a badge naming the institution, never the person. No mail is sent yet: the only mail sender in the repository is a development one, which prints the code and the address to the server's stdout and needs `EDUCHAN_MAIL_DEV=1`, and the deploy script leaves verification switched off
 - **Imageboard-native experience** — Fast, ephemeral threads on topic boards, with no accounts
 - **One image per post** — JPEG, PNG, WebP or GIF; uploads are off unless a server switches them on
 - **Archive** — Threads that fall off a board stay readable in its archive for a while, then are deleted
@@ -19,10 +19,10 @@ educhan is a fast, high-signal imageboard designed for students, researchers, an
 - A deployment made with `deploy/first-deploy.sh` is text-only for now: the script leaves image uploads off because images are not yet scanned (see [Image attachments](#image-attachments)), and institutional verification off because there is no real mail sender yet (see [Email delivery](#email-delivery))
 
 The prototype in this repository implements the imageboard end to end: boards,
-anonymous posting with tripcodes and per-thread poster IDs, one image per post,
-a paginated board index, a catalog view, threads with quote links, optional
-institutional verification, and key-authenticated moderation. Janitor accounts,
-bans, and reports are not built yet.
+anonymous posting with tripcodes and per-thread poster IDs, one image per post
+(switched off by default), a paginated board index, a catalog view, threads with
+quote links, optional institutional verification, and key-authenticated
+moderation. Janitor accounts, bans, and reports are not built yet.
 
 ## Verified Anonymity
 
@@ -35,26 +35,28 @@ switched off for the whole server unless `EDUCHAN_VERIFY_SECRET` is set.
   you@iitb.ac.in   + "I confirm I am 18 or over"
        │   refused unless ticked; then checked against the domain allowlist
        ▼
-  six-digit code, emailed — stored hashed, expires in 15 minutes
+  six-digit code, to the mail sender — stored hashed, expires in 15 minutes
        │   confirmed
        ▼
   signed credential, returned to the client: { label, expiry, random id }
        │   kept in localStorage; sent in X-Educhan-Credential
-       │   on the posts that tick the box, and on nothing else
+       │   on the submissions that tick the box, posted or refused,
+       │   and on nothing else
        ▼
   [Verified: IIT Bombay]
 
   The credentials table holds HMAC(secret, address), the SHA-256 of the
   credential's random id, the label, and an expiry counted from the end of
   the day it was issued (a day that ends at 05:00 UTC, after the nightly
-  sweep), and has no path to any post. A code's own row holds the same HMAC and an
-  expiry to the microsecond, the time it was asked for plus its lifetime,
-  and stays in the table's file until the first nightly sweep after the
-  code is confirmed or expires. PostgreSQL's transaction ids date the
-  issuance more closely: the credential row's own until the nightly sweep
-  rewrites it, and the gaps the request and the confirmation leave among
-  the posts' for as long as those posts exist (see "Transaction ids, and
-  the nightly rewrite").
+  sweep), and no column that leads to any post; but a label only one row
+  holds names that row on every post made under it. A code's own row holds
+  the same HMAC and an expiry to the microsecond, the time it was asked
+  for plus its lifetime, and stays in the table's file until the first
+  nightly sweep after the code is confirmed or expires. PostgreSQL's
+  transaction ids date the issuance more closely: the credential row's own
+  until the nightly sweep rewrites it, and the gaps the request and the
+  confirmation leave among the posts' for as long as those posts exist
+  (see "Transaction ids, and the nightly rewrite").
 ```
 
 1. Submit an institutional address on `/verify`, ticking the box that confirms
@@ -62,7 +64,12 @@ switched off for the whole server unless `EDUCHAN_VERIFY_SECRET` is set.
    refuses any request that does not carry `"adult": true`.
 2. The domain is checked against the allowlist, which decides both whether it
    counts as academic and what the badge will say.
-3. A six-digit code is emailed. It is stored hashed and expires in 15 minutes.
+3. A six-digit code is handed to the mail sender. No mail is sent yet: the only
+   sender in the repository is the development one, which prints the code and
+   the address to the server's stdout and needs `EDUCHAN_MAIL_DEV=1`, and the
+   deploy script leaves verification switched off (see [Email
+   delivery](#email-delivery)). The code is stored hashed and expires in 15
+   minutes.
 4. Submitting the code exchanges it for a signed, opaque credential, returned in
    the response body and kept by the client in `localStorage`.
 5. The posting form grows a **post with [Verified: …]** checkbox. Tick it per
@@ -83,12 +90,15 @@ claim in the credential or anything the browser keeps: the answer itself is
 recorded nowhere (`TestAdultAttestationIsNeverKept`, and
 `TestBadgeAttestationIsNeverPreselectedOrKept` for the page's unticked box).
 Why adult-only: the badge is the one feature that keeps something tied to a
-person, a keyed hash of an address for up to 180 days. Keeping it to adults
-keeps that record out of the rules for under-18s' data, such as India's
-parental-consent requirement from 13 May 2027 (build plan 2.14,
-design-recommendations §3.3 and §4.4). It is a tick-box and nothing more: a
-17-year-old who ticks it gets a badge, which is one more reason the badge says
-so little — an institution, an expiry, and a random number.
+person, a keyed hash of an address. The row that holds it is kept for the
+credential's lifetime (180 days by default), counted from the end of the day the
+credential was issued, and is then deleted by the next verification anyone
+completes, not at the moment it expires: with no later verification it stays.
+Keeping it to adults keeps that record out of the rules for under-18s' data,
+such as India's parental-consent requirement from 13 May 2027. It is a tick-box
+and nothing more: a 17-year-old who ticks it gets a badge, which is one more
+reason the badge says so little — an institution, an expiry, and a random
+number.
 
 ### The credential travels only when it is used
 
@@ -109,10 +119,13 @@ directions:
   call graph: the header is read in exactly one function, that function has
   exactly one caller (`postBadge`), and that caller has exactly two (the thread
   and reply handlers). A new handler that reaches for the credential fails here.
-- `TestCredentialHasNoEffectOffTheBadgePath` presents a valid credential to
-  every other endpoint and asserts the responses are byte-identical to the same
-  requests without it — including that an unbadged post carrying a credential
-  still gets no badge.
+- `TestCredentialHasNoEffectOffTheBadgePath` sends a valid credential with a
+  thread and a reply that do not ask for a badge and asserts neither gets one,
+  then sends it with a `GET` to each of ten read-only endpoints (verification
+  status, site settings, the board list, a board, its index, catalog and
+  archive, a thread, a post lookup and the health check) and asserts each
+  answers with the same status and the same body, byte for byte, as it does
+  without it.
 
 `GET /api/verify` therefore reports only whether the feature is configured. It
 cannot answer "am I verified?", because answering would mean the credential
@@ -127,14 +140,21 @@ property above, and it is worth paying here:
 - **The page runs no inline script.** The CSP in `middleware.go` is
   same-origin with no `unsafe-inline` exception, so an injected `<script>`, a
   `style` attribute, or an inline handler is refused by the browser before it
-  runs. `TestWebAssetsHaveNoInlineStylesOrScripts` fails the build if any
-  appear in the shipped assets, so the exception is never quietly added.
-- **A stolen credential is worth very little.** It grants exactly one thing:
-  the ability to post under that institution's label until it expires. There is
-  no account behind it, no posting history reachable through it, no settings, no
-  contact details, and no way to get from it to the address that earned it —
-  it contains a label, a timestamp, and a random number. Compare it to a session
-  cookie, which is what the alternative would effectively have been.
+  runs. `TestWebAssetsHaveNoInlineStylesOrScripts` fails the build if a `style`
+  attribute with a quoted value, a `<style>` block or a `<script>` tag with no
+  `src=` in it appears in `index.html`, `app.js`, `app.css` or any other HTML,
+  JavaScript or CSS file of the front end's own (the vendored files under
+  `web/lib/` are pinned by hash instead), so the exception is never quietly
+  added.
+- **A stolen credential is worth very little.** It lets its holder post under
+  that institution's label until it expires, and under the poster ID the owner's
+  badged posts have in each thread: in a thread the holder posts in with it, the
+  holder's badged posts look like the owner's, and the holder can tell which
+  badged posts there are the owner's. There is no account behind it, no list of
+  the owner's posts, no settings, no contact details, and no way to get from it
+  to the address that earned it — it contains a label, a timestamp, and a random
+  number. Compare it to a session cookie, which is what the alternative would
+  effectively have been.
 
 Sending the badge in a header rather than a cookie also removes the CSRF
 question from posting entirely: a cross-site form submission carries no header a
@@ -167,11 +187,14 @@ the remembered name (see below), which are what would otherwise let the next
 person at a shared computer post under the same IDs and tripcode.
 
 A badge is a weak thing to inherit: it grants posting under an institution's
-label and nothing else, with no account, no history, and no route back to the
-address that earned it — and the remembered posting name already sat in
-`localStorage` beside it. But it is not nothing, and the honest framing is a
-trade: a persistent credential that makes the TTL real, against a browser that
-now holds something worth forgetting on the way out.
+label and under the poster ID the owner's badged posts have in each thread, so
+that in a thread the next user posts in with it, their badged posts look like
+the owner's and show them which badged posts there are the owner's. There is no
+account, no list of the owner's posts, and no route back to the address that
+earned it — and the remembered posting name already sat in `localStorage` beside
+it. But it is not nothing, and the honest framing is a trade: a persistent
+credential that makes the TTL real, against a browser that now holds something
+worth forgetting on the way out.
 
 ### The privacy property, exactly
 
@@ -179,6 +202,22 @@ The design goal is that **no one — the operator included — can link a badge 
 an email address or to a poster's other posts.** Concretely, this is what an
 operator with full database access, root on the machine, and the server secret
 can and cannot work out.
+
+Everything below is about what educhan keeps (its database, its files, its
+backups and its logs) and what can be worked out from them. It is not a promise
+about an operator, or an intruder, who changes the server or records requests as
+they arrive: a code request carries the address, and every badged post carries
+the credential, whose random id is the key (as its SHA-256) of the stored row
+that also holds the address's keyed hash. Whoever records that header and holds
+the database can tie each badged post they see to that row; with the server
+secret they can test a guessed address against it, and with the poster-ID salt
+find that credential's badged posts in every thread. Nor is what follows a
+promise about a database set to log statements with their parameters
+(`log_statement`, `log_min_duration_statement`, or an extension such as
+pgaudit): every badged post looks its row up by the SHA-256 of its credential's
+id, and every code request and confirmation writes the address's keyed hash, so
+such a log ties each of them to its row, with a time. PostgreSQL leaves all of
+these off by default; leave them off.
 
 **What they can see**
 
@@ -219,59 +258,89 @@ can and cannot work out.
   after an issuance does name the institution, and its time is kept to the
   second too. So an issuance followed by a badged post ties that post to its
   stored record — the one row with that label and that expiry day — on any day
-  its institution issued only one credential, however many other institutions
-  issued that day. The posts' gaps keep that possible for as long as the posts
-  are kept; the request log adds the second for as long as it is kept.
+  no other credential its institution issued that day is still stored, however
+  many were issued at other institutions; and, while the row still carries its
+  own transaction id (until the next sweep, in a backup taken before it, and in
+  the write-ahead log), on any day no other stored credential of its institution
+  carries a transaction id between that row's and the post's, since that id
+  dates the row to just before the post. The post brings the poster's other
+  badged posts in its thread with it, by their shared poster ID. The posts' gaps
+  keep that possible for as long as the posts are kept; the request log adds the
+  second for as long as it is kept.
 - Which posts carry which badge, because a badge is displayed on the post.
+- How many stored credentials each institution has, because every row keeps its
+  label, and that label is the badge a post displays. Where only one row carries
+  an institution's label, every post showing that badge is that row's, on any
+  day and in every thread, but for posts made under a credential that has since
+  expired and been deleted; a guessed address that matches the row then names
+  their poster. Where a few rows carry it, each such post is one of theirs.
 - Which badged posts in one thread came from the same credential, because they
   share a poster ID there, as any poster's posts in a thread do. In different
   threads the same credential's IDs differ.
 - **Confirmation of a guess.** The email hash is keyed, not encrypted: holding
   the secret, an operator who suspects a particular address can recompute the
-  HMAC and check whether that person is verified. This is inherent to a
-  uniqueness key and is the sharpest edge of the design. It answers "is
-  ana@iitb.ac.in verified?" — it does not answer "who is verified?", nor
-  "which posts are theirs?" except for a post tied to its record by the
-  issuance times above.
+  HMAC and check whether that person is verified. The same hash keys the codes
+  in flight, so it also shows an address that asked for a code whose row has not
+  yet been deleted; and a credential's row is left by Forget in the browser and
+  outlasts its expiry, until a verification anyone completes after that deletes
+  it. Nothing limits how many addresses they try: with the secret and the
+  database, any list they can draw up — a class roster, a staff directory, a
+  pattern of roll numbers — can be hashed and matched offline. This is inherent
+  to a uniqueness key and is the sharpest edge of the design. It answers "is
+  you@iitb.ac.in verified?" and "who on this list is verified?" — it does not
+  answer "who is verified?" for an address nobody thought to list, nor "which
+  posts are theirs?" except for a post tied to its record by the issuance times
+  above, or the posts made under a credential that is its institution's only
+  stored one.
 
 **What they cannot do**
 
 - Recover an address from the database. It is never written, in any table, at
-  any point in the flow — not even transiently, and not in the logs. A test
-  (`TestNoEmailAddressReachesTheDatabase`) verifies the whole flow and then
-  searches every column of every table for it, with positive controls so it
-  cannot pass by failing to look.
-- Link a credential to a post. The credential carries a label, an expiry, and a
-  random identifier — nothing derived from the address. Posts store the badge
-  as text and hold no reference to the record it came from.
+  any point in the flow — not even transiently — and the application's log lines
+  never carry it. The one exception is the development mail sender, the only
+  sender so far, which prints the address and the code to the server's stdout
+  (see [Email delivery](#email-delivery)); where stdout is collected, as on
+  Cloud Run, that is a log. A test (`TestNoEmailAddressReachesTheDatabase`)
+  verifies the whole flow and then searches every column of every table for it,
+  with positive controls so it cannot pass by failing to look.
+- Link a credential to a post from anything stored, beyond the label of an
+  institution's one stored credential (above). The credential carries a label,
+  an expiry, and a random identifier — nothing derived from the address but its
+  institution. Posts store the badge as text and hold no reference to the record
+  it came from.
 - Link a post to a verification record by timing, beyond the issuance times
   above. Verification tables carry no `created_at`, and using a credential
   updates nothing, so there is no "last used" to line up against a post; the
   transaction id on a rewritten credential row dates the sweep that rewrote it,
-  not the issuance, and says of the issuance only that it came before the
-  sweep: of a credential issued on an earlier day, nothing its expiry does
-  not, and of one issued on the day the sweep ran in, which ends after it, that
-  it came in the 22 hours of that day before the sweep. But the issuance times
-  above are enough on some days:
-  neither the gaps among the posts' transaction ids nor the log's lines name an
-  institution, but a badged post soon after an issuance does, and that ties the
-  post to a single record on a day its institution issued only one credential.
-- Group a poster's requests by their badge. The credential is sent only on the
-  posts that carry one, so an operator watching the request layer sees it on
-  exactly the posts that already display it, and on nothing else.
-- Join the two. There is no foreign key and no shared column between the
-  verification tables and `posts` or `threads`; `TestVerificationTablesCannotBeJoinedToPosts`
+  not the issuance, and says of the issuance only that it came before the sweep:
+  of a credential issued on an earlier day, nothing its expiry does not, and of
+  one issued on the day the sweep ran in, which ends after it, that it came in
+  the 22 hours of that day before the sweep. But the issuance times above are
+  enough on some days: neither the gaps among the posts' transaction ids nor the
+  log's lines name an institution, but a badged post soon after an issuance
+  does, and that ties the post to a single record on a day no other credential
+  its institution issued that day is still stored, or, while the record still
+  carries its own transaction id, on any day no other stored credential of its
+  institution carries one between the record's and the post's.
+- Group a poster's requests by their badge. The credential is sent only on
+  badged submissions, the posts that display it and the attempts the server
+  refused, so an operator watching the request layer sees it there and on
+  nothing else. On those requests it does identify the credential's stored row.
+- Join the two. There is no foreign key, and no column but the badge label,
+  between the verification tables and `posts` or `threads`; `TestVerificationTablesCannotBeJoinedToPosts`
   asserts the exact column list of both tables so a future migration cannot
-  quietly add one.
+  quietly add one. The one value the two sides share is the label a post's badge
+  copies, which joins a post only to all its institution's rows at once (above).
 - Recompute a badged post's poster ID. It is derived from the random id inside
   the credential as the poster presents it; the database holds only that id's
   SHA-256, and no derivation from anything in the verification tables
   reproduces it (`TestBadgedPosterIDCannotBeRecomputedFromTheDatabase`).
-- Link two badged posts in different threads to each other. Their poster IDs
-  differ, and two posts showing the same institution say only that: an
-  institution with one verified user and one badged post is as anonymous as its
-  user base is large. **A badge narrows you to your institution — that is the
-  whole of what it discloses, and it is not nothing at a small one.**
+- Link two badged posts in different threads to each other, beyond the issuance
+  times above, or the one stored credential of their institution (above). Their
+  poster IDs differ, and two posts showing the same institution say only that.
+  **To a reader, a badge narrows you to your institution — that is the whole of
+  what it discloses, and it is not nothing at a small one. To an operator, it
+  narrows you to that institution's stored credentials.**
 
 Rotating `EDUCHAN_VERIFY_SECRET` invalidates every credential and orphans every
 uniqueness key, so everyone re-verifies and their old rows match nothing.
@@ -555,17 +624,18 @@ What that protects, exactly:
   every backup, for as long as those posts exist, and places each issuance
   between two posts as closely as its credential's own `xmin` did before the
   rewrite (`TestIssuanceLeavesGapsAmongThePostsTransactionIDs`). With the label
-  of the first badged post after it and the expiry day, that still points at
-  the credential's row on a day its institution issued only one credential; on
-  a day with a single issuance, the expiry day alone does. Other writes leave
-  gaps too — a moderator's, a refused reply's, the sweep's, autovacuum's on
-  other tables, another database's on the same instance — so a gap alone proves
-  nothing; but a request's gap, a confirmation's within the code's lifetime
-  (fifteen minutes by default), then a badged post, is the shape of an
-  issuance, and on a quiet instance the gaps are exact. What the rewrite takes
-  away is the direct link from a credential row to a time, not the time.
-  Transaction ids belong to the whole PostgreSQL instance, so only verification
-  tables on an instance of their own would close this.
+  of the first badged post after it and the expiry day, that still points at the
+  credential's row on a day no other credential its institution issued that day
+  is still stored; on a day no other credential issued that day is still stored
+  at all, the expiry day alone does. Other writes leave gaps too — a
+  moderator's, a refused reply's, the sweep's, autovacuum's on other tables,
+  another database's on the same instance — so a gap alone proves nothing; but a
+  request's gap, a confirmation's within the code's lifetime (fifteen minutes by
+  default), then a badged post, is the shape of an issuance, and on a quiet
+  instance the gaps are exact. What the rewrite takes away is the direct link
+  from a credential row to a time, not the time. Transaction ids belong to the
+  whole PostgreSQL instance, so only verification tables on an instance of their
+  own would close this.
 - **A credential issued since the last sweep** carries its own transaction id
   and can be placed between two timed posts until the next sweep rewrites it.
   Until then, too, the pending row its confirmation deleted can still be in the
@@ -665,11 +735,16 @@ school marks its poster as a child at a findable place, and school mailboxes are
 often monitored and closed when a pupil leaves. That limits the badge, not who
 may use the site. The aim is that every badge names a university or college, but
 that is a goal, not a guarantee: `ac.uk` also admits sixth-form colleges, and no
-suffix maps exactly onto higher education. Suffixes shared with schools are
-either guarded by denials (`edu.au`, `kvs.ac.in`) or left out in favour of named
-universities (`edu.in`, `ac.jp`, `ac.th`, `edu.sg`, `edu.hk`), and `sch.uk` is
-not listed. Every suffix in the file is marked reviewed or not checked yet. No
-EU member-state suffixes are listed while the site does not target the EU.
+suffix maps exactly onto higher education. Suffixes known to be shared with
+schools are either guarded by denials (`edu.au`, `ac.in` through `!kvs.ac.in`,
+and `edu.my`, which is not checked yet, through `!moe-dl.edu.my`) or left out in
+favour of named universities (`edu.in`, `ac.jp`, `edu.sg`, `edu.hk`); `ac.th` is
+left out too, because it has not been checked; and `sch.uk` is not listed. Every
+suffix in the file is marked reviewed or not checked yet: 4 of its 34 suffixes
+are reviewed (`edu`, `ac.uk`, `ac.in` and `edu.au`), and the other 30 are not
+checked yet, which in the file's words means they were not checked and may still
+admit schools. No EU member-state suffixes are listed while the site does not
+target the EU.
 `EDUCHAN_VERIFY_DOMAINS` points at a file that **replaces** the
 built-in list rather than extending it, so a deployment sees exactly what it
 configured.
@@ -677,9 +752,10 @@ configured.
 ### Email delivery
 
 Delivery goes through `internal/mailer.Sender`, the same way blob storage goes
-through `internal/media.Store`. With no provider configured the development
-sender prints the code to stdout, so the feature is usable and testable out of
-the box:
+through `internal/media.Store`. No mail is sent yet: the only sender in the
+repository is the development one, which prints the code and the address to the
+server's stdout instead of sending them, so the feature is usable and testable
+locally once `EDUCHAN_VERIFY_SECRET` and `EDUCHAN_MAIL_DEV=1` are both set:
 
 ```
 [educhan] verification code for ana@iitb.ac.in: 481920 (valid for 15m0s)
@@ -688,9 +764,10 @@ the box:
 That sender prints the address, which makes it a development tool only — it is
 the one place in educhan an address is rendered at all. So the server refuses to
 start with `EDUCHAN_VERIFY_SECRET` set and no real sender unless
-`EDUCHAN_MAIL_DEV=1` says the development sender is meant. Adding SMTP or Google
-Workspace means writing another `Sender` and assigning it to `Config.Sender`;
-no handler and no SQL changes.
+`EDUCHAN_MAIL_DEV=1` says the development sender is meant, and the deploy script
+leaves verification switched off. Adding a real one, for a dedicated
+transactional mail provider, means writing another `Sender` and assigning it to
+`Config.Sender`; no handler and no SQL changes.
 
 ### Anti-abuse
 
@@ -823,7 +900,7 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Index | Paginated, newest bump first, showing each thread's opening post and last three replies |
 | Catalog | Every live thread on one page as excerpt tiles with thumbnails; an excerpt shows a spoiler as `[spoiler]`, never what it hides |
 | Attachments | One image per post and a per-board cap per thread, validated by magic bytes, thumbnailed at upload, served from `/media/…`; off unless switched on, and `GET /api/site` says which |
-| Verification | Optional institutional badge from an emailed code; the address is never stored and the badge cannot be linked to a post |
+| Verification | Optional institutional badge from a six-digit code handed to a mail sender. No mail is sent yet: the only sender in the repository is the development one, which prints the code and the address to the server's stdout and needs `EDUCHAN_MAIL_DEV=1`, and the deploy script leaves verification switched off. The address is never written to the database, only a keyed hash of it, and nothing stored with a post points to its verification record, though timing can tie the two: until the nightly sweep, in backups taken before it or in the write-ahead log, and afterwards on a day no other credential its institution issued that day is still stored; and where an institution has only one stored credential, its label alone ties that credential's posts to it ([The privacy property, exactly](#the-privacy-property-exactly)) |
 | Moderation | Sticky, lock, and delete a post or a whole thread, plus creating and reconfiguring boards, behind a shared moderation key |
 | Archive | Threads pushed past a board's thread limit are archived rather than deleted: they leave the index and the catalog, refuse replies, and still load by number |
 | Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed, then rewrites the verification credentials so that every credential issued before the sweep carries the sweep's transaction id rather than its own ([Transaction ids, and the nightly rewrite](#transaction-ids-and-the-nightly-rewrite)); per-client cooldowns limit new threads, replies, and uploads, and forget each address within a minute of its cooldown ending while the process has CPU between requests (see Flood control for an idle Cloud Run instance) |
@@ -1032,7 +1109,7 @@ the build needs, and the rest of the walkthrough.
 | `EDUCHAN_UPLOADS_ENABLED` | off | Accept image attachments. Off refuses any post carrying an image with `403`, reading no more of it than a text post may be, and `GET /api/site` reports which |
 | `EDUCHAN_MOD_KEY` | empty | Shared secret for the moderation and board management endpoints; unset means they refuse every request |
 | `EDUCHAN_VERIFY_SECRET` | empty | Keys institutional verification: the address hash, the pending code hash, and the credential signature. **Unset switches the whole feature off**; rotating it revokes every credential |
-| `EDUCHAN_VERIFY_CODE_TTL` | `15m` | How long an emailed code stays usable |
+| `EDUCHAN_VERIFY_CODE_TTL` | `15m` | How long a code stays usable |
 | `EDUCHAN_VERIFY_CREDENTIAL_TTL` | `4320h` (180 days) | How long a badge lasts before the holder verifies again. Changing it splits the credential day it is deployed in, dating the credentials issued that day before and after the deploy apart ("What that protects, exactly"): deploy a change soon after 05:00 UTC, before anyone has verified that day |
 | `EDUCHAN_VERIFY_COOLDOWN` | `60` (seconds) | Minimum interval between code requests, per client and per address |
 | `EDUCHAN_VERIFY_DOMAINS` | embedded list | Path to an allowlist file replacing the built-in one |
@@ -1253,10 +1330,19 @@ curl -s -X POST localhost:8080/api/boards/career/threads \
   -H 'Content-Type: application/json' \
   -d '{"subject":"placement season","name":"ana#trip","body":"how did yours go?"}'
 
-# Verification, end to end. "adult": true says you are 18 or over; without
-# it the request is refused. With no mail provider configured the code is
-# printed to the server's stdout. Confirming returns the credential; hold on
-# to it, because the server will not show it again.
+# Verification, end to end. No mail is sent: the only sender in the
+# repository is the development one, which prints the code and the address to
+# the server's stdout, and the deploy script leaves verification switched off.
+# So start the server with both settings, and with the thread cooldown off so
+# that the badged thread at the end is not refused for following the thread
+# above within 30 seconds, as in
+#   EDUCHAN_VERIFY_SECRET=dev-verify-secret EDUCHAN_MAIL_DEV=1 \
+#     EDUCHAN_THREAD_COOLDOWN=0 make run
+# and use the code it prints in place of 481920. Without the secret these
+# requests answer 403, and with it but without EDUCHAN_MAIL_DEV the server
+# refuses to start. "adult": true says you are 18 or over; without it the
+# request is refused. Confirming returns the credential; hold on to it,
+# because the server will not show it again.
 curl -s -c jar -X POST localhost:8080/api/verify/request \
   -H 'Content-Type: application/json' -d '{"email":"you@iitb.ac.in","adult":true}'
 CRED=$(curl -s -b jar -c jar -X POST localhost:8080/api/verify/confirm \

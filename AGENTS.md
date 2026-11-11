@@ -1004,10 +1004,10 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   states it in full.** Three rules make it true, and a change that breaks any of them
   breaks the promise rather than just the code: the address is never written anywhere
   (only `HMAC(EDUCHAN_VERIFY_SECRET, normalised address)` is, as a uniqueness key); the
-  credential carries only a label, an expiry, and a random id; and nothing links a
-  credential to a post. Practical consequences when editing `verify.go`, `store.go`,
-  `0004_verification.sql`, `0015_verification_statistics.sql`, or
-  `0016_vacuum_probe.sql`:
+  credential carries only a label, an expiry, and a random id; and nothing stored links a
+  credential to a post (within the limits the README states). Practical consequences when
+  editing `verify.go`, `store.go`, `0004_verification.sql`,
+  `0015_verification_statistics.sql`, or `0016_vacuum_probe.sql`:
   - Never add a column to `verification_pending` or `verification_credentials` that could
     be joined to a post, and never add `created_at` or a "last used" — an issuance or use
     timestamp correlates with the posts around it. `CredentialLabel` is a read and has to
@@ -1314,9 +1314,11 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     starts, a row is written or mail is sent
     (`TestVerificationRequiresTheAdultAttestation`); `/api/verify/confirm` does not ask
     again. Why 18+: the badge is the one feature that keeps something tied to a person,
-    an email HMAC for up to 180 days, and keeping it adult-only keeps that record out of
-    India's parental-consent rule for under-18s from 13 May 2027 (design-recommendations
-    §3.3, §4.4). Why never stored: a kept answer would be a record of age about every
+    an email HMAC, kept in its credential row for the credential's lifetime (180 days by
+    default) counted from the end of the day it was issued, and then until the next
+    verification anyone completes deletes it, not at the moment it expires; keeping it
+    adult-only keeps that record out of India's parental-consent rule for under-18s from
+    13 May 2027. Why never stored: a kept answer would be a record of age about every
     badge holder, the very data those rules attach to, and a tick-box proves nothing
     worth keeping. So no column, no log field, no credential claim, no cookie and no
     client storage key holds it (`TestAdultAttestationIsNeverKept`,
