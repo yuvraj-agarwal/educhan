@@ -1226,8 +1226,10 @@ function revealImageSpoiler(button) {
 }
 
 // verifiedBadgeHTML renders the institution a post was signed with. It says
-// where the poster is, and deliberately nothing else: two posts carrying the
-// same badge are no more linked to each other than any two posts.
+// where the poster is, and deliberately nothing else: to a reader, two posts
+// carrying the same badge share that institution and nothing more. What the
+// server's records can tie together is set out in README.md, under "The privacy
+// property, exactly".
 function verifiedBadgeHTML(label) {
   return `<span class="badge verified" title="Institutional email verified; the address is not kept with the post">Verified: ${esc(label)}</span>`;
 }
@@ -2316,8 +2318,8 @@ const VERIFY_INTRO = `
     since forgotten or expired. Timing can also tie a post you badge soon after
     verifying, and your other badged posts in that thread, to you if they check
     your address. While yours is the only badge from your institution the
-    server keeps, the posts you badge can be tied to you the same way. All of
-    this is a promise about what is kept, not about someone who changes the
+    server keeps, any post you have badged can be tied to you the same way. All
+    of this is a promise about what is kept, not about someone who changes the
     server or records what is sent to it.
   </p>
   <p class="verify-note muted">
@@ -2776,9 +2778,9 @@ const FAQ_SECTIONS = [
         for a badge or a code request, even one since forgotten or expired. Timing can also
         tie a badged post you make soon after verifying, and your other badged posts in that
         thread, to you if they check your address. While yours is the only badge from your
-        university or college the site keeps, the posts you badge can be tied to you the same
-        way. All of this is a promise about what is kept, not about someone who changes the
-        server or records what is sent to it.</p>
+        university or college the site keeps, any post you have badged can be tied to you the
+        same way. All of this is a promise about what is kept, not about someone who changes
+        the server or records what is sent to it.</p>
       <p>On a shared computer, use <strong>Forget this browser</strong> on the
         <a href="/verify#forget-browser">Verify</a> page before you leave. The badge stays in
         that browser for whoever uses it next, and so do the key your IDs are made from and

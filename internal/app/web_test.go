@@ -605,10 +605,10 @@ func TestAcceptsGzip(t *testing.T) {
 // they think of, timing can tie a badged post to its verification, a badge that
 // is its institution's only stored one names its row on the posts made under
 // it, and every badged post carries the credential, whose id finds the stored
-// row. Words that
-// say no one can make that link at all, or that the badge is not linked to its
-// poster, are a promise the code does not keep.
-var absoluteBadgePromise = regexp.MustCompile(`(?i)\b(?:server|operator) included\b|\bwork(?:s|ed)? back from\b|\btrac(?:e|ed|ing) back\b|\b(?:cannot|can't|can never) be (?:linked|traced|connected)\b|\bnot (?:linked|traceable|connected) to (?:this|the|its|a|any) (?:poster|post|address)\b|\bno one\b[^.]*\bcan (?:work|trace|link)\b`)
+// row. Words that say no one can make that link at all, that the badge is not
+// linked to its poster, or that two posts with the same badge are no more
+// linked than any two, are a promise the code does not keep.
+var absoluteBadgePromise = regexp.MustCompile(`(?i)\b(?:server|operator) included\b|\bwork(?:s|ed)? back from\b|\btrac(?:e|ed|ing) back\b|\b(?:cannot|can't|can never) be (?:linked|traced|connected)\b|\bnot (?:linked|traceable|connected) to (?:this|the|its|a|any) (?:poster|post|address)\b|\bno one\b[^.]*\bcan (?:work|trace|link)\b|\bno more linked\b`)
 
 func TestSiteNeverPromisesTheBadgeCannotBeTraced(t *testing.T) {
 	// The pattern has to catch the wording it exists for, and the wording the
@@ -620,6 +620,7 @@ func TestSiteNeverPromisesTheBadgeCannotBeTraced(t *testing.T) {
 		"no one, the operator included, can link a badge to an address",
 		"Institutional email verified; not linked to this poster",
 		"the badge is not linked to the post",
+		"two posts carrying the same badge are no more linked to each other than any two posts",
 	} {
 		if !absoluteBadgePromise.MatchString(phrase) {
 			t.Fatalf("absoluteBadgePromise does not match %q", phrase)
@@ -679,24 +680,27 @@ func TestForgettingTheBrowserIsSaidAsDone(t *testing.T) {
 	}
 }
 
-// The limits the Verify page and the FAQ state have to be true of a server
-// that runs only what this repository runs by itself. The nightly clean-up is
+// The limits the Verify page and the FAQ state have to be true of a server that
+// runs only what this repository runs by itself. The nightly clean-up is
 // educhan -sweep, a separate process someone has to schedule, so the copy may
 // mention it only as something the server might run, never as "the next" one.
-// The check on a guessed address finds a stored row, which outlives a badge
-// the browser forgot or that ran out, and a code request's row too, so the
-// copy may not say it finds only who "has a badge". The address checked is one
-// the operator brings: "an address they can list" reads as if the server could
-// list addresses. After a nightly sweep, the timing match needs no other
-// credential of the institution from that day still stored, not one issuance
-// or one address that day: two confirmations from one address leave one row,
-// and an address that verifies again on a later day moves its row to a later
-// expiry, so the copy states no condition for it rather than one narrower than
-// the rows. And each stored row keeps its label, so a badge that is its
+// The check on a guessed address finds a stored row, which outlives a badge the
+// browser forgot or that ran out, and a code request's row too, so the copy may
+// not say it finds only who "has a badge". The address checked is one the
+// operator brings: "an address they can list" reads as if the server could list
+// addresses. After a nightly sweep, the timing match needs no other credential
+// of the institution from that day still stored, not one issuance or one
+// address that day: two confirmations from one address leave one row, and an
+// address that verifies again on a later day moves its row to a later expiry,
+// so the copy states no condition for it rather than one narrower than the
+// rows. And each stored row keeps its label, so a badge that is its
 // institution's only stored one names its row on the posts made under it, on
 // any day, while that lasts: the copy says so, with a verb of its own and not
 // as "every post", since posts under a credential since deleted carry the same
-// label. The address check is said in one short sentence.
+// label. The match is made when someone looks, so it takes in every post the
+// poster has badged, those from before theirs was the only one included: the
+// copy may not read as covering only the posts made while it lasts. The address
+// check is said in one short sentence.
 func TestBadgeLimitsSayWhatTheServerDoes(t *testing.T) {
 	said := regexp.MustCompile(`\s+`).ReplaceAllString(appScript(t), " ")
 	for _, wrong := range []string{
@@ -709,6 +713,7 @@ func TestBadgeLimitsSayWhatTheServerDoes(t *testing.T) {
 		"only one address",
 		"so can every post",
 		"or a list of them",
+		"the posts you badge can be tied",
 	} {
 		if strings.Contains(said, wrong) {
 			t.Errorf("app.js says %q", wrong)
@@ -726,8 +731,8 @@ func TestBadgeLimitsSayWhatTheServerDoes(t *testing.T) {
 		"Whoever runs this server can check any address they think of for a badge or a code request, even one since forgotten or expired.",
 		"The people who run this site can check any address they think of for a badge or a code request, even one since forgotten or expired.",
 		"and your other badged posts in that thread, to you if they check your address.",
-		"While yours is the only badge from your institution the server keeps, the posts you badge can be tied to you the same way.",
-		"While yours is the only badge from your university or college the site keeps, the posts you badge can be tied to you the same way.",
+		"While yours is the only badge from your institution the server keeps, any post you have badged can be tied to you the same way.",
+		"While yours is the only badge from your university or college the site keeps, any post you have badged can be tied to you the same way.",
 	} {
 		if !strings.Contains(said, want) {
 			t.Errorf("app.js does not say %q", want)
