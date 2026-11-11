@@ -69,6 +69,10 @@ func loadMigrations() ([]migration, error) {
 // migrate applies every migration that has not been recorded in
 // schema_migrations yet. Each migration runs in its own transaction, so a
 // failure leaves the database on the last successfully applied version.
+// Then, still under the lock and on every start, it brings rows an older
+// release may have written since up to the latest rules: boards under a slug
+// now reserved (renameReservedBoards) and attachments named by the poster's
+// file (renameAttachments).
 //
 // It returns the versions the database has that this binary does not know: a
 // database a newer release migrated, which this one is serving after a
@@ -159,7 +163,40 @@ func applyMigrations(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, 
 	if err := renameReservedBoards(ctx, conn, log); err != nil {
 		return nil, err
 	}
+	if known[attachmentNamesVersion] {
+		if err := renameAttachments(ctx, conn, log); err != nil {
+			return nil, err
+		}
+	}
 	return ahead, nil
+}
+
+// attachmentNamesVersion is 0008_attachment_names.sql, the migration
+// renameAttachments repeats.
+const attachmentNamesVersion = 8
+
+// renameAttachments gives every attachment the name this release shows it
+// under, "image" and the extension of its stored file (attachmentName), as
+// 0008 did for the rows before it. 0008 ran once, but a release from before
+// it can still be serving beside this one while a deploy rolls out, and it
+// writes the poster's filename into original_name for every image it stores;
+// so this runs under the migration lock, after the migrations, on every
+// start, and the next start of this release renames what such an instance
+// stored. Once the names are right it changes nothing, at the cost of a scan
+// of the attachments table. It logs how many it renamed and never a name.
+func renameAttachments(ctx context.Context, conn *pgxpool.Conn, log *slog.Logger) error {
+	tag, err := conn.Exec(ctx, `
+		UPDATE attachments
+		SET original_name = 'image' || COALESCE(substring(original_path FROM '\.[^./]*$'), '')
+		WHERE original_name IS DISTINCT FROM
+		      'image' || COALESCE(substring(original_path FROM '\.[^./]*$'), '')`)
+	if err != nil {
+		return fmt.Errorf("rename attachments: %w", err)
+	}
+	if n := tag.RowsAffected(); n > 0 {
+		log.Warn("renamed attachments an older release stored under their poster's filename", "attachments", n)
+	}
+	return nil
 }
 
 // renameReservedBoards moves any board whose slug has since become a reserved

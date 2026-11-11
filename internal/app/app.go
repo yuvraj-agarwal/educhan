@@ -8,10 +8,31 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/yuvraj-agarwal/educhan/internal/mailer"
 	"github.com/yuvraj-agarwal/educhan/internal/media"
+)
+
+// The timeouts cmd/server gives its http.Server. net/http applies
+// ReadHeaderTimeout and IdleTimeout before any handler runs, so they govern
+// every request: its headers are read within ReadHeaderTimeout, a multipart
+// post's included, and a kept-alive connection waits IdleTimeout for the next
+// one. ReadTimeout and WriteTimeout govern every request but a multipart post,
+// which is how app.js sends an image: once its headers are in,
+// parseSubmission and processContext replace its body's read deadline and its
+// answer's write deadline through an http.ResponseController, because its
+// body may legitimately take uploadReadTimeout to arrive and its image then
+// postDeadline to process, more than one WriteTimeout from the end of its
+// headers covers. Any other request's answer is written within WriteTimeout of
+// its headers or not at all, which is what app.js's VERIFY_TIMEOUT_MS is held
+// to (TestVerifyAnswersBelongToTheStepTheyWereSentFrom).
+const (
+	ReadHeaderTimeout = 10 * time.Second
+	ReadTimeout       = 30 * time.Second
+	WriteTimeout      = 30 * time.Second
+	IdleTimeout       = 2 * time.Minute
 )
 
 // App wires together configuration, the store, the media store, and the HTTP
@@ -40,12 +61,26 @@ type App struct {
 	// schemaAhead lists the migrations the database has and this binary does
 	// not: a newer release migrated it. The sweeper refuses to run on one.
 	schemaAhead []int
+
+	// postDeadline is postDeadline, uploadReadTimeout is uploadReadTimeout and
+	// uploadPaceGrace is uploadPaceGrace, which tests change.
+	postDeadline      time.Duration
+	uploadReadTimeout time.Duration
+	uploadPaceGrace   time.Duration
+
+	// uploadShares is what each client's posts hold of the upload budget
+	// (clientUploadShare).
+	uploadShares uploadShares
 }
 
 // New connects to Postgres, verifies connectivity, applies pending migrations,
 // and prepares the media store.
 func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 	if err := checkMailer(cfg); err != nil {
+		return nil, err
+	}
+	// ConfigFromEnv refuses it too; this is for a Config built in code.
+	if err := checkUploadLimit(cfg); err != nil {
 		return nil, err
 	}
 	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
@@ -87,18 +122,21 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		sender = mailer.NewDev(os.Stdout)
 	}
 	a := &App{
-		cfg:           cfg,
-		log:           log,
-		pool:          pool,
-		store:         NewStore(pool),
-		media:         blobs,
-		domains:       domains,
-		sender:        sender,
-		threadLimiter: newCooldownLimiter(cfg.ThreadCooldown),
-		postLimiter:   newCooldownLimiter(cfg.PostCooldown),
-		uploadLimiter: newCooldownLimiter(cfg.UploadCooldown),
-		verifyLimiter: newCooldownLimiter(cfg.VerifyCooldown),
-		schemaAhead:   schemaAhead,
+		cfg:               cfg,
+		log:               log,
+		pool:              pool,
+		store:             NewStore(pool),
+		media:             blobs,
+		domains:           domains,
+		sender:            sender,
+		threadLimiter:     newCooldownLimiter(cfg.ThreadCooldown),
+		postLimiter:       newCooldownLimiter(cfg.PostCooldown),
+		uploadLimiter:     newCooldownLimiter(cfg.UploadCooldown),
+		verifyLimiter:     newCooldownLimiter(cfg.VerifyCooldown),
+		schemaAhead:       schemaAhead,
+		postDeadline:      postDeadline,
+		uploadReadTimeout: uploadReadTimeout,
+		uploadPaceGrace:   uploadPaceGrace,
 	}
 	every := cfg.cooldownSweepEvery
 	if every <= 0 {

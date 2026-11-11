@@ -45,6 +45,14 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 	return r.ResponseWriter.Write(b)
 }
 
+// Unwrap returns the wrapped writer so http.NewResponseController can reach the
+// connection underneath to set read and write deadlines: an upload post governs
+// its own (parseSubmission, processContext), and without this the controller
+// would stop at this recorder and silently do nothing.
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
 // requestLogger emits one structured line per request.
 //
 // The line deliberately carries no client address. In production these lines
@@ -60,7 +68,13 @@ func requestLogger(log *slog.Logger) middleware {
 			next.ServeHTTP(rec, r)
 
 			level := slog.LevelInfo
-			if rec.status >= http.StatusInternalServerError {
+			switch {
+			case rec.status == http.StatusServiceUnavailable:
+				// Turned away by design, a post the server had no room
+				// for in time (answerBusy), or the database out of reach,
+				// which the health check reports as an error of its own.
+				level = slog.LevelWarn
+			case rec.status >= http.StatusInternalServerError:
 				level = slog.LevelError
 			}
 			log.Log(r.Context(), level, "request",
@@ -101,8 +115,10 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-// clientIP returns the address flood control is keyed on, and that a poster ID
-// is derived from when the request carries no poster key.
+// clientIP returns the address flood control, a client's share of the upload
+// budget and the one image post a client may have waiting for room in it are
+// keyed on, and that a poster ID is derived from when the request carries no
+// poster key.
 //
 // For IPv6 that is not the whole address but its /64 (addressKey): a subscriber
 // is normally handed at least a /64 and may use any address in it, so keyed on

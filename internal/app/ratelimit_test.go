@@ -124,6 +124,56 @@ func TestAllowAllChargesNothingWhenRefused(t *testing.T) {
 	}
 }
 
+// An admitted action the server then could not carry out is refunded: the
+// cooldowns it started are taken back, and the poster can try again at once.
+// A cooldown another action started since is not, so a refund cannot cut
+// short a wait it did not begin.
+func TestChargeAllRefundsWhatItStarted(t *testing.T) {
+	now := time.Now()
+	post := newCooldownLimiter(5 * time.Second)
+	upload := newCooldownLimiter(30 * time.Second)
+	for _, l := range []*cooldownLimiter{post, upload} {
+		l.now = func() time.Time { return now }
+	}
+	both := []cooldown{{post, "a"}, {upload, "a"}}
+
+	_, refund, ok := chargeAll(both...)
+	if !ok {
+		t.Fatal("the first image post should be allowed")
+	}
+	refund()
+	if _, ok := allowAll(both...); !ok {
+		t.Fatal("after a refund the same post should be allowed at once")
+	}
+	if len(post.seen) != 1 || len(upload.seen) != 1 {
+		t.Fatalf("tracked %d and %d keys, want the one admitted post's", len(post.seen), len(upload.seen))
+	}
+
+	// A refund that comes after another action restarted the cooldown leaves
+	// that action's cooldown in place.
+	now = now.Add(31 * time.Second)
+	_, stale, ok := chargeAll(both...)
+	if !ok {
+		t.Fatal("the post after the cooldowns ran out should be allowed")
+	}
+	now = now.Add(31 * time.Second)
+	if _, ok := allowAll(both...); !ok {
+		t.Fatal("the next post should be allowed")
+	}
+	stale()
+	if _, ok := allowAll(both...); ok {
+		t.Error("a stale refund took back the cooldown a later post started")
+	}
+
+	// A disabled or absent limiter has nothing to refund.
+	var none *cooldownLimiter
+	_, refund, ok = chargeAll(cooldown{newCooldownLimiter(0), "a"}, cooldown{none, "a"})
+	if !ok {
+		t.Fatal("disabled limiters must allow every action")
+	}
+	refund()
+}
+
 func TestCooldownLimiterSweeps(t *testing.T) {
 	now := time.Now()
 	limiter := newCooldownLimiter(time.Second)

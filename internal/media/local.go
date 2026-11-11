@@ -47,9 +47,14 @@ func (s *LocalStore) path(key string) (string, error) {
 
 // Put writes the object atomically: content lands in a temporary file that is
 // renamed into place, so a reader never observes a partially written image.
+// A write whose context has ended by the time it would start, or by the time
+// it would be published, is not made, as with Cloud Storage.
 func (s *LocalStore) Put(ctx context.Context, key, contentType string, r io.Reader) error {
 	full, err := s.path(key)
 	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
@@ -73,6 +78,9 @@ func (s *LocalStore) Put(ctx context.Context, key, contentType string, r io.Read
 	}
 	if err := os.Chmod(tmpName, 0o644); err != nil {
 		return fmt.Errorf("media: set permissions: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if err := os.Rename(tmpName, full); err != nil {
 		return fmt.Errorf("media: publish object: %w", err)
