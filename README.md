@@ -302,11 +302,11 @@ these off by default; leave them off.
   Cloud Run, that is a log. A test (`TestNoEmailAddressReachesTheDatabase`)
   verifies the whole flow and then searches every column of every table for it,
   with positive controls so it cannot pass by failing to look.
-- Link a credential to a post from anything stored. The credential carries a
-  label, an expiry, and a random identifier — nothing derived from the address
-  but its institution. Posts store the badge as text and hold no reference to
-  the record it came from; the text points to a record only where that record is
-  the one its institution has (above).
+- Link a credential to a post from anything stored, beyond the label of an
+  institution's one stored credential (above). The credential carries a label,
+  an expiry, and a random identifier — nothing derived from the address but its
+  institution. Posts store the badge as text and hold no reference to the record
+  it came from.
 - Link a post to a verification record by timing, beyond the issuance times
   above. Verification tables carry no `created_at`, and using a credential
   updates nothing, so there is no "last used" to line up against a post; the

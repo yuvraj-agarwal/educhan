@@ -2057,8 +2057,8 @@ function forgetBrowserHTML() {
     </div>`;
 }
 
-// BROWSER_FORGOTTEN says what was just done, not what the browser holds now.
-// It is said once the page has been drawn again, after the page has asked the
+// BROWSER_FORGOTTEN says what was just done, not what the browser holds now. It
+// is said once the page has been drawn again, after the page has asked the
 // server whether verification is on, and a badge another tab verified while
 // that request was out is drawn above it: "no longer holds a badge" was then
 // said beside one.
@@ -3774,8 +3774,8 @@ document.addEventListener("click", (event) => {
     clearNotice();
     // replacing shows the address form over a badge that is still held and
     // still usable — it is replaced in this browser by the new one (and
-    // cancelled on the server only if the new one is for the same address),
-    // not by asking for one.
+    // cancelled on the server only if the new one is for the same address), not
+    // by asking for one.
     verifyStep = { step: "email", label: "", replacing: true };
     drawVerifyStep();
     showVerifyField("f-email");
