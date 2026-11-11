@@ -741,15 +741,17 @@ on both. Proxied, the orange cloud, would break three things:
 The script checks this itself. On every run with a domain it looks both names
 up, as Cloud Shell sees them, and warns about one that does not lead to the
 load balancer's address and to no other, which is how a proxied record looks
-from outside. It moves visitors to the domain only once the bare name does. It
-warns as well about an `AAAA` record on either name: at the end of every run
-and, while the site is still on `run.app`, before it starts to wait for the
-domain. Google issues and renews no certificate for a name that resolves
-anywhere but the load balancer, which has no IPv6 address, and a visitor whose
-network has IPv6, as many mobile networks do, goes to an `AAAA` record first.
-A proxied record shows up in that warning too: Cloudflare answers for it with
-IPv6 addresses of its own (`2606:4700:…`), which are no record of yours and go
-when the record is **DNS only**.
+from outside. It moves visitors to the domain only once the bare name does. On
+a machine with no `getent`, which Cloud Shell has, the script cannot look: it
+says so, and does not move a site that is still on `run.app`. It warns as well
+about an `AAAA` record on either name: at the end of every run and, while the
+site is still on `run.app`, before it starts to wait for the domain. Google
+issues and renews no certificate for a name that resolves anywhere but the
+load balancer, which has no IPv6 address, and a visitor whose network has
+IPv6, as many mobile networks do, goes to an `AAAA` record first. A proxied
+record shows up in that warning too: Cloudflare answers for it with IPv6
+addresses of its own (`2606:4700:…`), which are no record of yours and go when
+the record is **DNS only**.
 
 Two settings in Cloudflare are worth changing once the site answers on the
 domain. Raise the TTL of both records from **Auto**, which is five minutes, to
@@ -762,10 +764,10 @@ Without that certificate it fails at once. The warning Cloudflare shows there
 is about sites it proxies, and it serves nothing of this one.
 
 The load balancer answers on IPv4 only for now, so there is no `AAAA` record
-to add. The app is ready for IPv6: it counts an IPv6 client by its `/64`, the
-block of addresses a subscriber usually holds and can move between
-([Flood control](../README.md#flood-control)). Cloud Armor's limit is not: it
-counts every address apart, so over IPv6 it would hold only a client that
+to add. The app counts an IPv6 client by its `/64`, the block of addresses a
+subscriber usually holds and can move between
+([Flood control](../README.md#flood-control)). Cloud Armor's limit does not:
+it counts every address apart, so over IPv6 it would hold only a client that
 stays on one address. IPv6 follows as a change of its own, which has to answer
 that and check the count of `X-Forwarded-For` entries over IPv6 as well.
 Nobody is shut out meanwhile: a network that gives its subscribers IPv6 only,
@@ -780,7 +782,10 @@ and `0 issue "letsencrypt.org"` on the bare name, which covers `www.` too.
 With no `CAA` records at all, any authority may issue, and there is nothing to
 add. Cloudflare publishes some `CAA` records of its own once a zone has any,
 and does not list them, so check what is really published with
-`dig +short CAA educhan.org` rather than in the dashboard.
+`dig +short CAA educhan.org` rather than in the dashboard. Those records of
+Cloudflare's can name the same two authorities, and they go when Universal SSL
+is disabled (above). So add the two yourself even where `dig` already shows
+them, and look again once Universal SSL is off.
 
 What the run builds, all named so a later run finds it again:
 
@@ -789,15 +794,16 @@ What the run builds, all named so a later run finds it again:
 | Global address | `educhan-ip` | The IPv4 address the DNS records point at |
 | Serverless network endpoint group | `educhan-neg` (in `REGION`) | How the load balancer reaches the Cloud Run service |
 | Backend service | `educhan-backend` | `EXTERNAL_MANAGED`, request logging off, the Armor policy attached, and `Strict-Transport-Security: max-age=31536000` on every answer from the service |
-| Cloud Armor policy | `educhan-edge` | One rule at priority 1000: more than 1200 requests a minute from one address get `429`. The script makes the rule once and then leaves it as it stands, so a rule changed by hand stays changed; a run with `EDGE_RATE=n` writes the script's rule again, with `n` requests a minute |
+| Cloud Armor policy | `educhan-edge` | One rule at priority 1000: more than 1200 requests a minute from one address get `429`. The script makes the rule where the policy has none and leaves one that is there as it stands, so a rule changed by hand stays changed; a run with `EDGE_RATE=n`, from 1 to 1000000, sets every part of the script's rule again, with `n` requests a minute, and takes it out of preview |
 | Certificates | `educhan-cert`, `educhan-cert-www` | Google-managed, one per name, so each goes live with its own DNS record |
 | SSL policy | `educhan-tls` | `MODERN`, TLS 1.2 and up |
 | URL maps | `educhan`, `educhan-http` | Everything goes to the service, except that `www.` is redirected to the bare name and `http://` to `https://`, both with `301` |
 | Target proxies | `educhan-https`, `educhan-http` | Hold the certificates and the URL maps |
 | Forwarding rules | `educhan-https`, `educhan-http` | Ports 443 and 80 on the address |
 
-All of these belong to Compute Engine, so with `DOMAIN` the script enables one
-more API than section 2.1 lists: `compute.googleapis.com`.
+All of these belong to Compute Engine, so with a domain the script enables one
+API more, `compute.googleapis.com`, which a site on `run.app` alone does not
+need.
 
 **Nothing here keeps a visitor's address.** A load balancer's request log has
 an entry for every request with the visitor's address and the time (section
@@ -806,20 +812,23 @@ request logging off again, puts its policy and its `Strict-Transport-Security`
 header back, and puts the exclusion of section 2.8 back, enabled and with its
 filter, in case any of them was changed by hand. Any other response header
 that someone added to the backend is kept. The Armor rule is the one thing
-here that a run does not put back: where the rule no longer has the shape the
-script gave it, the run says so in a note at the end, and `EDGE_RATE` writes
-the script's own again. Cloud Armor, as this policy is built, writes no log
-entry of its own: what it decides goes into that same request log, so with
-the log off it uses the visitor's address for the count and the address goes
-into no log. (Adaptive Protection is a separate switch on the policy, which
-the script never turns on, and it logs separately.) The two redirects, from
-`http://` and from `www.`, are answered by the URL maps and never reach the
-backend service, so its logging switch, the Armor rule and the
-`Strict-Transport-Security` header do not apply to them; whatever Google logs
-of them is the load balancer's (`resource.type="http_load_balancer"`), which
-the exclusion keeps out of the `_Default` bucket. The exclusion also covers
-Cloud Run's own request log, which is still written for requests that come
-through the load balancer.
+here that a run does not put back: where the rule is no longer the limit the
+script made (every request counted by its address, `429` past the limit, and
+enforced rather than in preview), the run says so in a note at the end, and
+`EDGE_RATE` sets the script's own again. An update may not write over
+everything a hand has put on a rule: where something survives it, or Cloud
+Armor refuses the update, the run says so, and how to replace the rule. Cloud
+Armor, as this policy is built, writes no log entry of its own: what it
+decides goes into that same request log, so with the log off it uses the
+visitor's address for the count and the address goes into no log. (Adaptive
+Protection is a separate switch on the policy, which the script never turns
+on, and it logs separately.) The two redirects, from `http://` and from
+`www.`, are answered by the URL maps and never reach the backend service, so
+its logging switch, the Armor rule and the `Strict-Transport-Security` header
+do not apply to them; whatever Google logs of them is the load balancer's
+(`resource.type="http_load_balancer"`), which the exclusion keeps out of the
+`_Default` bucket. The exclusion also covers Cloud Run's own request log,
+which is still written for requests that come through the load balancer.
 
 **Moving visitors from `run.app` to the domain is two updates, in a fixed
 order.** The app finds the visitor's address in `X-Forwarded-For` by counting
@@ -832,12 +841,12 @@ own flood-control bucket. One with `run.app` closed is the lesser fault: every
 visitor shares the load balancer's bucket, so one person's post holds up
 everyone else's for the cooldown. So the script closes `run.app` first, with
 `--ingress internal-and-cloud-load-balancing`, which answers outside requests
-to `run.app` with `404` and lets the load balancer's through. It waits, five
-minutes at most, until Cloud Run reports the setting in force and a request
-from Cloud Shell to `run.app` is refused, and only then raises the count to
-two. For the few minutes in between, visitors share one bucket; at no point
-can a client choose its own. A run that stops between the two leaves `run.app`
-closed with the count at one, and the next run finishes the move.
+to `run.app` with `404` and lets the load balancer's through. It waits, about
+five minutes at most, until Cloud Run reports the setting in force and a
+request from Cloud Shell to `run.app` is refused, and only then raises the
+count to two. For the few minutes in between, visitors share one bucket; at no
+point can a client choose its own. A run that stops between the two leaves
+`run.app` closed with the count at one, and the next run finishes the move.
 
 Every later run makes the same two checks before it deploys, and the count is
 two only where both pass: Cloud Run reports `run.app` closed, and a request
@@ -853,21 +862,25 @@ in force (`run.googleapis.com/ingress-status`):
 gcloud run services describe educhan --region asia-south1 --format='yaml(metadata.annotations)'
 ```
 
-A last request to `run.app` follows each deploy that counts two. If the site
-answers that one, the run puts the count back to one and stops there.
+A last request to `run.app` follows each deploy or update that sets the count
+to two. If the site answers that one, the run puts the count back to one and
+stops there. And a run that finds `run.app` open while the latest revision
+counts two, a state the script never leaves but a hand can make, puts the
+count back to one before it builds anything.
 
 The script makes the move only once the bare name resolves to the load
 balancer and to nowhere else (above), and a request through the load balancer
 has been answered over HTTPS, which shows that Google has issued the
 certificate and the load balancer is serving it. Until then the site stays on
-`run.app`, unchanged. The script waits up to 20 minutes, printing where things
-stand once a minute; Ctrl-C ends the wait and nothing else, and the script
-finishes its closing lines. Google usually issues a certificate within an hour
-of its DNS record resolving, and the load balancer can take half an hour more
-to start serving it, so on a first run the wait often ends first. The script
-then says what it is waiting for. Run it again as soon as that has happened:
-from the moment the domain answers until the move, anyone who reaches the site
-through it shares one flood-control bucket with everyone else who does.
+`run.app`, unchanged. The script waits about 20 minutes at most, printing
+where things stand about once a minute; Ctrl-C ends the wait and nothing else,
+and the script finishes its closing lines. Google usually issues a certificate
+within an hour of its DNS record resolving, and the load balancer can take
+half an hour more to start serving it, so on a first run the wait often ends
+first. The script then says what it is waiting for. Run it again as soon as
+that has happened: from the moment the domain answers until the move, anyone
+who reaches the site through it shares one flood-control bucket with everyone
+else who does.
 
 The move is also where a browser starts again. What it kept under the
 `run.app` address stays there: the poster key, so the same person's later
@@ -900,11 +913,12 @@ themselves: `PROVISIONING_FAILED_PERMANENTLY`, which Google does not try
 again, and `RENEWAL_FAILED`, where the old certificate goes on serving until
 it expires and no new one follows it.
 
-Once the site is on the domain, the script lists any certificate that is not
-`ACTIVE` at the end of every run, so a renewal that failed shows there, but
-only when the script runs. A certificate lasts 90 days, and Google starts
-renewing it about a month before it expires. So where weeks pass between
-deploys, run the list above about once a month.
+Once the site is on the domain, the script lists any Google-managed
+certificate on the load balancer that is not `ACTIVE` at the end of every run,
+so a renewal that failed shows there, but only when the script runs. A
+certificate lasts 90 days, and Google starts renewing it about a month before
+it expires. So where weeks pass between deploys, run the list above about once
+a month.
 
 **Replacing a certificate** in either of those two states starts with putting
 its name's record right, since nothing is issued until it is. Then a spare
@@ -934,23 +948,26 @@ gcloud compute target-https-proxies update educhan-https --global \
 gcloud compute ssl-certificates delete educhan-cert --global --quiet
 bash deploy/first-deploy.sh YOUR_PROJECT_ID
 
-# 4. Once the list above shows all three ACTIVE, and half an hour more has
+# 4. Once the list above shows them all ACTIVE, and half an hour more has
 #    passed, take the spare off the proxy and delete it.
 gcloud compute target-https-proxies update educhan-https --global \
   --ssl-certificates educhan-cert,educhan-cert-www
 gcloud compute ssl-certificates delete educhan-cert-spare --global --quiet
 ```
 
-For a failed `educhan-cert-www`, give the spare `--domains www.educhan.org`
-in step 1 and exchange the names `educhan-cert` and `educhan-cert-www` in
-step 3. If both have failed, give the spare both names (`--domains
+For a failed `educhan-cert-www`, give the spare `--domains www.educhan.org` in
+step 1 and exchange the names `educhan-cert` and `educhan-cert-www` in step 3.
+If both have failed, give the spare both names (`--domains
 educhan.org,www.educhan.org`), which Google issues only once both records are
 right, and do step 3 once for each. A `www.` `DOMAIN` has one name and only
 `educhan-cert`: give the spare that name alone, leave `educhan-cert-www` out
 of every line, and put `DOMAIN=` and the name in front of the script in step
 3, as on the first run, because the script finds its load balancer by its own
-certificates and that step leaves it none.
-Until step 4 the script notes, at the end of every run, that the proxy holds a
+certificates and that step leaves it none. It goes by what is left instead,
+and stops if that serves another name than `DOMAIN`: the URL map, which
+redirects `www.` to the bare name only where `DOMAIN` was a bare name, and
+otherwise the `www.` names on the certificates the proxy still holds. Until
+step 4 the script notes, at the end of every run, that the proxy holds a
 certificate it did not make.
 
 **Later runs** find the load balancer from `educhan-cert`, or from
@@ -976,7 +993,8 @@ of deploying each treat the two settings differently:
   brings back that revision's count while the ingress stays as it is now. So
   never send traffic to a revision from the other side of the move. The script
   ends any such pin it finds, after saying so before the build starts, since a
-  run of the script ships its checkout.
+  run of the script ships its checkout. Where the revision that then serves
+  counts two, the run ends by asking for the check below once more.
 - `first-deploy.sh` from a checkout older than this section knows nothing of
   the load balancer: it sets the count back to `1` and leaves `run.app`
   closed. The current script puts that right on its next run.
@@ -1000,7 +1018,8 @@ post                                          # 201, and the new thread's number
 post -H 'X-Forwarded-For: 198.51.100.7'       # 429: a header of the client's own changes nothing
 ```
 
-and, within 30 seconds of those, post the thread on the other device.
+and, within 30 seconds of the first of those (sooner is surer), post the
+thread on the other device.
 
 | First `post` | Second `post` | Other device | What it means |
 | --- | --- | --- | --- |
@@ -1067,6 +1086,7 @@ means deleting what the script built as well, in this order, and from then on
 no `DOMAIN` in front of the script:
 
 ```bash
+REGION=asia-south1
 gcloud compute forwarding-rules delete educhan-https educhan-http --global --quiet
 gcloud compute target-https-proxies delete educhan-https --global --quiet
 gcloud compute target-http-proxies delete educhan-http --global --quiet

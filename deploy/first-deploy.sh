@@ -43,9 +43,10 @@ PROJECT_ID="${1:-${PROJECT_ID:-}}"
 REGION="${2:-${REGION:-asia-south1}}"
 MIN_INSTANCES="${MIN_INSTANCES:-1}"
 DOMAIN="${DOMAIN:-}"
-# Requests a minute from one address before Cloud Armor answers 429. Unset, a
-# new load balancer gets 1200, and the rule of an existing one is left exactly
-# as it stands.
+# Requests a minute from one address before Cloud Armor answers 429. Unset,
+# the rule is made with 1200 where the policy has none, and a rule that is
+# there is left exactly as it stands. Set, every part of the rule is set again,
+# with this limit.
 EDGE_RATE="${EDGE_RATE:-}"
 if [[ -z "$PROJECT_ID" ]]; then
   echo "usage: [DOMAIN=example.org] bash deploy/first-deploy.sh PROJECT_ID [REGION]" >&2
@@ -62,8 +63,9 @@ if [[ -n "$DOMAIN" ]] && ! matches "$DOMAIN" '^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)
   echo "DOMAIN must be a bare name in lower case, such as educhan.org (not ${DOMAIN})." >&2
   exit 2
 fi
-if [[ -n "$EDGE_RATE" ]] && ! matches "$EDGE_RATE" '^[1-9][0-9]*$'; then
-  echo "EDGE_RATE must be a whole number of requests a minute, such as 1200 (not ${EDGE_RATE})." >&2
+# From 1 to 1000000, the largest count that a Cloud Armor throttle rule takes.
+if [[ -n "$EDGE_RATE" ]] && ! { matches "$EDGE_RATE" '^[1-9][0-9]{0,6}$' && ((EDGE_RATE <= 1000000)); }; then
+  echo "EDGE_RATE must be a whole number of requests a minute, from 1 to 1000000, such as 1200 (not ${EDGE_RATE})." >&2
   exit 2
 fi
 
@@ -171,12 +173,42 @@ COMPUTE_API="$(must_read gcloud services list --enabled --format='value(config.n
 EDGE_DOMAIN=""
 LEFTOVER=""
 if [[ -n "$COMPUTE_API" ]]; then
-  EDGE_CERTS="$(must_read gcloud compute ssl-certificates list --global --format='value(name,managed.domains[0])')"
-  EDGE_DOMAIN="$(awk -v name="$EDGE_CERT" '$1 == name { print $2 }' <<<"$EDGE_CERTS")"
+  # Each certificate with the names it is for, which is one name on each of
+  # the script's own.
+  EDGE_CERTS="$(must_read gcloud compute ssl-certificates list --global --format='value(name,managed.domains.list())')"
+  EDGE_DOMAIN="$(awk -v name="$EDGE_CERT" '$1 == name { split($2, names, ","); print names[1] }' <<<"$EDGE_CERTS")"
   if [[ -z "$EDGE_DOMAIN" ]]; then
     # While the bare name's certificate is being replaced (section 2.10), the
     # www. one still says which domain this load balancer serves.
-    EDGE_DOMAIN="$(awk -v name="$EDGE_WWW_CERT" '$1 == name { sub(/^www[.]/, "", $2); print $2 }' <<<"$EDGE_CERTS")"
+    EDGE_DOMAIN="$(awk -v name="$EDGE_WWW_CERT" '$1 == name { split($2, names, ","); sub(/^www[.]/, "", names[1]); print names[1] }' <<<"$EDGE_CERTS")"
+  fi
+  if [[ -z "$EDGE_DOMAIN" && -n "$DOMAIN" ]]; then
+    # Neither of the script's certificates, and yet there can be a load
+    # balancer: while the one certificate of a www. DOMAIN is being replaced,
+    # the proxy holds only the spare (section 2.10). The run has DOMAIN to go
+    # by then, and it goes on only if DOMAIN is the name that what is left of
+    # the load balancer serves. Its URL map sends www.NAME on to NAME where
+    # DOMAIN was a bare NAME. Where DOMAIN was a www. name the map has no such
+    # redirect, and the name is one of the www. names on the certificates that
+    # the proxy holds.
+    served="$(must_read gcloud compute url-maps list --global --format='value(name,pathMatchers[].defaultUrlRedirect.hostRedirect)' |
+      awk -v name="$EDGE_MAP" '$1 == name && $2 != "" { print "  " $2 }')"
+    if [[ -z "$served" ]]; then
+      proxy_certs="$(must_read gcloud compute target-https-proxies list --global --format='value(name,sslCertificates[].basename())' |
+        awk -v name="$EDGE_HTTPS" '$1 == name { print $2 }')"
+      served="$(awk -v held=";${proxy_certs};" \
+        '$2 != "" && index(held, ";" $1 ";") { n = split($2, names, ","); for (i = 1; i <= n; i++) if (names[i] ~ /^www[.]/) print "  " names[i] }' <<<"$EDGE_CERTS")"
+    fi
+    if [[ -n "$served" ]] && ! grep -qxF "  ${DOMAIN}" <<<"$served"; then
+      cat >&2 <<EOF
+This project's load balancer already serves another name, not ${DOMAIN}:
+
+${served}
+
+Moving to another domain is not a re-run: see deploy/README.md section 2.10.
+EOF
+      exit 1
+    fi
   fi
   if [[ -z "$EDGE_DOMAIN" && -z "$DOMAIN" ]]; then
     # The load balancer's address, reserved and in use by nothing: a run with
@@ -201,6 +233,13 @@ read_service() {
   state="$(must_read service_state)" || return 1
   IFS='|' read -r INGRESS IN_FORCE TRAFFIC URL <<<"$state"
 }
+# The settings of the service's latest revision, as NAME=value joined by
+# commas. Nothing at all for a service that is not deployed yet.
+service_env() {
+  gcloud run services list --region "$REGION" \
+    --format='value[separator="|"](metadata.name,spec.template.spec.containers[0].env.map().format("{0}={1}", name, value).list())' |
+    awk -F'|' -v name="$SERVICE" '$1 == name { print substr($0, length($1) + 2) }'
+}
 # A rollback made in the console pins traffic to one revision, and a pinned
 # service goes on serving that revision whatever is deployed after it.
 pinned() { [[ -n "$TRAFFIC" && ",${TRAFFIC}," != *",True=100,"* ]]; }
@@ -217,18 +256,40 @@ run_app_refuses() {
   OUTSIDE="$(run_app_code)"
   [[ "$OUTSIDE" == 403 || "$OUTSIDE" == 404 ]]
 }
-# Why run.app does not count as closed, from the ingress Cloud Run last
-# reported in force ($1), the setting itself where it was read along with that
-# ($2), and the last answer to a request from here.
-not_closed_because() {
-  if [[ -z "$1" ]]; then
-    printf 'Cloud Run did not say which ingress setting is in force'
-  elif [[ "$1" != "$CLOSED" ]]; then
-    printf 'Cloud Run reports ingress "%s" in force, not\n"%s"' "$1" "$CLOSED"
-  elif [[ "${2:-$CLOSED}" != "$CLOSED" ]]; then
-    printf 'the ingress setting is now "%s", which something other than\nthis run set while it waited' "$2"
+# Why run.app does not count as closed: WHY names the reason and WHY_TEXT says
+# it. It goes by the ingress Cloud Run last reported in force ($1), the setting
+# itself where it was read along with that ($2, left out where it was not), and
+# the last answer to a request from here. The setting comes first: set to
+# anything else, it is the reason, whatever is in force. A request is made only
+# once both read closed, so its answer is the reason only then.
+WHY=""
+WHY_TEXT=""
+why_not_closed() {
+  local in_force="$1" setting="${2-$CLOSED}"
+  if [[ -n "$setting" && "$setting" != "$CLOSED" ]]; then
+    WHY=changed
+    WHY_TEXT="the ingress setting is now \"${setting}\", which something other than
+this run set while it waited"
+  elif [[ -z "$in_force" ]]; then
+    WHY=unread
+    WHY_TEXT="Cloud Run did not say which ingress setting is in force"
+  elif [[ "$in_force" != "$CLOSED" ]]; then
+    WHY=waiting
+    WHY_TEXT="Cloud Run reports ingress \"${in_force}\" in force, not
+\"${CLOSED}\""
+  elif [[ -z "$setting" ]]; then
+    WHY=nosetting
+    WHY_TEXT="Cloud Run did not say what the ingress setting is"
+  elif [[ "$OUTSIDE" == 000 ]]; then
+    WHY=silent
+    WHY_TEXT="a request from here to
+${URL}
+got no answer at all, which says nothing either way"
   else
-    printf 'a request from here to\n%s\nwas answered HTTP %s, where a closed address answers 404' "$URL" "$OUTSIDE"
+    WHY=answered
+    WHY_TEXT="a request from here to
+${URL}
+was answered HTTP ${OUTSIDE}, where a closed address answers 404 or 403"
   fi
 }
 read_service
@@ -263,6 +324,38 @@ elif [[ -z "$DOMAIN" && -n "$INGRESS" && "$INGRESS" != all ]]; then
   echo "to build one, or see deploy/README.md section 2.10 to go back to the run.app address." >&2
   exit 1
 fi
+if [[ -n "$EDGE_RATE" && -z "$DOMAIN" ]]; then
+  echo "EDGE_RATE sets the flood limit of the load balancer that DOMAIN builds, and this" >&2
+  echo "project has none. Run the script with DOMAIN=your.domain as well, or without EDGE_RATE." >&2
+  exit 2
+fi
+
+# run.app open while the count is two is the one state in which a client can
+# choose its own flood-control bucket (the comment before the deploy has the
+# whole of it). This script never leaves a service so, but a hand that opened
+# run.app can, and the deploy that would put it right is a build away, which
+# can fail first. So the count goes back to one here, before anything slow. A
+# pinned service is left to the deploy: what it serves is an older revision,
+# which an update to the settings would not change.
+if [[ "$INGRESS" != "$CLOSED" ]] && ! pinned; then
+  env_now="$(must_read service_env)"
+  if [[ ",${env_now}," == *",EDUCHAN_TRUST_PROXY=2,"* ]]; then
+    cat >&2 <<EOF
+
+WARNING: the ${SERVICE} service's run.app address is open to the internet (its
+ingress is "${INGRESS:-all}") while the app counts two hops (EDUCHAN_TRUST_PROXY=2).
+So a client can send an X-Forwarded-For of its own straight to run.app and
+choose its own flood-control bucket. This script never leaves a service in
+that state, so something else has changed one of the two. The count goes back
+to one now, before the build.
+EOF
+    gcloud run services update "$SERVICE" --region "$REGION" --update-env-vars EDUCHAN_TRUST_PROXY=1 || {
+      echo "That update failed, so the count is still two. The deploy further down sets it" >&2
+      echo "to one as well. If this run stops before then, run the update by hand:" >&2
+      echo "  gcloud run services update ${SERVICE} --region ${REGION} --update-env-vars EDUCHAN_TRUST_PROXY=1" >&2
+    }
+  fi
+fi
 
 if [[ -n "$DOMAIN" ]]; then
   # www.DOMAIN is redirected to DOMAIN, unless DOMAIN is a www. name itself.
@@ -282,20 +375,41 @@ if [[ -n "$DOMAIN" ]]; then
   # its /64, but Cloud Armor's limit counts every address apart, and the count
   # of X-Forwarded-For entries has not been checked over IPv6
   # (deploy/README.md section 2.10).
-  exists gcloud compute addresses describe "$EDGE_IP" --global ||
+  # Was the address there before this run? An earlier run printed its records
+  # then, and the lines below are worded for that.
+  ADDRESS_WAS_THERE=1
+  if ! exists gcloud compute addresses describe "$EDGE_IP" --global; then
+    ADDRESS_WAS_THERE=""
     gcloud compute addresses create "$EDGE_IP" --global --ip-version=IPV4
-  EDGE_ADDRESS="$(gcloud compute addresses describe "$EDGE_IP" --global --format='value(address)')"
+  fi
+  # The address, and IN_USE once the load balancer's forwarding rules hold it.
+  address="$(gcloud compute addresses describe "$EDGE_IP" --global --format='value(address,status)')"
+  read -r EDGE_ADDRESS EDGE_ADDRESS_STATUS <<<"$address"
   dns_records() {
     printf '    %-5s %-28s %s\n' Type Name Content A "$DOMAIN" "$EDGE_ADDRESS"
     if [[ -n "$WWW" ]]; then
       printf '    %-5s %-28s %s\n' A "$WWW" "$EDGE_ADDRESS"
     fi
   }
-  if [[ -n "$EDGE_DOMAIN" && "$INGRESS" == "$CLOSED" ]]; then
+  if [[ "$INGRESS" == "$CLOSED" && "$EDGE_ADDRESS_STATUS" == IN_USE ]]; then
+    # The site has moved behind the load balancer, which it does only once the
+    # bare name's record leads there.
     cat <<EOF
 
 The DNS records for ${DOMAIN}, as they should already stand. In Cloudflare
 each has Proxy status "DNS only" (the grey cloud).
+
+$(dns_records)
+EOF
+  elif [[ -n "$ADDRESS_WAS_THERE" ]]; then
+    cat <<EOF
+
+The DNS records for ${DOMAIN}. If they are not in place yet, add them now,
+while the rest of this runs. In Cloudflare that is DNS > Records, with Proxy
+status "DNS only" (the grey cloud) on each: proxied, Cloudflare would see
+every visitor's address, and Google could not issue the certificate or renew
+it. The names should have no other A, AAAA or CNAME record; the load balancer
+answers on IPv4 only, so there is no AAAA record to add.
 
 $(dns_records)
 EOF
@@ -489,30 +603,100 @@ if [[ -n "$DOMAIN" && "$INGRESS" == "$CLOSED" ]]; then
     # confirm it. The deploy counts one hop, the safe side, and the move is
     # finished further down, through the load balancer.
     RESUME=1
+    why_not_closed "$IN_FORCE"
     cat <<EOF
 
 NOTE: run.app is set to closed, but this run cannot confirm that it is:
-$(not_closed_because "$IN_FORCE").
+${WHY_TEXT}.
 The service is deployed counting one hop, which is safe, and the count goes up
 further down once the closing is confirmed.
 EOF
   fi
 fi
-# Is this the run that takes the count from one to two? Asked only for the
-# closing note that sends the owner to check the count, so a read that fails
-# is let go, and the note with it.
+# Is this the run that takes the count from one to two? It is where the latest
+# revision counted one. It may be where traffic is pinned to an older revision,
+# whose count this script does not read. Asked only for the note that sends the
+# owner to check the count, so a read that fails is let go, and the note with
+# it. COUNT_RAISED is set once the deploy has gone through.
 COUNT_RAISED=""
-service_env() {
-  gcloud run services list --region "$REGION" \
-    --format='value[separator="|"](metadata.name,spec.template.spec.containers[0].env.map().format("{0}={1}", name, value).list())' |
-    awk -F'|' -v name="$SERVICE" '$1 == name { print substr($0, length($1) + 2) }'
-}
+will_raise=""
 if [[ "$TRUST_PROXY" == 2 ]]; then
-  env_was="$(service_env 2>/dev/null </dev/null || true)"
-  if [[ ",${env_was}," == *",EDUCHAN_TRUST_PROXY=1,"* ]]; then
-    COUNT_RAISED=1
+  if pinned; then
+    will_raise=pin
+  else
+    env_was="$(service_env 2>/dev/null </dev/null || true)"
+    if [[ ",${env_was}," == *",EDUCHAN_TRUST_PROXY=1,"* ]]; then
+      will_raise=1
+    fi
   fi
 fi
+# The note goes out at the end of the run, and at the end of a run that fails
+# after the count went up as well: the next run finds the count at two already
+# and cannot tell that nobody has checked it.
+count_note() {
+  local how="$COUNT_RAISED"
+  COUNT_RAISED=""
+  case "$how" in
+    "") ;;
+    pin)
+      cat <<EOF
+
+This run ended a pin, and the revision that serves now counts two hops to find
+each visitor's address, which the pinned one may not have done. Check once,
+with two devices, that it finds the right one: "Check the count once it is
+live" in deploy/README.md section 2.10.
+EOF
+      ;;
+    *)
+      cat <<EOF
+
+As of this run the app counts two hops to find each visitor's address. Check
+once, with two devices, that it finds the right one: "Check the count once it
+is live" in deploy/README.md section 2.10.
+EOF
+      ;;
+  esac
+}
+trap count_note EXIT
+# After a deploy that counts two, one more request to run.app from outside.
+# Cloud Run answers 404, from its front end, to a request that ingress refuses.
+# An answer from the app itself means run.app is open after all, and the count
+# goes back to one at once.
+run_app_last_look() {
+  local direct
+  if [[ -z "$URL" ]]; then
+    step "run.app"
+    echo "This service has no run.app address (its default URL is switched off), so there is none to close."
+    return 0
+  fi
+  step "Checking that ${URL} is closed to the public"
+  direct="$(run_app_code)"
+  case "$direct" in
+    403 | 404) echo "closed (HTTP ${direct})" ;;
+    2*)
+      cat >&2 <<EOF
+${URL}/api/boards answers ${direct} from the internet, though it was refused
+earlier in this run. With the count at two, a client that reaches the app
+there, past the load balancer, can choose its own flood-control bucket. So the
+count goes back to one now, which stops that: everyone who comes through
+${DOMAIN} then shares one bucket. See what opened run.app:
+
+  gcloud run services describe ${SERVICE} --region ${REGION} --format='yaml(metadata.annotations)'
+
+(run.googleapis.com/ingress is the setting, and ingress-status the one in
+force.) Then run this script again.
+EOF
+      COUNT_RAISED=""
+      gcloud run services update "$SERVICE" --region "$REGION" --update-env-vars EDUCHAN_TRUST_PROXY=1 || {
+        echo "That update failed, so the count is still two. Run it by hand now:" >&2
+        echo "  gcloud run services update ${SERVICE} --region ${REGION} --update-env-vars EDUCHAN_TRUST_PROXY=1" >&2
+      }
+      exit 1
+      ;;
+    000) echo "could not tell: it gave no answer at all, where a closed address answers 404 or 403" ;;
+    *) echo "could not tell: it answered HTTP ${direct}, where a closed address answers 404 or 403" ;;
+  esac
+}
 
 step "Deploying the Cloud Run service"
 # --update-*, not --set-*: a re-run sets the values below and keeps any other
@@ -538,6 +722,10 @@ gcloud run deploy "$SERVICE" \
 if pinned; then
   step "Sending traffic to the new revision (it was pinned to an older one)"
   gcloud run services update-traffic "$SERVICE" --region "$REGION" --to-latest
+fi
+COUNT_RAISED="$will_raise"
+if [[ "$TRUST_PROXY" == 2 ]]; then
+  run_app_last_look
 fi
 
 # After the service, whose first instance applies any new migrations: the
@@ -620,6 +808,10 @@ DNS_NOTES=""
 CERT_NOTES=""
 SPARE_CERTS=""
 STOPPED=""
+# Visitors are moved only once the domain is seen, from here, to lead to the
+# load balancer, and a machine with no getent cannot look. Cloud Shell has it.
+CAN_LOOK_UP=1
+command -v getent >/dev/null 2>&1 || CAN_LOOK_UP=""
 
 if [[ -n "$DOMAIN" ]]; then
   step "Load balancer for ${DOMAIN}"
@@ -629,6 +821,16 @@ if [[ -n "$DOMAIN" ]]; then
     gcloud compute network-endpoint-groups create "$EDGE_NEG" --region "$REGION" \
       --network-endpoint-type=serverless --cloud-run-service="$SERVICE"
 
+  # Where the site answers at this point of the run, for the messages of a
+  # step below that fails.
+  site_now() {
+    if [[ "$INGRESS" == "$CLOSED" ]]; then
+      echo "https://${DOMAIN}"
+    else
+      echo "${URL:-its run.app address}"
+    fi
+  }
+
   # Cloud Armor's one rule: a flood limit per address, on every request. It
   # uses the visitor's address for the count and writes no log entry of its
   # own: what it decides goes in the load balancer's request log, which is off
@@ -636,8 +838,6 @@ if [[ -n "$DOMAIN" ]]; then
   # shared IPv4 address, puts many readers behind one address, and the app's
   # own cooldowns limit posting.
   armor_quota_hint() {
-    local where="its run.app address"
-    [[ -z "$URL" ]] || where="$URL"
     cat >&2 <<EOF
 
 If the error above says a SECURITY_POLICIES or SECURITY_POLICY_RULES quota is
@@ -645,46 +845,105 @@ exceeded with a limit of 0, this project has no Cloud Armor allowance at all,
 which is reported for billing accounts still on the free trial. Activating the
 full account (console: Billing) is the fix to try; then run this script again.
 
-Meanwhile the site is deployed and answers where it did before this run: at
-${where}, unless it had moved to
-${DOMAIN} already. The address reserved for the load balancer (${EDGE_IP},
-${EDGE_ADDRESS}) stays reserved, and Google bills an unused address by the
-hour: should the domain wait, a run of this script without DOMAIN says how to
-give the address up safely.
+Meanwhile the site is deployed, at
+$(site_now)
 EOF
+    if [[ "$EDGE_ADDRESS_STATUS" != IN_USE && -z "$EDGE_DOMAIN" ]]; then
+      cat >&2 <<EOF
+
+The address reserved for the load balancer (${EDGE_IP}, ${EDGE_ADDRESS}) stays
+reserved, and Google bills an unused address by the hour: should the domain
+wait, a run of this script without DOMAIN says how to give the address up
+safely.
+EOF
+    fi
   }
   exists gcloud compute security-policies describe "$EDGE_POLICY" --global ||
     gcloud compute security-policies create "$EDGE_POLICY" --global \
       --description="educhan: a flood limit per address" ||
     { armor_quota_hint; exit 1; }
-  # The rule is made once. After that only EDGE_RATE sets it again: left alone,
-  # a rule tuned by hand, in a flood say, outlives the next deploy whole, its
-  # count, its interval and anything else that was changed.
-  rule_verb=create
-  if exists gcloud compute security-policies rules describe 1000 --security-policy "$EDGE_POLICY"; then
-    rule_verb=update
+  # The rule is made where the policy has none at priority 1000: on the first
+  # run, and again if someone has deleted it. Whether it is there is read from
+  # the policy's own list of rules, so that a read that fails stops the run
+  # and is not taken for a rule that is missing.
+  rule_priorities="$(must_read gcloud compute security-policies describe "$EDGE_POLICY" --global \
+    --format='value(rules[].priority)')"
+  rule_there=""
+  if grep -qx 1000 <<<"${rule_priorities//;/$'\n'}"; then
+    rule_there=1
   fi
-  if [[ "$rule_verb" == create || -n "$EDGE_RATE" ]]; then
-    rate="${EDGE_RATE:-1200}"
-    gcloud compute security-policies rules "$rule_verb" 1000 \
-      --security-policy "$EDGE_POLICY" \
-      --description "At most ${rate} requests a minute from one address" \
-      --src-ip-ranges '*' \
-      --action throttle --conform-action allow --exceed-action deny-429 \
-      --rate-limit-threshold-count "$rate" --rate-limit-threshold-interval-sec 60 \
-      --enforce-on-key IP >/dev/null ||
+  rate="${EDGE_RATE:-1200}"
+  rule_flags=(
+    --security-policy "$EDGE_POLICY"
+    --description "At most ${rate} requests a minute from one address"
+    --src-ip-ranges '*'
+    --action throttle --conform-action allow --exceed-action deny-429
+    --rate-limit-threshold-count "$rate" --rate-limit-threshold-interval-sec 60
+    --enforce-on-key IP
+  )
+  if [[ -z "$rule_there" ]]; then
+    gcloud compute security-policies rules create 1000 "${rule_flags[@]}" >/dev/null ||
       { armor_quota_hint; exit 1; }
     echo "Cloud Armor answers 429 past ${rate} requests a minute from one address."
   else
+    # A rule that is there is left alone unless EDGE_RATE is set: a rule tuned
+    # by hand, in a flood say, outlives the next deploy whole. With EDGE_RATE
+    # the update names every part of the script's own rule, and takes the rule
+    # out of preview, in which it stops nothing: gcloud sends only what a
+    # command names, and Cloud Armor keeps the rest of the rule.
+    if [[ -n "$EDGE_RATE" ]]; then
+      gcloud compute security-policies rules update 1000 "${rule_flags[@]}" --no-preview >/dev/null || {
+        cat >&2 <<EOF
+
+That update of Cloud Armor's rule 1000 failed (its error is above). If the
+error is about the rule itself, the rule may hold a setting made by hand that
+an update cannot write over. To replace it, delete it and run this script
+again with the same EDGE_RATE, which makes it anew; between the two the site
+has no flood limit at the edge:
+
+  gcloud compute security-policies rules delete 1000 --security-policy ${EDGE_POLICY} --quiet
+
+Meanwhile the site is deployed, at
+$(site_now)
+EOF
+        exit 1
+      }
+    fi
+    # The rule as it now stands, read back even after an update, which can
+    # leave in place a part that was set by hand. The expression comes last
+    # because it can hold a "|", and several lines.
     rule="$(must_read gcloud compute security-policies rules describe 1000 --security-policy "$EDGE_POLICY" \
-      --format='value[separator="|"](action,rateLimitOptions.rateLimitThreshold.count,rateLimitOptions.rateLimitThreshold.intervalSec,rateLimitOptions.exceedAction,rateLimitOptions.enforceOnKey,preview)')"
-    IFS='|' read -r rule_action rule_count rule_interval rule_exceed rule_key rule_preview <<<"$rule"
-    if [[ "$rule_action" == throttle && "$rule_exceed" == "deny(429)" && "$rule_key" == IP &&
-          -n "$rule_count" && -n "$rule_interval" && "$rule_preview" != True ]]; then
+      --format='value[separator="|"](action,rateLimitOptions.rateLimitThreshold.count,rateLimitOptions.rateLimitThreshold.intervalSec,rateLimitOptions.exceedAction,rateLimitOptions.conformAction,rateLimitOptions.enforceOnKey,preview,match.config.srcIpRanges.list(),match.expr.expression)')"
+    rule="${rule//$'\n'/ }"
+    IFS='|' read -r rule_action rule_count rule_interval rule_exceed rule_conform rule_key rule_preview rule_ranges rule_expr <<<"$rule"
+    # Is it a flood limit of the script's kind: every request counted by its
+    # address, 429 past the limit, and enforced? With EDGE_RATE it must also
+    # hold the limit just set.
+    rule_ok=""
+    if [[ "$rule_action" == throttle && "$rule_exceed" == "deny(429)" && "$rule_conform" == allow &&
+          "$rule_key" == IP && -n "$rule_count" && -n "$rule_interval" && "$rule_preview" != True &&
+          "$rule_ranges" == "*" && -z "$rule_expr" ]]; then
+      rule_ok=1
+    fi
+    if [[ -n "$EDGE_RATE" && ( "$rule_count" != "$rate" || "$rule_interval" != 60 ) ]]; then
+      rule_ok=""
+    fi
+    if [[ -n "$rule_ok" && -n "$EDGE_RATE" ]]; then
+      echo "Cloud Armor answers 429 past ${rate} requests a minute from one address."
+    elif [[ -n "$rule_ok" ]]; then
       echo "Cloud Armor's rule is left as it stands: 429 past ${rule_count} requests in ${rule_interval} seconds from one address."
     else
-      ARMOR_NOTE="  action: ${rule_action:--}   limit: ${rule_count:--} requests in ${rule_interval:--} seconds   past it: ${rule_exceed:--}   counted by: ${rule_key:--}   preview: ${rule_preview:--}"
-      echo "Cloud Armor's rule is left as it stands (there is a note about it at the end)."
+      rule_scope="addresses ${rule_ranges:--}"
+      if [[ -n "$rule_expr" ]]; then
+        rule_scope="requests matching ${rule_expr}"
+      fi
+      ARMOR_NOTE="  action: ${rule_action:--}   limit: ${rule_count:--} requests in ${rule_interval:--} seconds   past it: ${rule_exceed:--}   under it: ${rule_conform:--}
+  counted by: ${rule_key:--}   preview: ${rule_preview:--}   applies to: ${rule_scope}"
+      if [[ -n "$EDGE_RATE" ]]; then
+        echo "Cloud Armor took the change, but rule 1000 is still not the script's own (there is a note about it at the end)."
+      else
+        echo "Cloud Armor's rule is left as it stands (there is a note about it at the end)."
+      fi
     fi
   fi
 
@@ -798,14 +1057,15 @@ EOF
   cert_state() {
     gcloud compute ssl-certificates describe "$EDGE_CERT" --global --format='value(managed.status)' </dev/null
   }
-  # The load balancer's certificates: name, state, and each name's own state.
-  # It fails when they cannot be read.
+  # The certificates on the load balancer that Google manages, a spare among
+  # them: name, state, and each name's own state. It fails when they cannot be
+  # read.
   cert_report() {
     local rows
     rows="$(gcloud compute ssl-certificates list --global \
       --format='value(name,managed.status,managed.domainStatus)' </dev/null 2>/dev/null)" || return 1
-    awk -v a="$EDGE_CERT" -v b="$EDGE_WWW_CERT" \
-      '$1 == a || $1 == b { printf "  %-17s %-32s %s\n", $1, $2, $3 }' <<<"$rows"
+    awk -F'\t' -v held=",${CERTS}," \
+      'index(held, "," $1 ",") && $2 != "" { printf "  %-17s %-32s %s\n", $1, $2, $3 }' <<<"$rows"
   }
   # Where a name points, as the resolver here sees it: "ok" for the load
   # balancer's address and no other, "none" for no address at all, "unknown"
@@ -862,7 +1122,10 @@ EOF
     # domain answers: the wait below can be a long one.
     check_site
   fi
-  if [[ "$TRUST_PROXY" == 1 && -z "$RESUME" && -n "$answered" ]]; then
+  if [[ "$TRUST_PROXY" == 1 && -z "$RESUME" && -n "$answered" && -z "$CAN_LOOK_UP" ]]; then
+    printf '\nNot waiting for https://%s to answer: this machine has no getent to look the name up with (more at the end).\n' "$DOMAIN"
+  fi
+  if [[ "$TRUST_PROXY" == 1 && -z "$RESUME" && -n "$answered" && -n "$CAN_LOOK_UP" ]]; then
     # A real AAAA record keeps Google from issuing the certificate at all, so
     # it is worth saying before the wait and not only after it.
     early_notes="$(
@@ -889,11 +1152,15 @@ EOF
     # Ctrl-C reaches whatever the script is running at that moment, a lookup
     # or a read as well as the sleep, and stops it. Each of those is allowed to
     # fail for that reason, and the loop ends at the next look at STOPPED.
+    # A look a minute, twenty-one in all, and no new one once twenty minutes
+    # have gone: a look is a lookup, a request and a read, each of which can
+    # be slow.
     trap 'STOPPED=1' INT
+    wait_from=$SECONDS
     for ((minute = 0; ; minute++)); do
       APEX_AT="$(points_at "$DOMAIN")" || APEX_AT=none
       [[ -z "$STOPPED" ]] || break
-      if [[ "$APEX_AT" == ok || "$APEX_AT" == unknown ]]; then
+      if [[ "$APEX_AT" == ok ]]; then
         if edge_error="$(through_edge 2>&1)"; then
           DOMAIN_LIVE=1
           break
@@ -906,7 +1173,7 @@ EOF
       [[ -z "$STOPPED" ]] || break
       CERT_STATE="$state"
       case "$APEX_AT" in
-        ok | unknown)
+        ok)
           if [[ "$CERT_STATE" == ACTIVE ]]; then
             printf '  %2d min: certificate issued, the load balancer is not serving it yet\n' "$minute"
           else
@@ -924,7 +1191,7 @@ EOF
       esac
       # Waiting does not mend a certificate in either of these states.
       [[ "$CERT_STATE" != PROVISIONING_FAILED_PERMANENTLY && "$CERT_STATE" != RENEWAL_FAILED ]] || break
-      ((minute < 20)) || break
+      ((minute < 20 && SECONDS - wait_from < 1200)) || break
       sleep 60 || true
       [[ -z "$STOPPED" ]] || break
     done
@@ -942,16 +1209,22 @@ EOF
     # when every visitor shares one flood-control bucket; the other way round
     # there would be one when a client could choose its own.
     if [[ -n "$RESUME" ]]; then
-      step "Finishing the move to ${DOMAIN}: closing run.app to the public"
+      step "Making sure that run.app is closed to the public"
     else
       step "Moving visitors to ${DOMAIN}: closing ${URL} to the public"
     fi
     gcloud run services update "$SERVICE" --region "$REGION" --ingress "$CLOSED"
     # Closed for certain: Cloud Run reports the setting in force, and a
-    # request from here, outside the project's network, is refused.
-    echo "Waiting, five minutes at most, for Cloud Run to report that in force and to refuse a request from here."
+    # request from here, outside the project's network, is refused. Thirty
+    # tries ten seconds apart, and no new one once five minutes have gone: a
+    # try is a read and a request, each of which can be slow.
+    echo "Waiting, about five minutes at most, for Cloud Run to report that in force and to refuse a request from here."
+    waited_from=$SECONDS
     for ((i = 0; i < 30; i++)); do
-      ((i == 0)) || sleep 10
+      if ((i > 0)); then
+        ((SECONDS - waited_from < 300)) || break
+        sleep 10
+      fi
       state="$(service_state 2>/dev/null </dev/null || true)"
       SEEN_WANTED="${state%%|*}"
       SEEN_IN_FORCE="${state#*|}"
@@ -970,6 +1243,7 @@ EOF
       }
       TRUST_PROXY=2
       COUNT_RAISED=1
+      run_app_last_look
     fi
     # Whichever way that went, the domain is where the site answers from now on.
     SITE="https://${DOMAIN}"
@@ -980,38 +1254,6 @@ fi
 if [[ "$TRUST_PROXY" == 2 ]]; then
   SITE="https://${DOMAIN}"
   check=(through_edge)
-  # A last look from outside, now that the deploy is done. Cloud Run answers
-  # 404, from its front end, to an outside request that ingress refuses.
-  if [[ -z "$URL" ]]; then
-    step "run.app"
-    echo "This service has no run.app address (its default URL is switched off), so there is none to close."
-  else
-    step "Checking that ${URL} is closed to the public"
-    direct="$(run_app_code)"
-    case "$direct" in
-      403 | 404) echo "closed (HTTP ${direct})" ;;
-      2*)
-        cat >&2 <<EOF
-${URL}/api/boards answers ${direct} from the internet, though it was refused a
-moment ago. With the count at two, a client that reaches the app there, past
-the load balancer, can choose its own flood-control bucket. So the count goes
-back to one now, which stops that: everyone who comes through ${DOMAIN}
-then shares one bucket. See what opened run.app:
-
-  gcloud run services describe ${SERVICE} --region ${REGION} --format='yaml(metadata.annotations)'
-
-(run.googleapis.com/ingress is the setting, and ingress-status the one in
-force.) Then run this script again.
-EOF
-        gcloud run services update "$SERVICE" --region "$REGION" --update-env-vars EDUCHAN_TRUST_PROXY=1 || {
-          echo "That update failed, so the count is still two. Run it by hand now:" >&2
-          echo "  gcloud run services update ${SERVICE} --region ${REGION} --update-env-vars EDUCHAN_TRUST_PROXY=1" >&2
-        }
-        exit 1
-        ;;
-      *) echo "could not tell: it answered HTTP ${direct}, where a closed address answers 404" ;;
-    esac
-  fi
   check_site
 elif [[ -z "$checked" || ( -n "$DOMAIN_LIVE" && -z "$RESUME" ) ]]; then
   # A site with no domain, which is checked here and nowhere else, or one whose
@@ -1051,16 +1293,47 @@ elif [[ -n "$DOMAIN" && "$SITE" == "https://${DOMAIN}" && "$APEX_AT" != ok && "$
   HEADING="educhan answers behind the load balancer, but DNS does not lead visitors to it (see the warning above), at:"
 fi
 if [[ -n "$DOMAIN" && "$TRUST_PROXY" == 1 && -n "$DOMAIN_LIVE" ]]; then
+  why_not_closed "$SEEN_IN_FORCE" "$SEEN_WANTED"
   cat >&2 <<EOF
 
 WARNING: ${DOMAIN} answers, but this run could not confirm that run.app is
-closed: $(not_closed_because "$SEEN_IN_FORCE" "$SEEN_WANTED").
+closed: ${WHY_TEXT}.
+EOF
+  case "${WHY}:${SEEN_WANTED}" in
+    changed:all)
+      cat >&2 <<EOF
+So the app still counts one hop, and everyone who comes through ${DOMAIN}
+shares one flood-control bucket. The next run of this script closes run.app
+again and raises the count. Find out first what set the ingress back: someone
+else at work on the service, or another way of deploying it ("Later runs" in
+deploy/README.md section 2.10).
+EOF
+      ;;
+    changed:*)
+      cat >&2 <<EOF
+The app still counts one hop. With that setting nothing reaches the service,
+by ${DOMAIN} or by run.app, and the next run of this script stops there and
+says how to open it again.
+EOF
+      ;;
+    silent:*)
+      cat >&2 <<EOF
+So the app still counts one hop, and everyone who comes through ${DOMAIN}
+shares one flood-control bucket. Run this script again now: it raises the
+count as soon as the closing is confirmed. No answer at all is a fault on the
+way from here to run.app, and no sign that run.app is open. If the next run
+says the same, wait a few minutes, or start a new Cloud Shell session, and run
+it again.
+EOF
+      ;;
+    *)
+      cat >&2 <<EOF
 So the app still counts one hop, and everyone who comes through ${DOMAIN}
 shares one flood-control bucket. Run this script again now: it raises the
 count as soon as the closing is confirmed.
 EOF
-  if [[ -n "$RESUME" ]]; then
-    cat >&2 <<EOF
+      if [[ -n "$RESUME" ]]; then
+        cat >&2 <<EOF
 
 An earlier run had asked for the closing already, so another run may say the
 same. See what Cloud Run reports:
@@ -1072,9 +1345,18 @@ force.) "Going back to run.app" in deploy/README.md section 2.10 puts the site
 back on its run.app address, where each visitor is counted apart, while that is
 looked into.
 EOF
-  fi
+      fi
+      ;;
+  esac
 elif [[ -n "$DOMAIN" && "$TRUST_PROXY" == 1 && -n "$answered" ]]; then
-  if [[ "$APEX_AT" != ok && "$APEX_AT" != unknown ]]; then
+  if [[ -z "$CAN_LOOK_UP" ]]; then
+    cat <<EOF
+
+The site stays on run.app: this machine has no getent, so the script could not
+check that ${DOMAIN} leads to the load balancer, and it moves visitors only
+once it has. Run it from Cloud Shell, which has getent, to make the move.
+EOF
+  elif [[ "$APEX_AT" != ok && "$APEX_AT" != unknown ]]; then
     cat <<EOF
 
 ${DOMAIN} does not lead to the load balancer yet (the warning below), so the
@@ -1148,6 +1430,14 @@ no IPv6 address, and a visitor whose network has IPv6, as many mobile networks
 do, goes to the AAAA record first.
 EOF
 fi
+if [[ -n "$DOMAIN" && -z "$CAN_LOOK_UP" && ( "$TRUST_PROXY" == 2 || -n "$RESUME" ) ]]; then
+  cat >&2 <<EOF
+
+NOTE: this machine has no getent, so this run did not check that the DNS
+records of ${DOMAIN} still lead to the load balancer. A run from Cloud Shell,
+which has getent, makes that check.
+EOF
+fi
 if [[ -n "$CERT_NOTES" ]]; then
   cat >&2 <<EOF
 
@@ -1169,7 +1459,22 @@ did not check them. Every one should be ACTIVE:
   gcloud compute ssl-certificates list --global
 EOF
 fi
-if [[ -n "$ARMOR_NOTE" ]]; then
+if [[ -n "$ARMOR_NOTE" && -n "$EDGE_RATE" ]]; then
+  cat <<EOF
+
+NOTE: Cloud Armor's rule 1000 is still not the flood limit this script makes,
+though this run set it again with EDGE_RATE: it holds something that an update
+leaves in place. As it stands:
+
+${ARMOR_NOTE}
+
+To have the script's own rule, delete this one and run the script again with
+the same EDGE_RATE, which makes it anew. Between the two the site has no flood
+limit at the edge.
+
+  gcloud compute security-policies rules delete 1000 --security-policy ${EDGE_POLICY} --quiet
+EOF
+elif [[ -n "$ARMOR_NOTE" ]]; then
   cat <<EOF
 
 NOTE: Cloud Armor's rule 1000 is not the flood limit this script makes, and
@@ -1187,7 +1492,8 @@ if [[ -n "$SPARE_CERTS" ]]; then
 NOTE: the load balancer also holds a certificate this script did not make
 (${SPARE_CERTS}), and the script leaves it there. If it is the spare
 from "Replacing a certificate" in deploy/README.md section 2.10, the last step
-there takes it off, once the script's own certificates are ACTIVE.
+there takes it off, half an hour after the script's own certificates have all
+turned ACTIVE.
 EOF
 fi
 if [[ -z "$answered" ]]; then
@@ -1269,9 +1575,9 @@ if [[ -n "$DOMAIN" && "$SITE" == "https://${DOMAIN}" ]]; then
   # the IPv6 one on a network that has both. The two redirects are the load
   # balancer's own answers, which never reach the service; a browser that has
   # been to the site goes straight to https:// (HSTS) and skips the first.
-  redirects="  curl -sI http://${DOMAIN}/ | head -n 1"
+  redirects="  curl -sS -o /dev/null -w '%{http_code}\n' http://${DOMAIN}/"
   if [[ -n "$WWW" ]]; then
-    redirects="${redirects}"$'\n'"  curl -sI https://${WWW}/ | head -n 1"
+    redirects="${redirects}"$'\n'"  curl -sS -o /dev/null -w '%{http_code}\n' https://${WWW}/"
   fi
   cat <<EOF
 
@@ -1283,15 +1589,21 @@ shows a device's IPv6 address, which the site never sees.) Wi-Fi makes a surer
 test than a mobile network, where the address can change between requests.
 
 The load balancer also answers by itself, with a redirect, where a browser
-that knows the site no longer asks. Ask from here:
+that knows the site no longer asks. Ask from here, where 301 is the right
+answer:
 
 ${redirects}
 
-Wait a minute, then run these here. Both must print nothing: the first looks
-for the device's address anywhere, the second for any request log entry at
-all.
+000, with an error from curl, means that nothing answered: a DNS record that
+is missing or, on an https:// address, a certificate that is not ACTIVE yet.
 
-  gcloud logging read '"YOUR.IP.ADDRESS"' --freshness=1d --limit=5
+Wait a minute, then run these here. Both must print nothing: the first looks
+for the device's address anywhere but the audit logs, the second for any
+request log entry at all. (The audit logs record what the project's own people
+do in the console and with gcloud, with the address they did it from, and
+nothing a visitor does.)
+
+  gcloud logging read '"YOUR.IP.ADDRESS" AND NOT logName:"cloudaudit.googleapis.com"' --freshness=1d --limit=5
   gcloud logging read 'httpRequest.remoteIp:*' --freshness=1d --limit=5
 EOF
 else
@@ -1300,20 +1612,15 @@ else
 Check that no log holds a visitor IP: open the URL from your phone or laptop,
 search "what is my ip" to learn that device's address, wait a minute, then
 run these here. Both must print nothing: the first looks for that address
-anywhere, the second for any request log entry at all.
+anywhere but the audit logs, the second for any request log entry at all.
+(The audit logs record what the project's own people do in the console and
+with gcloud, with the address they did it from, and nothing a visitor does.)
 
-  gcloud logging read '"YOUR.IP.ADDRESS"' --freshness=1d --limit=5
+  gcloud logging read '"YOUR.IP.ADDRESS" AND NOT logName:"cloudaudit.googleapis.com"' --freshness=1d --limit=5
   gcloud logging read 'httpRequest.remoteIp:*' --freshness=1d --limit=5
 EOF
 fi
-if [[ -n "$COUNT_RAISED" ]]; then
-  cat <<EOF
-
-As of this run the app counts two hops to find each visitor's address. Check
-once, with two devices, that it finds the right one: "Check the count once it
-is live" in deploy/README.md section 2.10.
-EOF
-fi
+count_note
 cat <<EOF
 
 After the demo, stop paying for the warm instance:
