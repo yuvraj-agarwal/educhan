@@ -3205,18 +3205,18 @@ func TestAGoneBadgeIsSaidToHaveGone(t *testing.T) {
 // it is the address it was asked for, and startVisit puts the window at the
 // top only while that is still the address, so a reader who presses Back, or
 // follows another link, before the answer comes is left where the browser or
-// that link put them, as before, when the abandoned render draws late. And
-// the offset changes in the same turn as
-// <main> does, so no frame shows the page arrived at, or the skeleton, at the
-// old offset, nor the page being left moved to its top while it waits: each
-// call comes straight after a place that writes <main> for that render — the
-// age screen, the skeleton, each view, the two messages for a page that could
-// not be shown — and never before the request. A view writes <main> once,
-// after its last wait, for the call after it to follow in the same turn; the
-// Verify page's step is started at the top before a refusal said in it is
-// brought into view. focusHash, which then moves the page to what the address
-// names, is held whole by TestVerifyCodeBoxShowsWhileACodeIsPending, with
-// navigate, beginLoading and startVisit.
+// that link put them, as before, when the abandoned render draws late. And the
+// offset changes in the same turn as <main> does, so no frame shows the page
+// arrived at, or the skeleton, at the old offset, nor the page being left
+// moved to its top while it waits: each call comes straight after a place that
+// writes <main> for that render — the age screen, the skeleton, each view, the
+// two messages for a page that could not be shown — and never before the
+// request. A view writes <main> once, after its last wait, for the call after
+// it to follow in the same turn; the Verify page's step is started at the top
+// before a refusal said in it is brought into view. focusHash, which then
+// moves the page to what the address names, is held whole by
+// TestVerifyCodeBoxShowsWhileACodeIsPending, with navigate, beginLoading and
+// startVisit.
 func TestALinkFollowedStartsAtTheTopOfThePage(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -3261,13 +3261,16 @@ func TestALinkFollowedStartsAtTheTopOfThePage(t *testing.T) {
 		t.Error("render() does not pass down the address its visit is for (visitAt), read as it starts")
 	}
 	// Kept nowhere: none of the functions it passes through assigns it, plainly,
-	// by a compound operator (visit ||= ...), by ++ and --, or as the target of
-	// a destructuring ({ visit } = ..., [visit] = ...); visitAt is declared
-	// once, from visit. A name visit elsewhere in app.js is another function's
-	// own, and visit => ... is a parameter, not an assignment.
+	// by a compound operator (visit ||= ...), by ++ and --, as the target of a
+	// destructuring ({ visit } = ..., [visit] = ...), whose closing brace or
+	// bracket the = follows, or as the variable of a for...of or for...in;
+	// visitAt is declared once, from visit. A name visit elsewhere in app.js is
+	// another function's own, and visit => ... is a parameter, not an
+	// assignment.
 	assigns := regexp.MustCompile(`\bvisit(?:At)?\s*(?:[-+*/%&|^]|\|\||&&|\?\?|<<|>>>?|\*\*)?=[^=>]|` +
 		`\bvisit(?:At)?\s*(?:\+\+|--)|(?:\+\+|--)\s*visit(?:At)?\b|` +
-		`[{,\[]\s*(?:\.\.\.)?visit(?:At)?\s*(?:=[^,}\]]*)?[}\],][^;=]*?[}\]]?\s*=[^=>]`)
+		`[{,\[]\s*(?:\.\.\.)?visit(?:At)?\s*(?:=[^,}\]]*)?(?:[}\]]|,[^;=]*?[}\]])\s*=[^=>]|` +
+		`\bfor\s*\(\s*visit(?:At)?\s+(?:of|in)\b`)
 	for _, name := range []string{"navigate", "render", "beginLoading", "renderVerify", "startVisit"} {
 		body := strings.ReplaceAll(withoutComments(jsFunction(t, script, name)), "visit = false", "")
 		body = strings.Replace(body, "const visitAt = visit && requested;", "", 1)
