@@ -2498,9 +2498,9 @@ function sayVerifyRefusal(form, sentIt = false) {
 //
 // The page is titled whether or not it is drawn here: render() titles each
 // page as it draws it, and the drawing left alone is one it did not make.
-// visit is render()'s, for a reader arriving by a link: the step it draws is
-// shown from the top of the page (startVisit), and a refusal said in it is
-// then brought into view. A drawing it leaves alone is left where it is.
+// visit is render()'s, the address of a reader arriving by a link: the step it
+// draws is shown from the top of the page (startVisit), and a refusal said in
+// it is then brought into view. A drawing it leaves alone is left where it is.
 async function renderVerify(visit = false) {
   const step = verifyStep;
   await loadVerification();
@@ -3205,10 +3205,13 @@ function beginLoading(visit) {
 // read from its top, not from wherever the page left was scrolled to. It is
 // called in the same turn as <main> is written, so no frame shows the new page
 // at the old offset, nor the old page moved before it is replaced. visit is
-// passed down the one render() call, never kept anywhere: Back and Forward, the
-// thread's Update and every other render() leave the scroll to the browser.
+// the address the visit is for, passed down the one render() call and never
+// kept anywhere: Back and Forward, the thread's Update and every other render()
+// leave the scroll to the browser. A visit the reader has left, by Back or
+// another link before its answer came, moves nothing: the page they went to
+// is where the browser or that link put it.
 function startVisit(visit) {
-  if (visit) {
+  if (visit && window.location.href === visit) {
     window.scrollTo(0, 0);
   }
 }
@@ -3224,8 +3227,9 @@ async function resolvePost(route) {
 // another passes its own along, because by then the screen may be a skeleton.
 // visit is true for the render navigate() starts, and for the one a post
 // number hands over to on its behalf: each place below that writes <main> for
-// it puts the window at the top as it does (startVisit), and focusHash then
-// moves it to a post or a heading the address names.
+// it puts the window at the top as it does (startVisit), while the address is
+// still the one asked for (visitAt), and focusHash then moves it to a post or
+// a heading the address names.
 async function render({ draft = captureDraft(), visit = false } = {}) {
   // /u-{name}/ is the stored slug typed as a path. The board answers to it,
   // but the address it is shared under is /u/{name}/.
@@ -3234,6 +3238,7 @@ async function render({ draft = captureDraft(), visit = false } = {}) {
     window.history.replaceState(null, "", pathname.replace(/^\/u-/, "/u/") + search + hash);
   }
   const requested = window.location.href;
+  const visitAt = visit && requested;
   renderedPath = window.location.pathname + window.location.search;
   const route = parseRoute();
   state.route = route;
@@ -3253,14 +3258,14 @@ async function render({ draft = captureDraft(), visit = false } = {}) {
   const ungated = UNGATED_VIEWS.has(route.view);
   if (age !== "ok" && !ungated) {
     renderAgeGate(age);
-    startVisit(visit);
+    startVisit(visitAt);
     return;
   }
   // Those two are read with the screen put away; it comes back, as it was
   // left, on the next page that needs it.
   closeAgeScreen();
 
-  const finish = beginLoading(visit);
+  const finish = beginLoading(visitAt);
   let resolved = null;
   try {
     if (age === "ok") {
@@ -3293,7 +3298,7 @@ async function render({ draft = captureDraft(), visit = false } = {}) {
         resolved = await resolvePost(route);
         break;
       case "verify":
-        await renderVerify(visit);
+        await renderVerify(visitAt);
         break;
       case "rules":
         renderRules();
@@ -3311,7 +3316,7 @@ async function render({ draft = captureDraft(), visit = false } = {}) {
     // draws, before a refusal it says there is brought into view; it draws
     // nothing when the reader has left, or a step drawn in place since is
     // still on the page.
-    if (route.view !== "post" && route.view !== "verify") startVisit(visit);
+    if (route.view !== "post" && route.view !== "verify") startVisit(visitAt);
   } catch (err) {
     // An expired thread and a mistyped board look the same from here, and both
     // are better served by a way out than by the raw error. A post number the
@@ -3332,7 +3337,7 @@ async function render({ draft = captureDraft(), visit = false } = {}) {
     }
     el.main.innerHTML = emptyStateHTML(message, board);
     announce(notFound ? "Not found" : "Could not load this page");
-    startVisit(visit);
+    startVisit(visitAt);
     return;
   } finally {
     finish();

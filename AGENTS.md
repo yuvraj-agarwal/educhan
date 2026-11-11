@@ -353,23 +353,26 @@ needs a browser check before the test changes.
 - **A link followed starts at the top of the page.** `navigate()` (an internal link
   clicked, and the move to the thread once a post is made) is a new visit, as on a site of
   separate pages, a link to the page on screen included: it passes `visit` down its one
-  `render()` call, and each place that writes `<main>` for that render — the age screen,
-  the skeleton in `beginLoading`, each view, the not-found and could-not-load messages,
-  the Verify step in `renderVerify` — calls `startVisit`, which puts the window at the
-  top in the same turn, so no frame shows the new page or the skeleton at the old offset,
-  nor the old page moved while it waits. Each view writes `<main>` once, after its last
-  wait, for that to hold. `focusHash()` then moves the page to the post or heading the
-  fragment names; one that names nothing leaves it at the top. `visit` is never kept
-  where another render could find it: a post number hands it on to the thread it
-  resolves to, and Back and Forward (`popstate`, left to the browser's own scroll
+  `render()` call, which passes on the address the visit is for, and each place that
+  writes `<main>` for that render — the age screen, the skeleton in `beginLoading`, each
+  view, the not-found and could-not-load messages, the Verify step in `renderVerify` —
+  calls `startVisit`, which puts the window at the top in the same turn while that is
+  still the address, so no frame shows the new page or the skeleton at the old offset, nor
+  the old page moved while it waits, and a visit the reader left by Back or another link
+  before its answer came moves nothing when it draws late. Each view writes `<main>` once,
+  after its last wait, for that to hold. `focusHash()` then moves the page to the post or
+  heading the fragment names; one that names nothing leaves it at the top. `visit` is
+  never kept where another render could find it: a post number hands it on to the thread
+  it resolves to, and Back and Forward (`popstate`, left to the browser's own scroll
   restoration), the thread's Update, the age screen's answer and the first load render
   without it, as does a link that changes only the fragment, which is the browser's jump
   and `focusHash()` (`TestALinkFollowedStartsAtTheTopOfThePage`). Chromium restores the
-  offset Back saved against the page still on screen, before `popstate` renders the one
-  left, so Back straight after a link to a shorter page can land above where the reader
-  was, at the foot of the page the link led to; main does the same once the reader
-  scrolls that page or a slow answer draws the skeleton, and keeping the offset by hand
-  (`scrollRestoration`) is left out on purpose.
+  offset kept for the page gone back to against the page still on screen, before
+  `popstate` renders it, so Back straight after a link to a shorter page can show the page
+  gone back to at that shorter page's greatest offset, above where the reader was, as Back
+  already did before this rule once the reader scrolled the shorter page or a slow answer
+  drew the skeleton; keeping the offset by hand (`scrollRestoration`) is left out on
+  purpose.
 - `formHTML` takes the thread it replies to and follows its state: an archived thread
   gets an explanation instead of a form, a locked one a note. A refusal that arrives
   after the form was drawn (`thread is archived`, say) is a notice from `errorMessage`
