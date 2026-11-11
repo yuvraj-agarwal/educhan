@@ -966,8 +966,8 @@ Accept-Encoding`; the fonts are compressed already. JSON from the API is not com
 - **Backend**: Go 1.22 standard library HTTP server, `pgx` for PostgreSQL
 - **Database**: PostgreSQL 16, versioned SQL migrations applied on startup
 - **Front end**: HTML/CSS/JS with no framework and no build step, served from the Go binary; highlight.js and KaTeX are vendored for code and maths
-- **Deployment**: multi-stage Docker build onto a distroless base, built by Cloud Build into Artifact Registry; Cloud Run with Cloud SQL and Cloud Storage (see [Deployment](#deployment))
-- **Planned**: Gemini API + Cloud Vision for moderation, Cloud CDN + Cloud Armor
+- **Deployment**: multi-stage Docker build onto a distroless base, built by Cloud Build into Artifact Registry; Cloud Run with Cloud SQL and Cloud Storage, behind an Application Load Balancer with Cloud Armor once the site has a domain of its own (see [Deployment](#deployment))
+- **Planned**: Gemini API + Cloud Vision for moderation, Cloud CDN
 
 ## Running locally
 
@@ -1418,13 +1418,17 @@ and `DATABASE_URL` becomes an ordinary TCP connection string.
 
 Four things need setting for a real deployment, and the deploy guide covers
 each: `EDUCHAN_POSTER_ID_SALT` has to be a stable secret or poster IDs differ
-between instances; `EDUCHAN_TRUST_PROXY` is `1` behind Cloud Run's front end;
-media belongs in Cloud Storage — `EDUCHAN_MEDIA_BACKEND=gcs` with an
-`EDUCHAN_GCS_BUCKET` and `EDUCHAN_GCS_PREFIX`, which the sweeper Job must match
-exactly, because the container filesystem does not outlive the container; and
-Cloud Run's request logs, which carry every visitor's IP, must be excluded from
-Cloud Logging before the service takes traffic (deploy guide section 2.8), or
-the promise that IPs are not logged does not hold.
+between instances; `EDUCHAN_TRUST_PROXY` is `1` behind Cloud Run's front end
+and `2` behind the load balancer that puts the site on its own domain, where
+the deploy script sets it only while `run.app` is closed to the public (deploy
+guide section 2.10); media belongs in Cloud Storage —
+`EDUCHAN_MEDIA_BACKEND=gcs` with an `EDUCHAN_GCS_BUCKET` and
+`EDUCHAN_GCS_PREFIX`, which the sweeper Job must match exactly, because the
+container filesystem does not outlive the container; and Cloud Run's request
+logs, and the load balancer's once there is one, which carry every visitor's
+IP, must be excluded from Cloud Logging before the service takes traffic
+(deploy guide section 2.8), or the promise that IPs are not logged does not
+hold.
 
 ### The archive sweeper
 
