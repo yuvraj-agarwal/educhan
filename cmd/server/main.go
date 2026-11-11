@@ -89,22 +89,21 @@ func run(args []string, logs io.Writer) error {
 	// is still starting up (connecting, waiting for, running or finishing
 	// migrations, checking the media store's bucket, or reading the domain
 	// file) ends New with the stop as its error, which is written, and the
-	// process exits 1 with nothing deleted, the spent answers included.
-	// Without this, the signal would kill it there at once, without a word.
-	// New ends with startupCtx wherever it is: a step that waits on something
-	// ends with it, and New looks at it after the rest, among them a
-	// migration's COMMIT and the migrations' lock given back, which migrate
-	// waits on whatever the stop, both for two seconds at most after it, and
-	// the domain file's read, which it does not cut short, any more than a
-	// Cloud Storage client's credentials, found and asked for their first token
-	// on the auth library's terms (media.NewGCSStore). So the error is written
-	// at once, or once that answer, that read or those credentials come, unless
-	// the database stops answering while the sweep is connected to it: New
-	// gives up the connection before it returns, which pgx allows fifteen
-	// seconds, seventeen after a commit or an unlock left unanswered, longer
-	// than Cloud Run waits. The server listens for signals only once it serves
-	// (serve), and its startup ends at startupTimeout wherever it is, the same
-	// way.
+	// process exits 1 with nothing deleted, the spent answers included. Without
+	// this, the signal would kill it there at once, without a word. New ends
+	// with startupCtx wherever it is: a step that waits on something ends with
+	// it, and New looks at it after the rest, among them a migration's COMMIT
+	// and the migrations' lock given back, which migrate waits on whatever the
+	// stop, both for two seconds at most after it, and the domain file's read,
+	// which it does not cut short, any more than a Cloud Storage client's
+	// credentials, found and asked for their first token on the auth library's
+	// terms (media.NewGCSStore). So the error is written at once, or once that
+	// answer, that read or those credentials come, unless the database stops
+	// answering while the sweep is connected to it: New gives up the connection
+	// before it returns, which pgx allows fifteen seconds, seventeen after a
+	// commit or an unlock left unanswered, longer than Cloud Run waits. The
+	// server listens for signals only once it serves (serve), and its startup
+	// ends at startupTimeout wherever it is, the same way.
 	base := context.Background()
 	if *sweep {
 		var stop context.CancelFunc
