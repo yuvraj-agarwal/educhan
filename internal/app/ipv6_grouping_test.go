@@ -7,12 +7,13 @@ import (
 	"time"
 )
 
-// An IPv6 client is keyed on its /64 (clientIP), because a subscriber is
-// handed at least a /64 and may use any address in it. These tests drive the
-// real handlers through one trusted proxy and hold every limit that keys on the
-// client, and the poster ID of a post sent with no poster key, to that: a
-// second address in the same /64 is the same client, and the first address of
-// the next /64 is another.
+// An IPv6 client is keyed on its /64 (clientIP), because a subscriber is handed
+// at least a /64 and may use any address in it. These tests drive the real
+// handlers through one trusted proxy and hold every limit that keys on the
+// client but the captcha's challenge meter (TestCaptchaChallengesPerAddress
+// holds that one), and the poster ID of a post sent with no poster key, to
+// that: a second address in the same /64 is the same client, and the first
+// address of the next /64 is another.
 const (
 	// The first and the last address of one /64: the furthest apart two
 	// addresses of one client can be.
