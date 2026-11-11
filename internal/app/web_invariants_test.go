@@ -808,6 +808,7 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 		"onVerifyPage":            "TestVerifyAnswersDrawOnlyOnTheVerifyPage",
 		"announce":                "this test",
 		"verifyStepOnScreen":      "TestVerifyStepIsDrawnForAReaderArriving",
+		"startVisit":              "this test",
 	}
 	roots := []string{"drawVerifyStep", "showVerifyField", "sayVerifyRefusal", "focusHash", "showHeldBadge",
 		"confirmBrowserForgotten"}
@@ -928,6 +929,13 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 			"done.focus({ preventScroll: true });",
 			"}",
 		}},
+		{"startVisit", []string{
+			"function startVisit(visit) {",
+			"if (visit && window.location.href === visit) {",
+			"window.scrollTo(0, 0);",
+			"}",
+			"}",
+		}},
 		{"announce", []string{
 			"function announce(title) {",
 			"document.title = title === \"educhan\" ? title : `${title} — educhan`;",
@@ -1036,8 +1044,8 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 	// returns is held: the answer to Verify (held above, with showHeldBadge
 	// whole), the two forget buttons, whose callbacks are held here whole, and
 	// render(), below.
-	if n := strings.Count(code, "renderVerify()"); n != 5 {
-		t.Errorf("app.js names renderVerify() %d times; want five: its definition, render(), the answer to Verify, and "+
+	if n := strings.Count(code, "renderVerify("); n != 5 {
+		t.Errorf("app.js names renderVerify( %d times; want five: its definition, render(), the answer to Verify, and "+
 			"the two forget buttons, each held from where it returns", n)
 	}
 	for _, then := range []string{
@@ -1074,18 +1082,20 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 			"return;",
 			"}",
 		})
-	if !slices.Contains(renderLines, "const finish = beginLoading();") ||
+	if !slices.Contains(renderLines, "const finish = beginLoading(visitAt);") ||
 		len(regexp.MustCompile(`\bfinish\b`).FindAllString(strings.Join(renderLines, "\n"), -1)) != 2 {
 		t.Error("render() does not take finish from beginLoading and call it in its finally alone")
 	}
 	if got, want := jsLines(jsFunction(t, script, "beginLoading")), []string{
-		"function beginLoading() {",
+		"function beginLoading(visit) {",
 		`el.main.setAttribute("aria-busy", "true");`,
 		"const dimmed = el.main.firstChild;",
 		"const timer = setTimeout(() => {",
 		"if (el.main.firstChild !== dimmed) return;",
+		"if (visit && window.location.href !== visit) return;",
 		`el.main.innerHTML = '<div class="skeleton"><div class="skeleton-row"></div><div class="skeleton-row"></div>` +
 			`<div class="skeleton-row"></div></div>';`,
+		"startVisit(visit);",
 		"}, 250);",
 		"return () => {",
 		"clearTimeout(timer);",
@@ -1106,7 +1116,7 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 		"} else {",
 		`window.history.pushState(null, "", url);`,
 		"}",
-		"await render();",
+		"await render({ visit: true });",
 		"}",
 	}; !slices.Equal(got, want) {
 		t.Errorf("navigate runs\n\t%s\nwant exactly\n\t%s\nIt waits on render(), which can draw a pending code's box, "+
@@ -1119,8 +1129,8 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 	// other waits are render's own for a post number and a new post's for its
 	// thread, and each draws a thread.
 	waits := []string{
-		"await render();",
-		"await render({ draft });",
+		"await render({ visit: true });",
+		"await render({ draft, visit });",
 		"await navigate(`${threadPath(created.board, created.thread_no)}#p${created.no}`);",
 	}
 	waited := map[string]int{}
@@ -1286,7 +1296,7 @@ func TestOnlyKnownPlacesTellWhetherABadgeIsHeld(t *testing.T) {
 		// listener, and the buttons a press aimed at the step before is let
 		// go on.
 		"async function loadVerification() {":             7,
-		"async function renderVerify() {":                 1,
+		"async function renderVerify(visit = false) {":    1,
 		"function verifyViewHTML() {":                     7,
 		"async function submitVerification(form) {":       3,
 		"function showHeldBadge() {":                      1,
@@ -1755,16 +1765,17 @@ func TestVerifyStepIsDrawnForAReaderArriving(t *testing.T) {
 	code := withoutComments(script)
 
 	holdLines(t, "render()'s Verify page", jsLines(jsFunction(t, script, "render")), `case "verify":`, "break;",
-		[]string{"await renderVerify();"})
+		[]string{"await renderVerify(visitAt);"})
 
 	if got, want := jsLines(jsFunction(t, script, "renderVerify")), []string{
-		"async function renderVerify() {",
+		"async function renderVerify(visit = false) {",
 		"const step = verifyStep;",
 		"await loadVerification();",
 		"if (!onVerifyPage()) return false;",
 		`announce("Institutional verification");`,
 		"if (verifyStep !== step && verifyStepOnScreen()) return false;",
 		"drawVerifyStep();",
+		"startVisit(visit);",
 		`const form = el.main.querySelector("form[data-verify]");`,
 		"if (form) sayVerifyRefusal(form);",
 		"return true;",
@@ -1814,9 +1825,10 @@ func TestVerifyStepIsDrawnForAReaderArriving(t *testing.T) {
 	loading := jsLines(jsFunction(t, script, "beginLoading"))
 	dimmed := slices.Index(loading, "const dimmed = el.main.firstChild;")
 	timer := slices.Index(loading, "const timer = setTimeout(() => {")
-	if dimmed < 0 || timer != dimmed+1 || len(loading) < timer+3 ||
+	if dimmed < 0 || timer != dimmed+1 || len(loading) < timer+4 ||
 		loading[timer+1] != "if (el.main.firstChild !== dimmed) return;" ||
-		!strings.HasPrefix(loading[timer+2], `el.main.innerHTML = '<div class="skeleton">`) {
+		loading[timer+2] != "if (visit && window.location.href !== visit) return;" ||
+		!strings.HasPrefix(loading[timer+3], `el.main.innerHTML = '<div class="skeleton">`) {
 		t.Errorf("beginLoading's skeleton does not first check that the page still shows the view it dims:\n\t%s",
 			strings.Join(loading, "\n\t"))
 	}
@@ -2777,7 +2789,7 @@ func TestVerifyStepDrawnAgainIsNotToldWhatWasTypedIsThere(t *testing.T) {
 		t.Errorf("submitVerification does not tell the form it says its refusal in whether that form sent it:\n%s", submit)
 	}
 	render := withoutComments(jsFunction(t, script, "renderVerify"))
-	if !strings.Contains(render, "drawVerifyStep();\n  const form = el.main.querySelector(\"form[data-verify]\");\n  if (form) sayVerifyRefusal(form);") {
+	if !strings.Contains(render, "drawVerifyStep();\n  startVisit(visit);\n  const form = el.main.querySelector(\"form[data-verify]\");\n  if (form) sayVerifyRefusal(form);") {
 		t.Errorf("renderVerify says the refusal kept with the step other than in the step it has just drawn:\n%s", render)
 	}
 }
@@ -3173,5 +3185,173 @@ func TestAGoneBadgeIsSaidToHaveGone(t *testing.T) {
 	}
 	if !strings.Contains(code, "\nlet badgeLost = \"\";\n") {
 		t.Error("badgeLost does not start empty")
+	}
+}
+
+// A link followed is a new visit, as it is on a site of separate pages: the
+// page arrived at is shown from its top, or at the post or heading its
+// address names, not at whatever offset the page left was scrolled to. Before,
+// nothing set the offset on a navigation, and a reader at the foot of a long
+// thread who followed the board's link, or Verify in the header, was shown the
+// new page part-way down or at its foot; it was at the top only when the
+// loading skeleton happened to be drawn and was no taller than the window.
+//
+// So navigate() alone asks for a visit, by passing visit down the one render()
+// call it makes, and startVisit puts the window at the top only when it is
+// asked: Back and Forward, the thread's Update, the age screen's answer and
+// the first load leave the offset to the browser, as they always did, and the
+// popstate listener runs what it ran before. visit is never kept anywhere a
+// later render() could find it, and a visit the reader has left moves nothing:
+// it is the address it was asked for, and startVisit puts the window at the
+// top only while that is still the address, so a reader who presses Back, or
+// follows another link, before the answer comes is left where the browser or
+// that link put them, as before, when the abandoned render draws late. And the
+// offset changes in the same turn as <main> does, so no frame shows the page
+// arrived at, or the skeleton, at the old offset, nor the page being left
+// moved to its top while it waits: each call comes straight after a place that
+// writes <main> for that render — the age screen, the skeleton, each view, the
+// two messages for a page that could not be shown — and never before the
+// request. A view writes <main> once, after its last wait, for the call after
+// it to follow in the same turn; the Verify page's step is started at the top
+// before a refusal said in it is brought into view. focusHash, which then
+// moves the page to what the address names, is held whole by
+// TestVerifyCodeBoxShowsWhileACodeIsPending, with navigate, beginLoading and
+// startVisit.
+func TestALinkFollowedStartsAtTheTopOfThePage(t *testing.T) {
+	script := appScript(t)
+	code := withoutComments(script)
+
+	if got, want := jsLines(jsFunction(t, script, "startVisit")), []string{
+		"function startVisit(visit) {",
+		"if (visit && window.location.href === visit) {",
+		"window.scrollTo(0, 0);",
+		"}",
+		"}",
+	}; !slices.Equal(got, want) {
+		t.Errorf("startVisit runs\n\t%s\nwant it to put the window at the top for a visit whose address is still "+
+			"the one on screen and do nothing otherwise:\n\t%s",
+			strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
+	}
+	if n := len(regexp.MustCompile(`scrollTo\(|scrollRestoration`).FindAllString(code, -1)); n != 1 {
+		t.Errorf("app.js names scrollTo or scrollRestoration %d times; want once, in startVisit: Back and Forward "+
+			"are the browser's to restore", n)
+	}
+
+	// Asked for by navigate() alone, and handed on by render() only to the
+	// render a post number hands over to. Every other call of render() asks
+	// for nothing, and the popstate listener is as it was.
+	if n := strings.Count(code, "visit: true"); n != 1 || !strings.Contains(jsFunction(t, script, "navigate"), "await render({ visit: true });") {
+		t.Errorf("app.js asks for a visit %d times; want once, in navigate's call of render()", n)
+	}
+	for _, line := range jsLines(script) {
+		if regexp.MustCompile(`(?:^|[^.\w$])render\(`).MatchString(line) && strings.Contains(line, "visit") &&
+			line != "await render({ visit: true });" && line != "await render({ draft, visit });" &&
+			!strings.HasPrefix(line, "async function render(") {
+			t.Errorf("app.js calls render() with a visit in %q; only navigate asks for one, and render() hands its "+
+				"own on to the thread a post number names", line)
+		}
+	}
+	if !strings.Contains(code, "\nasync function render({ draft = captureDraft(), visit = false } = {}) {\n") {
+		t.Error("render() does not take visit as an argument that is false unless given")
+	}
+	// render() passes down the address the visit is for, read as it starts,
+	// so that a visit the reader has left by Back or another link moves nothing.
+	if !strings.Contains(withoutComments(jsFunction(t, script, "render")),
+		"\n  const requested = window.location.href;\n  const visitAt = visit && requested;\n") {
+		t.Error("render() does not pass down the address its visit is for (visitAt), read as it starts")
+	}
+	// Kept nowhere: none of the functions it passes through assigns it, plainly,
+	// by a compound operator (visit ||= ...), by ++ and --, as the target of a
+	// destructuring ({ visit } = ..., [visit] = ...), whose closing brace or
+	// bracket the = follows, or as the variable of a for...of or for...in;
+	// visitAt is declared once, from visit. A name visit elsewhere in app.js is
+	// another function's own, and visit => ... is a parameter, not an
+	// assignment.
+	assigns := regexp.MustCompile(`\bvisit(?:At)?\s*(?:[-+*/%&|^]|\|\||&&|\?\?|<<|>>>?|\*\*)?=[^=>]|` +
+		`\bvisit(?:At)?\s*(?:\+\+|--)|(?:\+\+|--)\s*visit(?:At)?\b|` +
+		`[{,\[]\s*(?:\.\.\.)?visit(?:At)?\s*(?:=[^,}\]]*)?(?:[}\]]|,[^;=]*?[}\]])\s*=[^=>]|` +
+		`\bfor\s*\(\s*visit(?:At)?\s+(?:of|in)\b`)
+	for _, name := range []string{"navigate", "render", "beginLoading", "renderVerify", "startVisit"} {
+		body := strings.ReplaceAll(withoutComments(jsFunction(t, script, name)), "visit = false", "")
+		body = strings.Replace(body, "const visitAt = visit && requested;", "", 1)
+		if assigns.MatchString(body) {
+			t.Errorf("%s assigns visit; it is passed down the one render() call that navigate() starts, and kept "+
+				"nowhere", name)
+		}
+	}
+	popstate := jsBlock(t, script, `window.addEventListener("popstate", () => {`, "});")
+	if got, want := jsLines(popstate), []string{
+		`window.addEventListener("popstate", () => {`,
+		"if (window.location.pathname + window.location.search === renderedPath) {",
+		"focusHash();",
+		"return;",
+		"}",
+		"render();",
+		"});",
+	}; !slices.Equal(got, want) {
+		t.Errorf("the popstate listener runs\n\t%s\nwant exactly\n\t%s\nBack and Forward leave the offset to the "+
+			"browser", strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
+	}
+
+	// Called straight after each place that writes <main> for the render, in
+	// the same turn, and nowhere else.
+	for _, at := range []struct{ function, before, call string }{
+		{"render", "renderAgeGate(age);", "startVisit(visitAt);"},
+		{"render", "}", `if (route.view !== "post" && route.view !== "verify") startVisit(visitAt);`},
+		{"render", `announce(notFound ? "Not found" : "Could not load this page");`, "startVisit(visitAt);"},
+		{"beginLoading", `el.main.innerHTML = '<div class="skeleton"><div class="skeleton-row"></div>` +
+			`<div class="skeleton-row"></div><div class="skeleton-row"></div></div>';`, "startVisit(visit);"},
+		{"renderVerify", "drawVerifyStep();", "startVisit(visit);"},
+	} {
+		lines := jsLines(jsFunction(t, script, at.function))
+		found := false
+		for i := 1; i < len(lines); i++ {
+			if lines[i] == at.call && lines[i-1] == at.before {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s does not start the visit (%s) straight after %s:\n\t%s", at.function, at.call, at.before,
+				strings.Join(lines, "\n\t"))
+		}
+	}
+	// A visit the reader has left draws no skeleton: one drawn without
+	// startVisit would show the page they went to, by another link, at the old
+	// offset until its own render drew.
+	if lines := jsLines(jsFunction(t, script, "beginLoading")); !slices.Contains(lines,
+		"if (visit && window.location.href !== visit) return;") {
+		t.Errorf("beginLoading draws a skeleton for a visit the reader has left:\n\t%s", strings.Join(lines, "\n\t"))
+	}
+	if n := strings.Count(code, "startVisit("); n != 6 {
+		t.Errorf("app.js names startVisit( %d times; want six: its declaration, the age screen, the skeleton, the "+
+			"views, the page that could not be shown and the Verify step", n)
+	}
+	// The views' call comes after the switch that draws them and before the
+	// catch, and the switch's last statement draws a view.
+	render := withoutComments(jsFunction(t, script, "render"))
+	views := strings.Index(render, "switch (route.view) {")
+	after := strings.Index(render, `if (route.view !== "post" && route.view !== "verify") startVisit(visitAt);`)
+	load := strings.Index(render, "const finish = beginLoading(visitAt);")
+	if views < 0 || after < views || strings.Contains(render[views:after], "startVisit(") ||
+		load < 0 || strings.Contains(render[:load], "await ") {
+		t.Error("render() does not start the visit once the switch has drawn the view, or waits on something before " +
+			"its loading begins")
+	}
+	// Each view writes <main> once, after its last wait, so the call after the
+	// switch is in the same turn as the drawing.
+	for _, name := range []string{"renderHome", "renderIndex", "renderCatalog", "renderArchive", "renderThread",
+		"renderRules", "renderFAQ"} {
+		view := withoutComments(jsFunction(t, script, name))
+		write := strings.Index(view, "el.main.innerHTML =")
+		if write < 0 || strings.Count(view, "el.main.innerHTML =") != 1 || strings.Contains(view[write:], "await ") {
+			t.Errorf("%s does not write <main> once, after its last wait: a frame painted between its drawing and "+
+				"the visit's start shows the page at the old offset:\n%s", name, view)
+		}
+	}
+	for _, name := range []string{"render", "beginLoading", "renderVerify"} {
+		lines := jsLines(jsFunction(t, script, name))
+		if !strings.Contains(lines[0], "visit") {
+			t.Errorf("%s does not take visit from its caller: %s", name, lines[0])
+		}
 	}
 }
