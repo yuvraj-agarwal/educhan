@@ -359,20 +359,20 @@ needs a browser check before the test changes.
   calls `startVisit`, which puts the window at the top in the same turn while that is
   still the address, so no frame shows the new page or the skeleton at the old offset, nor
   the old page moved while it waits, and a visit the reader left by Back or another link
-  before its answer came moves nothing when it draws late. Each view writes `<main>` once,
-  after its last wait, for that to hold. `focusHash()` then moves the page to the post or
-  heading the fragment names; one that names nothing leaves it at the top. `visit` is
-  never kept where another render could find it: a post number hands it on to the thread
-  it resolves to, and Back and Forward (`popstate`, left to the browser's own scroll
-  restoration), the thread's Update, the age screen's answer and the first load render
-  without it, as does a link that changes only the fragment, which is the browser's jump
-  and `focusHash()` (`TestALinkFollowedStartsAtTheTopOfThePage`). Chromium restores the
-  offset kept for the page gone back to against the page still on screen, before
-  `popstate` renders it, so Back straight after a link to a shorter page can show the page
-  gone back to at that shorter page's greatest offset, above where the reader was, as Back
-  already did before this rule once the reader scrolled the shorter page or a slow answer
-  drew the skeleton; keeping the offset by hand (`scrollRestoration`) is left out on
-  purpose.
+  before its answer came draws no skeleton and moves nothing when it draws late. Each view
+  writes `<main>` once, after its last wait, for that to hold. `focusHash()` then moves
+  the page to the post or heading the fragment names; one that names nothing leaves it at
+  the top. `visit` is never kept where another render could find it: a post number hands
+  it on to the thread it resolves to, and Back and Forward (`popstate`, left to the
+  browser's own scroll restoration), the thread's Update, the age screen's answer and the
+  first load render without it, as does a link that changes only the fragment, which is
+  the browser's jump and `focusHash()` (`TestALinkFollowedStartsAtTheTopOfThePage`).
+  Chromium restores the offset kept for the page gone back to against the page still on
+  screen, before `popstate` renders it, so Back straight after a link to a shorter page
+  can show the page gone back to at that shorter page's greatest offset, above where the
+  reader was, as Back already did before this rule once the reader scrolled the shorter
+  page or a slow answer drew the skeleton; keeping the offset by hand
+  (`scrollRestoration`) is left out on purpose.
 - `formHTML` takes the thread it replies to and follows its state: an archived thread
   gets an explanation instead of a form, a locked one a note. A refusal that arrives
   after the form was drawn (`thread is archived`, say) is a notice from `errorMessage`

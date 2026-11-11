@@ -3179,17 +3179,21 @@ function emptyStateHTML(message, slug = null) {
 // request is slow enough to notice, which keeps fast navigations from flashing.
 // The dimmed view stays where the reader left it; a skeleton drawn for a visit
 // is drawn at the top of the page (startVisit), where the page arrived at
-// starts. The skeleton stands in for the view it dims, and for nothing drawn
-// since: a Verify step that an answer drew in place while the page was loading
-// stays as it was drawn, with the field it put the reader in, rather than going
-// under a skeleton to be drawn again without it (renderVerify). What it hands
-// back runs once the page is drawn, a pending code's box included, so it is
-// held whole (TestVerifyCodeBoxShowsWhileACodeIsPending).
+// starts, and none is drawn for a visit the reader has left by Back or another
+// link: the render of the page they went to draws its own when it is slow, at
+// the top for a visit and where Back put the window otherwise. The skeleton
+// stands in for the view it dims, and for nothing drawn since: a Verify step
+// that an answer drew in place while the page was loading stays as it was
+// drawn, with the field it put the reader in, rather than going under a
+// skeleton to be drawn again without it (renderVerify). What it hands back
+// runs once the page is drawn, a pending code's box included, so it is held
+// whole (TestVerifyCodeBoxShowsWhileACodeIsPending).
 function beginLoading(visit) {
   el.main.setAttribute("aria-busy", "true");
   const dimmed = el.main.firstChild;
   const timer = setTimeout(() => {
     if (el.main.firstChild !== dimmed) return;
+    if (visit && window.location.href !== visit) return;
     el.main.innerHTML = '<div class="skeleton"><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div></div>';
     startVisit(visit);
   }, 250);

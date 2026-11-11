@@ -1092,6 +1092,7 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 		"const dimmed = el.main.firstChild;",
 		"const timer = setTimeout(() => {",
 		"if (el.main.firstChild !== dimmed) return;",
+		"if (visit && window.location.href !== visit) return;",
 		`el.main.innerHTML = '<div class="skeleton"><div class="skeleton-row"></div><div class="skeleton-row"></div>` +
 			`<div class="skeleton-row"></div></div>';`,
 		"startVisit(visit);",
@@ -1824,9 +1825,10 @@ func TestVerifyStepIsDrawnForAReaderArriving(t *testing.T) {
 	loading := jsLines(jsFunction(t, script, "beginLoading"))
 	dimmed := slices.Index(loading, "const dimmed = el.main.firstChild;")
 	timer := slices.Index(loading, "const timer = setTimeout(() => {")
-	if dimmed < 0 || timer != dimmed+1 || len(loading) < timer+3 ||
+	if dimmed < 0 || timer != dimmed+1 || len(loading) < timer+4 ||
 		loading[timer+1] != "if (el.main.firstChild !== dimmed) return;" ||
-		!strings.HasPrefix(loading[timer+2], `el.main.innerHTML = '<div class="skeleton">`) {
+		loading[timer+2] != "if (visit && window.location.href !== visit) return;" ||
+		!strings.HasPrefix(loading[timer+3], `el.main.innerHTML = '<div class="skeleton">`) {
 		t.Errorf("beginLoading's skeleton does not first check that the page still shows the view it dims:\n\t%s",
 			strings.Join(loading, "\n\t"))
 	}
@@ -3309,6 +3311,13 @@ func TestALinkFollowedStartsAtTheTopOfThePage(t *testing.T) {
 			t.Errorf("%s does not start the visit (%s) straight after %s:\n\t%s", at.function, at.call, at.before,
 				strings.Join(lines, "\n\t"))
 		}
+	}
+	// A visit the reader has left draws no skeleton: one drawn without
+	// startVisit would show the page they went to, by another link, at the old
+	// offset until its own render drew.
+	if lines := jsLines(jsFunction(t, script, "beginLoading")); !slices.Contains(lines,
+		"if (visit && window.location.href !== visit) return;") {
+		t.Errorf("beginLoading draws a skeleton for a visit the reader has left:\n\t%s", strings.Join(lines, "\n\t"))
 	}
 	if n := strings.Count(code, "startVisit("); n != 6 {
 		t.Errorf("app.js names startVisit( %d times; want six: its declaration, the age screen, the skeleton, the "+
