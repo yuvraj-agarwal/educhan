@@ -2309,18 +2309,18 @@ const VERIFY_INTRO = `
   <p class="verify-note">
     Verifying proves you hold an address at a recognised institution and earns
     you an optional badge. The address itself is never stored: what is kept is
-    a keyed hash of it, in a table that has no link to any post or thread. The
-    badge you get carries only the institution, an expiry and a random number,
-    so nothing kept with a post points to your address. The random number is
-    what keeps your ID the same within a thread on the posts you badge. It is
-    not made from your address. There are limits. Whoever runs this server can
-    check any address they think of for a badge or a code request, even one
-    since forgotten or expired. Timing can also tie a post you badge soon after
-    verifying, and your other badged posts in that thread, to you if they check
-    your address. While yours is the only badge from your institution the
-    server keeps, any post you have badged can be tied to you the same way. All
-    of this is a promise about what is kept, not about someone who changes the
-    server or records what is sent to it.
+    a keyed hash of it, in a table with no column that points to any post or
+    thread. The badge you get carries only the institution, an expiry and a
+    random number, so nothing kept with a post points to your address. The
+    random number is what keeps your ID the same within a thread on the posts
+    you badge. It is not made from your address. There are limits. Whoever
+    runs this server can check any address they think of for a badge or a code
+    request, even one since forgotten or expired. Timing can also tie a post
+    you badge soon after verifying, and your other badged posts in that thread,
+    to you if they check your address. While yours is the only badge from your
+    institution the server keeps, any post you have badged can be tied to you
+    the same way. All of this is a promise about what is kept, not about
+    someone who changes the server or records what is sent to it.
   </p>
   <p class="verify-note muted">
     The badge is off by default on every post, and is sent to the server only
@@ -2361,7 +2361,9 @@ function verifyViewHTML() {
   const wait = busy ? " disabled" : "";
 
   // While a badge held here is being replaced, either step can go back to it:
-  // asking for a new badge retires nothing until the new one is confirmed.
+  // asking for a new badge changes nothing until the new one is confirmed,
+  // which replaces this one in this browser (and cancels it on the server only
+  // when it is for the same address).
   const keep = v.badge
     ? `<button class="btn subtle" type="button" data-action="verify-keep"${wait}>Keep my badge</button>`
     : "";
@@ -2768,8 +2770,8 @@ const FAQ_SECTIONS = [
           by default, and it's sent only with the posts you tick it on.</li>
       </ol>
       <p>The address itself is never stored. The server keeps only a scrambled fingerprint of
-        it, so that one address holds one badge at a time, in a table with no link to any
-        post. The badge holds the institution's name, an expiry date and a random number, and
+        it, so that one address holds one badge at a time, in a table with nothing in it that
+        points to a post. The badge holds the institution's name, an expiry date and a random number, and
         nothing about you. So nothing stored with a badged post points to your email address,
         or to the posts you make without the badge &mdash; unless you give both the same name or tripcode,
         which would show they're yours. That's why the Name field empties when you tick the
