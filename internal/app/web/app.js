@@ -2770,8 +2770,8 @@ const FAQ_SECTIONS = [
           by default, and it's sent only with the posts you tick it on.</li>
       </ol>
       <p>The address itself is never stored. The server keeps only a scrambled fingerprint of
-        it, so that one address holds one badge at a time, in a table with nothing in it that
-        points to a post. The badge holds the institution's name, an expiry date and a random number, and
+        it, so that one address holds one badge at a time, in a table with no column that
+        points to any post or thread. The badge holds the institution's name, an expiry date and a random number, and
         nothing about you. So nothing stored with a badged post points to your email address,
         or to the posts you make without the badge &mdash; unless you give both the same name or tripcode,
         which would show they're yours. That's why the Name field empties when you tick the

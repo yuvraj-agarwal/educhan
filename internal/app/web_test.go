@@ -700,8 +700,9 @@ func TestForgettingTheBrowserIsSaidAsDone(t *testing.T) {
 // label. The match is made when someone looks, so it takes in every post the
 // poster has badged, those from before theirs was the only one included: the
 // copy may not read as covering only the posts made while it lasts. That label
-// is also why the hash table may not be said to have "no link to any post": it
-// has no column that points to one, and the sole-badge limit is the exception.
+// is also why the hash table may not be said to have "no link to any post" or
+// "nothing in it that points" to one: it has no column that points to one, and
+// the sole-badge limit is the exception. Both places say it in the same words.
 // The address check is said in one short sentence.
 func TestBadgeLimitsSayWhatTheServerDoes(t *testing.T) {
 	said := regexp.MustCompile(`\s+`).ReplaceAllString(appScript(t), " ")
@@ -717,6 +718,7 @@ func TestBadgeLimitsSayWhatTheServerDoes(t *testing.T) {
 		"or a list of them",
 		"the posts you badge can be tied",
 		"no link to any post",
+		"nothing in it that points",
 	} {
 		if strings.Contains(said, wrong) {
 			t.Errorf("app.js says %q", wrong)
@@ -736,11 +738,15 @@ func TestBadgeLimitsSayWhatTheServerDoes(t *testing.T) {
 		"and your other badged posts in that thread, to you if they check your address.",
 		"While yours is the only badge from your institution the server keeps, any post you have badged can be tied to you the same way.",
 		"While yours is the only badge from your university or college the site keeps, any post you have badged can be tied to you the same way.",
-		"in a table with no column that points to any post or thread.",
-		"in a table with nothing in it that points to a post.",
 	} {
 		if !strings.Contains(said, want) {
 			t.Errorf("app.js does not say %q", want)
 		}
+	}
+	// Both describe the hash table in the same words: a column that points to
+	// a post, not a label, is what neither may claim the table has.
+	table := "in a table with no column that points to any post or thread."
+	if n := strings.Count(said, table); n != 2 {
+		t.Errorf("app.js says %q %d times, want once on the Verify page and once in the FAQ", table, n)
 	}
 }
