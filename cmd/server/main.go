@@ -2,11 +2,12 @@
 // embedded web UI that consumes it, backed by PostgreSQL.
 //
 // With -sweep it serves nothing: it deletes the archived threads whose board's
-// archive_days have run out, with their media, rewrites the verification
-// credentials so that every one issued before the sweep carries the sweep's
-// transaction id rather than its own (the README's "Transaction ids, and the
-// nightly rewrite" says what that leaves), and exits. That is the mode a
-// scheduled Cloud Run Job runs, from the same image.
+// archive_days have run out, with their media (one with a held reply leaves
+// public view instead and is deleted once the reply is decided), rewrites the
+// verification credentials so that every one issued before the sweep carries
+// the sweep's transaction id rather than its own (the README's "Transaction
+// ids, and the nightly rewrite" says what that leaves), and exits. That is the
+// mode a scheduled Cloud Run Job runs, from the same image.
 package main
 
 import (

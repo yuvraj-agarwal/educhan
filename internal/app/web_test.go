@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -387,6 +388,64 @@ func TestAgeScreenIsNeverCalledVerification(t *testing.T) {
 	for _, want := range []string{"README.md", "AGENTS.md", "internal/app/web/app.js", "internal/app/web/index.html", "internal/app/web_test.go"} {
 		if !slices.Contains(scanned, want) {
 			t.Errorf("%s was not scanned", want)
+		}
+	}
+}
+
+// TestNarrowScrollMarginsMatchTheHeaderWrap pins the scroll margins that keep
+// what the page scrolls to — a heading jumped to, the field a block names, the
+// support panel — clear of the sticky header to the widths at which the header
+// is three rows tall: every width below the one where the board row moves up
+// beside the brand. Rules in a narrower block left those things hidden under
+// the header from 641 to 700px.
+func TestNarrowScrollMarginsMatchTheHeaderWrap(t *testing.T) {
+	body, err := fs.ReadFile(webFS(), "app.css")
+	if err != nil {
+		t.Fatalf("reading app.css: %v", err)
+	}
+	css := regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(string(body), "")
+	m := regexp.MustCompile(`@media \(min-width: (\d+)px\) \{\s*\.board-nav \{[^}]*flex:`).FindStringSubmatch(css)
+	if m == nil {
+		t.Fatal("app.css: no min-width block that puts .board-nav beside the brand")
+	}
+	wide, _ := strconv.Atoi(m[1])
+
+	// marginRules holds, for each max-width block by its width, the
+	// selectors it gives a scroll-margin-top.
+	marginRules := map[int]map[string]bool{}
+	for _, loc := range regexp.MustCompile(`@media \(max-width: (\d+)px\) \{`).FindAllStringSubmatchIndex(css, -1) {
+		width, _ := strconv.Atoi(css[loc[2]:loc[3]])
+		depth, end := 1, loc[1]
+		for ; end < len(css) && depth > 0; end++ {
+			switch css[end] {
+			case '{':
+				depth++
+			case '}':
+				depth--
+			}
+		}
+		for _, rule := range regexp.MustCompile(`([^{}]+)\{([^{}]*)\}`).FindAllStringSubmatch(css[loc[1]:end-1], -1) {
+			if !strings.Contains(rule[2], "scroll-margin-top") {
+				continue
+			}
+			for _, sel := range strings.Split(rule[1], ",") {
+				if marginRules[width] == nil {
+					marginRules[width] = map[string]bool{}
+				}
+				marginRules[width][strings.Join(strings.Fields(sel), " ")] = true
+			}
+		}
+	}
+	for _, sel := range []string{".page h2", ".support-panel", `.post-form .fields input[type="text"]`,
+		".post-form .fields textarea"} {
+		if !marginRules[wide-1][sel] {
+			t.Errorf("app.css: %s has no scroll-margin-top in @media (max-width: %dpx), where the header wraps", sel, wide-1)
+		}
+		for width, sels := range marginRules {
+			if width != wide-1 && sels[sel] {
+				t.Errorf("app.css: %s has a scroll-margin-top in @media (max-width: %dpx), not where the header wraps (%dpx)",
+					sel, width, wide-1)
+			}
 		}
 	}
 }

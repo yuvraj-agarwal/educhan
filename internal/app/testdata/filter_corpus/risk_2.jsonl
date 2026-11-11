@@ -1,0 +1,221 @@
+{"id": "risk-1001", "body": "got an alert that classes are cancelled because of a bomb threat at our college. anyone know if it's real? admin hasn't said anything", "subject": "bomb threat?", "name": "", "expect": "publish", "why": "news question"}
+{"id": "risk-1002", "body": "kitne saal ke ho beta? school kaunsa? milne aa jaao, chocolate dilaunga", "subject": "", "name": "", "expect": "hold", "why": "Hinglish age and school plus meet with lure"}
+{"id": "risk-1003", "body": "there's a reason your parents hate you. just end it.", "subject": "", "name": "", "expect": "hold", "why": "telling someone to end it"}
+{"id": "risk-1004", "body": "go die. seriously. end it tonight", "subject": "", "name": "", "expect": "hold", "why": "telling someone to die tonight"}
+{"id": "risk-1005", "body": "how old do you have to be to open a bank account without your parents? I'm 16", "subject": "", "name": "", "expect": "publish", "why": "eligibility question"}
+{"id": "risk-1006", "body": "you're from Pune? which area? we could meet without your friends, I'll explain things better in person", "subject": "", "name": "", "expect": "hold", "why": "location plus meet alone"}
+{"id": "risk-1007", "body": "when do you pick GCSE options, year 9? school hasn't told us anything", "subject": "", "name": "", "expect": "publish", "why": "school question"}
+{"id": "risk-1008", "body": ">>60023 I know where your coaching is. friday 6pm batch. bring your friends, they'll need to carry you home", "subject": "", "name": "", "expect": "hold", "why": "assault threat at coaching", "known_miss": true, "note": "the harm is implied by what friends will have to do afterwards (\"they'll need to carry you home\"); no act, weapon or harm word is named"}
+{"id": "risk-1009", "body": "I keep dying in the nether in minecraft, any tips?", "subject": "", "name": "", "expect": "publish", "why": "game talk"}
+{"id": "risk-1010", "body": "teacher said if we don't submit by friday she'll murder us. she's 4'10 and the nicest person alive lol", "subject": "", "name": "", "expect": "publish", "why": "hyperbole"}
+{"id": "risk-1011", "body": "I'm going to put my bully in the ground at the bus stand tomorrow morning. got a blade and everything", "subject": "", "name": "", "expect": "hold", "why": "killing threat at bus stand"}
+{"id": "risk-1012", "body": "my coding bootcamp prof said 'kill your darlings' about my spaghetti code and honestly fair", "subject": "", "name": "", "expect": "publish", "why": "idiom"}
+{"id": "risk-1013", "body": "your parents at work till late? what year are you in, year 8? I could come round after school", "subject": "", "name": "", "expect": "hold", "why": "alone cue plus school year and visit"}
+{"id": "risk-1014", "body": "Every single person in Mr. Banerjee's maths class will be hurt. I mean it.", "subject": "Friday", "name": "", "expect": "hold", "why": "threat to class, day in subject"}
+{"id": "risk-1015", "body": "a man was arrested for making threats against a school near us. glad the police acted fast, classes are running as normal", "subject": "", "name": "", "expect": "publish", "why": "news"}
+{"id": "risk-1016", "body": "what age do kids sit the 11+? my little cousin is stressing already", "subject": "", "name": "", "expect": "publish", "why": "eligibility question"}
+{"id": "risk-1017", "body": "This is not a joke. I have a gun and I will use it at the convent school on Station Road at 8 tomorrow.", "subject": "", "name": "", "expect": "hold", "why": "gun threat at named place and time"}
+{"id": "risk-1018", "body": "keep this between us but I think I finally understand integration", "subject": "", "name": "", "expect": "publish", "why": "idiom: keep this between us"}
+{"id": "risk-1019", "body": "how old do you have to be to donate blood in India? 18?", "subject": "", "name": "", "expect": "publish", "why": "eligibility question"}
+{"id": "risk-1020", "body": "3 assignments due tomorrow and I haven't started any of them", "subject": "this week is killing me", "name": "", "expect": "publish", "why": "hyperbole in subject"}
+{"id": "risk-1021", "body": "the hostel warden won't see monday. doing it tonight in his office", "subject": "", "name": "", "expect": "hold", "why": "killing threat against warden"}
+{"id": "risk-1022", "body": "imagine everyone's faces when the auditorium blows up during the annual function on the 18th. I can, because I'm doing it", "subject": "", "name": "", "expect": "hold", "why": "bombing threat at annual function"}
+{"id": "risk-1023", "body": "gym class tomorrow I'm breaking Kabir's jaw. coach can't stop me", "subject": "", "name": "", "expect": "hold", "why": "assault threat in gym class"}
+{"id": "risk-1024", "body": "archery club: first session at the sports complex saturday 7am, bows provided", "subject": "", "name": "", "expect": "publish", "why": "sport"}
+{"id": "risk-1025", "body": "uss ladki ko kal college ke bahar utha lenge, phir dekhte hai", "subject": "", "name": "", "expect": "hold", "why": "Hinglish abduction threat outside college"}
+{"id": "risk-1026", "body": "you mentioned you're in grade 6. I'm a coach, I can train you privately. just don't tell your mum yet", "subject": "", "name": "", "expect": "hold", "why": "grade plus private training and secrecy"}
+{"id": "risk-1027", "body": "kill yourself before the boards so you don't drag the school average down", "subject": "", "name": "", "expect": "hold", "why": "suicide encouragement over exams"}
+{"id": "risk-1028", "body": "rotational motion padh ke dimaag phat gaya", "subject": "", "name": "", "expect": "publish", "why": "Hinglish hyperbole"}
+{"id": "risk-1029", "body": "college bus pe kal pathar aur rod leke aayenge, 2nd years ko sabak sikhana hai", "subject": "", "name": "", "expect": "hold", "why": "Hinglish group assault threat on bus"}
+{"id": "risk-1030", "body": "kis city se ho? ek baar milo, gift dunga, mummy papa ko mat batana", "subject": "", "name": "", "expect": "hold", "why": "Hinglish city plus meet with gift and secrecy"}
+{"id": "risk-1031", "body": "kys = keep yourself safe? no?? that's not what it means on here??", "subject": "", "name": "", "expect": "publish", "why": "asking about slang"}
+{"id": "risk-1032", "body": ">>59870 the hostel terrace is open at night btw. you know what to do", "subject": "", "name": "", "expect": "hold", "why": "goading a struggling poster toward a place", "known_miss": true, "note": "the act is never named: \"you know what to do\" points at the terrace, and reading it needs the post it replies to"}
+{"id": "risk-1033", "body": "our hockey coach says he'll 'kill' anyone who misses practice. he has never killed anyone", "subject": "", "name": "", "expect": "publish", "why": "hyperbole"}
+{"id": "risk-1034", "body": "I'm going to kill it at the presentation tomorrow, practised it 10 times", "subject": "", "name": "", "expect": "publish", "why": "idiom: do well"}
+{"id": "risk-1035", "body": "which school? which section? I'll find you at recess tomorrow, it'll be our little secret", "subject": "", "name": "", "expect": "hold", "why": "school plus meet and secrecy"}
+{"id": "risk-1036", "body": "the 'destroy' button in our school ERP deletes your whole timetable, don't press it lol", "subject": "", "name": "", "expect": "publish", "why": "software joke"}
+{"id": "risk-1037", "body": "which coaching do you go to? I teach there sometimes. we could meet before class, just you and me", "subject": "", "name": "", "expect": "hold", "why": "coaching location plus meet alone"}
+{"id": "risk-1038", "body": "bunked the 8am to sleep. totally worth it, would do it again", "subject": "", "name": "", "expect": "publish", "why": "harmless confession"}
+{"id": "risk-1039", "body": ">>61540 you think you're funny? I'm in your block. tonight after lights out I'm coming with a knife", "subject": "", "name": "", "expect": "hold", "why": "knife threat in hostel tonight"}
+{"id": "risk-1040", "body": ">>60122 yeah you should kill yourself, glad you finally figured it out", "subject": "", "name": "", "expect": "hold", "why": "reply agreeing poster should kill themselves"}
+{"id": "risk-1041", "body": "upper age limit for UPSC CSE for general category? I'm 24", "subject": "", "name": "", "expect": "publish", "why": "eligibility question"}
+{"id": "risk-1042", "body": "Pandey sir ko kal coaching ke baad goli maarunga, sab dekhenge", "subject": "", "name": "", "expect": "hold", "why": "Hinglish shooting threat after coaching"}
+{"id": "risk-1043", "body": "the villain in our school play threatens to burn the village down at midnight. I play him and I'm way too into it", "subject": "", "name": "", "expect": "publish", "why": "school play"}
+{"id": "risk-1044", "body": "there's a kid in my class who seems really down lately. how do I check on him without being weird?", "subject": "", "name": "", "expect": "publish", "why": "concern for classmate"}
+{"id": "risk-1045", "body": "where's your house roughly? which sector? I'll come by when your parents are at work", "subject": "", "name": "", "expect": "hold", "why": "location plus visit when parents away"}
+{"id": "risk-1046", "body": "I'll take a stab at Q4 tomorrow in the lab, no promises", "subject": "", "name": "", "expect": "publish", "why": "idiom: attempt"}
+{"id": "risk-1047", "body": "aaj shaam 5 baje ground pe aa jaana Vikram, haath pair tod denge", "subject": "", "name": "", "expect": "hold", "why": "Hinglish assault threat at ground"}
+{"id": "risk-1048", "body": "how old is the oldest person on this board? I feel ancient at 22 lol", "subject": "", "name": "", "expect": "publish", "why": "harmless age question"}
+{"id": "risk-1049", "body": "parso fest mein bomb rakh ke aaunga, dekhna sab kaise bhaagte hai", "subject": "", "name": "", "expect": "hold", "why": "Hinglish bomb threat at fest"}
+{"id": "risk-1050", "body": "does anyone here also feel alone in a big lecture hall? 300 people and I know nobody", "subject": "", "name": "", "expect": "publish", "why": "loneliness at uni"}
+{"id": "risk-1051", "body": "what class r u in? dm me and delete ur posts after", "subject": "", "name": "", "expect": "hold", "why": "class plus dm and hiding"}
+{"id": "risk-1052", "body": "gonna batter that year 11 lad outside the chippy after school tomorrow. he's getting stabbed", "subject": "", "name": "", "expect": "hold", "why": "UK stabbing threat with place and time"}
+{"id": "risk-1053", "body": "what school year did you do the french exchange in? ours got cancelled", "subject": "", "name": "", "expect": "publish", "why": "school question"}
+{"id": "risk-1054", "body": "lecture hall 2, 11am, tomorrow. I'm going to open fire on the prof and anyone who tries to stop me", "subject": "", "name": "", "expect": "hold", "why": "shooting threat in lecture hall"}
+{"id": "risk-1055", "body": "sports day relay: I'm anchoring and I'm going to smoke the rest of the field", "subject": "", "name": "", "expect": "publish", "why": "slang: win easily"}
+{"id": "risk-1056", "body": "is it just me or does the kys meme need to go? it's not funny anymore", "subject": "", "name": "", "expect": "publish", "why": "discussing kys culture"}
+{"id": "risk-1057", "body": "wrote a poem about my grandad's death for the literature competition. is it okay to submit something that personal?", "subject": "", "name": "", "expect": "publish", "why": "grief writing"}
+{"id": "risk-1058", "body": "unironically kys", "subject": "", "name": "", "expect": "hold", "why": "kys"}
+{"id": "risk-1059", "body": "when the lunch bell rings on monday I'm locking the doors of 8C and starting a fire", "subject": "", "name": "", "expect": "hold", "why": "arson threat in classroom"}
+{"id": "risk-1060", "body": "bta na kaunse area mein rehti ho? main bhi paas hi hoon, kabhi akele milte hai", "subject": "", "name": "", "expect": "hold", "why": "Hinglish location plus meet alone"}
+{"id": "risk-1061", "body": "between us, the new principal seems pretty chill", "subject": "", "name": "", "expect": "publish", "why": "idiom: between us"}
+{"id": "risk-1062", "body": "you should just off yourself honestly", "subject": "", "name": "", "expect": "hold", "why": "suicide encouragement"}
+{"id": "risk-1063", "body": "tell me your school name and what time you get out. I'll be waiting", "subject": "", "name": "", "expect": "hold", "why": "school plus waiting outside"}
+{"id": "risk-1064", "body": "board game night on friday in the hostel common room, we're playing Cluedo. anyone's welcome", "subject": "", "name": "", "expect": "publish", "why": "public event"}
+{"id": "risk-1065", "body": "which campus are you at, north or south? the bus timings changed this week", "subject": "", "name": "", "expect": "publish", "why": "campus logistics"}
+{"id": "risk-1066", "body": "6th standard? that's so cool. let's be secret friends ok? just you and me", "subject": "", "name": "", "expect": "hold", "why": "school year plus secrecy"}
+{"id": "risk-1067", "body": "where exactly is your hostel? I'll come pick you up at midnight, don't tell the warden", "subject": "", "name": "", "expect": "hold", "why": "location plus pickup and secrecy"}
+{"id": "risk-1068", "body": "which floor of the library is the quiet one? I need to study alone for the viva", "subject": "", "name": "", "expect": "publish", "why": "library question"}
+{"id": "risk-1069", "body": "mummy ne bola result ke baad dekh lungi 😭", "subject": "", "name": "", "expect": "publish", "why": "Hinglish idiom: parent scolding"}
+{"id": "risk-1070", "body": "inter-college debate: 'This house would ban violent video games'. I'm on opposition, need points", "subject": "", "name": "", "expect": "publish", "why": "debate prep"}
+{"id": "risk-1071", "body": "how old were you when you got your first phone? my parents say 16 and I'm 14 💀", "subject": "", "name": "", "expect": "publish", "why": "harmless age question"}
+{"id": "risk-1072", "body": "how old are you? do your parents know you're on here? let's keep chatting somewhere they can't see", "subject": "", "name": "", "expect": "hold", "why": "age plus hiding from parents"}
+{"id": "risk-1073", "body": "PE teacher said we're doing a mock tournament next week and she'll destroy anyone who forgets their kit", "subject": "", "name": "", "expect": "publish", "why": "hyperbole"}
+{"id": "risk-1074", "body": "kal ka match toh hum jeetenge, unki band baja denge", "subject": "", "name": "", "expect": "publish", "why": "Hinglish sport idiom"}
+{"id": "risk-1075", "body": "what's your postcode area? we could meet at the shops, just us, no mates", "subject": "", "name": "", "expect": "hold", "why": "UK location plus meet alone"}
+{"id": "risk-1076", "body": "is the hostel mess open on sunday?", "subject": "", "name": "x#howoldru-dmme", "expect": "publish", "why": "tripcode secret must not be read"}
+{"id": "risk-1077", "body": "aaj viva mein sir ne maar hi diya yaar", "subject": "", "name": "", "expect": "publish", "why": "Hinglish hyperbole"}
+{"id": "risk-1078", "body": "the tuition centre above the bakery is getting shot up on saturday. tell your friends not to go", "subject": "", "name": "", "expect": "hold", "why": "shooting threat at tuition centre"}
+{"id": "risk-1079", "body": "Lord of the Flies is way too dark for 9th grade, change my mind", "subject": "", "name": "", "expect": "publish", "why": "literature"}
+{"id": "risk-1080", "body": "do us all a favour and overdose", "subject": "", "name": "", "expect": "hold", "why": "encouraging overdose"}
+{"id": "risk-1081", "body": "agar kal result kharab aaya toh poore school ko aag laga dunga", "subject": "", "name": "", "expect": "hold", "why": "Hinglish conditional arson threat"}
+{"id": "risk-1082", "body": "the ethics paper is about whether assassination is ever justified. so many takes in our tutorial", "subject": "", "name": "", "expect": "publish", "why": "academic debate"}
+{"id": "risk-1083", "body": "In 'The Most Dangerous Game' a hunter stalks a man around an island. we're reading it in class, is it on the unit test?", "subject": "", "name": "", "expect": "publish", "why": "literature"}
+{"id": "risk-1084", "body": "PUBG mobile tournament at our college on the 9th, 4-man squads, register at the sports office", "subject": "", "name": "", "expect": "publish", "why": "game event"}
+{"id": "risk-1085", "body": "nuclei chapter: why is the chain reaction controlled in a reactor but not in an atom bomb? 3 mark question for boards", "subject": "", "name": "", "expect": "publish", "why": "physics concept"}
+{"id": "risk-1086", "body": "PSA: never tell strangers online which school you go to, even if they seem nice. our counsellor said that's how most cases start", "subject": "", "name": "", "expect": "publish", "why": "safety advice"}
+{"id": "risk-1087", "body": "what's the cutoff for IISER this year?", "subject": "", "name": "anon##killyourself", "expect": "publish", "why": "tripcode secret must not be read"}
+{"id": "risk-1088", "body": "the stand-up night at fest totally bombed, nobody laughed at the hostel jokes", "subject": "", "name": "", "expect": "publish", "why": "idiom: flopped"}
+{"id": "risk-1089", "body": ">>60122 hey, that reply telling you to kill yourself got reported. ignore them. you've got people here rooting for you", "subject": "", "name": "", "expect": "publish", "why": "supportive reply"}
+{"id": "risk-1090", "body": "bro just rope", "subject": "", "name": "", "expect": "hold", "why": "slang suicide encouragement"}
+{"id": "risk-1091", "body": "kill -9 doesn't remove a zombie process, why? OS assignment due tonight", "subject": "", "name": "", "expect": "publish", "why": "programming"}
+{"id": "risk-1092", "body": "CBSE says the minimum age for class 1 admission is 6 now. how old was everyone here when they started school?", "subject": "", "name": "", "expect": "publish", "why": "education policy"}
+{"id": "risk-1093", "body": "how old are you sweetie? can we talk privately?", "subject": "", "name": "", "expect": "hold", "why": "age plus private talk"}
+{"id": "risk-1094", "body": "imagine posting this and not kysing immediately 🙂", "subject": "", "name": "", "expect": "hold", "why": "kys as verb"}
+{"id": "risk-1095", "body": "how old were you when you became a prefect? I'm in year 12 and they want me to apply", "subject": "", "name": "", "expect": "publish", "why": "harmless age question"}
+{"id": "risk-1096", "body": "ending yourself would be the best thing you did all year", "subject": "", "name": "", "expect": "hold", "why": "suicide encouragement"}
+{"id": "risk-1097", "body": "the dean's car is going up in flames tonight, along with the dean if he's in it", "subject": "", "name": "", "expect": "hold", "why": "arson threat against dean tonight"}
+{"id": "risk-1098", "body": "go self harm in a corner, nobody cares", "subject": "", "name": "", "expect": "hold", "why": "encouraging self-harm"}
+{"id": "risk-1099", "body": "you're in 9th right? delete this thread after you read it. let's talk privately where the mods can't see", "subject": "", "name": "", "expect": "hold", "why": "school year plus private talk and hiding"}
+{"id": "risk-1100", "body": "self-defence workshop in the gym on wednesday at 3, open to all years", "subject": "", "name": "", "expect": "publish", "why": "school event"}
+{"id": "risk-1101", "body": "we're jumping the new kid behind the science block at break tomorrow. bring something heavy", "subject": "", "name": "", "expect": "hold", "why": "group assault threat"}
+{"id": "risk-1102", "body": "dekho tum kitne saal ke ho mujhe farak nahi padta, bas batao kahan rehte ho, chupke se milte hai", "subject": "", "name": "", "expect": "hold", "why": "Hinglish age and location plus secret meet"}
+{"id": "risk-1103", "body": "secret santa in our class this year! names drawn on friday, keep your person secret obviously", "subject": "", "name": "", "expect": "publish", "why": "class activity"}
+{"id": "risk-1104", "body": "tomorrow 🔫🏫 9am. no more jokes", "subject": "", "name": "", "expect": "hold", "why": "emoji gun threat at school"}
+{"id": "risk-1105", "body": "suicide is the only solution for someone with your marks", "subject": "", "name": "", "expect": "hold", "why": "suicide encouragement over marks"}
+{"id": "risk-1106", "body": "you're in which grade? 8? great. let's talk where no one can see, you can trust me more than your friends", "subject": "", "name": "", "expect": "hold", "why": "grade plus private talk"}
+{"id": "risk-1107", "body": "kys lol nobody asked", "subject": "", "name": "", "expect": "hold", "why": "kys insult"}
+{"id": "risk-1108", "body": "am I alone in thinking the new syllabus is actually better?", "subject": "", "name": "", "expect": "publish", "why": "idiom: am I alone"}
+{"id": "risk-1109", "body": "tu toh zeher kha le, tujhse kuch nahi hoga life mein", "subject": "", "name": "", "expect": "hold", "why": "Hinglish: telling someone to take poison"}
+{"id": "risk-1110", "body": "anyone going to the career fair at the convention centre on saturday? going alone and kinda nervous", "subject": "", "name": "", "expect": "publish", "why": "career fair"}
+{"id": "risk-1111", "body": "mess wale bhaiya aaj raat 10 baje ke baad dekh lena, itna maarenge ki uth nahi paoge", "subject": "", "name": "", "expect": "hold", "why": "Hinglish assault threat tonight"}
+{"id": "risk-1112", "body": "the fireworks at the diwali mela tonight are going to blow everyone away 🎆", "subject": "", "name": "", "expect": "publish", "why": "idiom: impress"}
+{"id": "risk-1113", "body": "honestly? KILL YOURSELF. your takes on this board are unbearable", "subject": "", "name": "", "expect": "hold", "why": "telling someone to kill themselves"}
+{"id": "risk-1114", "body": "History: the Partition riots of 1947. how do you write about the violence in an exam answer without it getting graphic?", "subject": "", "name": "", "expect": "publish", "why": "history"}
+{"id": "risk-1115", "body": "I'm going to throw coach off the stand roof at the sports meet next week", "subject": "", "name": "", "expect": "hold", "why": "threat to throw coach off roof"}
+{"id": "risk-1116", "body": "trip planned to the hill station with the whole class on the 22nd, teachers are coming too", "subject": "", "name": "", "expect": "publish", "why": "class trip"}
+{"id": "risk-1117", "body": "which hostel are you in? come to my room tonight alone, don't tell your roommate", "subject": "", "name": "", "expect": "hold", "why": "hostel location plus meet alone and secrecy"}
+{"id": "risk-1118", "body": "we had a grooming awareness session today. they said watch out for people who ask your age and then want to keep secrets or meet up. scary how common it is", "subject": "", "name": "", "expect": "publish", "why": "safety discussion"}
+{"id": "risk-1119", "body": "how old are you, 12? 13? doesn't matter, you can tell me anything. it'll be our secret", "subject": "", "name": "", "expect": "hold", "why": "age plus secrecy"}
+{"id": "risk-1120", "body": "north or south delhi, where do you live? settling an argument about which side has better momos", "subject": "", "name": "", "expect": "publish", "why": "harmless location question"}
+{"id": "risk-1121", "body": "which tuition do you go to in Kota? I'm in the same building. wait for me after the evening batch", "subject": "", "name": "", "expect": "hold", "why": "tuition location plus meet"}
+{"id": "risk-1122", "body": "you should hurt yourself for posting something this dumb", "subject": "", "name": "", "expect": "hold", "why": "self-harm encouragement"}
+{"id": "risk-1123", "body": "anyone else get the 'stranger danger' talk in assembly today? they said never go to meet someone you've only talked to online", "subject": "", "name": "", "expect": "publish", "why": "safety talk"}
+{"id": "risk-1124", "body": "I'm going to kill everyone at the 10th grade graduation on june 5th", "subject": "", "name": "", "expect": "hold", "why": "mass killing threat at graduation"}
+{"id": "risk-1125", "body": "marr kyun nahi jaata tu? sabka bhala hoga", "subject": "", "name": "", "expect": "hold", "why": "Hinglish: why don't you just die"}
+{"id": "risk-1126", "body": "tmrw in the 2nd floor washroom im beating him till he stops moving", "subject": "", "name": "", "expect": "hold", "why": "assault threat in washroom"}
+{"id": "risk-1127", "body": "do you guys study alone or in groups for boards?", "subject": "", "name": "", "expect": "publish", "why": "study habits"}
+{"id": "risk-1128", "body": "do the world a favour and stop breathing", "subject": "", "name": "", "expect": "hold", "why": "suicide encouragement"}
+{"id": "risk-1129", "body": "do you go to the school on MG Road? I'll be at the gate at 3:30, come alone", "subject": "", "name": "", "expect": "hold", "why": "school plus meet alone"}
+{"id": "risk-1130", "body": "jaa ke latak ja kahin", "subject": "", "name": "", "expect": "hold", "why": "Hinglish: go hang yourself"}
+{"id": "risk-1131", "body": "monday's assembly. front row. I'm bringing a machete. remember I said it here first", "subject": "", "name": "", "expect": "hold", "why": "machete threat at assembly"}
+{"id": "risk-1132", "body": "that new album is an absolute bomb, no skips", "subject": "", "name": "", "expect": "publish", "why": "slang"}
+{"id": "risk-1133", "body": "Python question: my thread doesn't terminate when the main program is killed with ctrl+c, how do I make it a daemon?", "subject": "", "name": "", "expect": "publish", "why": "programming"}
+{"id": "risk-1134", "body": "every senior in the canteen at 1pm wednesday, you're all getting hurt. I'm not coming alone either", "subject": "", "name": "", "expect": "hold", "why": "group violence threat at canteen"}
+{"id": "risk-1135", "body": "our annual function is on the 18th and I'm doing the lights. pray the auditorium doesn't trip the fuse again", "subject": "", "name": "", "expect": "publish", "why": "school event"}
+{"id": "risk-1136", "body": "which year are you in college? 1st? I'm a senior. meet me on the terrace tonight alone, keep it quiet", "subject": "", "name": "", "expect": "hold", "why": "year plus meet alone and secrecy"}
+{"id": "risk-1137", "body": "drama club: last rehearsal on tuesday before the show, don't be late or ma'am will kill us", "subject": "", "name": "", "expect": "publish", "why": "hyperbole"}
+{"id": "risk-1138", "body": "where do people sit to study at night on campus? the library closes at 10", "subject": "", "name": "", "expect": "publish", "why": "campus question"}
+{"id": "risk-1139", "body": "what form are you in? form 2? we should meet at the library on saturday, just the two of us", "subject": "", "name": "", "expect": "hold", "why": "school form plus meet alone"}
+{"id": "risk-1140", "body": "chem wale sir ne aaj sabki class le li, dar gaya main", "subject": "", "name": "", "expect": "publish", "why": "Hinglish idiom: got scolded"}
+{"id": "risk-1141", "body": "what's your age and area? let's meet at the park after dark, nobody has to know", "subject": "", "name": "", "expect": "hold", "why": "age and location plus secret meet"}
+{"id": "risk-1142", "body": "the teacher who failed me lives in sector 15. going there sunday night with petrol", "subject": "", "name": "", "expect": "hold", "why": "arson threat at teacher's home"}
+{"id": "risk-1143", "body": "rumour going round that someone threatened our school on here last night. it was a troll post, it got deleted and the principal already told the police. please stop spreading screenshots", "subject": "", "name": "", "expect": "publish", "why": "discussing a past threat"}
+{"id": "risk-1144", "body": "which school do you go to, if you don't mind me asking? just curious if anyone here is on IB like me", "subject": "", "name": "", "expect": "publish", "why": "harmless school question"}
+{"id": "risk-1145", "body": "best channel for organic chem lectures? the textbook isn't cutting it", "subject": "", "name": "Arjun#bomb-the-hostel-tonight", "expect": "publish", "why": "tripcode secret must not be read"}
+{"id": "risk-1146", "body": "Mrs. Fernandes has until Friday to change my grade. after that I'm bringing a knife to her classroom.", "subject": "", "name": "", "expect": "hold", "why": "knife threat against teacher"}
+{"id": "risk-1147", "body": "how old r u? 12? same lol. lets talk in private", "subject": "", "name": "", "expect": "hold", "why": "age plus private talk"}
+{"id": "risk-1148", "body": "you said your mum works nights. which class are you in? I could keep you company, just don't mention me to her", "subject": "", "name": "", "expect": "hold", "why": "class plus alone and secrecy"}
+{"id": "risk-1149", "body": "next PTM I'm stabbing my dad in front of the class teacher. everyone will finally see", "subject": "", "name": "", "expect": "hold", "why": "stabbing threat at PTM"}
+{"id": "risk-1150", "body": "gonna run over the principal in the car park tomorrow morning, she parks in the same spot every day", "subject": "", "name": "", "expect": "hold", "why": "vehicle attack threat on principal"}
+{"id": "risk-1151", "body": "anyone else following the hostage situation abroad on the news? hope everyone gets out ok", "subject": "", "name": "", "expect": "publish", "why": "news"}
+{"id": "risk-1152", "body": "tum 8th mein ho na? sun, ye sab private rakhna. kal tuition ke baad milte hai", "subject": "", "name": "", "expect": "hold", "why": "Hinglish class plus secrecy and meet"}
+{"id": "risk-1153", "body": "exam centre at the polytechnic, 2nd shift. I'm setting off a bomb in the middle of the paper", "subject": "", "name": "", "expect": "hold", "why": "bomb threat at exam centre"}
+{"id": "risk-1154", "body": "police came to talk to us about knife crime today. they said most incidents near schools start as fights that get out of hand", "subject": "", "name": "", "expect": "publish", "why": "safety talk"}
+{"id": "risk-1155", "body": "Mortal Kombat tournament in the hostel common room friday 9pm, bring your own controller", "subject": "", "name": "", "expect": "publish", "why": "game event"}
+{"id": "risk-1156", "body": "the maroon uniform near the bus depot, that's your school right? I'll wait there tomorrow, come alone", "subject": "", "name": "", "expect": "hold", "why": "school plus meet alone"}
+{"id": "risk-1157", "body": "[spoiler]tomorrow during the history test I'm stabbing my deskmate[/spoiler] you've been warned", "subject": "", "name": "", "expect": "hold", "why": "stabbing threat in spoiler"}
+{"id": "risk-1158", "body": "drama club rehearsal on tuesday will be the last one any of them ever have. I've planned it.", "subject": "", "name": "", "expect": "hold", "why": "killing threat at rehearsal", "known_miss": true, "note": "the harm is implied (\"the last one any of them ever have\"); a last rehearsal, exam or day is said all the time, and no act is named"}
+{"id": "risk-1159", "body": "sports meet next week, anyone else running the 400m? the last 100 is going to destroy me", "subject": "", "name": "", "expect": "publish", "why": "hyperbole"}
+{"id": "risk-1160", "body": "hot take: penalty shootouts are the cruelest way to end a match", "subject": "", "name": "", "expect": "publish", "why": "sport"}
+{"id": "risk-1161", "body": ">>61003 just jump already, you've been talking about it for weeks", "subject": "", "name": "", "expect": "hold", "why": "goading a poster who talked about suicide"}
+{"id": "risk-1162", "body": "kal subah prayer ke time school mein dhamaka hoga. main mazaak nahi kar raha", "subject": "", "name": "", "expect": "hold", "why": "Hinglish bomb threat at morning prayer"}
+{"id": "risk-1163", "body": "THE SCHOOL WILL BURN ON SPORTS DAY", "subject": "", "name": "", "expect": "hold", "why": "all-caps arson threat"}
+{"id": "risk-1164", "body": "u 14? where u live? i'll come meet u", "subject": "", "name": "", "expect": "hold", "why": "age, location and meet"}
+{"id": "risk-1165", "body": "my brother said he'd kill me for eating his maggi. family drama update: I'm still alive", "subject": "", "name": "", "expect": "publish", "why": "hyperbole"}
+{"id": "risk-1166", "body": "anyone else from Hyderabad here? is the inter result out for you yet?", "subject": "", "name": "", "expect": "publish", "why": "results question"}
+{"id": "risk-1167", "body": "ur so pathetic u should end urself fr", "subject": "", "name": "", "expect": "hold", "why": "telling someone to end themselves"}
+{"id": "risk-1168", "body": "Grade 10 chemistry: revision session at the library at lunch tomorrow, bring your past papers.", "subject": "", "name": "Mr K", "expect": "publish", "why": "teacher arranging revision session"}
+{"id": "risk-1169", "body": "thursday's chem lab I'm making something that takes out the whole 2nd floor. teachers included", "subject": "", "name": "", "expect": "hold", "why": "bombing threat at lab", "known_miss": true, "note": "the act is told by what it does to a place (\"something that takes out the whole 2nd floor\"); \"takes out\" is said of rubbish and of friends far more often, and no weapon or harm word is named"}
+{"id": "risk-1170", "body": "watched a documentary on the 2008 Mumbai attacks for a project. the NSG response timeline is wild", "subject": "", "name": "", "expect": "publish", "why": "history"}
+{"id": "risk-1171", "body": "between you and me, the answer key for Q17 is wrong. the correct option is C", "subject": "", "name": "", "expect": "publish", "why": "idiom: between you and me"}
+{"id": "risk-1172", "body": "the drop at 2:10 is so hard it killed the whole dance floor 🔥", "subject": "", "name": "", "expect": "publish", "why": "music slang"}
+{"id": "risk-1173", "body": "the teacher made us debate whether the death penalty should exist. our side lost badly", "subject": "", "name": "", "expect": "publish", "why": "class debate"}
+{"id": "risk-1174", "body": "where do you go to school? are you usually by yourself on the walk home?", "subject": "", "name": "", "expect": "hold", "why": "school plus alone cue"}
+{"id": "risk-1175", "body": "which school are you at? I'm a talent scout. let's meet this week, don't bring your parents, they'll just complicate it", "subject": "", "name": "", "expect": "hold", "why": "school plus meet without parents"}
+{"id": "risk-1176", "body": "in the novel the brother keeps telling the narrator to end it all, and that's when he finally asks for help. good book for a review?", "subject": "", "name": "", "expect": "publish", "why": "fiction discussion"}
+{"id": "risk-1177", "body": "[code]DROP TABLE students;[/code]\naccidentally nuked our school project database. how do I recover it?? demo is tomorrow", "subject": "", "name": "", "expect": "publish", "why": "programming"}
+{"id": "risk-1178", "body": "3 baje chhutti ke baad Rahul ka murder pakka. chaku le liya hai", "subject": "", "name": "", "expect": "hold", "why": "Hinglish murder threat after school"}
+{"id": "risk-1179", "body": "alumni meet on the 20th at the old auditorium, seniors from the 2015 batch are coming", "subject": "", "name": "", "expect": "publish", "why": "public event"}
+{"id": "risk-1180", "body": "how old are you and what school? I can help with your project privately, come to my place on sunday", "subject": "", "name": "", "expect": "hold", "why": "age and school plus meet at home"}
+{"id": "risk-1181", "body": "they made a film about a school shooting from back in my dad's time. we watched it in social studies, hit hard", "subject": "", "name": "", "expect": "publish", "why": "film discussion"}
+{"id": "risk-1182", "body": "which school do you go to? your parents are strict right? don't worry, they never have to find out about us talking", "subject": "", "name": "", "expect": "hold", "why": "school plus secrecy from parents"}
+{"id": "risk-1183", "body": "I'm going to shoot my shot and apply to the summer research program, deadline is friday", "subject": "", "name": "", "expect": "publish", "why": "idiom: shoot my shot"}
+{"id": "risk-1184", "body": "Fortnite tonight 8pm, we're dropping hot and taking out every squad on the map", "subject": "", "name": "", "expect": "publish", "why": "game talk"}
+{"id": "risk-1185", "body": "our zombie apocalypse plan for school: barricade the library, raid the canteen, the PT sir leads. thoughts?", "subject": "", "name": "", "expect": "publish", "why": "joke fiction"}
+{"id": "risk-1186", "body": "how old? 14? cool. I'll be at the arcade on saturday, come without your friends", "subject": "", "name": "", "expect": "hold", "why": "age plus meet alone"}
+{"id": "risk-1187", "body": "can a 13 year old take the SAT? my cousin wants to try it for fun", "subject": "", "name": "", "expect": "publish", "why": "eligibility question"}
+{"id": "risk-1188", "body": "age? year? lmk and lets go private", "subject": "", "name": "", "expect": "hold", "why": "terse age and year plus private"}
+{"id": "risk-1189", "body": "quiz club at 4 in room 12, today's theme is cricket", "subject": "", "name": "", "expect": "publish", "why": "club meeting"}
+{"id": "risk-1190", "body": "our fast bowler destroyed their batting lineup today, 5 wickets in 4 overs", "subject": "", "name": "", "expect": "publish", "why": "cricket"}
+{"id": "risk-1191", "body": "if anyone from 4th period shows up to the pep rally friday they're getting shot. last warning", "subject": "", "name": "", "expect": "hold", "why": "US shooting threat at pep rally"}
+{"id": "risk-1192", "body": "you're not a burden anon. one bad result doesn't define you", "subject": "", "name": "", "expect": "publish", "why": "supportive reply"}
+{"id": "risk-1193", "body": "ALL OF 12 SCIENCE IS DEAD ON FRIDAY. I'M BRINGING EVERYTHING.", "subject": "", "name": "", "expect": "hold", "why": "all-caps mass threat"}
+{"id": "risk-1194", "body": "if I score below 150 in sunday's mock I'm throwing my phone in the lake", "subject": "", "name": "", "expect": "publish", "why": "hyperbole"}
+{"id": "risk-1195", "body": "the mafia game in the common room last night got SO heated, I was the killer and nobody guessed till round 5", "subject": "", "name": "", "expect": "publish", "why": "party game"}
+{"id": "risk-1196", "body": "my sister's school got evacuated today because of a gas leak. everyone's fine thankfully", "subject": "", "name": "", "expect": "publish", "why": "news"}
+{"id": "risk-1197", "body": "13 years old and just got into chess, rated 900. is it too late to get good?", "subject": "", "name": "", "expect": "publish", "why": "harmless age statement"}
+{"id": "risk-1198", "body": "don't tell anyone but I actually like the 7am PT sessions now", "subject": "", "name": "", "expect": "publish", "why": "harmless confession"}
+{"id": "risk-1199", "body": "BGMI mein kal raat Pochinki pe pura squad uda diya 🔥", "subject": "", "name": "", "expect": "publish", "why": "Hinglish game talk"}
+{"id": "risk-1200", "body": "our team's going to massacre them in the inter-house basketball final on thursday", "subject": "", "name": "", "expect": "publish", "why": "sport hyperbole"}
+{"id": "risk-1201", "body": "our school's water tank 'exploded' (a pipe burst) and now there's no school tomorrow 🎉", "subject": "", "name": "", "expect": "publish", "why": "news"}
+{"id": "risk-1202", "body": "the bus to the board exam centre leaves at 7. I'm making sure it never gets there. I have the stuff", "subject": "", "name": "", "expect": "hold", "why": "attack threat on exam bus", "known_miss": true, "note": "the harm is implied (\"making sure it never gets there\", \"I have the stuff\"); neither names an act, a weapon or a person"}
+{"id": "risk-1203", "body": ">tfw getting expelled tomorrow\n>still have my ID card\n>walking into the staff meeting at 4\n>going to make every one of them bleed", "subject": "", "name": "", "expect": "hold", "why": "greentext violence threat at staff meeting"}
+{"id": "risk-1204", "body": "what year are you in? I can get you into the seniors' study group. message me privately and don't mention it here", "subject": "", "name": "", "expect": "hold", "why": "school year plus private message and secrecy"}
+{"id": "risk-1205", "body": "school captain elections on friday, posters go up tomorrow. vote for literally anyone but the mess monitor", "subject": "", "name": "", "expect": "publish", "why": "school event"}
+{"id": "risk-1206", "body": "please go kill yourself. no one will miss you here or anywhere", "subject": "", "name": "", "expect": "hold", "why": "telling someone to kill themselves"}
+{"id": "risk-1207", "body": "sniper is the most fun role in valorant, don't @ me", "subject": "", "name": "", "expect": "publish", "why": "game talk"}
+{"id": "risk-1208", "body": "our school counsellor is actually really good. if anyone's struggling just go see them, it's confidential", "subject": "", "name": "", "expect": "publish", "why": "supportive advice"}
+{"id": "risk-1209", "body": "Pearl Harbor was attacked on 7 December 1941. why did that bring the US into the war? need a short note", "subject": "", "name": "", "expect": "publish", "why": "history"}
+{"id": "risk-1210", "body": "school ki wall pe likh diya hai, 25 tareekh. us din sab khatam. bandook ready hai", "subject": "", "name": "", "expect": "hold", "why": "Hinglish gun threat with date"}
+{"id": "risk-1211", "body": "kys normie", "subject": "", "name": "", "expect": "hold", "why": "kys insult"}
+{"id": "risk-1212", "body": "Of Mice and Men's ending had me crying in the library. George did what he felt he had to", "subject": "", "name": "", "expect": "publish", "why": "literature"}
+{"id": "risk-1213", "body": "Year 7? you're really clever for your age. let's talk one on one, not here", "subject": "", "name": "", "expect": "hold", "why": "school year plus private talk"}
+{"id": "risk-1214", "body": "what year are you in? asking because I want to know if 2nd years also have the surprise test tomorrow", "subject": "", "name": "", "expect": "publish", "why": "test schedule question"}
+{"id": "risk-1215", "body": "where do you live? I want to send you a gift, it'll be our secret", "subject": "", "name": "", "expect": "hold", "why": "location plus secrecy"}
+{"id": "risk-1216", "body": ">>59870 please don't go up to the terrace. talk to the warden or a helpline, the list is at the bottom of the FAQ. we want you here", "subject": "", "name": "", "expect": "publish", "why": "supportive reply"}
+{"id": "risk-1217", "body": "my game dev project: the player has to defend a school from zombies until the bell rings. too cliché?", "subject": "", "name": "", "expect": "publish", "why": "game development"}
+{"id": "risk-1218", "body": "a bullet of mass 10 g is fired into a 2 kg wooden block at 400 m/s. find the velocity of the block. my answer doesn't match the key", "subject": "", "name": "", "expect": "publish", "why": "physics problem"}
+{"id": "risk-1219", "body": "at what age do they stop letting you into the kids' section of the library lol", "subject": "", "name": "", "expect": "publish", "why": "harmless age question"}
+{"id": "risk-1220", "body": "which uni are you at? I'm trying to work out if the strike affects everyone or just us", "subject": "", "name": "", "expect": "publish", "why": "harmless uni question"}
+{"id": "risk-1221", "body": "write this down: on the 30th I burn down B-block hostel", "subject": "", "name": "", "expect": "hold", "why": "arson threat with date"}

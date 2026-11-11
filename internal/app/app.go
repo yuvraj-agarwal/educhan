@@ -52,6 +52,8 @@ type App struct {
 	postLimiter   *cooldownLimiter
 	uploadLimiter *cooldownLimiter
 	verifyLimiter *cooldownLimiter
+	// refusals counts the posts the content rules sent back to each client.
+	refusals *refusalBudget
 	// cooldownSweep drops the limiters' expired entries, which are client
 	// addresses: on a timer, and before a request when the timer has fallen
 	// behind. stopCooldownSweep stops the timer; Close calls it.
@@ -133,6 +135,7 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		postLimiter:       newCooldownLimiter(cfg.PostCooldown),
 		uploadLimiter:     newCooldownLimiter(cfg.UploadCooldown),
 		verifyLimiter:     newCooldownLimiter(cfg.VerifyCooldown),
+		refusals:          newRefusalBudget(cfg.RefusalLimit, refusalWindow),
 		schemaAhead:       schemaAhead,
 		postDeadline:      postDeadline,
 		uploadReadTimeout: uploadReadTimeout,
@@ -143,7 +146,7 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		every = cooldownSweepInterval
 	}
 	a.cooldownSweep = newCooldownSweep(every,
-		a.threadLimiter, a.postLimiter, a.uploadLimiter, a.verifyLimiter)
+		a.threadLimiter, a.postLimiter, a.uploadLimiter, a.verifyLimiter, a.refusals)
 	a.stopCooldownSweep = a.cooldownSweep.start()
 	return a, nil
 }
@@ -221,6 +224,10 @@ func (a *App) Close() {
 
 // Routes returns the HTTP handler for the whole application.
 func (a *App) Routes() http.Handler {
+	// The content filter plans its searches once, which takes a moment of
+	// one core; a server starts on it now, so that the first post does not
+	// wait for all of it.
+	go prepareSearches()
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", a.handleHealth)
@@ -258,6 +265,8 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/boards/{slug}/threads/{no}/unlock", a.handleUnlock)
 	mux.HandleFunc("DELETE /api/boards/{slug}/threads/{no}", a.handleDeleteThread)
 	mux.HandleFunc("DELETE /api/boards/{slug}/threads/{no}/posts/{post}", a.handleDeletePost)
+	mux.HandleFunc("GET /api/held", a.handleListHeld)
+	mux.HandleFunc("POST /api/boards/{slug}/threads/{no}/posts/{post}/approve", a.handleApprovePost)
 
 	mux.HandleFunc("GET /media/original/{path...}", a.handleMediaOriginal)
 	mux.HandleFunc("GET /media/thumb/{path...}", a.handleMediaThumb)

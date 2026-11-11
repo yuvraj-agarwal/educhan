@@ -874,11 +874,11 @@ func TestSweepTakesIssuanceTimeOutOfCredentials(t *testing.T) {
 	path := fmt.Sprintf("/api/boards/dated/threads/%d/posts", thread.ThreadNo)
 	var credentials []string
 	for i := range issued {
-		credentials = append(credentials, h.verify(fmt.Sprintf("student%d@iitb.ac.in", i)).Credential)
+		credentials = append(credentials, h.verify(fmt.Sprintf("madeup.student%d@iitb.ac.in", i)).Credential)
 		h.reply("dated", thread.ThreadNo, "", fmt.Sprintf("after issuance %d", i), false)
 	}
 	// A code in flight across the sweep, whose pending row VACUUM FULL moves.
-	if status, out := h.requestCode("midway@iitb.ac.in"); status != http.StatusAccepted {
+	if status, out := h.requestCode("madeup.midway@iitb.ac.in"); status != http.StatusAccepted {
 		t.Fatalf("request a code: status %d (%s)", status, out.Error)
 	}
 	midway := h.mail.last(t).Code
@@ -960,11 +960,11 @@ func (h *harness) expiredCodesHeldByCredentials() (expired, joined int) {
 // the rest. A code still in flight stays, and still confirms.
 func TestSweepDeletesCodesThatExpiredUnconfirmed(t *testing.T) {
 	h := verifyServer(t, nil)
-	h.verify("holder@iitb.ac.in")
+	h.verify("madeup.holder@iitb.ac.in")
 	// The holder asks for a code again and never confirms it. Then another
 	// address asks for one, which is still in flight when the sweep runs;
 	// asking prunes expired codes, so it comes before they expire.
-	for _, email := range []string{"holder@iitb.ac.in", "inflight@iitb.ac.in"} {
+	for _, email := range []string{"madeup.holder@iitb.ac.in", "madeup.inflight@iitb.ac.in"} {
 		if status, out := h.requestCode(email); status != http.StatusAccepted {
 			t.Fatalf("request a code for %s: status %d (%s)", email, status, out.Error)
 		}
@@ -1022,7 +1022,7 @@ func TestSweepDeletesCodesThatExpiredUnconfirmed(t *testing.T) {
 // on, and both finish.
 func TestSweepDeletesExpiredCodesWithoutHoldingTheCredentialsTable(t *testing.T) {
 	h := verifyServer(t, nil)
-	if status, out := h.requestCode("late@iitb.ac.in"); status != http.StatusAccepted {
+	if status, out := h.requestCode("madeup.late@iitb.ac.in"); status != http.StatusAccepted {
 		t.Fatalf("request a code: status %d (%s)", status, out.Error)
 	}
 	code := h.mail.last(t).Code
@@ -1143,7 +1143,7 @@ func TestIssuanceLeavesGapsAmongThePostsTransactionIDs(t *testing.T) {
 	ctx := context.Background()
 	thread := h.createThread("gaps", "", "", "before anyone verified")
 	before := h.reply("gaps", thread.ThreadNo, "", "before the request", false)
-	if status, out := h.requestCode("gapped@iitb.ac.in"); status != http.StatusAccepted {
+	if status, out := h.requestCode("madeup.gapped@iitb.ac.in"); status != http.StatusAccepted {
 		t.Fatalf("request a code: status %d (%s)", status, out.Error)
 	}
 	between := h.reply("gaps", thread.ThreadNo, "", "between the request and the confirmation", false)
@@ -1369,10 +1369,10 @@ func TestCredentialConfirmedAsTheRewriteStartsIsRewrittenOnce(t *testing.T) {
 	h.addBoard("during")
 	thread := h.createThread("during", "", "", "credentials come and go")
 	path := fmt.Sprintf("/api/boards/during/threads/%d/posts", thread.ThreadNo)
-	earlier := h.verify("earlier@iitb.ac.in").Credential
+	earlier := h.verify("madeup.earlier@iitb.ac.in").Credential
 	gate := newRewriteGate(h.harness)
 
-	if status, out := h.requestCode("arriving@iitb.ac.in"); status != http.StatusAccepted {
+	if status, out := h.requestCode("madeup.arriving@iitb.ac.in"); status != http.StatusAccepted {
 		t.Fatalf("request a code: status %d (%s)", status, out.Error)
 	}
 	code := h.mail.last(t).Code
@@ -1396,7 +1396,7 @@ func TestCredentialConfirmedAsTheRewriteStartsIsRewrittenOnce(t *testing.T) {
 		t.Errorf("the sweep rewrote %d credentials, want both, the one confirmed as it started included",
 			sweep.report.Credentials)
 	}
-	arriving := h.app.emailHash(mustParseEmail(t, "arriving@iitb.ac.in").Key)
+	arriving := h.app.emailHash(mustParseEmail(t, "madeup.arriving@iitb.ac.in").Key)
 	if n := h.countRows("verification_credentials"); n != 2 {
 		t.Errorf("%d credential rows, want 2", n)
 	}
@@ -1420,11 +1420,11 @@ func TestCredentialConfirmedDuringTheRewriteIsKeptOnce(t *testing.T) {
 	h.addBoard("during")
 	thread := h.createThread("during", "", "", "credentials come and go")
 	path := fmt.Sprintf("/api/boards/during/threads/%d/posts", thread.ThreadNo)
-	stays := h.verify("stays@iitb.ac.in").Credential
-	replaced := h.verify("again@iitb.ac.in").Credential
+	stays := h.verify("madeup.stays@iitb.ac.in").Credential
+	replaced := h.verify("madeup.again@iitb.ac.in").Credential
 	gate := newRewriteGate(h.harness)
 
-	if status, out := h.requestCode("again@iitb.ac.in"); status != http.StatusAccepted {
+	if status, out := h.requestCode("madeup.again@iitb.ac.in"); status != http.StatusAccepted {
 		t.Fatalf("request a code: status %d (%s)", status, out.Error)
 	}
 	code := h.mail.last(t).Code
@@ -1447,7 +1447,7 @@ func TestCredentialConfirmedDuringTheRewriteIsKeptOnce(t *testing.T) {
 	if sweep.report.Credentials != 2 {
 		t.Errorf("the sweep rewrote %d credentials, want the 2 there were when it started", sweep.report.Credentials)
 	}
-	again := h.app.emailHash(mustParseEmail(t, "again@iitb.ac.in").Key)
+	again := h.app.emailHash(mustParseEmail(t, "madeup.again@iitb.ac.in").Key)
 	if n := h.countRows("verification_credentials"); n != 2 {
 		t.Errorf("%d credential rows, want 2", n)
 	}
@@ -1938,7 +1938,7 @@ func TestBadgedPostsDoNotQueueBehindTheSweepsVacuum(t *testing.T) {
 	h.addBoard("busy")
 	thread := h.createThread("busy", "", "", "posting through the sweep")
 	path := fmt.Sprintf("/api/boards/busy/threads/%d/posts", thread.ThreadNo)
-	credential := h.verify("export@iitb.ac.in").Credential
+	credential := h.verify("madeup.export@iitb.ac.in").Credential
 	ctx := context.Background()
 
 	export, err := h.app.pool.Begin(ctx)
@@ -2018,7 +2018,7 @@ func TestBadgedPostsDoNotQueueBehindVacuumsAnOlderSnapshotWouldSpoil(t *testing.
 	h.addBoard("report")
 	thread := h.createThread("report", "", "", "posting through a long report")
 	path := fmt.Sprintf("/api/boards/report/threads/%d/posts", thread.ThreadNo)
-	credential := h.verify("report@iitb.ac.in").Credential
+	credential := h.verify("madeup.report@iitb.ac.in").Credential
 	ctx := context.Background()
 
 	// The report reads from one snapshot on a connection of its own, as a
@@ -2800,7 +2800,7 @@ func TestSweepLeavesNoScanTimeFromBeforeIt(t *testing.T) {
 	closeJob := sync.OnceFunc(job.Close)
 	t.Cleanup(closeJob)
 
-	h.verify("earlier@iitb.ac.in")
+	h.verify("madeup.earlier@iitb.ac.in")
 	issued := 1
 	// A connection hands its counts over when a transaction of its ends, but
 	// no more than once a second. So a read on the server's connection a
@@ -2810,7 +2810,7 @@ func TestSweepLeavesNoScanTimeFromBeforeIt(t *testing.T) {
 	// does not, and is tried again.
 	var before int64
 	for attempt := 1; ; attempt++ {
-		if status, out := h.requestCode(fmt.Sprintf("late%d@iitb.ac.in", attempt)); status != http.StatusAccepted {
+		if status, out := h.requestCode(fmt.Sprintf("madeup.late%d@iitb.ac.in", attempt)); status != http.StatusAccepted {
 			t.Fatalf("request a code: status %d (%s)", status, out.Error)
 		}
 		code := h.mail.last(t).Code

@@ -93,6 +93,26 @@ type Post struct {
 	Backlinks []PostRef `json:"backlinks"`
 }
 
+// HeldPost is a post the content filter kept back, as the moderator queue
+// shows it: where it would appear, why it was held, and everything a reader
+// would see if it were approved. Subject is the thread's, for an opening post,
+// and empty for a reply.
+type HeldPost struct {
+	Board      string      `json:"board"`
+	ThreadNo   int64       `json:"thread_no"`
+	No         int64       `json:"no"`
+	OP         bool        `json:"is_op"`
+	Reason     string      `json:"held_reason"`
+	CreatedAt  time.Time   `json:"created_at"`
+	Subject    string      `json:"subject"`
+	Name       string      `json:"name"`
+	Tripcode   string      `json:"tripcode"`
+	PosterID   string      `json:"poster_id"`
+	Body       string      `json:"body"`
+	Badge      string      `json:"badge"`
+	Attachment *Attachment `json:"attachment"`
+}
+
 // PostRef points at a post elsewhere on the same board, carrying enough context
 // for a client to build a link to it.
 type PostRef struct {

@@ -200,7 +200,7 @@ func TestVerificationHappyPath(t *testing.T) {
 		t.Fatalf("before verifying: %+v, want the feature reported as enabled", before)
 	}
 
-	status, out := h.requestCode("Ana@iitb.ac.in")
+	status, out := h.requestCode("madeup.Ana@iitb.ac.in")
 	if status != http.StatusAccepted {
 		t.Fatalf("request code: status %d (%s)", status, out.Error)
 	}
@@ -212,7 +212,7 @@ func TestVerificationHappyPath(t *testing.T) {
 	}
 
 	sent := h.mail.last(t)
-	if sent.Address != "ana@iitb.ac.in" {
+	if sent.Address != "madeup.ana@iitb.ac.in" {
 		t.Errorf("code went to %q, want the submitted address", sent.Address)
 	}
 	if len(sent.Code) != verifyCodeDigits {
@@ -269,7 +269,7 @@ func TestVerificationHappyPath(t *testing.T) {
 func TestVerificationRejectsAWrongCode(t *testing.T) {
 	h := verifyServer(t, nil)
 
-	if status, out := h.requestCode("ana@iitb.ac.in"); status != http.StatusAccepted {
+	if status, out := h.requestCode("madeup.ana@iitb.ac.in"); status != http.StatusAccepted {
 		t.Fatalf("request code: status %d (%s)", status, out.Error)
 	}
 	sent := h.mail.last(t)
@@ -306,7 +306,7 @@ func TestVerificationRejectsAWrongCode(t *testing.T) {
 func TestVerificationCapsWrongGuesses(t *testing.T) {
 	h := verifyServer(t, nil)
 
-	if status, _ := h.requestCode("ana@iitb.ac.in"); status != http.StatusAccepted {
+	if status, _ := h.requestCode("madeup.ana@iitb.ac.in"); status != http.StatusAccepted {
 		t.Fatal("request code failed")
 	}
 	sent := h.mail.last(t)
@@ -353,7 +353,7 @@ func TestVerificationCapsWrongGuesses(t *testing.T) {
 func TestVerificationRejectsAnExpiredCode(t *testing.T) {
 	h := verifyServer(t, nil)
 
-	if status, _ := h.requestCode("ana@iitb.ac.in"); status != http.StatusAccepted {
+	if status, _ := h.requestCode("madeup.ana@iitb.ac.in"); status != http.StatusAccepted {
 		t.Fatal("request code failed")
 	}
 	sent := h.mail.last(t)
@@ -381,10 +381,10 @@ func TestVerificationRejectsNonAcademicDomains(t *testing.T) {
 	h := verifyServer(t, nil)
 
 	cases := []string{
-		"ana@gmail.com",
-		"ana@iitb.ac.in.example.com",
+		"madeup.ana@gmail.com",
+		"madeup.ana@iitb.ac.in.example.com",
 		// A namespace is not an institution.
-		"ana@ac.in",
+		"madeup.ana@ac.in",
 		"not-an-address",
 	}
 	for _, email := range cases {
@@ -416,7 +416,7 @@ func TestVerificationRequiresTheAdultAttestation(t *testing.T) {
 		cfg.VerifyCooldown = defaultVerifyCooldown
 		cfg.TrustedProxyHops = 1
 	})
-	const client, email = "203.0.113.9", "ana@iitb.ac.in"
+	const client, email = "203.0.113.9", "madeup.ana@iitb.ac.in"
 
 	for _, tc := range []struct {
 		name string
@@ -482,11 +482,11 @@ func TestAdultAttestationIsNeverKept(t *testing.T) {
 	// and a verification left in flight so the pending table holds a row.
 	var refused verifyResponse
 	if status := h.post("/api/verify/request",
-		map[string]any{"email": "bo@iitb.ac.in", "adult": false}, &refused); status != http.StatusBadRequest {
+		map[string]any{"email": "madeup.bo@iitb.ac.in", "adult": false}, &refused); status != http.StatusBadRequest {
 		t.Fatalf("without the attestation: status %d, want 400", status)
 	}
-	issued := h.verify("ana@iitb.ac.in")
-	if status, out := h.requestCode("cy@iitb.ac.in"); status != http.StatusAccepted {
+	issued := h.verify("madeup.ana@iitb.ac.in")
+	if status, out := h.requestCode("madeup.cy@iitb.ac.in"); status != http.StatusAccepted {
 		t.Fatalf("second request: status %d (%s)", status, out.Error)
 	}
 
@@ -551,7 +551,7 @@ func TestAdultAttestationIsNeverKept(t *testing.T) {
 func TestStoredExpiryCountsFromTheEndOfTheIssuanceDay(t *testing.T) {
 	h := verifyServer(t, nil)
 	before := time.Now()
-	issued := h.verify("ana@iitb.ac.in")
+	issued := h.verify("madeup.ana@iitb.ac.in")
 	after := time.Now()
 
 	var stored time.Time
@@ -586,7 +586,7 @@ func TestStoredExpiryCountsFromTheEndOfTheIssuanceDay(t *testing.T) {
 func TestIssuanceIsLoggedWithoutTheInstitution(t *testing.T) {
 	var logs syncBuffer
 	h := verifyServerLogging(t, nil, &logs)
-	issued := h.verify("ana@iitb.ac.in")
+	issued := h.verify("madeup.ana@iitb.ac.in")
 	if issued.Label != "IIT Bombay" {
 		t.Fatalf("label = %q, want IIT Bombay, or the scan below proves nothing", issued.Label)
 	}
@@ -608,10 +608,10 @@ func TestReverificationRevokesThePreviousCredential(t *testing.T) {
 	h := verifyServer(t, nil)
 	h.addBoard("general")
 
-	first := h.verify("ana@iitb.ac.in").Credential
+	first := h.verify("madeup.ana@iitb.ac.in").Credential
 
 	// Same mailbox, written the way somebody would on a second device.
-	second := h.verify("Ana+phone@iitb.ac.in").Credential
+	second := h.verify("madeup.Ana+phone@iitb.ac.in").Credential
 
 	if first == second {
 		t.Fatal("re-verifying should issue a different credential")
@@ -648,7 +648,7 @@ func TestExpiredCredentialStopsBadging(t *testing.T) {
 	h := verifyServer(t, func(cfg *Config) { cfg.VerifyCredentialTTL = 40 * time.Millisecond })
 	h.addBoard("general")
 
-	credential := h.verify("ana@iitb.ac.in").Credential
+	credential := h.verify("madeup.ana@iitb.ac.in").Credential
 	time.Sleep(60 * time.Millisecond)
 
 	var out createdPost
@@ -675,13 +675,13 @@ func TestVerificationRateLimits(t *testing.T) {
 
 	var out verifyResponse
 	if status := h.postFrom("203.0.113.1", "/api/verify/request",
-		map[string]any{"email": "ana@iitb.ac.in", "adult": true}, &out); status != http.StatusAccepted {
+		map[string]any{"email": "madeup.ana@iitb.ac.in", "adult": true}, &out); status != http.StatusAccepted {
 		t.Fatalf("first request: status %d (%s)", status, out.Error)
 	}
 
 	// Same client, a different address: refused on the client's cooldown.
 	if status := h.postFrom("203.0.113.1", "/api/verify/request",
-		map[string]any{"email": "bo@iitb.ac.in", "adult": true}, &out); status != http.StatusTooManyRequests {
+		map[string]any{"email": "madeup.bo@iitb.ac.in", "adult": true}, &out); status != http.StatusTooManyRequests {
 		t.Errorf("second address from the same client: status %d, want 429", status)
 	}
 	if got := h.lastHeader.Get("Retry-After"); got != "60" {
@@ -694,13 +694,13 @@ func TestVerificationRateLimits(t *testing.T) {
 	// Different client, the same address: refused on the address's cooldown, so
 	// a mailbox cannot be flooded from a pool of hosts.
 	if status := h.postFrom("203.0.113.2", "/api/verify/request",
-		map[string]any{"email": "ana@iitb.ac.in", "adult": true}, &out); status != http.StatusTooManyRequests {
+		map[string]any{"email": "madeup.ana@iitb.ac.in", "adult": true}, &out); status != http.StatusTooManyRequests {
 		t.Errorf("same address from another client: status %d, want 429", status)
 	}
 
 	// Different client, different address: unaffected.
 	if status := h.postFrom("203.0.113.2", "/api/verify/request",
-		map[string]any{"email": "cy@iitb.ac.in", "adult": true}, &out); status != http.StatusAccepted {
+		map[string]any{"email": "madeup.cy@iitb.ac.in", "adult": true}, &out); status != http.StatusAccepted {
 		t.Errorf("unrelated request: status %d (%s), want 202", status, out.Error)
 	}
 	if h.mail.count() != 2 {
@@ -726,7 +726,7 @@ func TestPostingWithAndWithoutABadge(t *testing.T) {
 		t.Errorf("refusal reason = %q, want %q", refused.Credential, credentialMissing)
 	}
 
-	issued := h.verify("ana@iitb.ac.in")
+	issued := h.verify("madeup.ana@iitb.ac.in")
 	if issued.Label != "IIT Bombay" {
 		t.Fatalf("verified as %q, want IIT Bombay", issued.Label)
 	}
@@ -804,7 +804,7 @@ func TestVerificationIsOffWithoutASecret(t *testing.T) {
 	}
 
 	var out verifyResponse
-	if code := c.post("/api/verify/request", map[string]any{"email": "ana@iitb.ac.in", "adult": true}, &out); code != http.StatusForbidden {
+	if code := c.post("/api/verify/request", map[string]any{"email": "madeup.ana@iitb.ac.in", "adult": true}, &out); code != http.StatusForbidden {
 		t.Errorf("request without a secret: status %d, want 403", code)
 	}
 	if code := c.post("/api/verify/confirm", map[string]any{"code": "123456"}, &out); code != http.StatusForbidden {
@@ -928,13 +928,19 @@ func TestPostsTableColumnsArePinned(t *testing.T) {
 		"board_id",   // which board's numbering the post belongs to
 		"body",       // the post text
 		"created_at", // shown on the post
-		"id",         // internal primary key
-		"is_op",      // the opening post of its thread
-		"name",       // display name, "Anonymous" by default
-		"no",         // the per-board number posters quote
-		"poster_id",  // the per-thread ID: a keyed hash, never the input it came from
-		"thread_id",  // the thread the post is in
-		"tripcode",   // the salted tripcode, if the poster used one; never the secret
+		// held_at and held_reason: when the content filter kept the post back
+		// for a moderator, and which rule's name — never what matched, which
+		// the post's own body already holds. Both are about the post, not the
+		// poster, and are cleared when the post is approved.
+		"held_at",
+		"held_reason",
+		"id",        // internal primary key
+		"is_op",     // the opening post of its thread
+		"name",      // display name, "Anonymous" by default
+		"no",        // the per-board number posters quote
+		"poster_id", // the per-thread ID: a keyed hash, never the input it came from
+		"thread_id", // the thread the post is in
+		"tripcode",  // the salted tripcode, if the poster used one; never the secret
 	}
 	if got := h.columns("posts"); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("posts has columns %v, want exactly %v\n"+
@@ -959,6 +965,8 @@ func TestEveryTableHasItsColumnsPinned(t *testing.T) {
 			"board_id",     // the board it is on
 			"bumped_at",    // the bump order every listing uses
 			"created_at",   // shown with the opening post
+			"expired_at",   // its archive period ran out while a held reply kept it from the sweep
+			"held_at",      // mirrors the opening post's held_at: the whole thread waits for a moderator
 			"id",           // internal primary key
 			"image_count",  // denormalised count of posts with an image
 			"last_post_at", // shown in listings

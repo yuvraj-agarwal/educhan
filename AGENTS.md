@@ -5,7 +5,8 @@ repository contains the working prototype: a Go HTTP API plus an embedded web UI
 by PostgreSQL. Boards, anonymous posting (tripcodes, per-thread poster IDs), image
 attachments stored without their metadata, a paginated index, a catalog view, a per-board
 archive, threads with quote links and post markup (spoilers, highlighted code, maths,
-cross-board links), per-client flood control, key-authenticated moderation and board
+cross-board links), per-client flood control, content rules that send back or hold posts
+(with a moderator queue for the held ones), key-authenticated moderation and board
 management, and optional institutional verification badges are implemented. Janitor
 accounts, bans, and reports are not.
 
@@ -14,13 +15,23 @@ accounts, bans, and reports are not.
 - **Go 1.22** (standard library HTTP, `log/slog`), **PostgreSQL 16**, `pgx`/`pgxpool`,
   `golang.org/x/image` (WebP decoding and thumbnail scaling).
 - `cmd/server` — entrypoint (config, logger, graceful shutdown), plus the one-shot
-  `-sweep` mode that deletes expired archived threads, rewrites and vacuums the
-  verification tables, and exits.
+  `-sweep` mode that deletes archived threads past their board's archive period (one
+  with a held reply leaves public view instead, until the reply is decided), rewrites
+  and vacuums the verification tables, and exits.
 - `internal/app`
   - `app.go` — wiring and routes; `config.go` — environment configuration.
   - `handlers.go` — HTTP handlers, validation, JSON responses.
   - `attachments.go` — upload parsing, media serving.
-  - `moderation.go` — moderation key check and the sticky/lock/delete handlers.
+  - `moderation.go` — moderation key check, the sticky/lock/delete handlers, and the
+    held-post queue and approval.
+  - `filter.go` — the content filter: normalisation, the rule tables and validators,
+    and `checkContent`, which every post goes through before it is stored;
+    `testdata/filter_corpus/` — the labelled made-up posts `TestFilterCorpus` runs
+    through it.
+  - `filtersearch.go` — how the filter runs its patterns: each split once into
+    branches, one walk of a trie finding every place a branch could start, and a copy
+    of Go's regexp machine run from those places alone; `filtersearch_test.go` holds
+    every search to what Go's regexp finds with the same pattern, and fuzzes it.
   - `boards.go` — board creation and settings updates, behind the same key.
   - `sweep.go` — the archive sweeper behind `educhan -sweep`.
   - `verify.go` — institutional verification: handlers, credential format, cookies;
@@ -242,11 +253,13 @@ psql -h localhost -p 5432 -U educhan -d educhan \
 ```
 
 Flood control is on by default (`EDUCHAN_THREAD_COOLDOWN=30`, `EDUCHAN_POST_COOLDOWN=5`,
-`EDUCHAN_UPLOAD_COOLDOWN=15` seconds), so scripted loops will see `429` with a
-`Retry-After` header. Set them to `0` when a test needs to post rapidly:
+`EDUCHAN_UPLOAD_COOLDOWN=15` seconds, and `EDUCHAN_REFUSAL_LIMIT=10` posts the content
+rules send back per minute), so scripted loops will see `429` with a `Retry-After`
+header. Set them to `0` when a test needs to post rapidly, or to probe the content rules
+with many refused posts:
 
 ```bash
-EDUCHAN_THREAD_COOLDOWN=0 EDUCHAN_POST_COOLDOWN=0 EDUCHAN_UPLOAD_COOLDOWN=0 make run
+EDUCHAN_THREAD_COOLDOWN=0 EDUCHAN_POST_COOLDOWN=0 EDUCHAN_UPLOAD_COOLDOWN=0 EDUCHAN_REFUSAL_LIMIT=0 make run
 ```
 
 For UI changes, the app is served at `http://localhost:8080` (dark-themed single page:
@@ -263,6 +276,7 @@ CI runs no browser, so the client's privacy and safety invariants are pinned by 
 that read `app.js` (`web_invariants_test.go`): the poster key and the credential only in
 `submit`, the age screen storing its outcome alone and sending nothing, the badge's 18+
 box never ticked in advance or kept, `/api/site` fetched only past the age screen,
+`support_seen` sent only on the one resubmission from the support panel and never kept,
 KaTeX's options, and the highlighting cap. They are
 a floor, not a proof; a change that trips one has changed one of those properties and
 needs a browser check before the test changes.
@@ -372,12 +386,14 @@ needs a browser check before the test changes.
   network failure (`err.unreachable`, set by `api()`) gets its own wording, never the
   browser's "Failed to fetch". So does an answer to a post that is not the post it made
   (`isCreatedPost`, `err.unconfirmed`): it is checked before the form is reset, so an
-  empty `200` never clears a draft (`TestThePostFormIsClearedOnlyForAPostMade`). A `429`
-  is worded for what was refused: `/verify` passes `errorMessage` `{ action: "code" }`, so
-  a code request is told to wait and request a code again, never to post again. A `503`
-  with `retry_after` is a post the server was too busy to take, worded as that and not as
-  flood control; the form keeps the post, image included, and nothing was charged for it.
-  An image that did not finish arriving in time is a `400` known by the server's words,
+  empty `200` never clears a draft (`TestThePostFormIsClearedOnlyForAPostMade`). A held
+  post's `202` is a post made, though it has no number until it is approved: taken for an
+  unconfirmed one, it kept the draft for the poster to send again. A `429` is worded for
+  what was refused: `/verify` passes `errorMessage` `{ action: "code" }`, so a code
+  request is told to wait and request a code again, never to post again. A `503` with
+  `retry_after` is a post the server was too busy to take, worded as that and not as flood
+  control; the form keeps the post, image included, and nothing was charged for it. An
+  image that did not finish arriving in time is a `400` known by the server's words,
   `UPLOAD_TOO_SLOW`, and worded as the connection's doing; the server never answers it
   `408`, which Chromium replays (see **Attachments**); nothing in `app.js` looks for one.
   A not-found page names and links a board only when it is in `state.boards`: the slug
@@ -406,6 +422,54 @@ needs a browser check before the test changes.
   fields need adding there too. The spoiler box lives in the file preview and is
   restored only alongside the file it was ticked for, and the badge box only for the
   badge it was ticked for.
+- **The content rules' answers** (see Content rules and held posts below) are shown in
+  the form, never as a page change. The draft stays put for a block and for support; a
+  held post empties the form as a published one does. They go in the form's own notice
+  (`data-form-notice`, above the buttons) rather than the page's `#notice`, because on a
+  long thread the poster is looking at the bottom of the page — and so does every other
+  refusal of a post (flood control, a locked or archived thread, the network), which
+  matters most after **Post anyway**, when the support panel is all that is on screen;
+  focus goes back to the button that was pressed (switched off while the post was out,
+  it had sent focus to the page), or to the form's own if the form was drawn again.
+  A `422` block is worded by `blockedMessage` (through `errorMessage`): the server's
+  sentence, which names what it found (a request to talk on another app is not a contact
+  detail) and the field, then the server's `match` quoted; a refusal without the
+  sentence gets the rule in plain words and the field when it is the Name or the
+  Subject. `pointAtMatch` focuses that field, selects the copy of the match the server
+  named by `occurrence` (a search that lets whitespace runs differ, since the server
+  quotes its normalised text, each search one character on from the last place found,
+  as `matchOccurrence` counts on the server; the last copy found if there are fewer; a
+  match the server cut and ended in "…" is looked for without it and selected to the end
+  of its run of non-space text), marks it `aria-invalid` and describes it by the notice
+  until the poster edits it, and scrolls the field and the notice into view together,
+  the field clear of the sticky header (`revealBelowHeader`: the least scroll leaves a
+  field under the header where it is, so one still covered goes to its scroll margin,
+  which is taller wherever the header wraps to three rows, the `max-width: 700px`
+  block; `TestNarrowScrollMarginsMatchTheHeaderWrap`).
+  Every answer is shown in `liveForm`: a re-render while the post was out ("Update")
+  replaces the form it was sent from and puts the draft in the new one, so the answer,
+  and a held or published post's emptying of the form, goes to that one; with no form
+  left on the same route, the page's `#notice` says it. A `422` support answer opens
+  `showSupport`'s panel above the buttons — the server's sentence, `HELPLINES_HTML`, and
+  **Post anyway** / **Go back** — and hides the form's own buttons while it is open.
+  Post anyway is an unnamed submit button of the form, so the resubmission goes through
+  the one submit handler and the one headers line: `supportSeen` is read from
+  `event.submitter` and adds `support_seen` to that request only, as `true` in JSON or
+  `"1"` in multipart. It is never stored, put in the draft, or left on the form, so the
+  next post with the same words is asked again
+  (`TestSupportSeenIsSentOnlyFromSubmitAndNeverKept`). Go back closes the panel and puts
+  the cursor in the message, clear of the sticky header (`revealBelowHeader`: closing
+  the panel shortens the page, which can leave the message on screen but under the
+  header, where a plain `focus()` does not scroll); nothing here traps the reader or
+  blocks the post. A `202`
+  held post empties the form as a published one does, stays on the thread or board (the
+  answer has no number, and nothing could show the post yet), and says it is waiting
+  for a moderator (`heldNoticeHTML`), linking to the FAQ's `faq-checks` and, on every
+  held post alike, to `faq-help` for where to get help. The outcome
+  names, the two block rules, `created.held` and both `support_seen` encodings are
+  checked against the server in `TestClientReadsTheContentRulesAnswersTheServerGives`.
+  Copy here follows the rules page: plain, kind, no claim that a check keeps anyone safe
+  or that anyone is watching, and no "this was a mistake" button until reports exist.
 - A spoilered attachment (`attachment.spoiler`) renders as a `<button>` tile with the
   caption and thumbnail in a `hidden` wrapper behind it; the server thumbnails it as
   usual, and hiding it is entirely the client's job. Keep the thumbnail inside the
@@ -430,12 +494,16 @@ needs a browser check before the test changes.
   `MIN_AGE` this week, and next month the same answer passes.
   Every sentence that names the age is built from `MIN_AGE`.
 - The FAQ (`FAQ_SECTIONS`) makes claims about what the code does — poster IDs and the
-  poster key, tripcodes, what is logged, the badge, the age screen. So do the rules,
-  about what a moderator can do to a post (delete it or its thread, lock the thread) and
-  what is not built yet (reports). A change to any of those changes the pages in the
+  poster key, tripcodes, what is logged, the badge, the age screen, the content checks
+  (`faq-checks`). So do the rules, about what the content checks send back, hold, and
+  answer with where to get help first, what a moderator can do to a post
+  (approve a held one, delete it or its thread, lock the thread) and what is not built
+  yet (reports). A change to any of those changes the pages in the
   same commit, and neither page describes a feature before it exists. Both end with
   `HELPLINES_HTML`, one static list for every reader: no lookup of where they are, and
-  external links carry `rel="noopener noreferrer"`. The rules and FAQ are readable before
+  external links carry `rel="noopener noreferrer"` and open in a new tab
+  (`target="_blank"`, said to screen readers), because the list is also the support
+  panel's and leaving in the same tab would lose the unsent draft. The rules and FAQ are readable before
   the age screen, so they must not depend on anything fetched: what a server can switch
   off — images, the badge — they qualify in words ("Not every educhan site …") rather
   than by reading a flag. The footer is not one of those pages, so its sentence inviting
@@ -457,9 +525,20 @@ needs a browser check before the test changes.
   (`TestPostingFormSendsOnlyTheBadgeItNames`). A post refused because the badge it
   carried expired or was revoked forgets that credential only while it is still the one
   stored. One stored since — that answer, or a badge issued in another tab, which is
-  what revoked it — is offered in its place, and the notice says so
-  (`sayBadgeReplaced`): forgetting whatever was stored deleted a badge the server cannot
-  hand out again.
+  what revoked it — is offered in its place, and the form's notice says so, as it says
+  every refusal of a post (`badgeReplacedMessage`): forgetting whatever was stored
+  deleted a badge the server cannot hand out again. Either way the refusal is said
+  once: the badge box it unticks is not said to be unticked in the page's `#notice` as
+  well (`offerHeldBadge`'s `quiet`), which put a second message about the one refusal
+  at the top of the page. The box sits among the form's own buttons, which the support
+  panel hides while it is open, so a form whose ticked box is drawn again, or whose
+  badged post is refused for its badge, closes its panel (`closeSupport`): left open, it
+  told the reader to tick a box out of sight, and Post anyway sent without a badge a
+  post written to carry one. The reader posts again with the form's own button, and the
+  content rules ask again. A badge just issued that closes a panel says why in that
+  form's notice, where the panel was (`sayBadgeUnticked`'s `form`), not the page's. A
+  panel over a box that was not ticked stays open: that post goes out without a badge
+  either way (`TestPostingFormSendsOnlyTheBadgeItNames`).
 - The poster key lives in `localStorage` under `educhan:poster-key`: 16 random bytes as
   22 characters of unpadded base64url, made by `posterKey()` on the first post rather
   than the first visit. `submit` sends it in `X-Educhan-Poster-Key` on thread-create and
@@ -697,7 +776,493 @@ written on, not just the code. Section numbers are design-recommendations.md's.
 - **Never market educhan as safe for teenagers.** No "safe space", no claim that a
   filter catches bullying or anything else, and no feature described to users before it
   is built. NGL, an anonymous app that did the first two, was banned by the FTC from
-  offering itself to under-18s (§3.4 item 10).
+  offering itself to under-18s (§3.4 item 10). The content filter (`filter.go`) is
+  described to readers as what it is — word and number patterns that miss plenty and
+  sometimes stop a fine post — and never as something that keeps anyone safe.
+
+### Content rules and held posts
+
+Build plan 2.9 (content rules), the hold half of 2.11 (threats) and 2.12 (self-harm).
+`checkContent` in `filter.go` reads the body, the subject, and the shown part of the
+name (`displayedName`: before the first `#`, so the tripcode secret is never read or
+quoted back). Every one of those fields has already lost its bidirectional controls
+(`collapseControl`, through `bidiControl`), which are never stored either: an override
+would show a reader text in an order the filter never read (`TestBidiControlsAreNotStored`).
+The body's markup is read as a reader sees it (`markupReadings`, from
+`markupBlocks`): a `[math]`/`[eqn]` block as one blank, `[code]` tags as line breaks
+around text that is read, and `[spoiler]` tags as nothing — so a number, handle,
+address or app name split by tags reads whole, as it does on screen once the spoiler is
+opened. Where a tag or an invisible character was, `firstNumber` sees the edge of a word
+(`view.apart`), so a number hidden in a spoiler straight after a word still stands alone. It works on two views of each field, both
+mapped byte by byte back to the source so a match is quoted as written: **plain** (NFKD
+compatibility folding, lower case, combining and enclosing marks (keycaps, circles) and
+invisible characters dropped, every script's digits as 0–9, dashes as `-`, a short list
+of Cyrillic and Greek lookalikes; a character whose compatibility form is more than
+`maxFoldRunes` long, a whole phrase such as U+FDFA, reads as itself) and **loose** (plain with spaced
+or dotted single letters closed up, a letter written three or more times running read
+twice (a capital I counted apart from a small i, since it stands for an l: "kiII"),
+leetspeak `0 1 3 4 5 7 @ $` read as letters when a letter is beside it or another one
+so read is ("ki11"), `!`
+between two letters read as `i`, a letter bracketed inside a word read as part of it
+("i[n]sta", `closingBracket`), and `l` read as `i`). Patterns are tables of Go regexps, planned as
+searches (`newSearch`, see below), for
+both views (`bothViews`, through `canon`, which makes the same `l`→`i` change in the
+pattern; `TestFilterPatternsSurviveCanon`) or for the plain view only (`plainOnly`, for
+anything whose `@`, dots or slashes matter), plus small validators (`matchCheck`).
+
+| Outcome | Rule / reason | Built from |
+| --- | --- | --- |
+| block, `422` | `contact` | `firstNumber` (one pass over the plain view; groups split by up to three spaces, line breaks, `-`, `.` or `_`, or a bare `,`, and `o`/`l`/`i` read as `0`/`1` inside a word that holds a digit, or as a lone letter between single-spaced digits, "8 l 2 O" (`digitLookalike`, `lookalikeDigit`); digits spaced one at a time with one kind of mark among them are read in the groups the marks make (`regrouped`), so "9 1 7 - 4 8 2 - 0 1 6 8" has a US number's shape; `formattedNumber`, `dataSet`, `roundRange` (two amounts either side of one dash, each round or written with thousands separators, the second larger: "~70,000–80,000"), `decimalRange` and `ipv4` let decimals, thousands, lists, ranges and IPv4 addresses through; `classifyNumber` with `standsAlone` (maths on either side through `operandBefore`/`operandAfter`, R's `<-` assigning as `=` does when a variable stands before it (`rAssigns`: a name only code has, one letter or with "_", ".", "$", "@" or a digit, or any name a line or a statement starts with, never one of `arrowPointers`, "me", "here", "digits", and no `phoneCue` word in the rest of its line before a "#", nor a `callCue` after one, so "here <- 9123456780 hmu" and "x <- 9123456780 # whatsapp me" are chat arrows and "n <- 9876543210 # number of rows" is code), a label (`labelled`: `numberLabels`, which include a program's "output" and "returns" and a receipt, challan, booking or complaint number, with an edition such as "ISBN-10" and up to three `labelLinks` between; an account label after an `accountApp`, "whatsapp acc", is not one; or a label heading the clause the number completes after "is", "was" or "hai", `labelledSubject`: "the ISBN on my copy is …", with no `contactWords` word, person or possessive between, so "the parcel guy's number is …" still counts) or quantity word, currency, a bracket glued to a name; a `contactCue` straight before the number, "call me =", "wa/", "my number is", outweighs an operator or a maths word near it, and a maths word (`mathsContext`, "prime", "the answer is") counts only with no way to reach anyone within 64 bytes either side (`reachedNear`, below), so "is 9845012345 prime? dm me" and "text me, the final answer is …" are numbers; with no cue, a number given as a maths answer passes, `mathsAnswer`: `mathsResultWords` in the number's own sentence (`sinceSentenceEnd`, `untilSentenceEnd`; "the largest 10-digit number …", "came out as", "for part (b)", what an answer key or a calculator says, "the answer is", "the final answer", "the answer to part c", "according to the solutions"; not "Lost my calculator near the canteen. 9845012345", "for part time", "here's the 10 digit number: …" or "selling the answer key …"), a power or a factorial before it (`powerBefore`), or a counting run among `countingTalk` words, unless a way to reach anyone is within 64 bytes either side, `reachedNear`: `callCue`, `ownNumber`, "my number", or `reachCue`, "dm me", "add me", "dm for more", "my insta", "telegram id", a handle, an app or one of `bareReachVerbs` used bare before "for", "whatsapp for steps", "msg for the working", though not an app named for itself or after one of `appPlaceLeads`, "saw this on reddit", "posted it on whatsapp for the class"), `numberShape`, which every shape goes through, so that a number of one digit over and over (`repdigit`, "9999999999", a placeholder), `dramaNumber` (Ofcom's ranges, 496 0000-0999 only in `ofcomDramaAreas`, `acmaDramaMobiles` and ACMA's landline ranges), `helpline` (`helplineNumbers`: four Indian lines, six US ones and four UK ones, with or without `+91`, `+44`, a trunk zero or a leading 1), `freephone` (UK 0800/0808 grouped 4-x, an organisation's line), a `landline` with an `officeWords` word in the four words before it and no `personalLines` word or `callCue` (`officeLine`: "UQ admissions (07) 3365 1111") and `nanpFiction` (555-0100 to 555-0199 in its 3-3-4 layout, the NANP's numbers for fiction) pass in every layout: `internationalPhone` (a `+` inside the bracket too, "(+91)"; `dataSet` never reads a `+` run as data), `indianMobile` (`mobileGrouping`; single digits only when every separator is of one kind, `oneSeparatorKind`, or one digit apart among groups of three or more, "98450 1 2345"), `calledMobile` (any grouping of two or more, one single digit allowed among them, after a `callCue`: "call me", "text me", "reach me", "my number"), `nanpPhone` (`nanpSeparators`, a `phoneCue` before spaced groups, or ten digits run together straight after a `phoneLabel` ("cell", "Google Voice:", "ph no") or a `contactCue`), `ukPhone`, `auMobile`, `auLandline` (0[2378] and 2-4-4 groups), `tenDigitMobile` (South African and Irish mobiles, 06/07/08 but not 070, 080 or 088, `tenDigitPrefix`, 3-3-4 or 3-7), `tenDigitCalled` (the same ten digits run together straight after a `phoneLabel` or a `contactCue`, as a North American number is read: "my number is 0821234567"); an eight-digit `sgMobile` (8 or 9 first, one block, 4-4 or a digit at a time) only after a `contactCue` or `callCue` ("my hp"), since eight digits alone are as often a date or a roll number; `mobileGrouping` lets pairs set off by dots or dashes leave one digit over at an end ("07.88.42.61.39.0"), and `operandAfter` reads "<-" as an arrow; a seven-digit `localNumber` (3-4, "-" or ".") counts only with an area code given apart within 40 bytes before it or 32 after (`areaCoded`, `areaCode`: "482-0196 (area code 404)"), or with it set off by a slash straight before it after a `phoneLabel`, `contactCue` or `callCue` (`slashAreaCoded`: "phone 495/418-3927"), and a run said to be backwards (`reverseCue` with a `callCue` before it) is read `reversed` unless it counts up or down; `piecedNumber`, tried at a run that is no number by itself: three to `maxPieces` pieces of one to six digits, `maxPiecedDigits` in all, each as small as one digit or spaced out a digit at a time ("07 9 1 5 / 3 3 0"), joined by `/`, `|`, `,` (a joining word may follow the mark: "76, then 1180") or `pieceJoiners` ("then", "and", "plus", "followed by", "ends in", "aur", "phir"), or quoted pieces joined by `+` ("'+91' + '98450' + …"), which together make a phone number (`piecedPhone`, which turns down helplines, drama numbers and counting) and have a `callCue` (not past a `dataWords` word straight before the pieces: "questions 87, 88, 91 … hmu") or an `evasionCue` ("so the mods dont catch") beside them, or for quoted pieces a `phoneCue` before; two pieces only straight after a `contactCue`, "call me on 98450/12345"), `halvedNumber` (two parts each labelled, `partLabelled` with `firstParts`, `lastParts` and `partSizes`: "first 5: 93104 / last 5: 72286", no other cue needed), `firstSpelledNumber` (digits read out one at a time, `spelledDigits` in English and Hinglish with `digitRepeats`, at least two words, mixed with digits or not, a run read again from its second word only after one of `ambiguousDigitWords`; `spelledPhone`: a mobile's shape, a North American number only after a `phoneCue`, not after a label or a `dataWords` word, and not `counting` up or down unless cued), `emailRule`/`providerEmailRule` (`providerEmail`)/`spelledEmailRule` (`emailTLDs` and `academicSecondLevel`, `exampleDomain`, `spelledEmail`, which lets `codeShape` through at a bare "at" ("Q3 at leetcode.com") except at a mail provider or a university, and a `dottedAbbreviation` ("B.Tech", "vol.1"), an `ordinalWord` ("2nd-year") or a `toolNames` version ("Python3.12") anywhere but a mail provider; bracketed `[.]` and `[@]`; `domainNamed`: a domain named with its `@` after a word of the sentence, not after an `addressCues` word (a verb of messaging or "at me" among them, "msg me at riya @madeup.ac.in"), a `nameLike` local part or before a provider, "signed up with my @iitb.ac.in address", "is a @yahoo.com address okay?"), `firstSpacedEmail` (an address spelled out a character at a time round an `@`, `spacedPart` reading single characters one space apart either way, at most 64; a provider with no ending only when the local part is spaced out too or `nameLike`, so "lol @ g m a i l" is not one), `myMailRule`, `mailColonHandle` (a colon, a dash or an arrow, not the "=", "=>" or ">" of code), `linkRule` + `contactLink` (a slash may be spelled, `linkSlash`; a path may start with Signal's `#`; a call's join link — Zoom's "/j/", "/w/" or "/s/" with a meeting's number, its web client's "/wc/join/<number>" or "/wc/<number>/join", or "/my/" with a room's name, a Meet code shaped `meetCode`, Teams' "/l/" with one of `teamsJoins` or "/meet/" with a meeting's number, Webex's personal room ("/meet/" or "/join/" and a name), "j.php" or "e.php" meeting or event anywhere after the site's name on any site's subdomain ("/acme/j.php", "/acme/k2/j.php"), or join-service page, any Jitsi room — and a LinkedIn "/in/" or "/pub/" profile, not the services' other pages), `linkedInPathRule` + `linkedInCheck` (a profile's "/in/" path after LinkedIn's name in place of the host, "LinkedIn - /in/x-y", or the name in the shape LinkedIn generates, hyphened words ending in a part of five or more letters and digits with a digit among them, "linkedin: x-y-1a2b3c", not "covid-19"; a vanity name alone has the shape of "linkedin: self-promotion" and is not read, nor is lnkd.in), `meetingIDRule` (a call's meeting number, `meetingNumber`, after "zoom id", "meeting ID", Webex's "meeting number (access code)" and the like, or after Zoom's or Webex's name with no label, "join zoom 845 2219 6630", "webex: 2634 123 4567"; a Meet code, `meetCodeShape`, after "meet code" or Meet's name, "gmeet qvx-trmk-hpd"; not when `reported`), `spacedInviteRule`, `askRules` + `askCheck` (`topicWords`, `rankedNumber` for "number one" and "number of", `notNegated`, `reported` for an ask someone else made, and `numberRefs` before "number"; an address asked for only with nothing after it but `mailTails` (`mailAsked`), and in the shapes read for apps by `mailAskRuns` + `mailAskCheck` ("ur email pls", "email address pls", "can i get your gmail", "may i have your college email id?", "give me ur mail id"; a bare "mail" only with "e" or "g" before it or a label after it, so "can i get your mail" is post; reported by `firstRun`); "whatsapp me", "facetime me", "snap me", "insta me" and the like only asked (`askedOfReaderHere` through `askLead`: `askMood`, a number before it, or any other lead in its clause — a condition, a relative, a purpose or whom it asks, "if ur bored kik me", "anyone who wants the notes whatsapp me", "lonely girls whatsapp me" — unless the lead ends in a subject, its auxiliary or an adverb of how often, `statesAnAct` with `actSubjects`, `actAdverbs`, `modalsPast` and `thirdOwners`, "she keeps trying to kik me", "my mum will whatsapp me", or opens with one of `whWords`; `habitAfter` turns down "kik me all the time", and `snapNotAsked` "snap me out of it" and "oh snap me too"); "lets facetime" and "can we facetime" only with nothing but `callTails` after them, not "can we facetime grandma"; moving a chat to an app, swapping accounts, "leave your number", "number bhejo", "follow me on X @…"), `numbersAskRule` + `numbersCheck` (everyone's numbers asked for, "drop your numbers", with a way to reach people in the ask, `numbersReach` ("dm me your numbers"), or `gatheringWords` round it, "anyone wanna make a whatsapp group? drop your numbers", or where the ask ends, `numbersTails`, unless `aboutResults` reads the words round it as an exam's results, `scoreWords`, "how many", "what did everyone get" ("results are out! drop your numbers below"), where only a way to reach people named round it counts (`reachNamed`: an app, someone added, called or texted, a group made; not scores added to a sheet, `sheetWords`, "a close call" or "the text section"), and not with `numbersTopics` straight after, "post your numbers from the mock"), `accountNumberRules` (a Session ID; a friend code), `atAskRule`, `myAppRule` + `myAppCheck` (`notAHandle`), `myAmbiguousAppRule` ("my signal is …", only with a handle's marks after it), and `handleRules` (`appColonHandle`, `appAtHandle`, `appLabelHandle`, `hindiHandle`, `handleBeforeApp`, `discTagHandle`, `labelledAppHandle` ("line id", "steam username", "riot id: name#TAG"), `riotTagHandle` + `riotTagCheck` (the name and its tag whole words, so hashtags run together are none, "#valentines#love", and a label or a mark after "val", "lol" or "league", not "lol same#mood"), `ghostHandle` (👻); `handleSeparator` between an app and a handle) + `handleCheck` (`plausibleHandle`, `measureShape`; for `handleBeforeApp`, `handleFirstCheck` and `toolNames`: "python3 on discord"; for `appLabelHandle` with no label, `labelHandleCheck`, `toolNames` and `dottedAbbreviation`: "ig python3 is better", "TG B.Tech"); and `appNameRule` + `appFrame` (`firstAppFrame`), which reads the grammar those phrasings are instances of from every app's name (and 👻; Bluesky's, and Threads' only with a handle and its "@" after it, "my threads is @x.y", since a thread is also a conversation here) outwards — seven words back and twelve on, within its sentence (`readBack`, `readOn`), a `topicWords` word straight after making it a topic ("my snap score"), an "M.Sc" turning it down — for: a verb of moving or talking with its object, particle and preposition said as an ask (`asksToMove`, `hollaVerbs` with "at", what is moved when it is `movedTalk` ("the study group"), `askMood`: an imperative, a "let's" or a "we" with a modal (`weFrame`), a "can we", a "can someone" (`anyoneWords`), a "wanna"; a kind of call goes with its verb, "can we video call on whatsapp" (`callKinds`); `askTails` the only words after it: "come to tg", "follow me back on insta pls"), a question about the reader's account (`asksForAccount`: "u got insta?", or in a question's word order with no mark, `accountAux`: "do u have telegram", "is anyone here on discord", except about a game, `gameAppWords`: "r u on minecraft rn" is about playing), messages there (`messagesThere`: "slide into my dms on insta", `takenToDMs`: "take this to dms on insta"; a message asked for there, `sendVerbs` and `sentMessages` after an ask's lead, "send me a dm on insta"; "dms open on discord" opening its clause), a streak partner looked for (`streakWords`, `streakPartners`, `partnerAsks`), the Hinglish either way round (`hinglishAsk`), the app made a verb with "karo" (`appKaro`: "mujhe whatsapp karo" after `hindiMe`, or with only `hindiKarTails` after it to the end of its clause, and never with `hindiPast`), a group or call set up there with the app before it or after it, `groupPreps` (`setsUpAGroup`: "make a gc on snap"; asked or offered with `makeVerbs`, after "wanna" or "who wants to" as well; being made by the poster, `settingUp`, "creating a whatsapp group for neet aspirants", but not as a sentence's subject before `gerundVerbs`, "creating a discord server is easy"; made by the poster already with `joinWords` after it, `madeVerbs`, "made a discord server for jee 2027, join", not "my mom made a whatsapp group"), talking "there" once the app or a link to it is named (`talksThere`), the poster saying they are on it with an invitation to talk in the sentence (`announcedOn`, `invitesTalk`: "dm me", "hmu" or "add me" always, "i'm on snap if anyone wants to talk"; an offer to talk not where the sentence keeps the talk here, a "here" or a "thread" with one of `postingHere` up to five words before it in its clause, "reply here", "in this thread", "talk about the syllabus here", read on past the twelve words if need be (`talksHere`, `talksHereOn`), but not a place complained of or one the poster is new to, "this thread is dead", "new here" (`placeComplaints`), nor where the app is followed by how much the poster is on it, `appUsage` ("a lot", "for hours", "6 hours a day"), and the talk by the app or its use, `aboutUsage` with `usageTopics`, "i'm on insta 6 hours a day, anyone else wanna talk about phone addiction?", not "… about anything"), a handle after a few lead words (`handleAfterApp`, `leadWords`, "user" and "userid" among them, read as written or without an "'s", so "my ig it's x_y" and "my snap's x_y" both count; after a mark, "~" and pointing emoji among them, "insta 👉 x.y"; Reddit's "u/x_y"; quoted after "search"; never one followed by "(" or after code's "=" or "=>" for a mail app), an address in two halves round a mail app (`splitAddress`, `addressAt`, `labelledLocal`: "[at] gmail [dot] com — prefix is …"), and a handle that is another field of the post (`otherFieldNamed`: "my insta is my name", blocked only when that field is filled in); a handle after an ask is quoted with it (`withHandle`); `ambiguousAppWords` ("signal", "dc", "steam") only after a verb of talking, in a "we" frame with nothing after them, or where the post wants to leave the board (`leavingTheBoard`); an ask `reported` (below) is not the poster's, and nor is one the words after it name or take back (`askNotMade`, through `askMade` round `askCheck`, `numbersCheck` and `offBoardCheck` and on an ask `appFrame` finds: "is what" someone not "I" or "we" says, "send me a dm on insta is what every spam bot says"; "is a weird thing to ask"; unless the ask is made all the same after it, to the end of the sentence past a comma (`askedAnyway`: "…, but pls do"); or one of `takeBacks` or "i mean" and then a place on the board, `boardPlaces`, in the same sentence, with none of `negators` between, "jk, just post it here", not "jk not here", nor a place complained of (`placeComplaints`: "i mean this thread is dead") or posting here put second to the app (`postingHere`: "whatsapp me actually, easier than posting here"); "actually" is no take-back), while a contact detail is blocked however it is named; and `offBoardRule` + `offBoardCheck` (talking off the board with no app named, after a verb of talking said as an ask: "text instead of posting here?"; "instead" ending the ask only after a private verb to "me", "us" or "you", and not with a number on its line (`numberGiven`), which the number rules judge; "somewhere more private" after any verb of talking or before "we could talk"; "privately", "in private", "1 on 1" and "one on one" after a verb of talking, but not with or to someone else, "talk privately with my parents"; "somewhere else" and "elsewhere" only ending the ask and with no `boardWords` word on its line, not "can we talk elsewhere? this thread is for physics"; "go private" only said as a suggestion and ending the ask (`askMood`, `askTails`), not "lets go private colleges"; a bare "dm me" names no way to reach anyone and is not one; only `offBoardObjects` between them, so the talk is with the poster or the reader and not advice to call someone else, "call a helpline instead of posting here") |
+| block, `422` | `id_number` | `aadhaar` (`aadhaarShape` and Verhoeff), `ssn` (`ssnShape` with dashes), or either shape with its label straight before it (`idLabelled`: `aadhaarLabels`, `ssnLabels` or "social security", `idFillers` skipped; the label is the evidence, so a mistyped check digit or spaces in place of dashes still count), `niRule` + `validNIPrefix` (capitals, or `niLabelled`); `aadhaarShape` takes a digit at a time with one kind of gap |
+| support, `422` | — | `supportRules`, read in the poster's own voice in any tense rather than phrase by phrase: wanting, wishing or needing (`want`, `wanted`, `wanting`, `wish`, …) any of `crisisActs` ("i used to want to die", "i wish i could just disappear"), feeling like or thinking about any of `crisisGerunds`, `selfHurt` and its tenses without the "I", "no reason to keep living" and its variants, "if i" with any of `gone`, a "way out", stockpiling `medicines`, and Hinglish (first person included, "marna chahta hoon", "marne ke baare mein sochta hoon", "khud ko khatam kar lunga", "life khatam kar dunga", "ab jeene ka mann nahi" with no verb only before `hindiLifeTails`); filtered by `supportCheck`: first `aboutSomeoneElse` (the nearest person before the words, when it is someone else, Hindi pronouns included (`hindiOtherPeople`): "my friend keeps saying she wants to die"), `quotedNotSaid` (words `reported`, below, unless a report without quotation marks makes the poster the subject of what was said, `reportedOfOthers`: "my therapist says I'm suicidal"; a word explained, `glossed`; a kind of post named, `mentionedAsAKind`, "the kms jokes") `shrugged` ("kms" opening its sentence with a mishap told in the past straight after it, or "I wanted to die" after a moment named in its sentence, with a laugh, a 💀 or relief — "thank god", "phew", "it went through" — in or just after the sentence, and no serious cause, life itself or a time that makes it an episode, `episodeWords`: "last night", "again", "every day") and `jokingCause` (a cause named before "make me" with a laugh or a 💀 in the sentence, "this group project is going to make me kms 💀", not life itself or one of `seriousCauses` (family, bullying, a partner), and 😭, "bruh" and "ded" are not a laugh; a bare "i want to die lol" still counts); then by what opens the match: "if i …" needs other people's reaction in the sentence (`counterfactualCheck`: "nobody would care", not "in minecraft", "in the exam", "died my hair" or "for a week"), a "way out" no one else in its sentence without the poster, a want, a stockpile or a bare act needs the poster as its subject (`ownSubject`, reading back through `carriers` such as "been" and "started", the words of `crisisAdverbs` the rules let stand between "I" and the verb ("genuinely", "kind of", "desperately", "fucking"), and either drawn out (`carrierWord`: "reallyyy"), to an "I" or the clause's start; `otherSubjects` and any other word turn it down unless "and" joins a second verb), thinking about or considering one of `crisisGerunds` needs no other subject (`someoneElseThinks`: a person or a pronoun, `otherThinkers` among them, a name with a capital, any word before a `thirdAux` such as "is" or "has", or any word before the finite "think" or "thought": "my mum is thinking about suicide", "is Hamlet thinking", "why do teenagers think about suicide"; "staring at the ceiling thinking about suicide" is still the poster's), a bare "self harming" or "cut again" needs to be done (`doneAgain`), stockpiling not to be of `pillContainers` or `forAPurpose` (one of `ordinaryPurposes` named: "for the trip", never "for when I'm ready" or "for tonight"), "hurt myself" not an accident or an activity named as one (`hurtByAccident`: "accidentally", "by accident", "on" one of `accidentObjects` within five words, one of `activityGerunds`, or a clause after one of `accidentLeads` or "every time" that names one, `accidentClause`: one of `activities` (not one over or lost, `activitiesLeft`: "when I got home from practice", "when I lost the match"), `activityGerunds`, `accidentObjects` or `accidentVerbs`, or `fallVerbs` before one of `fallWays` or the clause's end, by the poster or no one named, someone else's clause, `clauseOthers`, only with one of `accidentObjects`; past "with" a tool only to an activity not just a place, `activityPlaces`, and past "all the time" or "always"; after a word of `hurtDegrees`, and "more" or "less" only in a comparison or before an accident marker, or "less" in a question of how, `lessAsked`; never with one of `notAccidents` or `harmSites` after it: "I always burn myself when I cook", "every time I play football", "with a knife while chopping"; "on my wrist", "using a razor blade", "when I'm sad", "while my parents were at work" and "more when I'm at practice" are not; "I keep hurting myself" is read the same, `hurtForms`), "suicidal thoughts" not a general statement (`genericVerbs`), and "any reason"/"the point" a `futile` clause; then the idioms: "die of embarrassment", "ready to die for my country" (not a death owed: "i deserve to die for what i did", "i should just die for being this stupid", nor how long, `dieForTime`: "i've wanted to die for weeks"), "cut off", "end it with her", "ending things with my boyfriend", "burning myself out", "live in the hostel", "going on to a PhD" and "keep going to tuition", through `livingCheck`; `kmsCheck` for "5 kms" and AWS KMS; `supportPhrasing` for the phrasings read with the post round them, the post's words read once through the field's `wordReading`: a past attempt with a past time after "end it" (`pastTimes`) and no relationship ended (`endingARelationship`: "with my boyfriend" after it, or a break-up, or a partner and a fight, in a post with none of `attemptSigns`) or an overdose of medicine (`pillWords`, `medicineNames`), "make it to" an age (`ageMarks`, not `clockWords`, `countNouns` or a clock time, `clockAfter`) with no school work in the sentence, after "don't think i'll" or another doubt (`reachDoubts` and `reachVerbs`: "i won't make it to 18", "i doubt i'll make it to my next birthday", where a mark is the clause's last word and none of `looseAgeMarks`), and "won't be alive" by a time with no school work, "my last post" among `farewellWords` and no `breakWords`, and not on a thread (`threadWords`), "a plan and a date" with nothing after it, "I'm on the roof" with `jumpWords` and `nowWords` and no `jumpSports`, "top myself" not "up", and the Hinglish past hurt (not `hindiMishaps`), "kood jaunga" (not `winWords`), "sab khatam kar dunga" (`apologyWords`, not `hindiStudyWords`) and "is duniya mein" (`stayWords` and `hindiNot`); `supportSaid` for the phrasings as often said of something else, read by what opens them: an overdose just taken by the poster, ten or more if counted, with no `medRoutine` in its sentence; "ending it" and "gonna end it" by the poster with none of `endedThings` in the post, and not ending it "with" school work (`endsWithWork`: "with a final revision of organic chem"), nor with nothing after it in its sentence and a relationship in the 120 bytes after (`endsARelationship`: one of `relationshipEnds` or "different things", "I've decided to end it. He's been cheating for months"; none of `endItOthers`' pronouns, jobs or games, which follow a crisis as often); "been cutting" and a relapse the poster's, and "clean from sh" with a relapse in the post and the poster's "I" in its clause (`selfSubjects`) or only how long before it (`onlyADuration`: "3 months clean from sh and relapsed"); "by the time you read this" not before `travelWords`; a suicide note with no `writingWork` or `storyWords` in the post; "life isn't worth living" not after `otherOwners`; "jaan de dunga" not `forSomeone`, before it or after it ("is project ke liye"); "zindagi khatam" not after `hindiOthers`; sleeping pills not few (`fewWords`) or for a pain (`medRoutine`, `hindiPillRoutine`); then the idioms after the act: a cut that names what is cut (`cutObject`, `cutObjects`), a cut short or of a session (`cutShort`) or with hair or nails in its sentence (`cutsSomethingElse`, `hairAndNails`: "i want to cut again, my bangs grew out"), "hang myself" upside down or from a bar or the rings (`hangsFromABar`), dyed hair after "die" (`dyesSomething`), an overdose on anything but medicine, an accident named after it (`accidentAhead`), "drown myself in" anything but `waterWords`, "shoot myself a message" or "in the foot", all my pills (`pillObjectSet`) with `medRoutine` or taken "along" or "with me", "rope" with anything after it but `endItTimes`, `trailFillers` or `shrugs`, "want to sh" before a shell's command (`shellAfter`), "better off without me" in a team or a group (`memberships`), "sleep forever" or "hit by a bus" with school work and a laugh, "sleep forever" after an exam (`sleepUntil`, `examsSleptAfter`), "rather be dead than" or "dead last" (`rankOrThan`) or "dead tired" (`deadIntensified`) and a death with a name after it (`deathTrail`); and `inYourShoesBefore`, which leaves "if I were you I'd kill myself" to `goads`), and `supportRuns`, read by the same check: `checkedRuns` (`wordRun`s filed by their first word and read in Go over the plain view's words by `anyRun`, so a phrasing in many wordings costs the plan nothing) for "committing suicide" and "do suicide" felt, thought of, considered, planned or tried, "off myself", "neck myself" and "rope" wanted or planned, "sh" wanted and "sh urges" had (not "sh" run on into a shell's command or a censored word, `shellAfter`: "sh build.sh", "sh*t", "sh!t"; the letter after the mask is ASCII as posted, so "sh!é" stays "sh"), and all of `pillObjects` planned to be taken or swallowed; the plain view reads `spellingFolds` first (`foldSpellings`: "sucide", "suiside" and "suicid" as "suicide", "commiting" as "committing", "sh'd" and "sh-ed" as "self harmed", though not "sh'd" before one of `shouldWords`, "sh'd have" (but "have" before a mark the harm left, `marksAfter`: "i sh'd have scars all over my arm"), and "not" only before a verb, not a stretch of time or a unit of one, "i sh'd not long ago", "i sh'd not even like 2 days ago", "i sh'd not even a day after", "i sh'd not because i had to", "i sh'd not for attention" (`notLongAgo`, past `notFillers`, `notUnits` and `notReasons`), "sh'ing" and "sh-ing" as "self harming"), so every rule sees those spellings as the words they stand for; and `asksForAMethod` (`selfHarmMethodRules` + `methodCheck`, and `methodRuns`: "how to", "how do i" and a best or easiest way to "sh", "self harm" or one of the reflexive acts, not "cut myself a fringe" or "burn myself a cd" (`secondObjects`), a particle or a degree after the reflexive that `selfIdiom` reads as a phrasal verb or a degree, "cut myself off from social media", "cut myself off caffeine", "burn myself out completely", "hurt myself less when i fall", "cut myself down to one coffee a day" (`selfPhrasal` before "from", before "of" and what is left (`selfObject`, read before any hiding; not life itself, `lifeLeft`: "cut myself out of this world", not "out of his life"), before what is given up (`selfObject`), an activity, a manner after "out", or the clause's end; "down to" or "back to" an amount, `selfAmount`; either `selfPhrasal` before a time, `selfIdiomTimes` (not "every time" or "every day" with nothing after it, `selfOften`), or `selfDegrees` before an accident or an activity named (`hurtByAccident`), a thing handled with no harm, a season after "every" or a gerund after one of `accidentLeads` (not "less when im sad", "less before school" or "less if my parents check"), or a degree before an activity named in `activityGerunds` or `selfSports`, or one of `selfPostures` with what it does after it ("less carrying heavy bags", not "less carrying" alone), with no `selfHarmObjects` or fire as the head of the noun phrase after "with" (`harmWith`: "hurt myself less playing football", "playing with glass marbles", not "burn myself less playing with matches"); not "cut myself up", "cut myself less" with nothing after it, the harm hidden, how deep or a scar anywhere after it, a tool anywhere (`selfTools`; a knife or scissors in a clause of its own only without one of `toolUses` after it, `plainUse`: not "hurt myself less when using a knife to cut vegetables") or a place on the body before a clause of its own begins, `selfMarked`: "cut myself down my arm", "hurt myself out of sight", "cut myself out deeply", "cut myself off so it doesn't scar", "hurt myself less without getting caught", "hurt myself less when i use a blade", not "hurt myself less when i fall on my knees"; not the handling of a tool straight after it, `selfHarmings`: "hurt myself less using a blade", "burn myself out using a lighter"; and not, after a degree, the harm or "do it" anywhere, or the handling (`selfHandlings`) of a tool of harm or the body later in the clause (`harmHandled`, `selfHarmObjects`): "hurt myself less after cutting", "burn myself less every time i do it", "hurt myself less when using my nails", "when using a box cutter", "when heating a coin", "when i hold my hand over the candle" (the body held over one of `flameWords`, `flamelessUse`), "when pulling my hair" (`hairPulls` only of `hairWords`, not styled, `hairStyled`: "pulling my hair into a bun"), "when i put my hand on the stove" or "on the iron" (`putForms` only of the body put on, in or over one of `flameWords` or `hotSurfaces`, `putOnto`), not "burn myself less when holding the kettle", "hurt myself less when hitting the ball in cricket", "when pulling the rope", "when i put my hand near the stove while cooking", nor what is handled in play, a craft or a rite with nothing of harm after it, `playGear`, `playKit`, `handsUsed` and `playUses`: "when holding the bat", "when using a hammer in woodwork", "when using my hands to catch"; matches only for a rite or the stove, `matchWords` and `matchRites` ("when lighting matches for the puja", not "for the candle" or "for practice"); one of `selfHarmObjects` put to a use of its own, `objectUses` and `objectUsed` ("when using a spoon to stir the curry", "a pin to sew", "a rope for skipping", "rubbing out mistakes with an eraser"); and fire cooked with, `cookingWords` ("cooking with fire on a chulha"); or, with no handling before it in its clause, one of `selfHarmObjects` or fire after "with", `harmWith`: "hurt myself less when playing with broken glass", "when i play with fire", not "when playing with my friends"), "drown myself in" anything but `waterWords`, or "shoot myself in the foot"; a search after overdose or self-harm not for one of `methodTopics`, "tips for self harm recovery"; "for me to die/overdose/not survive" and "i'd need to not wake up" need a question round them, `methodAsks` or `questionAfter`, so "time for me to die in this exam" is not one; "the most painless way to go" only with nothing after it; a lethal dose only for the poster (`selfWords`) or asked after (`doseAsked`: a question mark after it or a `doseQuestions` opener whatever weight or study word is near it, "lethal dose of paracetamol per kg?", "pharmacology question: lethal dose of paracetamol?", or no `doseStatements` after it; never a "why" that opens the dose's own clause or stands just before it ("explain why the lethal dose of paracetamol drops", though "why bother, whats the lethal dose" asks), nor a topic after a `studyLabel` that opens the sentence, a few words with one of `studyFrames` before a colon or a dash or opening on "for" before a comma, "For my pharmacology viva: lethal dose of morphine in opioid-naive patients vs tolerant ones", though the dose named bare after one, of a medicine and per weight at most, or for a person by age, weight or size (`forARecipient`, `doseRecipients`: "for a 45 kg person", "for someone my size"), is asked; a plain study word, "exam", "notes", "medicine", is no label; and a how-many or how-much question about a lethal dose is asked whatever label is before it, "for the tox exam, how many tablets of paracetamol is a lethal dose"); a how-many-pills question disclaimed, "asking for a friend", not with `medicalWords` or `ailments`; the questions opened short and read in Go so as not to copy a long tail into every planned branch: a cut asked where, or which vein, not of something else (`cutPlaces`), "what pills can kill you" only after "what" or "which" (`killNouns`), a height with a death in its sentence (`fallFatal`, `fatalWords`, not "fatal for an egg"), "how long does it take to die" with one of `dyingMethods` after it, "eat less than" 800 calories or fewer (`calorieWords`), cutting unseen (`cutUnseen`) after a `methodAsks` word, "how to stop eating" with nothing or `stopEatingTrail` after it, and `hiddenMethods` asked after "how to" only) |
+| hold, `202` | `threat` | `threatens` over every field at once (a subject and a body pair as if adjacent): `threatIntentRules` (the first person with `threatModals` and up to two `threatAdverbs`, swear words and "go" among them; "someone should"; "i planted a bomb"; some Hinglish), `threatFrameRules` + `threatFrameCheck` (grammar rather than phrases, verb first so the search starts at a rare word: a verb of harm or of carrying in any form (`threatVerbForms`), `frameSpeaker` reading back from it for who says it ("I", "we", "imma", "I'm going to", "planning to" opening a clause, "on monday I", any verb after "tomorrow I", `frameAdverbs` skipped, "acid" among them; a clause opened by `bareHeld` or a greentext line, `greentextOpens`, or by one of `bareArmed` when what follows is a weapon: "come back monday with a full mag"), and `threatFrame` reading what it is done to with `readNoun` (determiners and owners, up to two describing words, then a head of a kind: `rolePeople`, `kinPeople`, a capitalised name or one with a title before or after it (`titledName`, `nameTitles`, `titlesAfter`: "Mr Sharma", "Sharma sir"), or after one of `lowerNameVerbs` a name in small letters that `lowerName` takes (not a word of any set the filter knows, `notAName`, a plural or an -ing form), `placeHeads`, `vehicleHeads`, `bodyHeads`, `weaponHeads` (and `magHeads` after `loadedWords`: "a full mag"), fuel; a head followed by `nounTails`, an event or a message is not one, and `nounEnds` stop it; besides, the shit beaten out of someone, `beatenOutOf`, someone's backside, `bum`, a bomb put or left in a place or one of `bombSpots`, `bombLeftIn`, a bomb made or built that is not one of `harmlessBombs` and not in a sentence of `bombMoney`, a kidnap that is not an invitation ("for coffee"), a hit that is a message ("hit you … with the details", or `hitMeUp` in the sentence when the clause after the hit names no force, repetition or injury and the clause or sentence after that no injury, `hitHard` and `hitInjured`: "so hard", "so many times", "till you bleed", "you won't walk", "u won't be able to stand", "in the face", ". you'll end up in hospital", though a place or "can't" said of the poster is none, "i'm at the doctor till 3"), and "batter" or "thrash" said of no team), so "run over the PE teacher", "push the topper down the stairs", "put the warden in the hospital", "take a hammer to the warden's head", "bringing my dad's pistol to class", "going to the hostel with petrol", "light the staff room up" are one rule each verb rather than a phrase each, lighting a place up not counted for a room someone walks into, a stage, a court, a party venue or a home (`litUpPlaces`), a sentence with a show, lamps, a festival, a game, a camp, a decoration or an occasion in it (`litUp`, `campWords`, `lightUpWords`: "at the pep rally"), a lab and an experiment (`labHeads`, `experimentWords`), what the poster wears straight after the place (`wornClothes`: "in my new jacket", "wearing my kurta", not "wear fireproof shoes"), or a "with" that names no fuel, weapon or people ("with my outfit"), and none of those with a fuel in the sentence (`fuelWords`: "with petrol for my birthday"); turned down for a story or a dream in the sentence (`storyNamed`, a story word that is not the poster's own, a time, an outing or a fuss, not "my book", "after the show", "movie night" or "so much drama", `dreamWords`), a game for the verbs games use (`gameActs`), a prop, a toy or a festival beside a weapon carried, none of them denied (`unnegatedIn`: "this is not a game"), a blade on a camp or a trip (`bladeHeads`, `outdoorWords`) and a gun at a range (`gunHeads`, `shootingRange`), and exasperation with one person close taken back (`hyperbolicActs`, `retracted`: a refusal that is a clause of its own, not "I won't stop", and no "not kidding"; `closeOne`)), `threatComingRules` + `threatComingCheck` (harm said to be coming, with `threatSubject` reading who or what before it: a group picked out by where or who it is (`pickWords`, a class and section, `classSection`), all of them, or whoever is somewhere (`presenceCondition`: "if anyone shows up to the rally"); a place or a vehicle picked out that will burn, blow up or explode (`explodeRuns`, "is going to explode" among them, read in Go and paired through `anyRunNear`; not "explode" at news, `explodesAtNews`: a clause of "when", "once" or "if" that names news a clock time leaves news (`explodeClockNews`: an announcement, results, marks, rankings or a list put up, "at 10am when the results are declared") or, with no clock time after "explode", other news (`explodeNews`: a cutoff, prizes, prices or fees, something cancelled, a holiday, the wifi; a date sheet, an answer key or a report card, `explodeNewsHeads` after `explodeNewsKinds`; papers given or handed back, `explodeReturn` with `explodePapers`) or a happening a crowd cheers (`explodeHappenings`: something seen or heard, though not something unnamed on a day named, `explodeSees` with `seenUnnamed` ("it", or "this" or "that" with none of `explodeMedia` after it) and `soonWords` before "when" or after it ("tomorrow when he sees it", "when they see it tomorrow", not "when they see this lol" or "tomorrow when ma'am sees this meme"), a win, a show, food served, a fix, a resignation; something found out, come out or brought back, `explodeOut`, `explodeBack`; something read out, `explodeReads`; a six or a century hit, `explodeHits` before `explodeScores`; being let or told to go home early, `explodeLet` and `explodeSay`), and has no poster (though "we" after `explodeSay` is told: "says we can go home"), none of a bomb's timing (`explodeTriggers`), nothing hidden (`explodeHidden`, or "what's" before "in" and "it" or something that holds a thing or a place, `hiddenIn` with `explodeHidden`, `explodeVessels`, `explodeHolds`, `explodeSpots` and `threatPlaceWords` but `explodeFed`, read from the head of the noun phrase, or from its first word before a number, a code or where it stands, past a side of it, `explodeSides` before "of": "the bag", "what's in the locker", "what's in the van", "what's in the back of the van", "what's in room 12", "what's in the hall", not "what's in the yearbook", "what's in the new dress code", "what's in the squad", "what's in store" or "what's in the canteen today"), no gates or doors closing, place filling or "least expect" (`explodeTiming`), no assembly unless something is announced in it (`explodeAssembly`), and no people arriving, going in or somewhere (`explodeArrive`, `explodeGoIn`, `explodeBe`, read only with people as the verb's subject, `peopleSubject`, so "the results are in" is news); never with assembly before the clause, nor with a bomb or the poster arming one anywhere after "explode" to the end of the post, `explodeArmedFrom`, which finds where the last word that arms one starts once for each view (`armedAt`, and `madeAt` for the last that arms one or is a bomb said in praise of something made, `madePraise`, which news excuses but a stage or an event in the sentence does not), and `explodeArms` (`explodeDevices`, a device among them, also with "'s" after it, "the bomb's under the stage", unless said in praise, `explodePraise`: "our dance is the bomb", "my results are a bomb", "the lineup is a bomb", "a bomb of a day", "the atmosphere will be explosive", `explodeMoods`, not "there is a bomb", "the package is a bomb", "my lunchbox is a bomb" or "my present is a bomb", `explodeVessels`, nor something made said to be one truly or somewhere, `explodeMade` with `explodeLiteral` and `explodeTruly` ("our project is a bomb", not "my project is a bomb, literally" or "my project is a bomb, it's under the stage"), nor a work named with a word before it or something made with no "a" said so, `workSubject` with `explodeWorks` ("my art project is a bomb", "the stage setup is a bomb", "our project is bomb"), nor one pointed at and then placed, `explodePointers` ("it's the bomb under the stage"), nor a praise that goes on to such a thing, `soIsNamed`: "my results are a bomb and so is my bag", though "the lineup is a bomb and so is the food" and "so is yours", `explodeMines`, are praise; the poster's `explodeRigs`, or `explodePlants` before "it", or before `explodeArticles` and something that holds one ("i put the bag in the staffroom"), where it would go off, `explodePlaced`: `explodeHides` anywhere but where it is shown, `explodeShown` with `explodeShows` ("i hid it", not "i hid it as my wallpaper"), the rest with nothing after them, "there", under or behind something, with a device, or after `explodeAt` or "next to" anywhere but where it is posted, printed, shown, kept or at home, `explodeSomewhere` reading the head of the noun phrase with `phraseHead` (`explodeShows`, `explodePrints`, `explodeMedia`, `explodeKept`: "i set it", "on the bench in the hall", "near the gate", "in the car park", "on the teacher's desk", "next to the stage", not "i set it up for the dj", "i put them on the class gc" or "i left it at home"), and not put there to be seen (`explodeSeenBy`, `explodeFinds`: "so she sees it first"); "it" or "them" put, set or left after a thing seen that holds nothing stands for that thing, `explodeReferent` with `explodeShowables` and `explodeMedia` ("when they see the cake, i left it in the staffroom fridge")), which no stage or event in the sentence excuses either: "when the results come out, i planted it in the staffroom", "the hall will explode tomorrow, the bomb is under the stage"); nor with harm, people or a warning in the rest of its sentence or the next (`explodeRest`, `explodeHarmAfter`: harm named outright, `harmDone`, or the poster not found out, `concealed` with `knowAsks`, but for a meme or a video seen, "they'll never know it was me", not "i'll never know how i passed"; a weapon; people, with the verb of their own clause, `explodeVerbStarts`, harmed, trapped or in the place, `explodeTaken`, "all of you will burn", "everyone will be in the hall", though not burning with `explodeFeelings`; "and so will everyone in it", `explodeSoWill`, but at a win or a score, `explodeCheered`; a warning to keep away, `explodeWarnings` with `explodeWarned`, "so don't come", "i'm not joking"); people who "will pay" with nothing after it but a time, a place or "for it", "for this" or "for that" (`payRuns`, `payCheck`: the reader, all of them, someone picked out or whoever wronged the poster (`whoeverWronged`: "whoever broke my phone", "whoever keeps stealing my lunch", "whoever reported me", a verb of `wrongVerbs` in any tense after up to three of `wrongAux`, or one of `softWrongs` said of the poster, "whoever posted my pic"), never the poster's own; not with a sum, a bill, a fee, a receipt or attention in the sentence, `moneyWords`, unless a real weapon or ammunition is named, `realArms` ("i ordered a gun online", not "nerf bullets"), a thing bought, ordered or signed up for, `purchaseWords` read by `purchasePaid` only as a purchase made, `purchaseMade` (not after a negator, "nobody can buy you a new face", not "signed" without "up", not "ordered me around" or "buy them time"), (in a relative clause before the promise, "everyone who signed up for the trip", or a clause after it, the poster's own too, in the promise's clause or the next, with no way or place of hurting in the promise's clause (`payWays`: "with your life", "outside the gate", "at the gate") and nothing after it in the sentence or in the post's next `threatWindow` characters that `payMenace` reads as a threat's (a weapon, pepper spray, `prepWords`, `poisonWords`, an end promised, `payFinal` ("enjoy your last day", "say goodbye to your family", "you'll end up in hospital", "ur gonna regret it"), or what `fightSet` finds, but not "dead" before `deadIntensified` ("dead tired") or gear put to its use, `payUse` (a bat or a stick after `payPlay` or with a pitch booked, a knife to cut food or what was bought, a lighter for `payLights` with no one's thing or place after it), unless `payAimed` finds someone named to be hurt ("bring your bats and hit him", "he won't walk again"): "i already ordered the pizza. see you at 7", "i booked the turf", "i booked the turf. bring your bats", "i ordered the cake. can someone bring a knife to cut it", not "i bought the pizza, it's poisoned", "... bring a knife" or "... it's gonna be a bloodbath"), unless `purchaseArmed` finds a weapon, something to hurt, tie up or burn with (`prepWords`: rope, zip ties, chloroform; `plainPreps` with no ordinary use after them, `plainPrepUse`: gloves, tape, a mask, pepper spray, "tape for your mouth" (`gagParts`, `bodyHeads`), not "the gloves for the match" or "the charts and tape"), something left vague or a purchase "for you" in it that `payOrdinary` does not find ordinary (`payGoods` bought, `giftGoods` for "her" or "him", or a `payOccasions` word after the people, with only `payTrail` or more goods after: "the snacks for them", "a gift for her", "a cake for her birthday", "the pizza for you guys", "the cake for you and the candles") ("i bought a bat", "i ordered something special", "i bought a gift for you"); "got" only with `payGoods` after it (`gotGoods`: "i got the hoodies for everyone", not "i got suspended"); never "buy your way out", "in order of" or a sign-off's "signed"; and in a sentence where `fightSet` finds no weapon, death or fight's place: `fightDeaths`, "in blood", "your last birthday" (`lastRites`), "it's your last", "outside the gate"), or a thing broken that is no one's body, `damagePaid`, unless `fightSet` finds a weapon, a death, a fight's place ("behind the school") or, for the poster's own thing with nothing paid "for it", a fight's time ("after school"), after which the promise is held only with a time or a place near it; nor asked as a question in its own clause); a person "dead" at a time (`deadWhen`) or who won't see, survive or walk out of a day (the speaker's own only for a teacher or a classmate with no `prognosis` named, never family), "the weekend", "the morning" and "another day" being their own time (`threatUnseenRules`, paired with themselves); a class dead or teachers not surviving over exams, results, homework or a load of lessons with no weapon named (`schoolHyperbole`, `schoolWorkWords`); turned down for the speaker's own, people at large, one person as a caution, the habitual, a story, a dream, a game, a stage or an event not given a time (`untimed`) with no bomb after it, even one said in praise of something made ("the school will explode tomorrow, my project is a bomb" is held, `madeAt`), a harmless condition, a "by" that names the cause, and "with cheers"), `threatSymbolRules` + `threatSymbolCheck` (a weapon emoji beside a school one, not with a game, a toy or a festival), and Hinglish verbs with the subject left out (`hindiKill`, `hindiBody`, `hindiGuns`, `hindiPronouns`; washing, a lift, a DJ and a game turned down in `threatExcused`, a game also when it comes before "mein" or "pe", `hindiGameNamed`) near (`threatWindow`, counted in `readingPositions`: letters and digits, and one for each gap however it is filled, so invisible characters and emoji pad nothing) `threatPlaceOrTimeRules`, which are found first and once (`nearSpans`), so that a match with none near it is never checked (`anyNear`), `schoolShootingRules` (a school or mass shooting, the next school shooter or Columbine, a massacre at school) near `shootingTimeRules` (a time still to come, or a day), filtered by `threatCheck` (`threatExcused` first, for the phrasings that need their own reading: a passive harm ("gets stabbed", "will be shot") that is the poster's own (not a place, a vehicle or a person: `passiveSubject`, "our school is getting bombed"), "bombed with" what swamps a place, `bombedFlooded` ("assignments", "mosquitoes", not "a drone" or "with students inside"), "on fire" at an occasion named after it, `onFireHype` ("it's biryani day", not with what `onFireHeld` finds: fuel, people kept inside, "you know who you are"), killed in an exam (`schoolHyperbole`), by someone named, idiomatic ("shot down", "stabbed in the back", "killed off"), habitual, a story's or a game's, "gets" with nothing soon after it; "gets what's coming" and "pay" as karma; "end with" a visit; "nobody gets out alive" in a story; "everyone … is going to die" of an event or food; Hinglish that names a mosquito, a stage, a lamp, an exam or a toy, or "aag laga" about an event with no fuel named ("presentation mein aag laga denge"); a weapon held as a prop; a stage set on fire; a topic beaten to death), a part in a school play or a musical (`playedPart`: a play named in the sentence or the one before it, `namesAPlay`, with "drama" only of the stage, "our school drama" or "drama club", not "so much drama"; the poster's part named with a capital, `partNamed` ("I'm Brutus", "playing Burr", "cast as Tybalt"), or the act set on the stage in its own clause, `stagedIn` ("in act 3", "in the final scene", "every night", not a whole show after "before" or "after", "before the show"); nothing in that clause setting it off the stage, `offStage`: "for real", where the poster's day is spent (`offStageSettings`: "on his way home", "in his sleep"), "after" or "later" not on the stage (`onStageAfter`: not "later in the play", "after the senate scene" or "after he speaks"), a place that is no stage ("at school", "at her house"), or, unless the clause sets it on the stage ("on opening night" among them), a clock time or a date ("at 3pm", "on the 5th"), a time of day or a period (`offStageTimes`: "tomorrow", "next week", "this weekend") not said of the play straight before it (`playTime`: "in the school play next week and I stab Caesar"), "during" anything but the show, a part of it or the occasion the play is named for (`duringShow`, `showParts`: "during the final act", "during the dress rehearsal", "during annual day", not "during the break" or "during school"), "when" and a clause with no cue (`stageCue`: "when he enters", "when the lights go down", `stageSignals`, not "when I see him"), or a day of the week the play is not said to be on (`playDay`: "on monday", not "on Friday night" or "school play is on friday. … I stab Caesar on friday"); "tonight", "today" and "now" (`showNow`) are the show's once a part is named, though not for an act done to a stranger, a name that is none of the parts of `castNames`, a closed list, or kin or a role at school after a determiner or an owner that is none of `castNames` or `castRoles` (`strangerActedOn`: "I stab Rahul tonight", "I stab our principal tonight", not "I stab Caesar tonight" or "I stab Roderigo tonight"; a part missing from the list is read as a stranger), for whom only a part of the show is a cue ("after he says one more word" is none); no real weapon), a lab blown up or set alight in a practical (`labMishap`, `labKit`: a practical, an experiment or kit named outside the lab's own name, no fuel or harm named, and `labOccupied` finding no weapon, fuel or people after "with", no name or class put in the lab after "with" or "while" ("with Priya in it", "with 10B inside", "while Rahul is in there"), and no place or people joined to the lab by "and", though a time, a laugh or "first" come before it (`labLeads`: "and then the whole school", "tomorrow and the teacher too", "first and then the staffroom"), nor a name ending what is joined that the source writes with a capital (`capitalsIn`: "and then Rahul") or that "too" follows (`labAlso`: "and rahul too"; `labNotNames` are verbs, "and then panic"), nor the poster's own partner or group, `labMates`, unless `labTrapped` follows ("and my partner too lol"), where people followed by a verb, `labClauseVerbs`, are the subject of a clause of their own (a pronoun too, `labPronouns`, before a verb or one of `labTails`: "and they'll"), let off only as their answer to the poster's mishap, `labReaction` (the poster as its object or owner, one of `labReactions`, a school's penalty, `labPenalties`, a chore they "have to" do, `labChores`, staying back or a new lab: "and the teacher will kill me", "and the whole class will laugh", "and the whole class will get detention", "and the teacher will give everyone extra homework", "and the whole class will have to redo it", "and my parents will have to pay for it", "and ma'am will write a complaint to my parents"; never with what menaces them anywhere in it, `labMenace`, "too late", "what hit" or "pay" for what they did, `labPays`: "and the teacher won't know what hit her", "and the teacher will regret failing me", "and everyone will run but it'll be too late", nor with death or harm, `labDeaths`, "in hell", "who i am", hanging "from" one of `labHangPoints` (`labHung`), or a chore done to someone's body or life (`bodyHeads`, `labLives`): "and everyone will have to clean up the bodies", "and the teacher will get detention in hell", "and the teachers will finally know who i am", "and the teacher will be suspended from the ceiling", "and the teacher will have to fix her face"), and never when it says they are harmed or in the lab, `labTrapped` (`labHarmed`, `labStuck`, "in it", "there", "out" after a negation, "with it" after going: "and everyone will die", "and the teacher will be in it", "and the teacher won't make it out", "and ma'am goes up with it"; not a death of `dieIdiom`, "will die of shock", nor an audience, `labWatches` before "me", "us" or "at": "will be inside watching me fail"); a name followed by a verb is held only for `labTrapped`, "and rahul will be locked in"; nor with a share of a class put in it, `labShares` ("with all of 10B in it"), nor harm named outright in the sentence or the next (`explicitHarm`: "and nobody will make it out", "none of you will get out", where `escapesHarm` takes no one getting out of or surviving one of `escapeOrdeals` with no place after it, `escapeOrdeal`, or getting out with one of `escapeGrades`, for no harm unless "alive" follows: "none of us will get out of the write-up", "nobody will survive the practical"), nor people the next sentence says are harmed or in the lab, `labLater` with `nextSentence` (". the teacher will die", ". everyone will be inside")), film and sports shoots, games, named or after a preposition (`gameNamed`: a title or a map within the sentence or the 64 bytes before it; never when the sentence names a real place, `placeNamed`, a word of `threatPlaceWords` that is not a time, as "after school" and "before class" are (`timeBefore`); after "at", "in" or "on" (`gameAfterAPreposition`), also `gameTitles` and the games whose words are verbs or seasons elsewhere, `playedGames` and `playedPairs` ("in Smash", "at laser tag", not "smash his face in" or "in the fall"), two-word names read in either view through `canonPairs`; the school sports of `sportWords`, "dodgeball", "netball", "rugby", only for a kill or a murder (`sportKill`) with the sport straight after "at", "in" or "on", not its ground, practice or changing room (`sportGrounds`) and with no weapon in the sentence, `sportAfterAPreposition`, said of the other side and not in earnest (`sportBanter`: "them", "you", "him" or the other team, never "everyone", and none of `seriousWords`, "for real" or "not a joke" in the sentence), and for nothing else `gameWords` excuses), but not for "there will be a shooting" or "a bomb", a condition that is not a demand (`harmlessCondition`: not "if you tell anyone", not "unless"; one that names no place excuses "hurt" too), a metaphor in an exam, the markets or the polls, a drill, hurt feelings and killing with kindness (`harmlessObject`), hyperbole such as "die of boredom", "die in the exam", "die when you see the results" or "when the results come out"); `namedTargetRules` with `namedTargetCheck` (a name with a capital, any after a title such as "mr" or "sir", or one in small letters that `lowerName` takes with the phrase ending after it; not an exam, subject, team, acronym or someone's occasion: "kill JEE", "kill Rahul's wedding"); `schoolShootingCheck` (a drill, an essay, a debate, `schoolShootingTopics`; the past, `shootingPast`; a massacre or a bloodbath in a sentence with an event, a game or a market); `threatWarningRules` near `threatWarningCues`; and `menace`, a threat told by implication: `menacePhrases`, each a `wordRun` read from its first word over the plain view's words (`wordReading`, `menacePhrasesAt`), are hints of a `menaceKind` (`menaceAfter`: an ambulance, a hospital or a body bag ahead, not after food, a run or the heat in its sentence (`harmlessCauses`), `nobodyLeaves` alive or home, the news, nothing left, someone's last one, `harmComing`, a place burnt to the ground or lit up (`ruin`, which exams do not make hyperbole; `lightingUp` and `litUp`), someone left inside, a crowd's last time (`lastCrowd`); `menaceReady`: what I need, in a bag or not, `enoughForAll`, a `listOfNames`, a `hiddenThing`, made sure of it, locked in from outside, people locked or trapped in a place (`lockedIn`: strong for a crowd, "them all", "everyone", locked in by the poster or by nobody named; not "us", not for a drill, a lockdown, an exam, a talk, a party, an event, a project or a time it ends, `lockedInExcuses`, an escape room, `escapeRoom`, or a purpose of study or attendance after "so", `lockedToStudy`: "so nobody bunks", though not "so they can't escape", or after "for", `lockedFor` ("for revision", "for the class photo"), and none of them in a sentence that sets something alight, `alightIn`: "for the fest and setting it on fire", or that names harm outright, `explicitHarm`: a weapon, people shot, stabbed, gassed or killed, nobody getting out or escaping, the poster never found out, which overrides every excuse); `menaceArmed`: a weapon, a club with a crew, a weapon emoji, a weapon brought in Hinglish (strong); `menaceVerdict`: done, happening, they'll learn, an `ultimatum`, `comingFor`, `hindiTarget` (strong); `menaceStayAway`: `stayAway` with no reason given, in its sentence or the ones either side (`stayAwayReasons`, `reasonNextTo`: "the canteen pizza on friday is a crime. stay away"), and no purpose after it (`stayPurposes`: "leave early to catch the bus"); `menaceWarned`: a "last chance" that is not one to sign up or buy (`notAnOffer`, `lastChanceOffers`); `menaceGrievance`: `wrongedBy`), turned down by their checks, by `excused` (a story, a dream, a game (`gameIn`; `notAGame` keeps "finals week", a "final warning" and a sports day out, as `gamesIn` does for `threatExcused`), a likeness (`likened`), `schoolHyperbole`, an event not given a time, the habitual, the poster as the subject) and by `reported`; two kinds within `threatWindow` of each other (`menacing`, which a grievance with only a warning is not) or one `strong` hint, within `threatWindow` of a place or a time, or with one in a hint's own sentence that `threatPlaceOrTimeRules` leave to the grammar (`placed`: `placeHeads`, `vehicleHeads`, `menaceTimes`, `menacePlaces`), hold |
+| hold, `202` | `self_harm` | `selfHarmRules` filtered by `selfHarmCheck` (`calledOnSomeoneElse`: an act called in code as a method of someone other than the reader, "me.die();", while code is otherwise read as text; `saidFirst`: a bare "jump off a bridge" or "just end it" counts only as an imperative, not with a subject before it, though a condition on the reader then "just" opens it ("if ur that stressed just jump", `conditionWords`); `askedWhether`: a question that asks after the reader ("are you going to kill yourself?"), not one of when; `reported` and `mentionedAsAKind`: words reported or named rather than said ("he said 'just end it'", "the kys comments"); "take all your pills" with a routine after it (`pillRoutine`), not "at once"; "you should end it" and "just end it" with nothing but `shrugs` after them (`onlyShrugs`) and none of `endItOthers` in the 120 bytes before or after, nor a clause beside them that opens on what is ended (`namesWhatIsEnded`, `opensOnEnded`: one of `endItThings` first, or after a determiner that opens the clause or follows "of", "just end it already, this lecture is 3 hours long", "sick of this chapter, just end it", in a clause that speaks to no one, so "this exam was easy and you still failed, just end it" is held); "go starve" and "you should stop eating" with nothing but shrugs after them or "to death", and "stop eating fatty" (`fatInsults`) with nothing after it; "ja mar" not before "gaya" (`diedWords`) or "kha" ("jaa mar kha le pehle"); `notNegated`: a negation ending the same clause, as in "don't you dare kill yourself" or "a bad rank doesn't end your life", not one anywhere before it, and a warning, "careful" earlier in the sentence or "or" before the modal; idioms such as "die your hair" and "a hill to die on", games after the words or after "in" before them, and "self-" compounds, and "delete yourself from" a group); `selfHarmUrgeRules` filtered by `urgeCheck`, which read an act urged on someone the way the threat frames read an act: the act first (overdose or "od", rope, die, jump, jump in front of a vehicle, "do it", stop or quit breathing, existing or living, self harm, the reflexive acts, "kys" in its forms, `kysForm`), also read as `urgeRuns` for "commit suicide" and "do suicide" ("bro just commit suicide", "just do suicide yaar"); then `urgeFramed` reading how it is told: an order opening its clause with only fillers before it ("bro just rope"), "and" after a favour asked ("do us all a favour and overdose"), or a modal said to the reader ("you should", "you need to", "why don't you", "time for you to"), or a question of when (`askedWhen`: "when are you finally going to", "are you ever gonna"); "rope time", the act judged ("ending yourself would be the best thing", "suicide is the only solution for someone with your marks", "the world would be better if you ended your life") and the Hinglish ("zeher kha le", "apni jaan le le", "latak ja", "mar kyun nahi jaata") say who it is for in themselves; turned down by `calledOnSomeoneElse`, `notNegated`, `reported`, `mentionedAsAKind`, `glossed` ("kys = keep yourself safe?"), games, `poolWords` after "jump" (a pool, a trampoline, the long jump pit), "overdose on" anything but pills (`pillWords`), "just do it" without `deathTopic` round it (`deathAround`, where "die of embarrassment" and the other `dieIdiom` readings are no death), "latak ja" on a bus (`hangOnWords`), and anything after the act but `urgeTails`; `selfHarmMethodRules` filtered by `methodCheck` (a how-many question in either order needs a medicine named in its sentence, so "how many volts would it take to kill you" is not one); and `goads`, encouragement told in other words, read as `menace` reads hints: `goadPhrases`, each a `wordRun` over the plain view's words (`wordReading`, shared with `menace`) with its check — `inYourShoes` ("if I were you" and then the poster's own act, `selfAct`; `supportCheck` turns the same words down with `inYourShoesBefore`), `goneAsAFavour`, `wholeSupply` (said to the reader, `haveTo`, of medicine or of something unsaid, with `finishRuns` in the post), `openDrop` (`heights`, a nudge, no `safetyWords`), `goneForGood`, `tooLate`, `meantIt` and the Hinglish reflexive — and a knot emoji with a nudge (`nudgeRuns`, ending their sentence) and no `knotHobbies`; turned down by `reported` and `notNegated` |
+| hold, `202` | `grooming` | any `ageQuestionRules` match (an age, a school year, where exactly someone lives, which area, hostel or room, an age or class said back as a question: "you're in 9th?", Hinglish "kaunse school mein ho"; a school year in any of its forms (`readerGrade`: "grade 6", "9th", "which class"), the reader's place (`readerPlaces`: "where exactly is your coaching", "which floor is your room on", "that's your tuition right?", "do you go to the…", "kis school mein ho", "8th mein ho"), the reader's area (`readerAreas`: suburb, estate, village, hall, a coaching or exam centre), a Nigerian school year ("JSS3", "which SS"), "which year 10 form", "u in class 8 or 9?", "which floor of the girls hostel is your room on", "what time does your school finish", "which gate do you use", Pidgin "where you dey stay", "kaunse saal mein ho", "u sound young", "what time do you get out", "tell me your class", "what school u at?" (the "are" left out), "u in high school?", "so mature for 13"; a statement of the reader's year after "when" or "by the time", or followed by a unit or `%`, is not one: "when you're in 12th you'll understand", "you're 15 minutes late") that `ageCheck` keeps (a question, or an age looked for as a number, `ageNumber` and `ageUnit` before a `youthNoun`: "any 14yo girls", "13-15 yo girls"; or a `youthNoun` looked for by an age or a class, "girls under 16", "any girls aged 14", "looking for a girl 13-15", "any class 9 girls"; with no "any", a school year and one of `soughtYouths` (girls, boys, graders: not guys, and students or kids, `pupilWords`, only with a way to reach the poster after them, `pupilsReached` (after "pls" or a "who" clause too, and past a comma: "class 7 kids who want free robux dm me"), and secrecy, a lure or an ask after that, `pupilsSought`: parents or other adults kept out (`keptFrom`, or one of `passVerbs` barred, `tellBarred`: "no parents", "don't tell your mum", "without telling your parents", not "tell your parents", "don't forget to tell your parents", or, with one of `parentNouns` after them, "no parents signature required"), asked about or kept from knowing (`parentsAway`: "are your parents home?", "your parents don't need to know") or the reader asked to come alone (`aloneAsks`), whatever else is said; a lure (`pupilLures` given to the reader, or after `pupilGivers`: robux, "i'll pay you", "i'll send you money", "i'll send you gifts", "i'll send gifts"; gifts only when no `pupilWe` gives them and no one but the reader is named after them, `pupilGiven`, `pupilRecipient`: not "we'll buy gifts", "we're giving gifts to the teachers", "i'll send gifts to everyone" or gifts to the class, the seniors (`pupilGiftGroups`), an occasion (`pupilOccasions`) or a name, but "i'll send gifts to everyone who dms", "to all of you" or "to the girls"; a surprise or "something special" for the reader, `pupilReaders` or "my juniors", `pupilReader`: "i have a surprise for you", "a surprise for my juniors") with nothing they would study, sign up for or do as a group and not said to all of them (`pupilsAll`: "a surprise for you all after boards"); or "just us" unless a group follows it (`pupilGroups`: "just us girls"), "just me" unless one of `pupilDuties` does, after "and" and someone named too ("just me handling the forms", "just me and riya organising the fest", not "just me taking you" or "just me and you organising"), teachers kept out, "don't tell anyone", "promise you won't tell", "tell no one", "keep it quiet", "between us", a secret, a private chat, being alone, an ask (`pupilAsks`: a photo after one of `photoAsks`, not one of or for someone or something else, "a photo of the timetable"; a video call; coming to the reader's school, not "for the career talk"; picking them up) or a meeting not in a school's or a group's place (`pupilPlaces`), not of a kind (`meetKinds`: "the parents meeting", "the alumni meet", "the model un meeting") and not in the open (`meetsOpenly`: one of `meetPeople` met, "meet the career counsellor", or a group's business after "about", "a meeting about the class magazine", unless a place of someone's own follows, `privatePlace`: "meet the coach at my house"), with no lure and nothing they would study, sign up for or do as a group (`pupilErrands`: "secret santa", a club, a debate, notes, a cleanup; `teacherErrands`, a gift, a party or a plan for a teacher who is not kept out; a surprise in a post for a teacher, a classmate, a group, an occasion, someone's occasion ("it's riya's birthday") or a name, `pupilMates`, `pupilNamed`: "a surprise for ma'am", "a surprise for kabir, keep it between us", a name being a word `lowerName` takes, right after "for" or "to", none of `pupilNotNames` ("for free", "for cutie") and with one of `pupilNameEnds` or nothing after it; one of `pupilNickNames`, given names also said to a child, is a name unless the poster has what is for them, `pupilNickNamed`, `pupilHas`: "it's a surprise for pari", not "i have a surprise for angel"): "class 8 students dm me, no parents", "class 8 students please dm me, no adults", "class 7 kids dm me, i'll send you gifts, keep it between us", "class 6 kids dm me, i have a surprise for you", "class 7 kids dm me, it's a surprise, don't tell anyone", "class 7 kids dm me for notes, come alone", not "class 12 students dm me for jee notes", "class 9 students dm me for doubts, no parents needed", "class 8 students dm me for the trip form and tell your parents", "class 10 students dm me, we're planning ma'am's birthday surprise, don't tell the teachers" or "class 12 students dm me, lets meet in the library tomorrow") after "looking for" or "searching for" (`seekingVerbs`), or else in the plural with a `seekingTails` word after them, a "who" only before what they are wanted for (`whoSought`: not "9th graders who went on the trip"), or in the singular with a way to reach the poster after (`reachTails`: "class 8 girl dm me"), and no article or `groupLeads` word before, "class 8 girls dm me", "9th graders hmu", "looking for class 8 girls", not "class 8 girls relay results", "the class 8 girls dm me every day", "grade 9 student here, dm me" or "class 8 girl here"; a `youthNoun` and a number in a sentence that counts more than one (`tallied`: "boys 13, girls 14") is a tally, not an age looked for; "our 15 year old students are doing well" matches too and is held only beside a cue; an age followed by an open age rule, `ageRuleAfter`, is not, unless the rule names an adult's age: "u 14? the competition is for 14 and above"; and "how old are you" followed by `generalOldNext` asks an age in general, "how old are you supposed to be to go out alone"; "how old" and "what age" after one of `askedWords` in their own sentence are reported (`askedBefore`: "she wanted to know how old are you"), but not after a sentence that ends in one, "your parents don't need to know. how old are you?") (or `aslRules` with `aslCheck`: "asl" opening what is said, not "bored asl" or "ASL club"; or `ageAndPlaceRuns` with `ageAndPlaceCheck`, "asl" spelled out where it opens what is said and ends it: "age and location?", "age/city?", not "age and location of the exam centre?") and any `privateCueRules` match (talking privately or alone, meeting, coming over, "just us two", keeping it quiet, parents not knowing, "akele aana", "kisi ko mat batana"; "come alone", "come without your friends", "wait for me", "meet me at", "I'll pick you up", "somewhere your parents can't see", "do your parents know", "your parents don't need to know", "delete this after", "let's go private", "keep it a secret", "ek baar milo", "gift dilaunga", "keep our chats between us", "do u walk home alone", "I'd love to see a photo of you", "come pick you", "kisi ko bolna mat"; "I'll buy you a gift", "I'll come to your school"; money as an amount, `lureAmount`, "i'll send you 500 rs", a bare number only with its currency (`lureGivers`: not "i'll send you 2 more notes"); a "dm" or "pm" said as a sentence of its own, "age? dm", or ending the post, but not the "pm" of a time (`hourWords` or a number before it: "starts at 3 pm"); "can i see a pic", which `privateCue` turns down when it is a picture of something else, "can i see a pic of the question"; a bare "privately" only beside an offer to the reader, and "waiting" only for them; "between us" only after `betweenUsLeads` ("just", "stays") and ending what is said; "tell no one" and "no need to tell your parents" only told to the reader (not after `tellers`) and ending what is said or saying it is about the two of them (`secretEnds`); "alone" opening a clause with a "?", or ending an order to come after a comma ("come to the chai stall after class, alone", `orderFillers` then `comeWords`); "walk with you" not "walk you through", "come up" not "come up with") that `cueCheck` keeps, or any `groomingCueRuns` run that `groomingCueCheck` keeps (a video call asked for with no app named, "lets vc", "can we vc", not with a group, `groupCallWords`; a "vc" said on its own, `vcAlone`, not "our vc club"; a camera turned on outside a lesson, `lessonWords`; "nobody will know", "promise you won't tell", "you won't tell anyone", with nothing after them but `secrecyTails`, not "nobody will know the answer") ("call me crazy", "not just you", "meet the deadline", "between you and me, the food is awful" and "seniors se baat karo" are not cues; nor is "do your parents know about" a thing, `personalAbout` naming what is not one; nor a `meetingCues` cue in a sentence with `publicPlaces`, `groupMeeting` or, for a visit, an `errand`, unless the sentence has `isolationWords`; `cueBesideAnAge` takes those meetings back when `asksTheAge` finds the reader's age asked) in the same post, or a `contact` block in the same post, which is the cue (`contactCue`, see the precedence below) |
+
+Precedence is block, then support unless `support_seen`, then hold (threat, self-harm,
+grooming), then publish, with one exception: a `contact` block in a post that also
+places the reader (`placesTheReader`: an `ageQuestionRules` or `aslRules` match that
+its check keeps) is not returned; it sets the private-contact cue `holdReason` reads
+for grooming, so the post is held instead of telling the poster which half of the cue
+to remove (`TestFilterPrecedence`). An `id_number` block a field finds first still
+blocks; one after a contact block in the same field is not looked for, and is held
+with the rest. A question about a method ("how many pills would kill me")
+gets the support screen first and is held once the poster goes on, because the person
+asking may be the one at risk (`TestFilterAsksAboutAMethodBeforeHoldingIt`).
+
+**Reported speech is one reading, shared by every family** (`reported`,
+`TestFilterReadsReportedSpeechAsSomeoneElses`). Crisis language, encouragement, threats
+(every rule `threatens` pairs, through its `own` wrapper), both halves of a grooming cue
+(`cueCheck`, `cueBesideAnAge`, `ageCheck`, `aslCheck`), method questions (`methodCheck`)
+and asks to talk elsewhere (`askCheck`, `appFrame`) all turn down words the post passes
+on rather than says: a greentext line quoting the post being answered
+(`quotesTheReply`, unless the run of greentext lines it is in opens with "be me", "tfw"
+or "mfw", `greentextRun`); a quotation, in any kind of quotation mark (`quotationAround`,
+which counts straight double quotes on the line to tell an opening one from a closing
+one, and reads curly single quotes as the apostrophes the view folds them to; an
+apostrophe for letters left out, "'cause", "'til", "'09" (`elided`), and the marks of
+feet and inches, "5'10\"" (`inchMark`), open nothing), whose speaker `quoteSpeaker`
+finds to be someone else — a label ("teacher:", "his dm:", "my bully to me:"; whoever
+comes after "to" or "dear" in a label is spoken to, so "note to my bully:" is the
+poster's, and a label with a verb of saying in it, "he messaged me:", is read for its
+verb, the last one unless it is in a clause of time or cause after an earlier one with
+"this" for its object, `framingVerb`: "a stranger sent me this after i posted:" is the
+stranger's), an attribution after a dash that names a person (`attributionSpeaker`:
+"— some guy in my class", not "— should I tell someone?"), or a verb of saying, writing,
+asking, sending or coming across within four words before it or six after it, whose
+subject `speakerOf` reads back to (`otherSpeakers`, `messageNouns`, any word not in
+`subjectSkips`), or that was said to the poster ("told me '…'", "was told",
+`passiveLeads` + `participles`, so "'…' he's been texting me" and "'…' they've been
+texting me" are theirs, and "'…' i've been told this" was said to the poster, while
+"'…' i've been texting him this" is the poster's own; `heardVerbs`, `receivedVerbs`);
+the poster's own clause after it giving the words as someone else's (`posterDisowns`:
+come to the poster, seen or read, "'…' i keep getting messages saying this", "i found
+this written on my desk", "i received this today"; refused before the verb of saying or
+appealed against, "i'd never say this", "we need to stop saying this", not "i won't stop
+saying this"; said by someone in a clause of "if" or "when"; or passed on to a parent, a
+teacher or the mods, "i'll show this text to my mum"), the same clause with its "I" left
+out ("got this again", `elidedReceipts`), a clause with the words as its subject
+(`quoteReceived`: "this was written on my desk", "this keeps happening", not "this is in
+my locker"), or someone else leaving them (`leftByOthers`: "someone left this in my
+locker"), unless the place is the reader's ("this was left on your desk",
+`readerOwners`) with no care for the reader after it (`readerAdvised`: "are you ok? tell
+a teacher", "did you report it?", not with a dare or menace, `readerDared`: "tell a
+teacher, i dare you", "see what happens", "watch your back", a laugh after the care, "i
+know who did it. me") or a sentence after them that starts within `threatWindow` owns
+them, each read whole (`ownedAfter`; `posterOwns`: "for you", not "here for you" or
+"waiting for you to", a weapon, "and i'm bringing it", "and i'll do it", "i'm going
+through with it" (`carriedOut`), "it was me", "by me", "i wrote this", "those words are
+mine", "this time it's real" or "for real", not with the poster's fear or a call for help
+in any of those sentences, "it's happening tomorrow" (`happenComing`, not after "if" or
+"maybe"), "and i agree"; `posterCarries`: the poster, or no one named, carrying, using,
+taking or making real what came, "bringing it tomorrow", "and i'm going to use it", "i'll
+make it real", "make it a reality", `ownedDoing`; not "bringing it to my teacher",
+"bringing it to sir", "showing it to my head of year", "using it in my complaint" or
+"using it as evidence", `handedOver`, nor "i'll bring it with me" when another sentence,
+not refused, hands the words over or tells an adult of them, "im going to the principal
+tomorrow with my mom. i'll bring it with me", `broughtAlong`, `toldHelper`). For
+crisis language a clause gives the words away only when it names who sent them or a
+message (`sentByOthers`), so "'i want to die' this keeps happening" stays the poster's;
+a quotation named as a kind of post (`namedAsAKind`: "the 'add me on snap' guys"); and
+the same report without quotation marks (`reportedClause`: a verb of saying before the
+words, in their sentence and before any comma, with only `reportedLinks` between: "my bf
+told me to go kill myself", "he said he'll shoot up the school"). A verb that doubles as
+a noun is the noun after `nounLeads` or a possessive (`sayingNoun`: "my post", "his
+message"). The poster's own words stay theirs however they are wrapped: a label, a dash
+or a subject that is the poster (`posterLabels`, `posterSubjects`, the poster's own
+mind, `mindWords`: "my head keeps telling me to"), an instruction (`instructionModals`:
+"you should tell him to kys"), a verb with no subject or only an adverb before it
+("already told everyone '…'"), "you heard me", and a quotation no one is named as
+saying. A source that is not a person names no one, so "news: '…'" and "'…' - police"
+still hold. This is the rule the owner set: a student reporting a threat, a grooming
+attempt or being told to kill themselves is not held for it, and a poster who wraps
+their own threat in quotation marks ("'I'm bringing a gun tomorrow' - me") is. The cost
+is that a threat put in someone else's mouth ("my friend said 'I'm bringing a gun
+tomorrow'") is published; the README says so. Contact details are blocked whoever they
+are said to belong to: only asks are read for whose they are.
+**The cost is linear in the post, and small.** No pattern is run whole over a view
+(`filtersearch.go`): each is split once into branches, one walk of a trie per view finds
+every place a branch could start, and a copy of Go's own regexp machine, which never
+backtracks, runs each branch from those places alone, putting no thread where nothing
+can take the next character (`viability`, worked out per instruction when the branch is
+planned; the machine finds the same matches with fewer steps). The number scanner and
+the view builders are single passes, the checks read at most a clause or a sentence each
+side of a match, cut to 64 bytes (`clauseAfter`, `sentenceAround`), or a window of a
+fixed width (`checkWork` lists them: `ownedAfter`, for one, reads each sentence that
+starts within `threatWindow` bytes after a quotation, to its end), or `readReach` words
+for a hint of a threat told by implication or a goad (whose nudges and finishers are
+read once for the post), and the threat pairing finds the places and times first and
+looks each intent up among them by binary search (`nearSpans`, `anyNear`), so an intent
+with no place or time near it is never put to its check, which is where the grammar's
+reading costs. Which copy of its quote a block is about (`matchOccurrence`) is counted in
+one pass over the field, the quote's words matched as a sequence of the field's runs
+of words, and those steps are counted with the rest; searched for again one character
+on from each copy, as the page does, a line of "a a a …" before a spelled-out address
+of forty single letters took about 140 ms. `TestFilterCountsCopiesInOnePass` holds the
+pass by what it costs rather than by the steps it reports: no more allocations, and no
+more than eight times the time, for a copy at nearly every character as for a post of
+the same length with copies only in its last line. Measured on one core of a shared
+four-vCPU Intel Xeon @ 2.80GHz (`GOMAXPROCS=1` under `taskset`, no race detector, the
+slower verdict's best of several runs, timed as the process's CPU time, with a subject
+and a name; the machine's load about 4 to 6): ordinary posts are the corpus's published
+posts run together a blank line apart and cut into pieces of 500 characters and of the
+maximum length, as many as the corpus makes (`ordinaryPieces`), and take about 1 ms and
+about 8–9 ms at the median piece (each piece's best of 11: 0.4–2.8 ms, and 6.9–13.9 ms
+for the long ones). One sentence repeated to the maximum length, which
+`BenchmarkCheckContent/sentence` posts, takes about 4.7–5.3 ms, since the same words
+over and over give the rules less to read than varied ones. The figures move together
+with the machine, so the sentence is their yardstick: the ordinary pieces take about a
+fifth of its time and 1.5 to 1.8 times it, and the slowest built bodies 5.5 to 7 times
+it. On the Intel Xeon @ 2.10GHz the earlier figures were taken on the sentence took
+2.6–3 ms; runs here at a load of 11 to 30 gave the same medians as at 4 to 6. Of 29,397
+bodies built to be slow — each rule's openings and `TestFilterCostIsBounded`'s units
+alone, in pairs and stacked; method questions with their heads, marks, fillers and runs
+of spaces varied and their words shuffled; a symbol or an emoji beside a letter, a digit
+or a mark; and runs made to strain the scanners, each repeated to the maximum length —
+each timed at the best of two runs and the slowest 120 again at the best of 15, the
+slowest take about 29–33 ms: a weapon emoji and a mark or a letter over and over ("🗡'",
+"a🪓", "9🔪"; each emoji is a hint of a threat, read for the sentence round it and for
+whose words it is), a weapon named over and over beside a day ("gun gun 10k gun gun gun
+gun sunday "), and method questions stacked before an app's tagged name.
+`TestFilterCostIsBounded`'s 155 bodies take about 0.9 to 31 ms at the best of 11, the
+most "stacked method questions" and then Snapchat's ghost before a short name, about
+25 ms (about 47 ms before `appFrame` kept its words). Before the searches were planned
+the typical post, the repeated sentence and a post of `㏂`, which folds to
+`maxFoldRunes`, took about 4 ms, 36 ms and 400–490 ms on the earlier machine.
+`go test -run - -bench CheckContent ./internal/app` times both kinds of maximum-length
+post as wall time, GC included. Refusals are budgeted all the same; see the API contract.
+Planning takes about 5–5.5 s of one core, once per process (5.0–5.2 s in six fresh
+processes under `taskset` at a load of about 4 to 5, 5.3–6.5 s at 11 to 20), and keeps
+about 65 MiB of heap; while it runs the heap reaches 270–300 MiB with four cores and
+330–370 MiB with one
+(`runtime.MemStats.HeapSys`, three and five runs on a shared machine), and the runtime
+gives the difference back to the system slowly: a server left idle after it started stayed
+at about 350–400 MiB resident for its first two to four minutes and then fell to about
+160–205 MiB (350–396 and 160–204 MiB over two separate measurements on a shared machine of
+four vCPUs, with `GOMEMLIMIT=400MiB` and without; in the later one the drop came at four
+minutes). The server's
+512 MiB has to hold that beside everything else (see the upload budgets below). `Routes`
+starts it in the background, and a post that comes first waits for it. The plain view is
+skipped when the loose one is only it with `l` read as `i` (`looseOnly`). What holds the
+cost down:
+
+- `TestFilterCostIsBounded` counts work rather than time (`checkContentCost`: the
+  places tried, the characters read, the machines' steps, and each check a match is put
+  to, `checkWork`), so it passes or fails alike on any machine and under `-race`. The
+  bodies built to be slow may cost at most `workPerByte` (160) steps per byte of the
+  post (the most, of its bodies, is a method question asked three times and then an
+  app's name with a tag in it, "how many to od how many to od how many to od i[n]sta "
+  over and over, about 150, so the bound is about 7% above it, and that is also the most
+  of the 29,397 bodies built to be slow the counts were last checked on; the next are
+  handles glued to an opening bracket and pointed at an app, "handles to brackets",
+  about 127, and a pill question run into such a handle, "howmany@pills_(snap ", about
+  116; the steps are the same with Go 1.22, 1.24 and 1.25), at most `workPerChar` (240)
+  per character, so that a post of four-byte characters is not given four times the
+  steps a character an ASCII one is (the most is Snapchat's ghost over and over, each
+  read for an ask or a handle round it, about 193), and eight times the text at most ten
+  times the steps. Its bodies include what made searching quadratic before:
+  spaces between the places a run can end ("addresses far apart", "arrows far apart",
+  read once now, since `nextRun` steps over what no run is made of and `runOf` keeps
+  every run it measured), weapon emoji, which all stand at one reading position (a run
+  of them is one hint, and `menace` pairs hints by binary search and counts it), a pill
+  question whose medicine ends no word, and handles glued to an opening bracket, which
+  every handle rule finds in both views and turns down by the bracket: `first` charged
+  each the clause each side its check is counted as reading, up to about 198 steps a
+  byte, and `firstHandle` turns one down before its check, charged the match it read. A
+  pattern whose `~` runs straight into a stretch of any characters, `~[^.?!\n]{0,60}?`,
+  keeps a copy of the stretch for every space of a run before it, which cost the pill
+  questions up to about 300 steps a byte; `window` starts the stretch at a letter or a
+  digit, matches the same text, and keeps one. An address rule keeps its name's first
+  piece a group of its own, one character and a bounded run, so that it is planned as a
+  run (filtersearch.go) and looked for from what follows the name; `spelledLocalEmailRule`,
+  with the name's spelled dots inside that group, was tried with every length of name at
+  every letter, which cost a post of "㏂" ("a.m." over and over) four times the steps,
+  inside both bounds, and half as much time again (`TestFilterAddressNamesAreRuns`).
+  `classifyNumber` asks `mathsAnswer`, which reads 64 bytes either side of a number,
+  last, of a number it has found to be a phone, Aadhaar or SSN number: asked of every
+  number that stood alone, it cost posts of helpline numbers, ranges and scores nearly
+  twice the steps and from 1.6 to 1.8 times the time, inside both bounds
+  (`TestFilterNumbersAreReadForAnAnswerLast`). A step is not a fixed time: `checkWork`
+  charges a check 128 bytes, and the checks that read wider fixed windows (its comment
+  lists them) are not charged the rest, so across those of the bodies that take more than
+  a few milliseconds a millisecond is about 18,000 to 91,000 steps (one with next to
+  nothing to search is mostly the fixed cost of a post), and the README's timing is
+  measured, not derived from the bound. What the count cannot see is held otherwise:
+  `appFrame` keeps the words it reads from one app's name to the next, so a post that
+  names an app every other character ("👻Sc" over and over) does not build them anew each
+  time, which took about twice the time at the same steps (`TestAppFramesReuseTheirWords`
+  holds it to its allocations). A new rule that trips the bound is planned or rewritten,
+  not given a bigger bound; add the body that tripped it to the table.
+- `TestFilterSearchesMatchTheirRegexps` and `FuzzFilterSearches` hold every search to
+  what Go's regexp finds with the same pattern, groups included, on every view, and
+  `TestFilterSearchesAreAllPlanned` fails if a pattern cannot be planned and would run
+  whole. A new rule's pattern needs nothing but to be written. A check may still read
+  a Go regexp over a bounded stretch round a match (32 or 64 bytes, or the match
+  itself), as most do; one large enough to cost something each match, an alternation
+  of many phrasings, is made with `newWindowSearch`, as `conditionalPlace`, the
+  medicine names and the number scanner's cues (`contactCue`, `phoneCue` and the rest)
+  are, so that it is planned and counted like the rest.
+- What planning keeps and how far its heap climbs grow with the patterns. Every branch
+  compiles its own copy of what follows its start, so the planner splits an
+  alternation only when that tail is at most `maxSplitTail` instructions (the threat
+  patterns' subjects, "i will", "someone should", sit in front of the whole list of
+  acts), shares one copy of each class's ranges among the programs (`shareRunes`), and
+  drops each pattern's tree once it is planned (`forget`). `TestFilterPlanIsBounded`
+  holds the compiled programs to 800,000 instructions (about 799,800 now; when it
+  was 570,000, the same patterns split without the bound came to 1.4 million). The support
+  rules that start at "I" and an adverb sit behind one copy of `crisisAdverbs`, which the
+  planner does not split, and share one copy of `crisisActs` there. The planner cuts the
+  openings it reads for a branch short when it has more than `maxCoverEntries` of them,
+  and an opening cut just after a separator says nothing of what follows: "a bit" before
+  "suicidal" is spelled with the separator required, or closed up, not "a~bit", whose
+  opening cut short made every "ma" that starts a word a place to look for "m a bit
+  suicidal" from (`TestFilterSupportSearchesSkipMany`). The grammar rules keep their
+  patterns small by matching the rarest word, the verb or the harm, and
+  reading the speaker and the object in Go (`frameSpeaker`, `threatFrame`,
+  `threatSubject`); a pattern that starts at "i" or "the" and spells out what follows
+  costs more steps and more instructions both. `threatActs` lists each act verb by verb and `joinActs` puts
+  the verbs that take the same people or places in front of one copy of the list, except
+  where two acts could start at the same place; `TestJoinActsMatchesTheActsOneByOne`
+  holds the joined alternation to the acts listed one by one.
+
+**Student-ID formats** (2.9's "configurable student-ID formats") are not built; the
+extension point is the comment at the end of `filter.go` — a validator beside `aadhaar`
+or a `plainOnly` rule beside `niRule`, loaded from configuration, with its own
+`findingKind`. A new rule needs true and false positives in `filter_test.go`; the false
+positives are the harder half, and the table there (maths, dates, ISBNs, scores, prices,
+bare app names, "this exam is killing me", history questions, Hinglish and Hindi) is the
+floor. The rules read English, with some Nigerian Pidgin ("I don tire for this life",
+"I wan die", "where you dey stay"), and some Hinglish (Hindi in Latin letters: "insta pe add karo",
+"mujhe marna hai", "goli maar dunga"); Devanagari and other languages are not read, and
+the README and the FAQ say so.
+
+**Be honest about the limits**, in code, docs and copy. Keyword filters are easy to get
+round (a number in words other than digit by digit, a separator `groupSeparator` does not know, pieces with
+no `callCue` or `evasionCue` beside them, a bare username or one pointed to in words other than another field of
+the post, contact details inside `[math]` or in base64, an email under a TLD not in `emailTLDs` (unless it is an
+academic second-level domain, `academicSecondLevel`: "edu.tr", "ac.il"), any language
+the tables are not written in) and they have false positives (gaming trash talk held as
+self-harm, a countdown blocked as a phone number, ten digits after "cell" blocked as a US
+number, a dose question held, a twelve-digit reference that passes the Verhoeff check, a
+joke about dying with no cause or laugh beside it shown the support message). That is why a block quotes exactly what it
+matched and a hold waits for a person.
+
+**The corpus** (`testdata/filter_corpus/{academic,life,contact,risk}{,_2,_3}.jsonl`) is
+4,942 made-up posts in three parts, one JSON object a line: `id` (unique across the
+files), `body`, `subject`, `name`, `expect` (`publish`, `block`, `support` or `hold`; a
+method question that shows support and is then held meets `hold`), `why`, and, only
+together, `known_miss: true` and a `note` saying why the miss is accepted rather than
+fixed. `TestFilterCorpus` runs each post as the handlers would (`normalizeSubject`,
+`displayedName`, `normalizeBody`, both `support_seen` verdicts) and fails on an outcome
+that is not its label, on a known miss that now comes out right (take the mark off), and
+on an unknown field or a repeated id; with `-v` it logs per file how many ordinary posts
+were stopped and how much of each kind was caught. To add a post, append a line to the
+file for its kind with the next id. The text is invented, never copied: no real person's
+number, address, handle or invite, and no name with a real school (the public helplines
+are the exception, as in `helplineNumbers`). Every address, username and profile in it
+says "madeup" — in the local part, the handle or the path (`madeup.rohan2008@gmail.com`,
+`@madeup_organicchem`, `instagram.com/madeup.sketchy`, a Name field's `madeupmint#k92`),
+in letters that still read "madeup" when the post spells it out or splits it with markup —
+or is at a domain RFC 2606 reserves, and a student number at an institution's domain moves
+to a made-up one (`s2214587@madeup-uni.ac.uk`), so none can be a real person's.
+`TestFilterCorpusDetailsAreMadeUp` holds the corpus, the addresses in this package's
+tests, and the examples the README, this file and the filter's comments quote, to that
+("snap: x_y_z" and "name#1234" stand in for a name and need no "madeup"); a group's invite
+code and a Session ID are random and name no one, and stay as they are, while a Steam
+friend code is the account's 32-bit number, so the corpus's is above 4,294,967,295 and no
+phone number's shape ("4410877305": no Indian mobile starts with 4, and no North American
+exchange with 0), so it can be no one's account or phone; the test reads each Steam code
+in the corpus and the tests on its own to hold that. A number cannot be marked so. In the
+first two parts the UK, US and Australian phone numbers come from the ranges set aside for
+drama, which the filter passes, so a post meant to be blocked uses an Indian or other
+number instead; in `_3` a number meant to be blocked is ordinary digits in a valid shape,
+and the three its writers took from a drama range or a voided SSN were regenerated so, as
+their `why` says. A North American number meant to be blocked is put in an area code the
+numbering plan never assigns (N9X, as 495 or 294; 37X and 96X are held back too), which
+the filter blocks like any other and which can be no one's, in the unit tests as in the
+corpus ("(495) 867-5309"); `TestFilterCorpusDetailsAreMadeUp` holds both to that, or to
+the fiction range or a toll-free line. A number meant to be blocked is never given with a
+name, a school or a handle; a tripcode secret holding a mobile uses a drama number, an
+exam roll, application, hall ticket, registration or student number the filter should
+publish has zeroes for its serial ("Roll No 2304000", "21BCE0000", "my roll number is
+21CS0000", both ends of a range: "22CS1000–22CS2000"), and an Aadhaar number fails its
+check digit wherever its label alone gets it blocked (`TestFilterCorpusDetailsAreMadeUp`
+holds the corpus to both, so no issued number can be among them; "my e-aadhaar says …",
+which no label reads, needs a valid one). An invented number or ID in a valid shape may
+still happen to be someone's, as with the unit tests' examples. Label a post by what the
+filter should do, not by what it does. A rule change that turns a labelled post wrong is a
+regression to fix, or a label to correct with the reason in `why`; a `known_miss` is for a
+miss whose fix would cost more than it buys, and its `note` says what. **The rules have
+been fitted to all 4,942 posts**, all three parts: the `_2` part was written apart from
+the rules, then used to rewrite the hold rules to read grammar and, after that, the
+contact and support rules to read verb classes, apps with their objects, the poster's own
+voice in any tense, number layouts and quotation; the `_3` part was written apart from
+them too, measured unseen (the README gives the figures), and then used to put right the
+ordinary posts it stopped and to widen each family cause by cause; the last 2,057 pin
+what a review of the rules found they missed or stopped wrongly, each written beside the
+change that put it right; so the rates `-v` logs describe how closely the rules fit these
+posts and are no measurement of anything else. The README says so, and a claim about how
+well the filter works needs posts it was not fitted to. Relabelled posts carry the reason
+in `why`: drama-range and 555-01xx numbers labelled `block` were relabelled `publish`, as
+was a WhatsApp channel link (one-way, so no private conversation), as the README's rules
+have them; and two lethal doses asked for under a study label ("for the tox exam, how many
+tablets of paracetamol is a lethal dose for an adult") were relabelled `hold`, since a
+label lets through a statement, a "why" or a topic, never the dose asked. In `_3`, a bare "inbox me" was relabelled `publish` (it names no way to reach
+anyone, as a bare "dm me" does not), and each doubt about a label that was settled the
+other way says so with "kept": a Zoom meeting ID with its passcode and a Meet link stay
+`block`, a plan or a time in the poster's own voice stays `support` (only a method
+question goes on to a hold), and "kms" over a mishap got over stays `publish`. Fifteen
+known misses are left, each with its note: an address in base64, a number given as a sum
+in `[math]`, a request in Bengali, eight risky posts whose harm is implied or written as
+code, a threat to blow up a lab "and then" a name in small letters at the end of the
+sentence (read as often as the poster's next act), two reports of a threat that are held
+because "scratched into my desk" and "these messages won't stop" are not read as the
+poster receiving it (the two ordinary posts the test logs as stopped), and a crisis post
+that never names the act.
+
+**API contract** (`refuseContent` and `heldResponse` in `handlers.go`). Both posting
+endpoints take `support_seen` (JSON boolean; multipart through `isTruthy`). The check runs
+after the body, subject and badge checks, after `ReplyRefusal` for a reply, and
+**between the two halves of flood control, and before the upload is stored**:
+`notCoolingDown` first answers `429` for a post that a cooldown would refuse, without
+reading it or starting anything, so a client in a cooldown cannot use the rules to test
+text; then a block or a support refusal starts no cooldown and stores no file
+(`TestRefusedPostsCostNoCooldownAndStoreNoFile`); then `allow` checks again and starts
+the cooldowns for a post that is to be stored, so a held post takes the cooldown like
+any other (`TestHeldPostsTakeTheCooldown`). A refusal
+is counted instead, against `refusalBudget` (`ratelimit.go`), keyed on `clientIP` across
+every board: once a client has `EDUCHAN_REFUSAL_LIMIT` (10) in a minute, `refuseContent`
+answers its posts `429` before reading them, clean or not, until the minute is up
+(`TestRefusalsAreBudgetedPerClient`). It is swept with the cooldowns, so it holds an
+address for at most its window plus the sweep interval. Badged and
+unbadged posts are filtered alike (`TestBadgedPostsAreFilteredAlike`).
+- block: `422 {"error": <one sentence naming what to remove and where>, "outcome":
+  "block", "rule": "contact"|"id_number", "field": "body"|"subject"|"name", "match":
+  <the source text, trimmed, at most 80 characters (`quoteSource`): a longer one is cut
+  and ends in "…", and the client's `pointAtMatch` then selects to the end of the run>,
+  "occurrence": <how many times the page's search finds the match earlier in the field
+  (`matchOccurrence`), so it selects the copy refused and not an allowed one before it>}`
+- support: `422 {"error": supportMessage, "outcome": "support"}`
+- hold: `202 {"held": true, "board": slug}` plus `"thread_no"` for a reply — never the
+  rule or the post number.
+
+**Nothing the filter reads is logged**: not the text, not the match, not the rule. There
+is no "post held" or "post refused" log line, but `requestLogger`'s line (method, path,
+status, duration) is written for these requests as for every other, so a `422` or `202`
+on a posting route does show that a post there was refused or held; a refusal also
+counts against the client address in `refusalBudget`, in memory. A held post is stored
+with `posts.held_at` and `posts.held_reason` (the rule's name), and a held opening post
+sets `threads.held_at` too; nothing else the filter matched is stored, and approval is
+logged like every moderation action.
+`TestTheFilterLogsNothingItRead` pins exactly those records and their keys, so a new
+field on either is a decision; the README says the same, and has to change with it.
+
+**Held posts** (`0009_held_posts.sql`). `posts.held_at` and `posts.held_reason` are set
+together (`posts_held_together`; reasons `threat`, `grooming`, `self_harm`), and
+`threads.held_at` mirrors the opening post's, so a held OP holds its thread and every
+listing stays a query of `threads` alone. The invariant: **a held post appears in no
+public view and changes nothing public but its post number.** The number is taken when
+the post is stored (`nextPostNo`, which is also what orders posting before any thread's
+lock), so the next published post skips it, and `/posts/{no}` answers it exactly as it
+answers a post a moderator deleted (`TestHeldPostsAppearInNoPublicView`); only the
+timing differs, a gap that appears at once and is filled if the post is approved. Every
+public query filters it — the index
+count, list, `opPosts` and `lastReplies`; the catalog; the archive; `Thread()` (thread
+and posts); `ThreadByID`; `PostThreadNo`; both directions of `attachQuotes` — and a held
+reply leaves `reply_count`, `image_count`, `last_post_at` and `bumped_at` alone. A held
+thread is unlisted, `404` to GET, replies (`ReplyRefusal` and `CreateReply`) and
+sticky/lock, prunes nothing when created, does not count against `thread_limit`, and is
+never archived (`threads_held_not_archived`) or swept; `SweepArchived` also skips an
+archived thread with a held reply. Such a thread must not outlive the threads archived
+with it in public, or its lasting would say a held post was in it: the sweep first calls
+`ExpireHeld`, which sets `threads.expired_at` (`0011`) on exactly the expired threads it
+is about to skip, and every public read filters `expired_at IS NULL` as it filters
+`held_at` — `Archive`, `Thread`, `ThreadByID`, `PostThreadNo`, `ReplyRefusal`,
+`CreateReply` (both `404`), both directions of `attachQuotes`, and `MediaPublic`.
+Approval does not bring it back; a later sweep deletes it, the first that finds it past
+its board's `archive_days`, which may have been raised since it expired
+(`TestHeldReplyKeepsItsThreadFromTheSweep`, `TestARaisedArchivePeriodKeepsADecidedExpiredThread`). The image cap counts published posts only, so
+approval can take a thread past it. `TestHeldPostsAppearInNoPublicView` walks every
+public endpoint with a positive control (published text is found, and the held text is
+found once approved); a new public query has to decide whether it means held posts, and
+almost always it does not. `threads_board_public_order_idx` (live and not held) replaces
+`threads_board_live_order_idx`. The migration is numbered `0009` because the
+strip-metadata branch adds `0008_attachment_names.sql`. A rollback across `0009` is
+unsafe for the same reason as one across `0005`: older code ignores `held_at`, so every
+held post and thread is public and takes replies. `deploy/README.md`'s rollback warning
+does not say so yet; the README's **Held posts** does. The same goes for `0011`: older
+code shows the expired threads again.
+
+A held post's image is gated where it is served: `serveMedia` asks `MediaPublic` (the
+`0010` indexes on `attachments.original_path` and `thumb_path` keep that one lookup per
+request), which is true only for a file an attachment row names whose post is published
+and whose thread has not expired, and otherwise answers `404` with `Cache-Control:
+no-store` unless `isModerator(r)` — the moderation key, read by the same code as
+`authorizeMod` — in which case the file is served `no-store`, never `immutable`, because
+the URL turns public on approval (`TestHeldImagesAreServedOnlyToModerators`). A file no
+row names is withheld too: between a sweep deleting a thread's rows and removing its
+files, or after a removal the store refused, a swept thread's images must answer as an
+expired thread's do (`TestFilesWhoseRowsAreGoneAreNotServed`).
+
+**Moderator queue**, behind `authorizeMod`: `GET /api/held` (`{"posts","total"}`: threats
+first, then oldest first, so a backlog of other holds cannot bury one; at most
+`heldQueueLimit` = 500, with `total` counting every held post; board, thread_no, no, is_op,
+held_reason, created_at, subject for an OP, name, tripcode, poster_id, body, badge,
+attachment;
+`TestHeldQueuePutsThreatsFirstAndCountsEverything`) and `POST
+/api/boards/{slug}/threads/{no}/posts/{post}/approve`. `ApprovePost` takes the board's
+row before the thread's (`TestApprovalRacingTheArchivingThreadDoesNotDeadlock`), clears
+the held columns, and recounts (`recountThread`): an approved reply is not bumped
+(approval can come hours late); an approved OP goes live with `bumped_at = now()` and the
+board is pruned in the same transaction, as `CreateThread` prunes. A post that is not
+held is `409 post is not held` (`errNotHeld`). Rejecting is the existing `DELETE` routes,
+which work on held posts and threads; `DeletePost` recounts rather than decrements, since
+a held reply was never counted.
+
+```bash
+EDUCHAN_MOD_KEY=dev-mod-key EDUCHAN_POST_COOLDOWN=0 make run
+curl -s -X POST localhost:8080/api/boards/meta/threads/$TNO/posts \
+  -H 'Content-Type: application/json' -d '{"body":"add me on snap"}'      # 422 block
+curl -s -X POST localhost:8080/api/boards/meta/threads/$TNO/posts \
+  -H 'Content-Type: application/json' -d '{"body":"kms"}'                 # 422 support
+curl -s -X POST localhost:8080/api/boards/meta/threads/$TNO/posts \
+  -H 'Content-Type: application/json' -d '{"body":"kms","support_seen":true}'  # 201
+curl -s -X POST localhost:8080/api/boards/meta/threads/$TNO/posts \
+  -H 'Content-Type: application/json' -d '{"body":"how old are you? dm me"}'   # 202 held
+curl -s localhost:8080/api/held -H 'X-Mod-Key: dev-mod-key'             # the queue
+PNO=$(curl -s localhost:8080/api/held -H 'X-Mod-Key: dev-mod-key' | TNO=$TNO python3 -c \
+  'import os,sys,json;print(next(p["no"] for p in json.load(sys.stdin)["posts"] if p["board"]=="meta" and p["thread_no"]==int(os.environ["TNO"])))')
+curl -s -X POST localhost:8080/api/boards/meta/threads/$TNO/posts/$PNO/approve \
+  -H 'X-Mod-Key: dev-mod-key'                                            # publish it
+curl -s -X DELETE localhost:8080/api/boards/meta/threads/$TNO/posts/$PNO \
+  -H 'X-Mod-Key: dev-mod-key'                                            # or reject it
+```
+
+**Not built**: a held image stays at its ordinary random key (served only with the
+moderation key, as above); build plan 2.2 moves held images under a `quarantine/`
+prefix. Nothing pages an on-duty moderator when a threat is
+held (2.11); the queue has to be read. The page handles all three answers in the
+posting form (see **The content rules' answers** under Front end conventions).
 
 ### Attachments
 
@@ -1237,10 +1802,15 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   read of it, charged nothing, its connection closed
   (`TestPostsWithoutALengthAreRefused`), and every body that holds room is held to its own
   pace. Browsers send a `Content-Length` with every form. Between them the two budgets
-  hold 320 MiB at most, whatever `containerConcurrency` lets in; the rest of the process
-  is about 40 MiB idle, and eighty 8 MiB uploads sent at once to a server with
-  `GOMEMLIMIT=400MiB` peaked at 330 MiB resident (786 MiB before the upload budget), so a
-  512 MiB instance needs that limit, which this code does not set. **Every wait is
+  hold 320 MiB at most, whatever `containerConcurrency` lets in; beside them the
+  content filter keeps about 65 MiB of planned searches, and the rest of the process is
+  about 40 MiB. Eighty 8 MiB uploads sent at once to a server with `GOMEMLIMIT=400MiB`
+  and one core peaked at 416–424 MiB resident, whether they came while the filter
+  was being planned or after it (three runs each; 330 MiB before the filter, 786 MiB
+  before the upload budget), and at about 470–540 MiB with no limit (469–540 MiB
+  over two separate measurements on a shared machine of four vCPUs), so a 512 MiB
+  instance needs that limit, which this code does not set. The limit is passed rather
+  than kept, since what the budgets and the filter hold is live. **Every wait is
   bounded, and a slow client is told apart from a busy server.** A post waits for room in
   the upload budget under `reserveContext` (`postDeadline`, 25 s, from when its handler
   starts); a wait that does not get room gives up `processingAllowance` (15 s, which
@@ -1468,12 +2038,14 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   out a moderator's lock, delete or recount, which do not touch the board row. It
   refuses with `errImageLimit` (`403 image limit reached`). `threads.image_count` is
   the denormalised copy the listings read for `images`/`at_image_limit`: set on thread
-  creation, set from that count on every image reply, and recounted when a post is
-  deleted. Nothing enforces the cap against the counter. The order in `createPost` is:
-  parse the body, resolve the badge, then `ReplyRefusal` — a lock-free read that
-  makes `CreateReply`'s checks in its order (missing, archived, locked, and for an
-  image the cap, counted from the posts like the real check) — then flood control,
-  then the upload is stored, then `CreateReply`. So the common refusal costs no
+  creation, set from that count on every published image reply (a held one changes
+  nothing), and recounted from the published posts when a post is deleted or a held
+  one approved (`recountThread`). Nothing enforces the cap against the counter. The
+  order in `createPost` is: parse the body, resolve the badge, then `ReplyRefusal` — a
+  lock-free read that makes `CreateReply`'s checks in its order (missing, archived,
+  locked, and for an image the cap, counted from the posts like the real check) — then
+  `notCoolingDown`, then the content rules (`refuseContent`), then flood control
+  (`allow`), then the upload is stored, then `CreateReply`. So the common refusal costs no
   cooldown and stores nothing, and the client's "send the text on its own" goes
   through at once (`TestRefusedRepliesCostNoCooldown`). The pre-check decides
   nothing: replies racing for the last slot both pass it, and the check inside
@@ -1517,11 +2089,13 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   naming the versions it does not know, and `App.schemaAhead` makes the sweeper refuse to
   run. A rollback across `0005` is unsafe whatever the code says — phase-0 code shows
   archived threads as live and its prune deletes them, leaving their files behind
-  (`deploy/README.md`). Under the same lock, after the migrations, `renameReservedBoards`
-  moves any board whose slug has since been reserved to `<slug>-board`
-  (`TestBoardsUnderNewlyReservedSlugsAreRenamed`), so reserving a new word needs no
-  migration of its own, and `renameAttachments` repeats `0008`'s rename, so a filename an
-  older release stored during a rollout is gone at the next start.
+  (`deploy/README.md`). So is a rollback across `0009`: older code does not know
+  `held_at`, so it shows held posts and held threads publicly. Under the same lock, after
+  the migrations, `renameReservedBoards` moves any board whose slug has since been
+  reserved to `<slug>-board` (`TestBoardsUnderNewlyReservedSlugsAreRenamed`), so reserving
+  a new word needs no migration of its own, and `renameAttachments` repeats `0008`'s
+  rename, so a filename an older release stored during a rollout is gone at the next
+  start.
   A new column on `posts` also means adding it to `TestPostsTableColumnsArePinned`
   (`verify_api_test.go`) in the same change: everything on that table is stored about
   every poster, so each column is there because somebody decided it should be.
@@ -1530,8 +2104,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   (`pruneThreads`). Every live view — the index count and list, the catalog, and the
   prune subquery itself — filters `archived_at IS NULL`, which is what keeps archived
   threads from counting against the limit or being archived a second time
-  (`TestArchivedThreadsDoNotCountAgainstTheLimit`); the partial index
-  `threads_board_live_order_idx` covers exactly that set. `Thread()` still serves an
+  (`TestArchivedThreadsDoNotCountAgainstTheLimit`). Every one of them also filters
+  `held_at IS NULL` (see Content rules and held posts), and the partial index
+  `threads_board_public_order_idx` covers exactly that set: live and not held. `Thread()` still serves an
   archived thread, with `archived_at` set, and `CreateReply` refuses it with
   `errThreadArchived` (`403 thread is archived`), checked before the lock flag so the
   poster is told the reason that will not change. `/api/boards/{slug}/archive` lists at
@@ -1580,9 +2155,11 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   of them: those warnings are
   `WarnServingSettings`, which only `serve` in `cmd/server` calls
   (`TestSweepModeLogsNoServerWarnings`, `TestServingWarningsAreTheServersAlone`). A new
-  warning about a server-only setting goes there, not in `New`. **Legal holds (build
-  plan 2.10) are not built**; when they are, `SweepArchived` must skip held threads, and
-  its comment says so.
+  warning about a server-only setting goes there, not in `New`. `SweepArchived` skips an
+  archived thread that has a held post in it, however long ago it was archived, so a
+  held threat cannot vanish before a moderator reads it. **Legal holds (build plan 2.10)
+  are not built**; when they are, `SweepArchived` must skip held threads the same way,
+  and its comment says so.
 - **Poster IDs** are `posterID(salt, source, thread id)`, and `posterSourceFor` in
   `identity.go` picks the source: on a badged post the credential's random id, otherwise
   the browser's poster key, otherwise the client address. The poster key is 16 random
@@ -1640,7 +2217,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   (`TestReplyQuotingAPostBeingDeletedStillPosts`).
 - Config via env vars: `DATABASE_URL`, `EDUCHAN_ADDR`, `EDUCHAN_POSTER_ID_SALT`,
   `EDUCHAN_TRUST_PROXY`, `EDUCHAN_THREAD_COOLDOWN`, `EDUCHAN_POST_COOLDOWN`,
-  `EDUCHAN_UPLOAD_COOLDOWN`, `EDUCHAN_LOG_FORMAT`, `EDUCHAN_MEDIA_BACKEND`,
+  `EDUCHAN_UPLOAD_COOLDOWN`, `EDUCHAN_REFUSAL_LIMIT`, `EDUCHAN_LOG_FORMAT`, `EDUCHAN_MEDIA_BACKEND`,
   `EDUCHAN_UPLOAD_DIR`, `EDUCHAN_GCS_BUCKET`, `EDUCHAN_GCS_PREFIX`,
   `EDUCHAN_MAX_UPLOAD_BYTES`, `EDUCHAN_MOD_KEY`, `EDUCHAN_VERIFY_SECRET`,
   `EDUCHAN_VERIFY_CODE_TTL`, `EDUCHAN_VERIFY_CREDENTIAL_TTL`, `EDUCHAN_VERIFY_COOLDOWN`,
@@ -1661,52 +2238,56 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   blocks do not reach the end, an animated WebP or one whose chunks do not make one
   picture (one cut short among them), or one whose processing would hold more than the
   whole budget — which turns on how it is encoded, not its size alone), and a reply the
-  thread would refuse (`ReplyRefusal`). Decoding the pixels is not up front, because it
-  is the cost the upload cooldown limits, so an image that fails to decode, whose
-  re-encoded file would pass `storedLimit` (`ErrStoredTooLarge`), or, for a GIF, that
-  cannot be stored one frame to a picture (`ErrImageTooCostly` from `playGIF`), is
-  refused by `storeUpload` after `allow`, its cooldown kept
+  thread would refuse (`ReplyRefusal`). Decoding the pixels is not up front, because it is
+  the cost the upload cooldown limits, so an image that fails to decode, whose re-encoded
+  file would pass `storedLimit` (`ErrStoredTooLarge`), or, for a GIF, that cannot be
+  stored one frame to a picture (`ErrImageTooCostly` from `playGIF`), is refused by
+  `storeUpload` after `allow`, its cooldown kept
   (`TestImagesRefusedByTheirHeaderStartNoCooldown` pins both sides, `ErrStoredTooLarge`
   among them). The exception is a post the server turns away as busy after `allow`
   (`tooBusy`: no room to process its image in time, or its deadline passing before the
   image is stored): `allow` hands back the refund `chargeAll` makes, which takes back the
   cooldowns that post started and leaves alone any that another post has started since
   (`TestChargeAllRefundsWhatItStarted`). A post turned away for want of room to read it is
-  turned away before `allow`, so it has nothing to refund. State is per process and in
-  memory — a shared backend means replacing `cooldownLimiter`, which nothing else depends
-  on.
+  turned away before `allow`, so it has nothing to refund. A post the content rules refuse
+  starts no cooldown and is counted by `refusalBudget` instead, and a post a cooldown
+  would refuse is answered by `notCoolingDown` (the same check, recording nothing) before
+  the rules read it (see **API contract** under Content rules). State is per process and
+  in memory — a shared backend means replacing `cooldownLimiter` and `refusalBudget`,
+  which nothing else depends on.
   The client is whatever `clientIP` returns, and that is what "client address" means
   everywhere in the code and the docs: an IPv4 address as it is, or an IPv6 address cut by
   `addressKey` in `middleware.go` to the first address of its /64 (`2001:db8:1:2::`),
   which is all an in-memory key holds for an IPv6 client. Every limit that takes
-  `clientIP` is keyed on it (today the posting and upload cooldowns, a client's share of
-  the upload budget and the one image post a client may have waiting for room in it, and
-  the per-client half of the code-request cooldown, whose other half is keyed on the
-  email's hash), and so is the poster ID of a post with no poster key. A subscriber is
-  normally handed at least a /64 and can use any address in it, so keyed on the whole
-  address one client could take a fresh key with every request. Everyone in one /64 shares
-  those keys, as everyone behind one IPv4 NAT address does (`TestClientIP`, and through
-  the handlers `ipv6_grouping_test.go`). The forwarded entry and the peer both go through
-  `addressKey`; a path into `clientIP` that skipped it would give an IPv6 client a fresh
-  key per request again. A holder of a shorter prefix, a /56 or a /48, still has many
-  /64s, and so many keys: a known limit, stated in the README, that the code does not
+  `clientIP` is keyed on it (today the posting and upload cooldowns, the refusal budget, a
+  client's share of the upload budget and the one image post a client may have waiting for
+  room in it, and the per-client half of the code-request cooldown, whose other half is
+  keyed on the email's hash), and so is the poster ID of a post with no poster key. A
+  subscriber is normally handed at least a /64 and can use any address in it, so keyed on
+  the whole address one client could take a fresh key with every request. Everyone in one
+  /64 shares those keys, as everyone behind one IPv4 NAT address does (`TestClientIP`, and
+  through the handlers `ipv6_grouping_test.go`). The forwarded entry and the peer both go
+  through `addressKey`; a path into `clientIP` that skipped it would give an IPv6 client a
+  fresh key per request again. A holder of a shorter prefix, a /56 or a /48, still has
+  many /64s, and so many keys: a known limit, stated in the README, that the code does not
   close.
   The keys carry client addresses, so the limiters are also a privacy surface: `New`
-  builds a `cooldownSweep` over all four limiters and starts its timer, which drops every
-  expired entry each `cooldownSweepInterval` (one minute), and `Close` stops it. **While
-  the process has CPU, an address is held in memory no longer than the longest cooldown
-  that applies to it plus one minute**, counted from its last action that started one,
-  busy server or quiet. A host that gives CPU only during requests, which is Cloud Run's
-  default (request-based billing), holds the timer back on an idle instance, so
-  `beforeEachRequest` (in `Routes`) runs an overdue sweep before a request is handled;
-  until a request arrives or the instance stops, an idle instance still holds what it last
-  saw, and on Cloud Run the one-minute bound needs CPU always allocated
-  (`--no-cpu-throttling`). The README's Flood control section states the bound with that
-  condition, and anything the client says about addresses rests on it, which is why the
-  FAQ promises no time limit. A longer interval, a new limiter left out of the sweep, a
-  limiter keyed on something that outlives its cooldown, or the request-path sweep dropped
-  from `Routes` breaks it (`TestSweepExpiredKeepsOnlyLiveCooldowns`,
-  `TestSweepCooldownsRunsUntilStopped`,
+  builds a `cooldownSweep` over all four limiters and the refusal budget (anything
+  `expiring`) and starts its timer, which drops every expired entry each
+  `cooldownSweepInterval` (one minute), and `Close` stops it. **While the process has CPU,
+  an address is held in memory no longer than the longest cooldown that applies to it plus
+  one minute**, counted from its last action that started one (for the refusal budget,
+  from the first refusal of its minute), busy server or quiet. A host that gives CPU only
+  during requests, which is Cloud Run's default (request-based billing), holds the timer
+  back on an idle instance, so `beforeEachRequest` (in `Routes`) runs an overdue sweep
+  before a request is handled; until a request arrives or the instance stops, an idle
+  instance still holds what it last saw, and on Cloud Run the one-minute bound needs CPU
+  always allocated (`--no-cpu-throttling`). The README's Flood control section states the
+  bound with that condition, and anything the client says about addresses rests on it,
+  which is why the FAQ promises no time limit. A longer interval, a new limiter left out
+  of the sweep, a limiter keyed on something that outlives its cooldown, or the
+  request-path sweep dropped from `Routes` breaks it
+  (`TestSweepExpiredKeepsOnlyLiveCooldowns`, `TestSweepCooldownsRunsUntilStopped`,
   `TestCooldownSweepRunsBeforeARequestOnceItIsOverdue`, and
   `TestFloodControlForgetsAddressesOnAQuietServer` and
   `TestFloodControlForgetsAddressesBeforeTheNextRequest`, which shorten the period through
@@ -1729,10 +2310,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
 - Moderation is one shared key rather than accounts: `authorizeMod` in `moderation.go` is
   the single gate, so replacing it with real janitor roles later touches only that file.
   Deleting a post or thread removes the attachment blobs after the transaction commits; a
-  failure there is logged and leaves an orphaned file rather than a broken post.
+  failure there is logged and leaves an orphaned file rather than a broken post, which
+  `serveMedia` answers `404` to all but a moderator because no row names it.
   `removeBlobs` ignores the caller's cancellation, because the rows are already gone and
-  nothing would come back for the files later. Sticky and lock apply to live threads
-  only: `SetThreadFlag` refuses an archived one with `errThreadArchived` (`403 thread is
+  nothing would come back for the files later. Approving a held post goes through the
+  same gate (`handleApprovePost`), and logs where it was, never what. Sticky and lock
+  apply to live threads only: `SetThreadFlag` refuses an archived one with `errThreadArchived` (`403 thread is
   archived`), because nothing brings a thread back from the archive and a sticky that
   answered success would not keep it out of the sweep
   (`TestArchivedThreadsCannotBeStickiedOrLocked`).
@@ -2135,7 +2718,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `internal/app/verify_api_test.go`, `internal/app/verify_transport_test.go`,
   `internal/app/migrate_test.go`, `internal/app/markup_api_test.go`,
   `internal/app/logging_test.go`, `internal/app/media_backend_test.go`,
-  `internal/app/busy_test.go`, and `TestClientKnowsTheServersImageRefusals`,
+  `internal/app/busy_test.go`, `internal/app/filter_api_test.go`, and
+  `TestClientKnowsTheServersImageRefusals`,
+  `TestClientReadsTheContentRulesAnswersTheServerGives`,
   `TestThePostFormIsClearedOnlyForAPostMade`, `TestClientKnowsWhenNoCodeIsPending` and
   `TestAnExpiredCodeIsSaidToHaveExpired` in `internal/app/web_invariants_test.go`) run the
   whole app against an isolated schema in `TEST_DATABASE_URL` (falling back to

@@ -328,3 +328,109 @@ func TestCooldownSweepRunsBeforeARequestOnceItIsOverdue(t *testing.T) {
 	var none *cooldownSweep
 	none.runIfDue(time.Now())
 }
+
+// The refusal budget lets a client be refused limit times in a window, then
+// makes it wait out the rest of the window, then starts counting again. Only
+// refusals count, and each client has its own.
+func TestRefusalBudget(t *testing.T) {
+	now := time.Now()
+	budget := newRefusalBudget(3, time.Minute)
+	budget.now = func() time.Time { return now }
+
+	for i := 0; i < 3; i++ {
+		if wait := budget.peek("a"); wait != 0 {
+			t.Fatalf("after %d refusals: wait %s, want none", i, wait)
+		}
+		budget.record("a")
+		now = now.Add(10 * time.Second)
+	}
+	if wait := budget.peek("a"); wait != 30*time.Second {
+		t.Fatalf("after the limit: wait %s, want the 30s left of the window", wait)
+	}
+	if wait := budget.peek("b"); wait != 0 {
+		t.Errorf("another client: wait %s, want none", wait)
+	}
+	// Peeking records nothing, however often it is done.
+	for i := 0; i < 10; i++ {
+		budget.peek("b")
+	}
+	if wait := budget.peek("b"); wait != 0 {
+		t.Errorf("another client after peeks: wait %s, want none", wait)
+	}
+
+	now = now.Add(30 * time.Second)
+	if wait := budget.peek("a"); wait != 0 {
+		t.Fatalf("once the window has passed: wait %s, want none", wait)
+	}
+	budget.record("a")
+	if got := budgetKeys(budget); len(got) != 1 || got[0] != "a" {
+		t.Fatalf("tracked %v, want only the refused client", got)
+	}
+	if c := budget.seen["a"]; c.n != 1 || !c.since.Equal(now) {
+		t.Errorf("a refusal after the window: %+v, want a fresh count of one", c)
+	}
+
+	now = now.Add(time.Minute)
+	budget.sweepExpired()
+	if got := budgetKeys(budget); len(got) != 0 {
+		t.Errorf("after the window: tracked %v, want nothing", got)
+	}
+
+	off := newRefusalBudget(0, time.Minute)
+	for i := 0; i < 5; i++ {
+		off.record("a")
+	}
+	if wait := off.peek("a"); wait != 0 || len(budgetKeys(off)) != 0 {
+		t.Errorf("a zero limit: wait %s, tracked %v; want it off", wait, budgetKeys(off))
+	}
+	var none *refusalBudget
+	none.record("a")
+	none.sweepExpired()
+	if wait := none.peek("a"); wait != 0 {
+		t.Errorf("a nil budget: wait %s, want none", wait)
+	}
+}
+
+// TestRefusalBudgetSweeps is TestCooldownLimiterSweeps for the refusal
+// budget: a burst of refused addresses between two ticks of the periodic sweep
+// is swept when the next new address is recorded, so the map holds no address
+// past its window however many arrive at once. An address still inside its
+// window is kept.
+func TestRefusalBudgetSweeps(t *testing.T) {
+	now := time.Now()
+	budget := newRefusalBudget(3, time.Minute)
+	budget.now = func() time.Time { return now }
+
+	for i := 0; i < cooldownSweepThreshold; i++ {
+		budget.record(string(rune(i)))
+	}
+	now = now.Add(2 * time.Minute)
+	budget.record("recent")
+	if got := len(budgetKeys(budget)); got != 1 {
+		t.Fatalf("tracked keys = %d, want 1 after the sweep", got)
+	}
+	// One that comes in while "recent" is inside its window leaves it alone.
+	budget.record("fresh")
+	if got := budgetKeys(budget); len(got) != 2 || got[0] != "fresh" || got[1] != "recent" {
+		t.Errorf("tracked %v, want the two addresses inside their window", got)
+	}
+}
+
+func budgetKeys(b *refusalBudget) []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	keys := make([]string, 0, len(b.seen))
+	for key := range b.seen {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// setBudgetClock replaces a budget's clock under its lock, as setClock does
+// for a cooldown.
+func setBudgetClock(b *refusalBudget, now func() time.Time) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.now = now
+}

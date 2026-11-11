@@ -13,16 +13,21 @@ import (
 )
 
 // The sweeper deletes archived threads once their board's archive_days have
-// passed, media included. It runs as `educhan -sweep`, a one-shot mode Cloud
-// Scheduler starts as a Cloud Run Job: Cloud Run gives a service CPU only
-// while it answers a request, so an in-process timer would fire whenever it
-// happened to, and a Job leaves no sweep endpoint to protect.
+// passed, media included. A thread with a held reply is the exception: it
+// leaves public view then (ExpireHeld sets expired_at) and is deleted by a
+// later sweep once the reply is decided: the first that finds it past its
+// board's archive_days, which may have been raised since. It runs as
+// `educhan -sweep`, a one-shot mode Cloud Scheduler starts as a Cloud Run
+// Job: Cloud Run gives a service CPU only while it answers a request, so an
+// in-process timer would fire whenever it happened to, and a Job leaves no
+// sweep endpoint to protect.
 //
 // Rows go first, and the storage keys of their files are queued in
 // media_deletions in the same transaction; the files go after, each key
 // forgotten only once its file is. So a file that cannot be removed now is
-// tried again by the next sweep rather than left public with nothing pointing
-// at it, and a sweeper that is not looking at the server's media store — a Job
+// tried again by the next sweep rather than left stored with nothing pointing
+// at it (until then, with no row naming it, it is served to nobody but a
+// moderator: MediaPublic), and a sweeper that is not looking at the server's media store — a Job
 // with a different backend, bucket, prefix or upload directory — finds the
 // files missing and fails, rather than deleting nothing and reporting success.
 //
@@ -78,7 +83,9 @@ type SweepReport struct {
 // Sweep deletes every archived thread that has outlived its board's
 // archive_days, in batches of sweepBatchSize, removes the files those threads
 // had, along with any an earlier sweep could not, and then rewrites the
-// verification tables.
+// verification tables. A thread with a held reply is not deleted but expired,
+// which takes it out of every public view, until a sweep finds the reply
+// decided.
 func (a *App) Sweep(ctx context.Context) (SweepReport, error) {
 	return a.sweep(ctx, time.Now(), sweepBatchSize)
 }
@@ -90,6 +97,12 @@ func (a *App) sweep(ctx context.Context, asOf time.Time, batch int) (SweepReport
 	if len(a.schemaAhead) > 0 {
 		return report, fmt.Errorf("sweep: the database has migrations this release does not know (%v); "+
 			"run the sweeper from the same release as the server", a.schemaAhead)
+	}
+	// Threads the batches below will skip for a held reply leave public view
+	// first, at the moment the rest are deleted.
+	if _, err := a.store.ExpireHeld(ctx, asOf); err != nil {
+		a.logSweep(report)
+		return report, fmt.Errorf("sweep archived threads: %w", err)
 	}
 	for {
 		swept, err := a.store.SweepArchived(ctx, asOf, batch)

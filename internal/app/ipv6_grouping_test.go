@@ -134,6 +134,58 @@ func TestCodeRequestCooldownCoversAnIPv6Clients64(t *testing.T) {
 	}
 }
 
+// The posts the content rules send back count against one refusal budget for
+// the whole /64, taken in turns from its two ends; once it is spent, a post
+// from either end is answered 429 without being read, a clean one as much as
+// one the rules would send back, and the neighbouring /64 is read as usual.
+func TestRefusalBudgetCoversAnIPv6Clients64(t *testing.T) {
+	h := testServer(t, func(cfg *Config) {
+		cfg.TrustedProxyHops = 1
+		cfg.RefusalLimit = 3
+	})
+	h.addBoard("general")
+	path := threadsPath("general")
+
+	refused := []struct {
+		from string
+		body map[string]any
+	}{
+		{sameNetworkFirst, map[string]any{"body": "wa.me/919876543210"}},
+		{sameNetworkLast, map[string]any{"body": "i want to die"}},
+		{sameNetworkFirst, map[string]any{"body": "my snap is madeup_ana23"}},
+	}
+	for i, post := range refused {
+		var out map[string]any
+		if status := h.postFrom(post.from, path, post.body, &out); status != http.StatusUnprocessableEntity {
+			t.Fatalf("refusal %d: status %d (%v), want 422", i+1, status, out)
+		}
+	}
+	posts := h.postCount()
+	for _, from := range []string{sameNetworkFirst, sameNetworkLast} {
+		for _, body := range []map[string]any{{"body": "a clean post"}, {"body": "wa.me/919876543210"}} {
+			var out map[string]any
+			if status := h.postFrom(from, path, body, &out); status != http.StatusTooManyRequests {
+				t.Errorf("%v from %s past the /64's budget: status %d (%v), want 429: another address in the same /64 is the same client",
+					body, from, status, out)
+			} else if secs, _ := out["retry_after"].(float64); secs < 1 || secs > 60 {
+				t.Errorf("retry_after = %v, want the rest of the minute", out["retry_after"])
+			}
+		}
+	}
+	if got := h.postCount(); got != posts {
+		t.Errorf("posts went from %d to %d while the /64's budget was spent", posts, got)
+	}
+
+	var out map[string]any
+	if status := h.postFrom(nextNetwork, path, map[string]any{"body": "wa.me/919876543210"}, &out); status != http.StatusUnprocessableEntity {
+		t.Errorf("a refused post from the neighbouring /64: status %d (%v), want 422", status, out)
+	}
+	var created createdPost
+	if status := h.postFrom(nextNetwork, path, map[string]any{"body": "a neighbour"}, &created); status != http.StatusCreated {
+		t.Errorf("a clean post from the neighbouring /64: status %d (%s), want 201", status, created.Error)
+	}
+}
+
 // Without a poster key the ID comes from the client's key, so two addresses in
 // one /64 post under one ID in a thread, as two browsers behind one IPv4 NAT
 // address do.

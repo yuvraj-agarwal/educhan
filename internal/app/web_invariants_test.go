@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // The client keeps promises the server cannot check: that the poster key and
@@ -544,20 +545,225 @@ func TestEveryVerifyStateOffersToForgetTheBrowser(t *testing.T) {
 	}
 }
 
+// A post about wanting to hurt yourself is answered once with where to get
+// help, and "Post anyway" sends the same post again with support_seen, which
+// takes it past that one step. The flag belongs to that one submission: the
+// submit handler reads it from the button that submitted and puts it on that
+// request, and nothing keeps it — not storage, not the draft, not a field or
+// attribute on the form — so the next post with the same words is asked
+// again, and no browser carries a standing mark that it has seen the help.
+func TestSupportSeenIsSentOnlyFromSubmitAndNeverKept(t *testing.T) {
+	script := appScript(t)
+	code := withoutComments(script)
+	submit := withoutComments(submitHandler(t, script))
+
+	// The wire name twice, both in the submit handler: a JSON post and a
+	// multipart one.
+	if n, in := strings.Count(code, "support_seen"), strings.Count(submit, "support_seen"); n != 2 || in != 2 {
+		t.Errorf(`"support_seen" appears %d times in app.js, %d of them in the submit handler; want twice, both there`, n, in)
+	}
+	for _, want := range []string{
+		`const supportSeen = Boolean(event.submitter && event.submitter.matches('[data-action="post-anyway"]'));`,
+		`payload.support_seen = true;`,
+		`data.set("support_seen", "1");`,
+	} {
+		if !strings.Contains(submit, want) {
+			t.Errorf("the submit handler no longer has %s", want)
+		}
+	}
+	// supportSeen is the submit handler's own, and lives no longer than it.
+	if n, in := strings.Count(code, "supportSeen"), strings.Count(submit, "supportSeen"); n != in || in == 0 {
+		t.Errorf("supportSeen appears %d times in app.js and %d in the submit handler; want every use there", n, in)
+	}
+	for _, line := range strings.Split(code, "\n") {
+		if !strings.Contains(line, "supportSeen") && !strings.Contains(line, "support_seen") {
+			continue
+		}
+		lower := strings.ToLower(line)
+		for _, keeper := range []string{"storage", "dataset", "setattribute", "cookie", "history", "draft", "indexeddb"} {
+			if strings.Contains(lower, keeper) {
+				t.Errorf("the support flag is kept somewhere: %s", strings.TrimSpace(line))
+			}
+		}
+	}
+	// The draft carried across a re-render knows nothing of the support step.
+	for _, name := range []string{"captureDraft", "restoreDraft", "keepUnsentDraft", "storageSet", "storageGet", "api"} {
+		if body := withoutComments(jsFunction(t, script, name)); strings.Contains(strings.ToLower(body), "support") {
+			t.Errorf("%s mentions the support step; the flag must not outlive one submission", name)
+		}
+	}
+	// The panel's button is what says which submission it is: a submit
+	// button with no name, so no form data carries it, and no field beside it.
+	panel := withoutComments(jsFunction(t, script, "supportPanelHTML"))
+	button := regexp.MustCompile(`<button[^>]*data-action="post-anyway"[^>]*>`).FindString(panel)
+	if button == "" || !strings.Contains(button, `type="submit"`) || strings.Contains(button, "name=") {
+		t.Errorf("Post anyway is no longer an unnamed submit button of the form: %q", button)
+	}
+	if strings.Contains(panel, "<input") {
+		t.Error("the support panel has a field, which every later submission would carry")
+	}
+}
+
+// The posting form reads the content rules' answers by the server's own words:
+// the two refusal outcomes, the block rules it has sentences for, the held
+// acknowledgement, and support_seen in the encodings submit sends it in. If
+// they drifted apart, a post with crisis language could not be made from the
+// page at all, and a held post would send its poster to a page without it.
+func TestClientReadsTheContentRulesAnswersTheServerGives(t *testing.T) {
+	script := appScript(t)
+	code := withoutComments(script)
+	for _, want := range []string{
+		`outcome === "support"`, `outcome === "block"`, `err.payload.outcome === "block"`,
+		`case "` + ruleContact + `":`, `case "` + ruleIDNumber + `":`, `created.held`,
+	} {
+		if !strings.Contains(code, want) {
+			t.Errorf("app.js no longer reads %s", want)
+		}
+	}
+
+	h := testServer(t, nil)
+	h.addBoard("words")
+	thread := h.createThread("words", "", "", "a thread")
+	replies := repliesPath("words", thread.ThreadNo)
+
+	status, out := h.postJSON(replies, map[string]any{"name": "", "body": "call me on 9876543210", "badge": false, "sage": false})
+	if status != http.StatusUnprocessableEntity || out["outcome"] != "block" || out["rule"] != ruleContact ||
+		out["field"] != "body" || out["match"] != "9876543210" {
+		t.Errorf("a phone number: %d %v, want 422 block contact in body", status, out)
+	}
+
+	// What submit sends: the form as JSON, and as multipart with an image.
+	crisis := map[string]any{"name": "", "body": "i want to die", "badge": false, "sage": false}
+	if status, out := h.postJSON(replies, crisis); status != http.StatusUnprocessableEntity || out["outcome"] != "support" {
+		t.Errorf("crisis language: %d %v, want 422 support", status, out)
+	}
+	crisis["support_seen"] = true
+	if status, out := h.postJSON(replies, crisis); status != http.StatusCreated {
+		t.Errorf("crisis language with support_seen: %d %v, want 201", status, out)
+	}
+	fields := map[string]string{"name": "", "body": "i want to die"}
+	if status, out := h.uploadMap(replies, fields, "pic.png", pngBytes(t, 24, 24)); status != http.StatusUnprocessableEntity || out["outcome"] != "support" {
+		t.Errorf("multipart crisis language: %d %v, want 422 support", status, out)
+	}
+	fields["support_seen"] = "1"
+	if status, out := h.uploadMap(replies, fields, "pic.png", pngBytes(t, 24, 24)); status != http.StatusCreated {
+		t.Errorf(`multipart crisis language with support_seen "1": %d %v, want 201`, status, out)
+	}
+
+	status, out = h.postJSON(threadsPath("words"), map[string]any{"name": "", "body": "how old are you? dm me", "badge": false, "subject": ""})
+	if status != http.StatusAccepted || out["held"] != true || out["no"] != nil {
+		t.Errorf("a held thread: %d %v, want 202 held with no number", status, out)
+	}
+
+	// A match too long to quote whole ends in an ellipsis, which pointAtMatch
+	// takes off before it looks for the text and then selects to the end of
+	// the run, so the whole of a long link is selected rather than its start.
+	link := "https://discord.gg/" + strings.Repeat("abcdefghij", 10)
+	status, out = h.postJSON(replies, map[string]any{"name": "", "body": "come chat " + link + " now", "badge": false, "sage": false})
+	match, _ := out["match"].(string)
+	if status != http.StatusUnprocessableEntity || !strings.HasSuffix(match, "…") ||
+		!strings.HasPrefix(link, strings.TrimSuffix(match, "…")) || utf8.RuneCountInString(match) > maxMatchLen {
+		t.Errorf("a long link: %d %v, want 422 with the link's start and an ellipsis, at most %d characters", status, out, maxMatchLen)
+	}
+	point := withoutComments(jsFunction(t, script, "pointAtMatch"))
+	for _, want := range []string{`endsWith("…")`, `slice(0, -1)`, `/^\S*/.exec(input.value.slice(end))`} {
+		if !strings.Contains(point, want) {
+			t.Errorf("pointAtMatch no longer reads a cut match: missing %s", want)
+		}
+	}
+	// The copy it selects is the one the server counted (matchOccurrence):
+	// the quote's words with any whitespace between, every search one
+	// character on from the last place found, and the occurrence'th.
+	for _, want := range []string{
+		`{ field: where, match, occurrence }`, `words.join("\\s+"), "g")`, `search.lastIndex = next.index + 1;`,
+		`occurrence + 1`,
+	} {
+		if !strings.Contains(point, want) {
+			t.Errorf("pointAtMatch no longer selects the copy the server refused: missing %s", want)
+		}
+	}
+	if strings.Contains(point, "indexOf(") {
+		t.Error("pointAtMatch searches with indexOf, which finds the first copy whichever the server refused")
+	}
+	// The sentence is the server's, which says what it found: a request to
+	// talk on another app is not a contact detail.
+	blocked := withoutComments(jsFunction(t, script, "blockedMessage"))
+	if !strings.Contains(blocked, "{ error, rule, field: where, match }") || !strings.Contains(blocked, "${error.trim()}") {
+		t.Error("blockedMessage no longer shows the server's sentence for what it found")
+	}
+	status, out = h.postJSON(replies, map[string]any{"name": "", "body": "what's your insta?", "badge": false, "sage": false})
+	if msg, _ := out["error"].(string); status != http.StatusUnprocessableEntity || out["rule"] != ruleContact ||
+		!strings.Contains(msg, "asks people to talk on another app") {
+		t.Errorf("an ask: %d %v, want a contact block whose sentence says it is an ask", status, out)
+	}
+	// The least scroll leaves a field that is on screen but under the sticky
+	// header where it is; on a phone the header is three rows deep, and the
+	// Name field is right under it.
+	reveal := withoutComments(jsFunction(t, script, "revealBelowHeader"))
+	if !strings.Contains(point, "revealBelowHeader(input)") || !strings.Contains(reveal, `scrollIntoView({ block: "start" })`) ||
+		!strings.Contains(reveal, ".site-header") {
+		t.Error("pointAtMatch no longer brings the field out from under the sticky header")
+	}
+	// So does Go back on the support panel: closing the panel shortens the
+	// page, which can leave the message under the header, where a plain
+	// focus() does not scroll.
+	opener := `const supportBack = event.target.closest('[data-action="support-back"]');`
+	i := strings.Index(script, opener)
+	if i < 0 {
+		t.Fatal("app.js has no Go back handler for the support panel; this test reads it")
+	}
+	back := withoutComments(script[i:])
+	back = back[:strings.Index(back, "return;")]
+	if !strings.Contains(back, "message.focus({ preventScroll: true });") || !strings.Contains(back, "revealBelowHeader(message);") {
+		t.Error("Go back on the support panel no longer brings the message out from under the sticky header")
+	}
+}
+
+// A post's answer can arrive after the page was drawn again — "Update" on the
+// thread while the reply was on its way — and then the form it was sent from
+// is out of the document, with the draft in the form that replaced it. An
+// answer written into the old form is seen by nobody: a held reply looks
+// unsent and is posted twice, and a block or the support panel never shows.
+// After the request, everything is done to liveForm's form.
+func TestPostAnswersGoToTheFormOnScreen(t *testing.T) {
+	handler := withoutComments(submitHandler(t, appScript(t)))
+	i := strings.Index(handler, "await api(")
+	if i < 0 {
+		t.Fatal("the submit handler no longer awaits api(); this test reads what follows it")
+	}
+	after := handler[i:]
+	if n := strings.Count(after, "liveForm(form, draftKey)"); n != 2 {
+		t.Errorf("liveForm(form, draftKey) is called %d times after the request, want once for an answer and once for a refusal", n)
+	}
+	for _, stale := range []string{
+		"showFormNotice(form", "showSupport(form", "pointAtMatch(form", "closeSupport(form",
+		"form.reset(", "field(form", "form.querySelector(", "form.contains(",
+	} {
+		if strings.Contains(after, stale) {
+			t.Errorf("the submit handler uses the submitted form after the request (%s), which a re-render may have taken out of the page", stale)
+		}
+	}
+}
+
 // A post's form is cleared, its file with it, only once the answer is the post
 // it made. An answer with a success status and no post in it — the empty 200
 // net/http sends for a handler that wrote nothing — was taken for one: the form
 // was reset and only then did reading the post's place from it fail, so the
 // draft was gone and the post had not been made. The check comes between the
 // request and the reset, and it asks for the fields a made post is answered
-// with, which are checked against what the server answers.
+// with, which are checked against what the server answers. The form reset is
+// the one on screen (liveForm, TestPostAnswersGoToTheFormOnScreen). A post the
+// content rules hold is made too, and is answered without a number, which it
+// does not have until it is approved: isCreatedPost takes that answer for a
+// post made, or the form kept a held post and said it might not have gone
+// through, and the poster sent it again.
 func TestThePostFormIsClearedOnlyForAPostMade(t *testing.T) {
 	script := appScript(t)
 	submit := withoutComments(submitHandler(t, script))
 	request := strings.Index(submit, "const created = await api(path,")
 	check := strings.Index(submit, "if (!isCreatedPost(created)) {")
-	reset := strings.Index(submit, "form.reset();")
-	if request < 0 || check < 0 || reset < 0 || strings.Count(submit, "form.reset();") != 1 {
+	reset := strings.Index(submit, "live.reset();")
+	if request < 0 || check < 0 || reset < 0 || strings.Count(submit, ".reset();") != 1 {
 		t.Fatalf("the submit handler no longer sends the post, checks its answer with isCreatedPost and resets the form once")
 	}
 	if !(request < check && check < reset) || !strings.Contains(submit[check:reset], "throw err;") {
@@ -572,6 +778,7 @@ func TestThePostFormIsClearedOnlyForAPostMade(t *testing.T) {
 		"board":     `typeof answer.board === "string"`,
 		"no":        "Number.isInteger(answer.no)",
 		"thread_no": "Number.isInteger(answer.thread_no)",
+		"held":      "answer.held === true",
 	}
 	for field, test := range fields {
 		if !strings.Contains(isCreated, test) {
@@ -592,6 +799,11 @@ func TestThePostFormIsClearedOnlyForAPostMade(t *testing.T) {
 		if n, ok := answer[field].(float64); !ok || n != float64(int64(n)) || n <= 0 {
 			t.Errorf("a made post is answered with %s %v, want a whole number", field, answer[field])
 		}
+	}
+	var held map[string]any
+	if status := h.post("/api/boards/words/threads", map[string]any{"body": "how old are you? dm me"}, &held); status != http.StatusAccepted ||
+		held["held"] != true || held["board"] != "words" || held["no"] != nil {
+		t.Errorf("a held post is answered %d %v, want 202 with held true and its board's slug, and no number", status, held)
 	}
 }
 
@@ -1349,8 +1561,8 @@ func TestOnlyKnownPlacesTellWhetherABadgeIsHeld(t *testing.T) {
 		"function formHTML({ kind, slug, thread = null, open = false }) {": 5,
 		"function badgeOptionHTML(held) {":                                 1,
 		"function badgeOffered(form) {":                                    2,
-		"function offerHeldBadge() {":                                      5,
-		"function sayBadgeUnticked() {":                                    2,
+		"function offerHeldBadge({ quiet = false } = {}) {":                5,
+		"function sayBadgeUnticked(form) {":                                2,
 		"function captureDraft() {":                                        6,
 		"function restoreDraft(draft) {":                                   7,
 		`el.main.addEventListener("change", (event) => {`:                  1,
@@ -1608,7 +1820,7 @@ func TestClientKnowsWhenNoCodeIsPending(t *testing.T) {
 	status, out := h.confirmCode("123456")
 	check("NO_CODE_PENDING", http.StatusBadRequest, status, out.Error)
 
-	if status, out := h.requestCode("late@iitb.ac.in"); status != http.StatusAccepted {
+	if status, out := h.requestCode("madeup.late@iitb.ac.in"); status != http.StatusAccepted {
 		t.Fatalf("request code: %d %s", status, out.Error)
 	}
 	sent := h.mail.last(t)
@@ -1616,7 +1828,7 @@ func TestClientKnowsWhenNoCodeIsPending(t *testing.T) {
 	status, out = h.confirmCode(sent.Code)
 	check("CODE_EXPIRED", http.StatusBadRequest, status, out.Error)
 
-	if status, out := h.requestCode("guess@iitb.ac.in"); status != http.StatusAccepted {
+	if status, out := h.requestCode("madeup.guess@iitb.ac.in"); status != http.StatusAccepted {
 		t.Fatalf("request code: %d %s", status, out.Error)
 	}
 	sent = h.mail.last(t)
@@ -1669,7 +1881,7 @@ func TestAnExpiredCodeIsSaidToHaveExpired(t *testing.T) {
 	script := appScript(t)
 	h := verifyServer(t, nil)
 
-	if status, out := h.requestCode("late@iitb.ac.in"); status != http.StatusAccepted {
+	if status, out := h.requestCode("madeup.late@iitb.ac.in"); status != http.StatusAccepted {
 		t.Fatalf("request code: %d %s", status, out.Error)
 	}
 	sent := h.mail.last(t)
@@ -3048,29 +3260,75 @@ func TestPostingFormSendsOnlyTheBadgeItNames(t *testing.T) {
 	}
 
 	// What brings a form on screen into line, held whole: it reads no Verify
-	// step and draws nothing but posting forms' badge slots, which is why it
-	// may run in the badge's answer. The focus a redrawn box had goes to the
-	// box drawn in its place, or the form's button, not to the page.
+	// step and draws nothing but posting forms' badge slots, and the support
+	// panel of a form whose ticked box it draws again, which is why it may run
+	// in the badge's answer. The focus a redrawn box had goes to the box drawn
+	// in its place, or the form's button, not to the page. A box that was
+	// ticked is said to have been unticked, unless the caller says what became
+	// of the badge itself (quiet, below).
+	//
+	// The slot sits among the form's own buttons, which the support panel
+	// hides while it is open (showSupport). A ticked box drawn again under an
+	// open panel was out of sight: the reader was told to tick a box they
+	// could not see, and Post anyway, the one way on, sent without a badge a
+	// post written to carry one. So the panel goes, and a focus in it goes
+	// where the box's would. One over a box that was not ticked stays, since
+	// that post goes out without a badge either way.
+	actions := strings.Index(form, `<div class="actions">`)
+	if slot := strings.Index(form, "${badge}"); actions < 0 || slot < actions ||
+		!strings.Contains(withoutComments(jsFunction(t, script, "showSupport")), "actions.hidden = true;") {
+		t.Errorf("formHTML no longer draws the badge slot among the buttons the support panel hides, which is "+
+			"why offerHeldBadge closes the panel; this test reads it:\n%s", form)
+	}
 	if got, want := jsLines(jsFunction(t, script, "offerHeldBadge")), []string{
-		"function offerHeldBadge() {",
+		"function offerHeldBadge({ quiet = false } = {}) {",
 		"const held = state.verification.badge;",
 		`const number = held ? held.number : "";`,
 		"let unticked = false;",
+		"let shut = null;",
 		`for (const slot of el.main.querySelectorAll("[data-badge-option]")) {`,
 		"if (slot.dataset.badgeOption === number) continue;",
+		`const form = slot.closest("form");`,
 		`const box = slot.querySelector('input[name="badge"]');`,
+		`const panel = box && box.checked ? form.querySelector("[data-support]") : null;`,
 		"if (box && box.checked) unticked = true;",
-		"const focused = slot.contains(document.activeElement);",
+		"const focused = slot.contains(document.activeElement) || Boolean(panel && panel.contains(document.activeElement));",
+		"if (panel) {",
+		"closeSupport(form);",
+		"shut = form;",
+		"}",
 		"slot.dataset.badgeOption = number;",
 		"slot.innerHTML = badgeOptionHTML(held);",
-		`const next = slot.querySelector('input[name="badge"]') || slot.closest("form").querySelector('button[type="submit"]');`,
+		`const next = slot.querySelector('input[name="badge"]') || form.querySelector('button[type="submit"]');`,
 		"if (focused && next) next.focus({ preventScroll: true });",
 		"}",
-		"if (unticked) sayBadgeUnticked();",
+		"if (unticked && !quiet) sayBadgeUnticked(shut);",
 		"}",
 	}; !slices.Equal(got, want) {
 		t.Errorf("offerHeldBadge runs\n\t%s\nwant it to draw again, unticked, every badge box naming a badge no longer "+
-			"held, and nothing else:\n\t%s", strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
+			"held, the support panel hiding a ticked one closed, and nothing else:\n\t%s",
+			strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
+	}
+	// Why is said where the panel was, in that form's notice, and in the
+	// page's notice otherwise, as before.
+	if got, want := jsLines(jsFunction(t, script, "sayBadgeUnticked")), []string{
+		"function sayBadgeUnticked(form) {",
+		"const held = state.verification.badge;",
+		"const message = held",
+		"? `Your badge in this browser is now Verified: ${held.label}, not the one you ticked, so the box is unticked. " +
+			"Tick it again to post with this badge.`",
+		`: "Your badge is no longer available in this browser — verify again to post with it.";`,
+		`const notice = form && form.querySelector("[data-form-notice]");`,
+		"if (!notice) {",
+		"showNotice(message);",
+		"return;",
+		"}",
+		"showFormNotice(form, esc(message));",
+		`notice.scrollIntoView({ block: "nearest" });`,
+		"}",
+	}; !slices.Equal(got, want) {
+		t.Errorf("sayBadgeUnticked runs\n\t%s\nwant it to say why in the form whose support panel was closed, "+
+			"and in the page's notice otherwise:\n\t%s", strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
 	}
 	if n := len(regexp.MustCompile(`\.dataset\.badgeOption\s*=[^=]`).FindAllString(code, -1)); n != 1 {
 		t.Errorf("app.js sets a slot's badge %d times; want once, in offerHeldBadge, which draws the box with it", n)
@@ -3095,8 +3353,11 @@ func TestPostingFormSendsOnlyTheBadgeItNames(t *testing.T) {
 	// this one. Forgetting whatever was stored deleted that badge, which the
 	// server hands out once and cannot show again. So the form is brought into
 	// line with the badge held now instead (offerHeldBadge), and the notice
-	// says that badge is offered (sayBadgeReplaced) rather than repeating the
-	// server's words, which send the reader to verify again.
+	// says that badge is offered (badgeReplacedMessage) rather than repeating
+	// the server's words, which send the reader to verify again. Either way a
+	// support panel open on the form goes, whether or not the box is still
+	// ticked: the box the notice names, or its absence, is among the buttons
+	// the panel hides, and Post anyway sent the post again with no badge.
 	holdLines(t, "a post refused for the badge it carried", jsLines(submit),
 		"const reason = err.payload && err.payload.credential;",
 		"if (err.status === 403 && err.message === IMAGE_LIMIT_REACHED) {", []string{
@@ -3112,19 +3373,61 @@ func TestPostingFormSendsOnlyTheBadgeItNames(t *testing.T) {
 			"state.verification.badge = readBadge();",
 			"replacedBy = state.verification.badge;",
 			"}",
-			"offerHeldBadge();",
+			"offerHeldBadge({ quiet: true });",
+			"closeSupport(live);",
 			"}",
 		})
 	if n := strings.Count(submit, "forgetCredential("); n != 1 {
 		t.Errorf("the submit handler forgets the credential in %d places; want one, for the credential refused", n)
 	}
-	if !strings.Contains(submit, "    if (replacedBy) {\n      sayBadgeReplaced(replacedBy);\n    } else {\n"+
-		"      showNotice(errorMessage(err, { hasText: body.trim() !== \"\" }));\n    }\n") {
+	// What a refused post is told is said where every refusal of a post is,
+	// in the form's own notice or, with no form left, the page's
+	// (TestPostAnswersGoToTheFormOnScreen), and for a badge replaced since it
+	// is the badge offered now, in both.
+	if !strings.Contains(submit, "    const refused = replacedBy ? badgeReplacedMessage(replacedBy) : "+
+		"errorMessage(err, { hasText: body.trim() !== \"\" });\n") ||
+		!strings.Contains(submit, "      showFormNotice(live, esc(refused));\n") ||
+		!strings.Contains(submit, "    } else {\n      showNotice(refused);\n    }\n") ||
+		strings.Count(submit, "errorMessage(err, { hasText") != 1 {
 		t.Errorf("a post refused for a badge replaced since does not say which badge is offered now:\n%s", submit)
 	}
-	if said := withoutComments(jsFunction(t, script, "sayBadgeReplaced")); !strings.HasPrefix(said, "function sayBadgeReplaced(held) {\n  showNotice(\n") ||
+	if said := withoutComments(jsFunction(t, script, "badgeReplacedMessage")); !strings.HasPrefix(said, "function badgeReplacedMessage(held) {\n  return `") ||
 		!strings.Contains(said, "Verified: ${held.label}") || strings.Contains(strings.ToLower(said), "verify again") {
-		t.Errorf("sayBadgeReplaced does not say which badge is held now, or sends the reader to verify again:\n%s", said)
+		t.Errorf("badgeReplacedMessage does not say which badge is held now, or sends the reader to verify again:\n%s", said)
+	}
+	// And it is said once. The box offerHeldBadge unticks there is the one
+	// the refusal is about, and the page's notice saying it was unticked
+	// (sayBadgeUnticked) stayed up beside the form's notice saying the
+	// refusal: two messages about one refusal, one of them at the top of the
+	// page, out of sight below a long thread. So the catch has offerHeldBadge
+	// keep quiet, and nothing else it calls reaches sayBadgeUnticked, however
+	// far down. Nothing else keeps it quiet: the box a post was stopped for
+	// before it went (above) and one a badge just issued unticked
+	// (submitVerification) are said to have been unticked, since nothing else
+	// says why.
+	at := strings.Index(submit, "} catch (err) {")
+	if at < 0 {
+		t.Fatal("the submit handler has no catch for a refused post; this test reads it")
+	}
+	caught := submit[at:]
+	if strings.Count(caught, "offerHeldBadge(") != 1 || !strings.Contains(caught, "      offerHeldBadge({ quiet: true });\n") {
+		t.Errorf("the submit handler's catch does not bring the forms into line quietly, once:\n%s", caught)
+	}
+	graph := jsCallGraph(t, script)
+	var says []string
+	for callee := range jsCallees(caught) {
+		if callee != "offerHeldBadge" && graph[callee] != nil && slices.Contains(jsReached(t, graph, callee), "sayBadgeUnticked") {
+			says = append(says, callee)
+		}
+	}
+	if len(says) > 0 {
+		slices.Sort(says)
+		t.Errorf("a refused post's catch calls %v, which say in the page's notice that a badge box was unticked; "+
+			"the refusal is said once, where every refusal of a post is", says)
+	}
+	if n, quiet := strings.Count(code, "offerHeldBadge("), strings.Count(code, "offerHeldBadge({ quiet: true });"); n != 4 || quiet != 1 {
+		t.Errorf("app.js names offerHeldBadge( %d times, %d of them quiet; want its declaration, the two calls that "+
+			"say a box was unticked, and the refused post's catch, quiet", n, quiet)
 	}
 
 	// A draft ticks the box again only for the badge it was ticked for, and
