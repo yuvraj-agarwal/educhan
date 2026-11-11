@@ -50,13 +50,15 @@ type App struct {
 // New connects to Postgres, verifies connectivity, applies pending migrations,
 // and prepares the media store. ctx bounds all of it. A step that waits on
 // something ends when ctx does, but for the two answers migrate waits for
-// whatever the stop (a migration's COMMIT, and the migrations' lock given
-// back, both until migrateAnswerTimeout after ctx ends at most) and the read
-// of the domain file, which ctx does not cut short though it can wait, on a
-// slow mount say. So New looks at ctx after migrate and after the domain file,
-// and after the media store too, for one that answers just as ctx ends. A
-// stop, or a bound, that ends ctx while New runs ends New, with what it opened
-// closed and ctx's error as its own.
+// whatever the stop (a migration's COMMIT, and the migrations' lock given back,
+// both until migrateAnswerTimeout after ctx ends at most), the read of the
+// domain file, which ctx does not cut short though it can wait, on a slow mount
+// say, and a Cloud Storage client's credentials, found and asked for the bucket
+// check's token on the auth library's terms (media.NewGCSStore). So New looks
+// at ctx after migrate and after the domain file, and after the media store
+// too, for one that answers just as ctx ends. A stop, or a bound, that ends ctx
+// while New runs ends New, with what it opened closed and ctx's error as its
+// own.
 func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 	if err := checkMailer(cfg); err != nil {
 		return nil, err

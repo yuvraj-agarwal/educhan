@@ -1503,11 +1503,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   subscriber is normally handed at least a /64 and can use any address in it, so keyed
   on the whole address one client could take a fresh key with every request. Everyone in
   one /64 shares those keys, as everyone behind one IPv4 NAT address does
-  (`TestClientIP`, and through the handlers `ipv6_grouping_test.go`). The forwarded
-  entry and the peer both go through `addressKey`; a path into `clientIP` that skipped
-  it would give an IPv6 client a fresh key per request again. A holder of a shorter
-  prefix, a /56 or a /48, still has many /64s, and so many keys: a known limit, stated
-  in the README, that the code does not close.
+  (`TestClientIP`, and through the handlers `ipv6_grouping_test.go` and, for the
+  challenge meter, `TestCaptchaChallengesPerAddress`). The forwarded entry and the peer
+  both go through `addressKey`; a path into `clientIP` that skipped it would give an
+  IPv6 client a fresh key per request again. A holder of a shorter prefix, a /56 or a
+  /48, still has many /64s, and so many keys: a known limit, stated in the README, that
+  the code does not close.
   The keys carry client addresses, so the limiters are also a privacy surface: `New`
   builds a `cooldownSweep` over all four limiters and the captcha's challenge meter
   (`captchaMeter`, anything with `sweepExpired` is `expiring`) and starts its timer,
