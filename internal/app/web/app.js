@@ -3178,8 +3178,8 @@ function emptyStateHTML(message, slug = null) {
 // beginLoading dims the current view and only falls back to a skeleton if the
 // request is slow enough to notice, which keeps fast navigations from flashing.
 // The dimmed view stays where the reader left it; a skeleton drawn for a visit
-// is drawn at the top of the page (startVisit), as the view it stands in for
-// will be. The skeleton stands in for the view it dims, and for nothing drawn
+// is drawn at the top of the page (startVisit), where the page arrived at
+// starts. The skeleton stands in for the view it dims, and for nothing drawn
 // since: a Verify step that an answer drew in place while the page was loading
 // stays as it was drawn, with the field it put the reader in, rather than going
 // under a skeleton to be drawn again without it (renderVerify). What it hands
@@ -3387,9 +3387,9 @@ function focusHash() {
 }
 
 // navigate starts a visit: the page it renders is shown from its top, or at
-// the post its address names (startVisit, focusHash), whatever the page left
-// was scrolled to. It waits on render(), which can draw a pending code's box,
-// so it ends there (TestVerifyCodeBoxShowsWhileACodeIsPending).
+// the post or heading its address names (startVisit, focusHash), whatever the
+// page left was scrolled to. It waits on render(), which can draw a pending
+// code's box, so it ends there (TestVerifyCodeBoxShowsWhileACodeIsPending).
 async function navigate(href, { replace = false } = {}) {
   const url = new URL(href, window.location.origin);
   if (replace) {
