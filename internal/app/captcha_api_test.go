@@ -1155,9 +1155,10 @@ func TestCaptchaChallengesPerAddress(t *testing.T) {
 		cfg.captcha = fake
 		cfg.TrustedProxyHops = 1
 	})
-	// Part of the way through a second, so the wait left in the window is not a
-	// whole number of seconds, and the 45 below is that wait rounded up.
-	now := time.Unix(1_800_000_000, 0).Add(15*time.Second + 400*time.Millisecond)
+	// The wait left in the window is under half a second over a whole number of
+	// seconds, so the 45 below is that wait rounded up: cut short it would be
+	// 44, and rounded to the nearest second too.
+	now := time.Unix(1_800_000_000, 0).Add(15*time.Second + 600*time.Millisecond)
 	meterAt(h.app.captchaMeter, &now)
 
 	var out map[string]any
@@ -1178,8 +1179,15 @@ func TestCaptchaChallengesPerAddress(t *testing.T) {
 	}
 	status, header := from("203.0.113.9")
 	if status != http.StatusTooManyRequests || header.Get("Retry-After") != "45" || out["retry_after"] != 45.0 {
-		t.Errorf("challenge past the limit: status %d, Retry-After %q, retry_after %v, want 429 and 45, the 44.6s left rounded up",
+		t.Errorf("challenge past the limit: status %d, Retry-After %q, retry_after %v, want 429 and 45, the 44.4s left rounded up",
 			status, header.Get("Retry-After"), out["retry_after"])
+	}
+	// On a whole second the wait is given as it is, not a second over.
+	whole := time.Unix(1_800_000_000, 0).Add(16 * time.Second)
+	meterAt(h.app.captchaMeter, &whole)
+	if _, header := from("203.0.113.9"); header.Get("Retry-After") != "44" || out["retry_after"] != 44.0 {
+		t.Errorf("challenge past the limit on a whole second: Retry-After %q, retry_after %v, want 44, the 44s left as they are",
+			header.Get("Retry-After"), out["retry_after"])
 	}
 	if status, _ := from("198.51.100.4"); status != http.StatusOK {
 		t.Errorf("another address: status %d, want 200", status)
@@ -1198,9 +1206,9 @@ func TestCaptchaChallengesPerAddress(t *testing.T) {
 		t.Errorf("another address's first challenge at scale %d, want 1", last)
 	}
 
-	// The count is kept on the key clientIP makes, so an IPv6 client is
-	// counted by its /64: a second address in it carries on the first's count,
-	// and an address in the next block starts its own.
+	// The count is kept on the key clientIP makes, so an IPv6 client is counted
+	// by its /64: a second address in it carries on the first's count, and an
+	// address in the next block starts its own.
 	for range captchaFreeChallenges {
 		from("2001:db8:1:2::1")
 	}
@@ -1369,6 +1377,12 @@ func TestARequestSpendsItsAnswerByItsExpiryAndTheClock(t *testing.T) {
 	// An answer spent earlier today: its row runs out at the coming midnight.
 	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
 		key("earlier today"), spentCaptchaExpiry(time.Now()))
+	// And two rows either side of the clock, which only the clock tells apart:
+	// one it is past by more than the margin a spend leaves, and one it has not
+	// reached.
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2), ($3, $4)`,
+		key("past the clock"), time.Now().Add(-2*captchaPruneMargin),
+		key("ahead of the clock"), time.Now().Add(10*time.Minute))
 
 	var created createdPost
 	if status := h.post("/api/boards/general/threads", map[string]any{"body": "answered", "captcha": "an answer"}, &created); status != http.StatusCreated {
@@ -1381,6 +1395,12 @@ func TestARequestSpendsItsAnswerByItsExpiryAndTheClock(t *testing.T) {
 	}
 	if _, found := expiry("earlier today"); !found {
 		t.Error("the spend pruned a row that is not yet past its day")
+	}
+	if _, found := expiry("past the clock"); found {
+		t.Error("the spend left a row the clock is past")
+	}
+	if _, found := expiry("ahead of the clock"); !found {
+		t.Error("the spend pruned a row the clock has not reached")
 	}
 }
 
