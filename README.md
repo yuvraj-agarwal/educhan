@@ -181,16 +181,18 @@ badge and the poster key it holds; any posting form it shows, or is drawing at
 that moment, loses its Name and the option to post with the badge, without a
 word when next pressed, which would tell whoever pressed it that the browser had
 held a badge. The other tabs hear of it from the browser's storage, as the badge
-emptied there, the last of what the forget clears, so that a tab hearing it sees
-storage with all three gone; a tab that storage tells nothing, because it cannot
+emptied there, the last of what the forget clears, by when storage, as a tab
+hearing it sees it, has had all three cleared (as measured in Chromium; other
+browsers were not measured); a tab that storage tells nothing, because it cannot
 read storage or because storage would not take the change where the button was
-pressed, hears of it through `BroadcastChannel` instead. A tab that stored one
-of the three again before it heard, for a post or a confirmation it handled
-meanwhile, removes it when it hears from storage, but only while storage, as
-that tab sees it, still holds what that tab stored. So a badge confirmed or a
-key made in another tab since the press stays, but for one stored over that
-tab's own before the tab sees it, which goes with it: storage has no way to
-remove a value only if it is still there.
+pressed, hears of it through `BroadcastChannel` instead, and in a browser
+without that, does not hear of it. A tab that stored one of the three again
+before it heard, for a post or a confirmation it handled meanwhile, removes it
+when it hears from storage, but only while storage, as that tab sees it, still
+holds what that tab stored. So a badge confirmed or a key made in another tab
+since the press stays, but for one stored over that tab's own before the tab
+sees it, which goes with it: storage has no way to remove a value only if it is
+still there.
 
 A badge is a weak thing to inherit: it grants posting under an institution's
 label and nothing else, with no account, no history, and no route back to the

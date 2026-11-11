@@ -2408,8 +2408,9 @@ function forgetBrowser() {
   // The credential goes last, and is emptied before it is removed. The emptying
   // is what the other tabs hear the forget by (followCredentialStorage), and a
   // tab's view of storage has, by the time it is told of a change, every change
-  // made before it: the key and the name are gone from the view too, so what a
-  // tab finds there as it stored it, it wrote back since (storedHere).
+  // made before it (measured in Chromium; Firefox and WebKit were not): the key
+  // and the name are gone from the view too, so what a tab finds there as it
+  // stored it, it wrote back since (storedHere).
   const emptied = emptyCredential();
   forgetCredential();
   // Posted either way. A tab that storage tells of the emptying leaves

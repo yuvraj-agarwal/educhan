@@ -876,33 +876,34 @@ properties and needs a browser check before the test changes.
   (`followCredentialStorage`): the pressing tab removes the poster key and the name,
   then empties the credential, then removes it (`forgetBrowser`, `emptyCredential`), and
   a tab's view of storage has, by the time it is told of a change, every change made
-  before it, so at the emptying it has the forget whole. It starts no puzzle there,
-  since a forget sends nothing, and the credential's removal after it, and a badge
-  verified since, come as changes of badge like any other. Another tab can store the
-  credential, the poster key or the name again, for a post or a confirmation it handles
-  before it hears; each tab notes what it stores of those three (`storedHere`), and on
-  hearing from storage removes each only while its view of storage still holds it as
-  that tab stored it: never what it stored before the forget, and never a badge
-  confirmed or a key made in another tab since, however late it hears (a name is
-  compared by its text, so the same name stored since goes too). Storage has no removal
-  that looks first, which leaves one case: a value another tab stores over what this tab
-  wrote back, before this tab's view shows it, goes with the removal, which forgets more
-  than it needs to, never less. Never compare at the message on `FORGET_CHANNEL`, a
-  `BroadcastChannel`: it can reach a tab before its view of storage has the forget, when
-  what the view shows as the tab's own may have gone from storage, a badge verified or a
-  key made since in its place, and the removal takes it, as it did in Chromium for a tab
-  kept busy meanwhile. The message is the hearing only for a tab that storage tells
-  nothing, which compares nothing: one that cannot read storage acts on `FORGET_MESSAGE`
-  (`storageAnswers`), and every tab on `FORGET_UNSTORED`, sent in its place when storage
-  would not take the emptying. Both are constants that say nothing about anyone. So a
-  tab hears each forget once, and a second hearing never undoes what it did after the
-  first. The notice a tab on `/verify` says when it hears says what was done, and that
-  what the browser held then is gone, not what the browser holds
-  (`BROWSER_FORGOTTEN_ELSEWHERE`): the page drawn under it may show the panel of a badge
-  stored since. In a browser without `BroadcastChannel`, a tab that storage tells
-  nothing does not hear it (`TestForgettingTheBrowserReachesEveryTab`). It is what the
-  FAQ's shared-computer advice points to: the key left behind would give the next person
-  at the computer the same IDs in the same threads.
+  before it (measured in Chromium; Firefox and WebKit were not), so at the emptying it
+  has the forget whole. It starts no puzzle there, since a forget sends nothing, and the
+  credential's removal after it, and a badge verified since, come as changes of badge
+  like any other. Another tab can store the credential, the poster key or the name
+  again, for a post or a confirmation it handles before it hears; each tab notes what it
+  stores of those three (`storedHere`), and on hearing from storage removes each only
+  while its view of storage still holds it as that tab stored it: never what it stored
+  before the forget, and never a badge confirmed or a key made in another tab since,
+  however late it hears (a name is compared by its text, so the same name stored since
+  goes too). Storage has no removal that looks first, which leaves one case: a value
+  another tab stores over what this tab wrote back, before this tab's view shows it,
+  goes with the removal, which forgets more than it needs to, never less. Never compare
+  at the message on `FORGET_CHANNEL`, a `BroadcastChannel`: it can reach a tab before
+  its view of storage has the forget, when what the view shows as the tab's own may have
+  gone from storage, a badge verified or a key made since in its place, and the removal
+  takes it, as it did in Chromium for a tab kept busy meanwhile. The message is the
+  hearing only for a tab that storage tells nothing, which compares nothing: one that
+  cannot read storage acts on `FORGET_MESSAGE` (`storageAnswers`), and every tab on
+  `FORGET_UNSTORED`, sent in its place when storage would not take the emptying. Both
+  are constants that say nothing about anyone. So a tab hears each forget once, and a
+  second hearing never undoes what it did after the first. The notice a tab on `/verify`
+  says when it hears says what was done, and that what the browser held then is gone,
+  not what the browser holds (`BROWSER_FORGOTTEN_ELSEWHERE`): the page drawn under it
+  may show the panel of a badge stored since. In a browser without `BroadcastChannel`, a
+  tab that storage tells nothing does not hear it
+  (`TestForgettingTheBrowserReachesEveryTab`). It is what the FAQ's shared-computer
+  advice points to: the key left behind would give the next person at the computer the
+  same IDs in the same threads.
 - The Verify page's steps (`verifyViewHTML`, `verifyStep`): the code step comes first
   and is decided on `verifyStep.step` alone, so a pending code's box shows whether or
   not a badge is held, since a badge is replaced only once the new one is confirmed
