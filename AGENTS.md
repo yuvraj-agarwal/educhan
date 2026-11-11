@@ -67,7 +67,8 @@ accounts, bans, and reports are not.
   Artifact Registry as `:<short SHA>` and `:latest`. It needs gcloud and a GCP project,
   not a Docker daemon, so a `Dockerfile` change is verified by submitting a build.
 - Deploy: `make cloud-deploy` — `gcloud run deploy` with the new image onto the existing
-  service; every other setting comes from the current revision. See `deploy/README.md`.
+  service; every other setting comes from the current revision. Once the archive sweeper
+  Job exists, the same target moves it onto that image too. See `deploy/README.md`.
 
 ## Cursor Cloud specific instructions
 
