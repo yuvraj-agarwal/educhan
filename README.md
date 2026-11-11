@@ -140,11 +140,12 @@ property above, and it is worth paying here:
 - **The page runs no inline script.** The CSP in `middleware.go` is
   same-origin with no `unsafe-inline` exception, so an injected `<script>`, a
   `style` attribute, or an inline handler is refused by the browser before it
-  runs. `TestWebAssetsHaveNoInlineStylesOrScripts` fails the build if a `style`
-  attribute, a `<style>` block or a `<script>` without `src` appears in
-  `index.html`, `app.js`, `app.css` or any other HTML, JavaScript or CSS file of
-  the front end's own (the vendored files under `web/lib/` are pinned by hash
-  instead), so the exception is never quietly added.
+  runs. `TestWebAssetsHaveNoInlineStylesOrScripts` fails the build if a
+  `style` attribute with a quoted value, a `<style>` block or a `<script>` tag
+  with no `src=` in it appears in `index.html`, `app.js`, `app.css` or any
+  other HTML, JavaScript or CSS file of the front end's own (the vendored files
+  under `web/lib/` are pinned by hash instead), so the exception is never
+  quietly added.
 - **A stolen credential is worth very little.** It lets its holder post under
   that institution's label until it expires, and under the poster ID the owner's
   badged posts have in each thread: in a thread the holder posts in with it, the
