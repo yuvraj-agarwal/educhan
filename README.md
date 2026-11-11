@@ -186,13 +186,18 @@ hearing it sees it, has had all three cleared (as measured in Chromium; other
 browsers were not measured); a tab that storage tells nothing, because it cannot
 read storage or because storage would not take the change where the button was
 pressed, hears of it through `BroadcastChannel` instead, and in a browser
-without that, does not hear of it. A tab that stored one of the three again
-before it heard, for a post or a confirmation it handled meanwhile, removes it
-when it hears from storage, but only while storage, as that tab sees it, still
-holds what that tab stored. So a badge confirmed or a key made in another tab
-since the press stays, but for one stored over that tab's own before the tab
-sees it, which goes with it: storage has no way to remove a value only if it is
-still there.
+without that, does not hear of it. Where storage would not take that change but
+takes the badge's removal after it, the other tabs see the badge go from storage
+as they would after Forget this credential, and a tab that sees it before the
+`BroadcastChannel` message reaches it, or in a browser without that, starts the
+anti-spam check for a form on screen that had the badge ticked and has something
+in it (seen only with storage made to refuse the change). A tab that stored one
+of the three again before it heard, for a post or a confirmation it handled
+meanwhile, removes it when it hears from storage, but only while storage, as
+that tab sees it, still holds what that tab stored. So a badge confirmed or a
+key made in another tab since the press stays, but for one stored over that
+tab's own before the tab sees it, which goes with it: storage has no way to
+remove a value only if it is still there.
 
 A badge is a weak thing to inherit: it grants posting under an institution's
 label and nothing else, with no account, no history, and no route back to the
@@ -1228,17 +1233,17 @@ script from anywhere else runs on the page, and no cookie is set.
    is solving one. Attaching an image, unticking the badge or the page taking a
    ticked one off a form on screen with something in it (the badge gone or
    replaced, in another tab or in this one, or refused as expired or revoked;
-   Forget this browser and `/verify` loading over the form start nothing, nor
-   does a refusal of a form off the screen, while a post link's lookup loads
-   say, nor the form a redraw draws in its place, noted or told of the refusal),
-   the press then refused once to say so, a refusal saying it spent the answer
-   while its form is on screen, and a press with no answer ready can start one
-   too (the full list heads `/* Captcha */` in `app.js`); drawing a page never
-   does. A challenge is a random salt and nonce, a PBKDF2-SHA-256 cost, the
-   first half of a key, an expiry half an hour away, and the server's HMAC over
-   all of it. The server made the key by choosing a counter at random, from one
-   to just under twice the work, and deriving PBKDF2 over the nonce with that
-   counter appended.
+   Forget this browser, where a tab hears it as that, and `/verify` loading over
+   the form start nothing, nor does a refusal of a form off the screen, while a
+   post link's lookup loads say, nor the form a redraw draws in its place, noted
+   or told of the refusal), the press then refused once to say so, a refusal
+   saying it spent the answer while its form is on screen, and a press with no
+   answer ready can start one too (the full list heads `/* Captcha */` in
+   `app.js`); drawing a page never does. A challenge is a random salt and nonce,
+   a PBKDF2-SHA-256 cost, the first half of a key, an expiry half an hour away,
+   and the server's HMAC over all of it. The server made the key by choosing a
+   counter at random, from one to just under twice the work, and deriving PBKDF2
+   over the nonce with that counter appended.
 2. ALTCHA's worker, vendored at `web/lib/altcha/pbkdf2.js`, runs in up to four
    copies and tries counters until a key starts with that half. That is about
    1500 attempts on average at the default work and never more than 3000, done

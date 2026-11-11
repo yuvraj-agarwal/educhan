@@ -772,7 +772,10 @@ func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 	// storage as the credential emptied, which the pressing tab does before
 	// it removes it: there the tab forgets, and returns before it reads the
 	// badge again and brings the forms into line with it, which is what
-	// starts the puzzle for a badge that went any other way.
+	// starts the puzzle for a badge that went any other way. Only a forget
+	// whose emptying storage would not take can reach a tab as the removal
+	// first, before FORGET_UNSTORED, and that is a badge gone to it, like
+	// any other.
 	if forget := withoutComments(jsFunction(t, script, "forgetOnThisPage") + jsFunction(t, script, "forgetForm")); strings.Contains(forget, "prepareCaptcha") ||
 		strings.Contains(forget, "withdrawBadgeOption") {
 		t.Error("forgetOnThisPage starts a puzzle for the forms it takes the badge out of")

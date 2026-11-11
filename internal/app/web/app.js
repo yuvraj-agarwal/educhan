@@ -2595,8 +2595,13 @@ function storageAnswers() {
 // one newly verified there (codeSpentElsewhere). An emptied credential is the
 // browser forgotten in another tab (forgetBrowser), and where this tab hears
 // the forget (forgottenElsewhere) in place of all this, which starts no puzzle,
-// since a forget starts nothing. The credential's removal after it, and a badge
-// verified since, are changes of badge like any other.
+// since a forget heard as one starts nothing. The credential's removal after
+// it, and a badge verified since, are changes of badge like any other. So is
+// the removal by a forget whose emptying storage would not take, which this tab
+// is told of with nothing emptied before it: told before FORGET_UNSTORED
+// reaches it, or with no BroadcastChannel to bring that, it takes the badge out
+// of its forms as above, and a ticked one with something written or attached
+// starts the puzzle it then needs.
 function followCredentialStorage(event) {
   if (event.key !== CREDENTIAL_STORAGE_KEY && event.key !== null) {
     return;
@@ -5167,15 +5172,15 @@ function posterKey() {
 // written or attached, and the page taking a ticked badge out of a form on
 // screen with something written or attached, the badge having gone from the
 // browser or given way to another, in another tab or in this one, by anything
-// but Forget this browser or /verify being drawn over the form, or been refused
-// as expired or revoked (a form off the screen then, while a post link's lookup
-// loads say, starts none, nor does the form a redraw draws in its place, noted
-// or told of the refusal), and the press then refused once to say so, of a form
-// with something written or attached; a refusal saying it spent the answer,
-// while the form is on screen; and a press with no good answer held and none
-// being solved. By the time a post is written its puzzle is usually solved. The
-// answer is kept in memory only, never in storage or a draft, and is good for
-// one request.
+// but Forget this browser heard as that (followCredentialStorage) or /verify
+// being drawn over the form, or been refused as expired or revoked (a form off
+// the screen then, while a post link's lookup loads say, starts none, nor does
+// the form a redraw draws in its place, noted or told of the refusal), and the
+// press then refused once to say so, of a form with something written or
+// attached; a refusal saying it spent the answer, while the form is on screen;
+// and a press with no good answer held and none being solved. By the time a
+// post is written its puzzle is usually solved. The answer is kept in memory
+// only, never in storage or a draft, and is good for one request.
 const CAPTCHA_WORKER_SRC = "/lib/altcha/pbkdf2.js";
 // The server sets this header, to "spent", on every response to a request whose
 // answer it has used up, a refusal included, but one: a 500 for a spend whose

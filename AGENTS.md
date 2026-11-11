@@ -416,19 +416,19 @@ properties and needs a browser check before the test changes.
   (`captchaBadgeToggled`, `captchaFormHasWriting`), the page taking a ticked badge out
   of a form on screen with something written or attached (`withdrawBadgeOption`, for the
   badge changed in another tab or in this one, and a refusal of the badge as expired or
-  revoked; never Forget this browser, which sends nothing, nor `/verify` loading over
-  the form; a form off the screen then, while a post link's lookup loads say, starts
-  none, nor does the form a redraw draws in its place, noted or told of the refusal),
-  the press that is then refused once to say so, on a form with something written or
-  attached (`submit`), an image picked or dropped on it and attached
-  (`captchaImageAttached`; not one a re-render puts back), a refusal saying it spent the
-  answer while its form is on screen, and a press with no good answer held. Ticking the
-  badge stops it unless a request is waiting for it (`stopCaptcha`, which says whether
-  it stopped one). It runs ALTCHA's vendored worker in up to `CAPTCHA_MAX_WORKERS`
-  copies with interleaved counters (side by side where the browser allows; Chromium runs
-  their Web Crypto on one thread), and only in a secure context (`CAPTCHA_INSECURE`
-  otherwise) with `Worker` and `crypto.subtle` (`CAPTCHA_FAILED` otherwise), failing
-  before any fetch, and only on a response shaped like a challenge
+  revoked; never Forget this browser, where the tab hears it as that, which sends
+  nothing, nor `/verify` loading over the form; a form off the screen then, while a post
+  link's lookup loads say, starts none, nor does the form a redraw draws in its place,
+  noted or told of the refusal), the press that is then refused once to say so, on a
+  form with something written or attached (`submit`), an image picked or dropped on it
+  and attached (`captchaImageAttached`; not one a re-render puts back), a refusal saying
+  it spent the answer while its form is on screen, and a press with no good answer held.
+  Ticking the badge stops it unless a request is waiting for it (`stopCaptcha`, which
+  says whether it stopped one). It runs ALTCHA's vendored worker in up to
+  `CAPTCHA_MAX_WORKERS` copies with interleaved counters (side by side where the browser
+  allows; Chromium runs their Web Crypto on one thread), and only in a secure context
+  (`CAPTCHA_INSECURE` otherwise) with `Worker` and `crypto.subtle` (`CAPTCHA_FAILED`
+  otherwise), failing before any fetch, and only on a response shaped like a challenge
   (`CAPTCHA_UNAVAILABLE` otherwise); a `429` from `/api/captcha` says too many checks
   were started from the reader's network, with its wait (`captchaBusy`), never a post's
   or a code request's cooldown. Every copy is terminated when the puzzle ends, a throw
@@ -896,11 +896,17 @@ properties and needs a browser check before the test changes.
   cannot read storage acts on `FORGET_MESSAGE` (`storageAnswers`), and every tab on
   `FORGET_UNSTORED`, sent in its place when storage would not take the emptying. Both
   are constants that say nothing about anyone. So a tab hears each forget once, and a
-  second hearing never undoes what it did after the first. The notice a tab on `/verify`
-  says when it hears says what was done, and that what the browser held then is gone,
-  not what the browser holds (`BROWSER_FORGOTTEN_ELSEWHERE`): the page drawn under it
-  may show the panel of a badge stored since. In a browser without `BroadcastChannel`, a
-  tab that storage tells nothing does not hear it
+  second hearing never undoes what it did after the first. The credential's removal is
+  no hearing. Where storage would not take the emptying but takes the removal, a tab is
+  told of it with nothing emptied first, as of any change of badge
+  (`followCredentialStorage`), and one told before `FORGET_UNSTORED` reaches it, or in a
+  browser without `BroadcastChannel`, takes the badge out of its forms as for any badge
+  gone, which starts the puzzle a ticked form on screen with something written or
+  attached then needs (seen only with `setItem` made to throw). The notice a tab on
+  `/verify` says when it hears says what was done, and that what the browser held then
+  is gone, not what the browser holds (`BROWSER_FORGOTTEN_ELSEWHERE`): the page drawn
+  under it may show the panel of a badge stored since. In a browser without
+  `BroadcastChannel`, a tab that storage tells nothing does not hear it
   (`TestForgettingTheBrowserReachesEveryTab`). It is what the FAQ's shared-computer
   advice points to: the key left behind would give the next person at the computer the
   same IDs in the same threads.
