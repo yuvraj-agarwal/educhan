@@ -2319,13 +2319,14 @@ let browserForgets = 0;
 // own. A tab hears each forget once. Where storage tells it of changes, it
 // hears the forget from storage, as the credential emptied there
 // (followCredentialStorage): by then its own view of storage has everything the
-// pressing tab cleared, which is what lets it tell what it stored itself since
-// (storedHere). A message on FORGET_CHANNEL, a BroadcastChannel, can reach a
-// tab before its view of storage has caught up, so the message is the hearing
-// only for a tab that storage tells nothing: FORGET_MESSAGE for one that cannot
-// read storage, and FORGET_UNSTORED for every tab, when storage would not take
-// the emptying in the tab the button was pressed in. Both are constants: they
-// say nothing about anyone, only that the browser was forgotten.
+// pressing tab cleared, as measured in Chromium (forgetBrowser), which is what
+// lets it tell what it stored itself since (storedHere). A message on
+// FORGET_CHANNEL, a BroadcastChannel, can reach a tab before its view of
+// storage has caught up, so the message is the hearing only for a tab that
+// storage tells nothing: FORGET_MESSAGE for one that cannot read storage, and
+// FORGET_UNSTORED for every tab, when storage would not take the emptying in
+// the tab the button was pressed in. Both are constants: they say nothing about
+// anyone, only that the browser was forgotten.
 const FORGET_CHANNEL = "educhan:forget-browser";
 const FORGET_MESSAGE = "forget";
 const FORGET_UNSTORED = "forget-unstored";
@@ -2342,10 +2343,11 @@ const FORGOTTEN_BEFORE_SENDING = "This browser was forgotten before the post wen
 // and a tab that handled a confirmation or a post before it heard may have
 // written one back since; when it hears from storage, it removes each that its
 // view of storage still holds as this tab wrote it (forgottenElsewhere). That
-// view has the forget by then, so what this tab stored before the forget is
-// never one, and nor is a badge confirmed or a key made in another tab since,
-// however late it hears, since both are random; a name is compared by its text,
-// so the same name stored since by another tab goes too.
+// view has the forget by then, as measured in Chromium (forgetBrowser), so what
+// this tab stored before the forget is never one, and nor is a badge confirmed
+// or a key made in another tab since, however late it hears, since both are
+// random; a name is compared by its text, so the same name stored since by
+// another tab goes too.
 const storedHere = new Map();
 
 // localStorage throws rather than degrading in some privacy modes, so every
@@ -2500,27 +2502,27 @@ const forgottenAt = new WeakMap();
 // at the credential emptied in storage (byStorage), or at the message, in a tab
 // that storage tells nothing. Heard from storage, what this tab wrote back
 // since that tab cleared it goes first (storedHere): the tab's view of storage
-// has the forget by then, so one of the three that it still holds as this tab
-// stored it was stored after the forget, before this tab heard. Heard from the
-// message, nothing is compared: a tab's view of storage can be behind the
-// message, and what it then shows as this tab's own may have gone from storage,
-// a badge confirmed or a key made in another tab since in its place, which the
-// removal would take. Storage has no removal that looks first, so the look and
-// the removal are two steps here too: if another tab stores over what this tab
-// wrote back, and this tab hears the forget before its view shows that, the
-// removal takes the other tab's value, which forgets more than it needs to,
-// never less. Then what the page holds goes, as it did in the tab the button
-// was pressed in, and /verify, when it is on screen here, is drawn again
-// without the badge or the code step, unless the reader has drawn another step
-// there by the time the page has asked the server (renderVerify). Its notice
-// says why, at the top of the page: the reader was not at the button that would
-// say it below (confirmBrowserForgotten). A badge or a key storage holds that
-// this tab did not write stays, whenever this tab hears: it was stored since
-// the forget, by someone else. So the notice says what was done, and that what
-// the browser held then is gone, not what the browser holds
-// (BROWSER_FORGOTTEN_ELSEWHERE): /verify drawn again shows such a badge's panel
-// under it. A name stored since in the words this tab last wrote goes too,
-// which again forgets more than it needs to.
+// has the forget by then, as measured in Chromium (forgetBrowser), so one of
+// the three that it still holds as this tab stored it was stored after the
+// forget, before this tab heard. Heard from the message, nothing is compared: a
+// tab's view of storage can be behind the message, and what it then shows as
+// this tab's own may have gone from storage, a badge confirmed or a key made in
+// another tab since in its place, which the removal would take. Storage has no
+// removal that looks first, so the look and the removal are two steps here too:
+// if another tab stores over what this tab wrote back, and this tab hears the
+// forget before its view shows that, the removal takes the other tab's value,
+// which forgets more than it needs to, never less. Then what the page holds
+// goes, as it did in the tab the button was pressed in, and /verify, when it is
+// on screen here, is drawn again without the badge or the code step, unless the
+// reader has drawn another step there by the time the page has asked the server
+// (renderVerify). Its notice says why, at the top of the page: the reader was
+// not at the button that would say it below (confirmBrowserForgotten). A badge
+// or a key storage holds that this tab did not write stays, whenever this tab
+// hears: it was stored since the forget, by someone else. So the notice says
+// what was done, and that what the browser held then is gone, not what the
+// browser holds (BROWSER_FORGOTTEN_ELSEWHERE): /verify drawn again shows such a
+// badge's panel under it. A name stored since in the words this tab last wrote
+// goes too, which again forgets more than it needs to.
 function forgottenElsewhere(byStorage) {
   if (byStorage) {
     for (const [key, value] of storedHere) {

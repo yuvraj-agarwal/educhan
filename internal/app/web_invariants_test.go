@@ -766,16 +766,15 @@ func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 			"by the page seeing its badge change other than by a forget or by a refusal of it as expired or revoked "+
 			"of a form still on screen, and on the press that note refuses, of a form with something written", n)
 	}
-	// Forget this browser takes the badge out of every form too, but starts
-	// no request: a forget sends nothing. Not in the tab it was pressed in
-	// or in a tab that hears it (forgetOnThisPage), and a tab hears it from
-	// storage as the credential emptied, which the pressing tab does before
-	// it removes it: there the tab forgets, and returns before it reads the
-	// badge again and brings the forms into line with it, which is what
-	// starts the puzzle for a badge that went any other way. Only a forget
-	// whose emptying storage would not take can reach a tab as the removal
-	// first, before FORGET_UNSTORED, and that is a badge gone to it, like
-	// any other.
+	// Forget this browser takes the badge out of every form too, but starts no
+	// request: a forget sends nothing. Not in the tab it was pressed in or in a
+	// tab that hears it (forgetOnThisPage), and a tab hears it from storage as
+	// the credential emptied, which the pressing tab does before it removes it:
+	// there the tab forgets, and returns before it reads the badge again and
+	// brings the forms into line with it, which is what starts the puzzle for a
+	// badge that went any other way. Only a forget whose emptying storage would
+	// not take can reach a tab as the removal first, before FORGET_UNSTORED,
+	// and that is a badge gone to it, like any other.
 	if forget := withoutComments(jsFunction(t, script, "forgetOnThisPage") + jsFunction(t, script, "forgetForm")); strings.Contains(forget, "prepareCaptcha") ||
 		strings.Contains(forget, "withdrawBadgeOption") {
 		t.Error("forgetOnThisPage starts a puzzle for the forms it takes the badge out of")
@@ -1668,31 +1667,31 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 	}
 }
 
-// "Forget this browser" pressed in one tab reaches every other educhan tab
-// open in the browser: each cancels what it has on its way and drops what it
-// holds itself, as the tab it was pressed in does, and draws /verify again if
-// it shows it. A tab hears each forget once. It hears it from storage, as the
+// "Forget this browser" pressed in one tab reaches every other educhan tab open
+// in the browser: each cancels what it has on its way and drops what it holds
+// itself, as the tab it was pressed in does, and draws /verify again if it
+// shows it. A tab hears each forget once. It hears it from storage, as the
 // credential emptied, which the pressing tab does last of what it clears and
-// before it removes the credential: a tab's view of storage has, by the time
-// it is told of a change, every change made before it, so at the emptying it
-// has the forget whole. That matters because a tab that handled a
-// confirmation or a post before it heard may have written the badge, the
-// poster key or the name back. So each tab notes what it stores of those
-// three, and on hearing removes each that its view of storage still holds as
-// it stored it, and touches nothing else: not what it stored before the
-// forget, and not a badge confirmed or a key made in another tab since,
-// however late it hears. The message on the forget's channel can reach a tab
-// before its view of storage has the forget, when what the view shows as the
-// tab's own may have gone from storage, a badge verified or a key made since in
-// its place: a tab that compared at the message removed it. So the message is
-// the hearing only for a tab that storage tells nothing, and nothing is
-// compared at it: a tab that cannot read storage acts on FORGET_MESSAGE, and
-// every tab on FORGET_UNSTORED, which the pressing tab sends in its place when
-// storage would not take the emptying. Both are constants that say nothing
-// about anyone, only forgetBrowser sends them, one for each forget, and a tab
-// acts on nothing else that arrives. No test here runs two tabs: what a
-// browser's storage tells a tab, and when, is measured in the browser
-// (the pull request's test plan).
+// before it removes the credential: a tab's view of storage has, by the time it
+// is told of a change, every change made before it (measured in Chromium;
+// Firefox and WebKit were not), so at the emptying it has the forget whole.
+// That matters because a tab that handled a confirmation or a post before it
+// heard may have written the badge, the poster key or the name back. So each
+// tab notes what it stores of those three, and on hearing removes each that its
+// view of storage still holds as it stored it, and touches nothing else: not
+// what it stored before the forget, and not a badge confirmed or a key made in
+// another tab since, however late it hears. The message on the forget's channel
+// can reach a tab before its view of storage has the forget, when what the view
+// shows as the tab's own may have gone from storage, a badge verified or a key
+// made since in its place: a tab that compared at the message removed it. So
+// the message is the hearing only for a tab that storage tells nothing, and
+// nothing is compared at it: a tab that cannot read storage acts on
+// FORGET_MESSAGE, and every tab on FORGET_UNSTORED, which the pressing tab
+// sends in its place when storage would not take the emptying. Both are
+// constants that say nothing about anyone, only forgetBrowser sends them, one
+// for each forget, and a tab acts on nothing else that arrives. No test here
+// runs two tabs: what a browser's storage tells a tab, and when, is measured in
+// the browser (the pull request's test plan).
 func TestForgettingTheBrowserReachesEveryTab(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -1705,8 +1704,8 @@ func TestForgettingTheBrowserReachesEveryTab(t *testing.T) {
 	// One channel, opened once. Its listener acts on the two messages and
 	// nothing else, and on FORGET_MESSAGE only where the tab cannot read
 	// storage: a tab that can hears the forget from storage, and acting on the
-	// message too would forget twice, the second time over what was done
-	// since the first. It compares nothing at either.
+	// message too would forget twice, the second time over what was done since
+	// the first. It compares nothing at either.
 	open := squash(withoutComments(jsFunction(t, script, "openForgetChannel")))
 	if strings.Count(code, "new BroadcastChannel(") != 1 || !strings.Contains(code, "\nconst forgetChannel = openForgetChannel();\n") ||
 		!strings.Contains(open, `if (typeof BroadcastChannel !== "function") { return null; } try { `+
@@ -1726,10 +1725,9 @@ func TestForgettingTheBrowserReachesEveryTab(t *testing.T) {
 	// of storage, then the credential emptied, the last of the three and what
 	// the other tabs hear, before it is removed, then the message, which says
 	// whether storage took the emptying. Emptied first, a tab would hear with
-	// the key and the name still in its view of storage, find them as it
-	// stored them, and remove a key made or a name stored in another tab
-	// since. The only other postMessage in app.js gives the captcha's worker
-	// its puzzle.
+	// the key and the name still in its view of storage, find them as it stored
+	// them, and remove a key made or a name stored in another tab since. The
+	// only other postMessage in app.js gives the captcha's worker its puzzle.
 	forget := squash(withoutComments(jsFunction(t, script, "forgetBrowser")))
 	if forget != "function forgetBrowser() { forgetOnThisPage(); "+
 		"for (const key of [POSTER_KEY_STORAGE_KEY, NAME_STORAGE_KEY]) { try { localStorage.removeItem(key); } catch { } } "+
@@ -1856,13 +1854,12 @@ func TestForgettingTheBrowserReachesEveryTab(t *testing.T) {
 // of it, whatever it says, puts the step away then, drawing /verify again
 // saying so if its code step is on screen (submitVerification). Verify requests
 // go one at a time, so there is at most one such confirmation. A success draws
-// the badge it earned as any success does. The notice says another tab
-// verified an address and the code here no longer works, and not that the one
-// is why. A code request still on its way is not a code step yet, and keeps its
-// own. It acts on the credential's key, and on storage cleared, and on nothing
-// else; the credential emptied is not a change of badge but the browser
-// forgotten in another tab, heard there
-// (TestForgettingTheBrowserReachesEveryTab).
+// the badge it earned as any success does. The notice says another tab verified
+// an address and the code here no longer works, and not that the one is why. A
+// code request still on its way is not a code step yet, and keeps its own. It
+// acts on the credential's key, and on storage cleared, and on nothing else;
+// the credential emptied is not a change of badge but the browser forgotten in
+// another tab, heard there (TestForgettingTheBrowserReachesEveryTab).
 func TestForgettingTheBadgeReachesEveryTab(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
