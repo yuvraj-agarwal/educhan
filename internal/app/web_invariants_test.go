@@ -1798,13 +1798,22 @@ func TestForgettingTheBrowserReachesEveryTab(t *testing.T) {
 	// What a tab notes it stored is exactly the credential, the poster key
 	// and the name, each as it is written, in the one place each is written,
 	// and nothing reads the note but forgottenElsewhere.
-	for fn, want := range map[string]string{
-		"storeCredential": "localStorage.setItem(CREDENTIAL_STORAGE_KEY, token); storedHere.set(CREDENTIAL_STORAGE_KEY, token);",
-		"posterKey":       "localStorage.setItem(POSTER_KEY_STORAGE_KEY, pagePosterKey); storedHere.set(POSTER_KEY_STORAGE_KEY, pagePosterKey);",
-	} {
-		if !strings.Contains(squash(withoutComments(jsFunction(t, script, fn))), want) {
-			t.Errorf("%s no longer notes what it stores as it stores it: missing %s", fn, want)
-		}
+	if !strings.Contains(squash(withoutComments(jsFunction(t, script, "storeCredential"))),
+		"localStorage.setItem(CREDENTIAL_STORAGE_KEY, token); storedHere.set(CREDENTIAL_STORAGE_KEY, token);") {
+		t.Error("storeCredential no longer notes the credential it stores as it stores it")
+	}
+	// posterKey, whole: a key found in storage is used as it is, neither stored
+	// again nor noted: another tab may have made it after a forget this tab has
+	// not heard yet, and a key noted here is removed when the tab hears. Only a
+	// key this page made is stored and noted.
+	poster := squash(withoutComments(jsFunction(t, script, "posterKey")))
+	if poster != "function posterKey() { try { const stored = localStorage.getItem(POSTER_KEY_STORAGE_KEY); "+
+		"if (stored && POSTER_KEY_PATTERN.test(stored)) { return stored; } } catch { } "+
+		"if (!pagePosterKey) { pagePosterKey = newPosterKey(); } "+
+		"try { localStorage.setItem(POSTER_KEY_STORAGE_KEY, pagePosterKey); storedHere.set(POSTER_KEY_STORAGE_KEY, pagePosterKey); } "+
+		"catch { } return pagePosterKey; }" {
+		t.Errorf("posterKey no longer uses a key found in storage as it is, or no longer notes the key it makes "+
+			"as it stores it: %s", poster)
 	}
 	submit := squash(withoutComments(submitHandler(t, script)))
 	if !strings.Contains(submit, "storageSet(NAME_STORAGE_KEY, name); storedHere.set(NAME_STORAGE_KEY, name);") {
