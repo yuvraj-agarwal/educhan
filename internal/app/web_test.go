@@ -609,7 +609,7 @@ func TestAcceptsGzip(t *testing.T) {
 // to, that the badge is not linked to its poster or to you, or that two posts
 // with the same badge are no more linked than any two, are a promise the code
 // does not keep.
-var absoluteBadgePromise = regexp.MustCompile(`(?i)\b(?:server|operator) included\b|\bwork(?:s|ed)? back from\b|\btrac(?:e|ed|ing) back\b|\b(?:cannot|can't|can never) be (?:linked|traced|connected)\b|\bnot (?:linked|traceable|connected) to (?:(?:this|the|its|a|any|your) (?:poster|post|address)|you)\b|\b(?:no one|nobody)\b[^.]*\bcan (?:work|trace|link|connect)\b|\bno way to get from\b|\bno more linked\b`)
+var absoluteBadgePromise = regexp.MustCompile(`(?i)\b(?:server|operator) included\b|\bwork(?:s|ed)? back from\b|\btrac(?:e|ed|ing) back\b|\b(?:cannot|can't|can never) be (?:linked|traced|connected)\b|\bnot (?:linked|traceable|connected) to (?:(?:this|the|its|a|any|your) (?:poster|post|(?:email )?address)|you)\b|\b(?:no one|nobody)\b[^.]*\bcan (?:ever )?(?:work|trace|link|connect)\b|\bno way to get from\b|\bno more linked\b`)
 
 func TestSiteNeverPromisesTheBadgeCannotBeTraced(t *testing.T) {
 	// The pattern has to catch the wording it exists for, and the wording the
@@ -627,6 +627,8 @@ func TestSiteNeverPromisesTheBadgeCannotBeTraced(t *testing.T) {
 		"The badge is not linked to your address.",
 		"Institutional email verified; not linked to you",
 		"There is no way to get from a post to your address.",
+		"Your badge is not linked to your email address.",
+		"No one can ever link a post to you.",
 	} {
 		if !absoluteBadgePromise.MatchString(phrase) {
 			t.Fatalf("absoluteBadgePromise does not match %q", phrase)
