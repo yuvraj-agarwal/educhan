@@ -118,9 +118,9 @@ func TestServerLogsCarryNoClientAddress(t *testing.T) {
 }
 
 // New builds an App for the sweeper as well as for the web server, and the
-// sweeper runs without a salt, a moderation key or verification on purpose. So
-// New warns about none of them; the serving path asks WarnServingSettings,
-// which does.
+// sweeper runs without a salt, a moderation key, verification or a captcha
+// secret on purpose. So New warns about none of them; the serving path asks
+// WarnServingSettings, which does.
 func TestServingWarningsAreTheServersAlone(t *testing.T) {
 	var logs syncBuffer
 	h := testServerLogging(t, func(cfg *Config) {
@@ -135,12 +135,12 @@ func TestServingWarningsAreTheServersAlone(t *testing.T) {
 
 	h.app.WarnServingSettings()
 	out := logs.String()
-	for _, setting := range []string{"EDUCHAN_POSTER_ID_SALT", "EDUCHAN_MOD_KEY", "EDUCHAN_VERIFY_SECRET"} {
+	for _, setting := range []string{"EDUCHAN_POSTER_ID_SALT", "EDUCHAN_MOD_KEY", "EDUCHAN_VERIFY_SECRET", "EDUCHAN_CAPTCHA_SECRET"} {
 		if !strings.Contains(out, setting+" is unset") {
 			t.Errorf("WarnServingSettings said nothing about %s:\n%s", setting, out)
 		}
 	}
-	if got := strings.Count(out, `"level":"WARN"`); got != 3 {
-		t.Errorf("%d warnings, want 3:\n%s", got, out)
+	if got := strings.Count(out, `"level":"WARN"`); got != 4 {
+		t.Errorf("%d warnings, want 4:\n%s", got, out)
 	}
 }

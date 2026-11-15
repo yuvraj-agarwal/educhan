@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -142,7 +143,8 @@ func TestSweepDeletesOnlyExpiredArchivedThreadsAndTheirMedia(t *testing.T) {
 // of is an orphan rather than a broken post. Its key stays queued, the sweep
 // reports failure — which is what gives the job a non-zero exit — and the next
 // sweep tries again, so a storage outage costs a retry rather than files kept
-// public for good with nothing left to say they exist.
+// public for good with nothing left to say they exist. The failure holds up
+// nothing else: the spent captcha answers past their day go all the same.
 func TestSweepRetriesFilesItCouldNotRemove(t *testing.T) {
 	h := testServer(t, nil)
 	h.addBoard("stuck")
@@ -151,6 +153,9 @@ func TestSweepRetriesFilesItCouldNotRemove(t *testing.T) {
 	thread := h.imageThread("stuck", "an image the store will not let go of")
 	h.archiveThread("stuck", thread.ThreadNo, time.Minute)
 	blobs := threadBlobs(t, h, "stuck", thread.ThreadNo)
+	spentKey := sha256.Sum256([]byte("an answer spent two days ago"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
 	store := h.app.media
 	h.app.media = refusingDeletes{store}
 
@@ -158,8 +163,11 @@ func TestSweepRetriesFilesItCouldNotRemove(t *testing.T) {
 	if err == nil {
 		t.Fatal("a sweep that could not remove an attachment reported success")
 	}
-	if want := (SweepReport{Threads: 1, Posts: 1, Attachments: 1, BlobFailures: 2}); report != want {
+	if want := (SweepReport{Threads: 1, Posts: 1, Attachments: 1, BlobFailures: 2, SpentCaptchas: 1}); report != want {
 		t.Errorf("sweep report = %+v, want %+v", report, want)
+	}
+	if n := h.countRows("captcha_spent"); n != 0 {
+		t.Errorf("%d spent captcha answers kept past their day by a sweep whose files failed, want none", n)
 	}
 	if status := h.threadStatus("stuck", thread.ThreadNo); status != http.StatusNotFound {
 		t.Errorf("the thread's rows should be gone even so, GET answers %d", status)
@@ -188,13 +196,42 @@ func TestSweepRetriesFilesItCouldNotRemove(t *testing.T) {
 	}
 }
 
+// The spent captcha answers go last and on their own: a sweep whose captcha
+// cleanup fails still removes the files of the threads it deleted, and says
+// what failed.
+func TestSweepRemovesFilesWhenTheCaptchaCleanupFails(t *testing.T) {
+	h := testServer(t, nil)
+	h.addBoard("gone")
+	h.exec(`UPDATE boards SET archive_days = 0 WHERE slug = 'gone'`)
+
+	thread := h.imageThread("gone", "an image to remove")
+	h.archiveThread("gone", thread.ThreadNo, time.Minute)
+	blobs := threadBlobs(t, h, "gone", thread.ThreadNo)
+	h.exec(`ALTER TABLE captcha_spent RENAME TO captcha_spent_elsewhere`)
+
+	report, err := h.app.Sweep(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "sweep spent captchas") {
+		t.Fatalf("a sweep whose captcha cleanup failed: error %v, want one saying so", err)
+	}
+	if want := (SweepReport{Threads: 1, Posts: 1, Attachments: 1, BlobsRemoved: 2}); report != want {
+		t.Errorf("sweep report = %+v, want %+v", report, want)
+	}
+	for _, path := range blobs {
+		requireFile(t, path, false)
+	}
+	if queued := h.countRows("media_deletions"); queued != 0 {
+		t.Errorf("%d files still queued, want none", queued)
+	}
+}
+
 // The sweeper is a separate process, and its media settings have to match the
 // server's. One that does not — a Job left on the local backend, a different
 // bucket, prefix or upload directory — finds every file missing. Deleting a
 // missing file is not an error for a moderator removing a post, but here it
 // means the sweeper is looking at the wrong store, so the sweep fails and
 // keeps the keys, where it used to report success and leave every image
-// public at its URL.
+// public at its URL. The spent captcha answers past their day go all the
+// same, as they do when a removal fails.
 func TestSweepAgainstAnotherMediaStoreFails(t *testing.T) {
 	h := testServer(t, nil)
 	h.addBoard("elsewhere")
@@ -204,6 +241,9 @@ func TestSweepAgainstAnotherMediaStoreFails(t *testing.T) {
 	h.archiveThread("elsewhere", thread.ThreadNo, time.Minute)
 	attachment := fetchThread(t, h, "elsewhere", thread.ThreadNo).Posts[0].Attachment
 	blobs := threadBlobs(t, h, "elsewhere", thread.ThreadNo)
+	spentKey := sha256.Sum256([]byte("an answer spent before the sweeper went astray"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
 
 	store := h.app.media
 	wrong, err := media.NewLocalStore(t.TempDir())
@@ -219,8 +259,11 @@ func TestSweepAgainstAnotherMediaStoreFails(t *testing.T) {
 	if !strings.Contains(err.Error(), "EDUCHAN_MEDIA_BACKEND") {
 		t.Errorf("error %q does not point at the media settings", err)
 	}
-	if want := (SweepReport{Threads: 1, Posts: 1, Attachments: 1, BlobsMissing: 2}); report != want {
+	if want := (SweepReport{Threads: 1, Posts: 1, Attachments: 1, BlobsMissing: 2, SpentCaptchas: 1}); report != want {
 		t.Errorf("sweep report = %+v, want %+v", report, want)
+	}
+	if n := h.countRows("captcha_spent"); n != 0 {
+		t.Errorf("%d spent captcha answers kept past their day by a sweep that found no files, want none", n)
 	}
 	for _, path := range blobs {
 		requireFile(t, path, true)
@@ -242,14 +285,18 @@ func TestSweepAgainstAnotherMediaStoreFails(t *testing.T) {
 // A sweep whose verification step fails as well — as it does every night for
 // a role that may not vacuum pg_statistic — still says that the files were
 // not in its media store: the error it exits with carries both, so neither
-// hides the other. A plain VACUUM stands in for that role, as in
-// TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile.
+// hides the other. Neither failure holds up the step after them: the spent
+// captcha answers past their day go all the same. A plain VACUUM stands in
+// for that role, as in TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile.
 func TestSweepErrorNamesEveryStepThatFailed(t *testing.T) {
 	h := testServer(t, nil)
 	h.addBoard("elsewhere")
 	h.exec(`UPDATE boards SET archive_days = 0 WHERE slug = 'elsewhere'`)
 	thread := h.imageThread("elsewhere", "stored where the sweeper is not looking")
 	h.archiveThread("elsewhere", thread.ThreadNo, time.Minute)
+	spentKey := sha256.Sum256([]byte("an answer spent before both steps failed"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
 
 	store := h.app.media
 	wrong, err := media.NewLocalStore(t.TempDir())
@@ -269,27 +316,536 @@ func TestSweepErrorNamesEveryStepThatFailed(t *testing.T) {
 			t.Errorf("error %q does not say %q", err, want)
 		}
 	}
-	if report.BlobsMissing != 2 {
-		t.Errorf("sweep report = %+v, want both files missing", report)
+	if strings.Contains(err.Error(), "sweep spent captchas") {
+		t.Errorf("the prune failed too: %v", err)
+	}
+	if report.BlobsMissing != 2 || report.SpentCaptchas != 1 {
+		t.Errorf("sweep report = %+v, want both files missing and the spent answer pruned", report)
+	}
+	if n := h.countRows("captcha_spent"); n != 0 {
+		t.Errorf("%d spent captcha answers kept past their day by a sweep whose rewrite failed, want none", n)
+	}
+}
+
+// The spent captcha answers past their day go whatever happened to the files,
+// a media queue the sweep could not read at all included, which with no thread
+// due it first meets when it comes to the files: the sweep fails and says
+// where, leaves the credential rewrite to the next sweep, as it does after any
+// failure of the files' own, and prunes the spent answers all the same.
+func TestSweepPrunesSpentCaptchasWhenTheMediaQueueFails(t *testing.T) {
+	h := testServer(t, nil)
+	h.exec(`INSERT INTO verification_credentials (email_hash, credential_id_hash, label, expires_at)
+		VALUES ('\x01', '\x02', 'Unswept College', '2033-03-03T00:00:00Z')`)
+	spentKey := sha256.Sum256([]byte("an answer spent before the queue went astray"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
+	h.exec(`ALTER TABLE media_deletions RENAME TO media_deletions_elsewhere`)
+
+	report, err := h.app.Sweep(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "sweep media") {
+		t.Fatalf("a sweep that could not read its media queue: error %v, want one saying so", err)
+	}
+	if strings.Contains(err.Error(), "sweep verification tables") {
+		t.Errorf("a sweep whose media queue failed went on to the rewrite: %v", err)
+	}
+	if want := (SweepReport{SpentCaptchas: 1}); report != want {
+		t.Errorf("sweep report = %+v, want %+v", report, want)
+	}
+	if n := h.countRows("captcha_spent"); n != 0 {
+		t.Errorf("%d spent captcha answers kept past their day by a sweep whose media queue failed, want none", n)
+	}
+}
+
+// And whatever happened to the threads. With an image thread due, the same
+// broken queue fails the batch that would delete it, which queues its files in
+// the same transaction: the batch is rolled back, the thread and its files are
+// left to the next sweep, and the credential rewrite with them, and the sweep
+// returns an error saying where, having pruned the spent answers all the same
+// and counted them in its one record of counts.
+func TestSweepPrunesSpentCaptchasWhenDeletingThreadsFails(t *testing.T) {
+	var logs syncBuffer
+	h := testServerLogging(t, nil, &logs)
+	h.exec(`INSERT INTO verification_credentials (email_hash, credential_id_hash, label, expires_at)
+		VALUES ('\x01', '\x02', 'Unswept College', '2033-03-03T00:00:00Z')`)
+	h.addBoard("due")
+	h.exec(`UPDATE boards SET archive_days = 0 WHERE slug = 'due'`)
+	thread := h.imageThread("due", "an image thread past its archive_days")
+	h.archiveThread("due", thread.ThreadNo, time.Minute)
+	blobs := threadBlobs(t, h, "due", thread.ThreadNo)
+	spentKey := sha256.Sum256([]byte("an answer spent before the threads went astray"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
+	h.exec(`ALTER TABLE media_deletions RENAME TO media_deletions_elsewhere`)
+
+	before := len(logs.String())
+	report, err := h.app.Sweep(context.Background())
+	lines := strings.Split(strings.TrimSpace(logs.String()[before:]), "\n")
+	if len(lines) != 1 || !strings.Contains(lines[0], `"msg":"sweep"`) || !strings.Contains(lines[0], `"spent_captchas":1`) {
+		t.Errorf("the sweep logged %q, want one sweep record counting the spent answer", lines)
+	}
+	if err == nil || !strings.Contains(err.Error(), "sweep archived threads") {
+		t.Fatalf("a sweep that could not delete its threads: error %v, want one saying so", err)
+	}
+	if strings.Contains(err.Error(), "sweep media") || strings.Contains(err.Error(), "sweep verification tables") {
+		t.Errorf("a sweep whose threads failed went on to the files or the rewrite: %v", err)
+	}
+	if want := (SweepReport{SpentCaptchas: 1}); report != want {
+		t.Errorf("sweep report = %+v, want %+v", report, want)
+	}
+	if n := h.countRows("captcha_spent"); n != 0 {
+		t.Errorf("%d spent captcha answers kept past their day by a sweep whose threads failed, want none", n)
+	}
+	if status := h.threadStatus("due", thread.ThreadNo); status != http.StatusOK {
+		t.Errorf("the failed batch's thread should be left for the next sweep, GET answers %d", status)
+	}
+	for _, path := range blobs {
+		requireFile(t, path, true)
 	}
 }
 
 // A cancelled sweep stops and says so, rather than reporting a pass it did
-// not make.
+// not make. It prunes the spent captcha answers past their day all the same,
+// stopped before its first batch as here, or among its files or during its
+// rewrite (below), and its error is the stop alone: a prune tried on the
+// stopped context would prune nothing and add a failure of its own.
 func TestSweepStopsWhenCancelled(t *testing.T) {
-	h := testServer(t, nil)
+	var logs syncBuffer
+	h := testServerLogging(t, nil, &logs)
 	h.addBoard("halted")
 	h.exec(`UPDATE boards SET archive_days = 0 WHERE slug = 'halted'`)
 	thread := h.createThread("halted", "", "", "archived and due")
 	h.archiveThread("halted", thread.ThreadNo, time.Minute)
+	spentKey := sha256.Sum256([]byte("an answer spent before the sweep was stopped"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := h.app.Sweep(ctx); err == nil {
-		t.Error("a cancelled sweep reported success")
+	before := len(logs.String())
+	report, err := h.app.Sweep(ctx)
+	if err == nil {
+		t.Fatal("a cancelled sweep reported success")
 	}
+	if !errors.Is(err, context.Canceled) || err.Error() != "sweep archived threads: context canceled" {
+		t.Errorf("a sweep cancelled before it began returned %q, want the stop and nothing else", err)
+	}
+	stoppedSweepPruned(t, h, &logs, before, report, SweepReport{SpentCaptchas: 1})
 	if status := h.threadStatus("halted", thread.ThreadNo); status != http.StatusOK {
 		t.Errorf("a cancelled sweep deleted the thread anyway: GET answers %d", status)
+	}
+}
+
+// Stopped among its files, as SIGTERM at a Job's task timeout stops one
+// working through a long queue, the sweep finishes the file in hand, keeps the
+// rest queued, and prunes the spent answers before it returns the stop.
+func TestSweepStoppedAmongItsFilesStillPrunesSpentCaptchas(t *testing.T) {
+	var logs syncBuffer
+	h := testServerLogging(t, nil, &logs)
+	h.addBoard("cutshort")
+	h.exec(`UPDATE boards SET archive_days = 0 WHERE slug = 'cutshort'`)
+	thread := h.imageThread("cutshort", "an image thread swept as the job was stopped")
+	h.archiveThread("cutshort", thread.ThreadNo, time.Minute)
+	spentKey := sha256.Sum256([]byte("an answer spent before the job ran out of time"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := h.app.media
+	h.app.media = cancellingDeletes{store, cancel}
+	before := len(logs.String())
+	report, err := h.app.Sweep(ctx)
+	h.app.media = store
+	if err == nil {
+		t.Fatal("a sweep stopped among its files reported success")
+	}
+	if !errors.Is(err, context.Canceled) || err.Error() != "sweep media: context canceled" {
+		t.Errorf("a sweep stopped among its files returned %q, want the stop and nothing else", err)
+	}
+	stoppedSweepPruned(t, h, &logs, before, report,
+		SweepReport{Threads: 1, Posts: 1, Attachments: 1, BlobsRemoved: 1, SpentCaptchas: 1})
+	if queued := h.countRows("media_deletions"); queued != 1 {
+		t.Errorf("%d files queued after the stop, want the one it did not get to", queued)
+	}
+}
+
+// A stop among the files does not hide the files the sweep could not remove
+// before it: its error is the stop and those files both, as every step that
+// failed says so. Here the store refuses the first file and the stop comes as
+// it does, so both files stay queued and the rewrite is left to the next
+// sweep.
+func TestSweepStoppedAmongItsFilesStillSaysWhatItCouldNotRemove(t *testing.T) {
+	h := testServer(t, nil)
+	h.addBoard("refusedstop")
+	h.exec(`UPDATE boards SET archive_days = 0 WHERE slug = 'refusedstop'`)
+	thread := h.imageThread("refusedstop", "an image the store refused as the job was stopped")
+	h.archiveThread("refusedstop", thread.ThreadNo, time.Minute)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := h.app.media
+	h.app.media = cancellingDeletes{refusingDeletes{store}, cancel}
+	report, err := h.app.Sweep(ctx)
+	h.app.media = store
+	if err == nil || !errors.Is(err, context.Canceled) ||
+		!strings.Contains(err.Error(), "sweep media: context canceled") ||
+		!strings.Contains(err.Error(), "1 files could not be removed from the media store") {
+		t.Errorf("a sweep stopped as the store refused a file returned %v, want the stop and the refusal both", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "sweep verification tables") {
+		t.Errorf("a sweep stopped among its files went on to the rewrite: %v", err)
+	}
+	if report.BlobFailures != 1 || report.BlobsRemoved != 0 || report.Credentials != 0 {
+		t.Errorf("sweep report = %+v, want the one refusal and no rewrite", report)
+	}
+	if queued := h.countRows("media_deletions"); queued != 2 {
+		t.Errorf("%d files queued after the stop, want both", queued)
+	}
+}
+
+// Stopped while it looks for the next file to remove, held up behind a lock
+// here as it would be behind a database that has stopped answering, the sweep
+// has no file in hand to finish: it stops there and then, rather than when the
+// lookup is answered, and prunes the spent answers before it returns the stop.
+// That is what lets a stopped Job exit before Cloud Run kills it however far
+// through its files it is, short of a file being removed.
+func TestSweepStoppedLookingForAFileStopsThere(t *testing.T) {
+	var logs syncBuffer
+	h := testServerLogging(t, nil, &logs)
+	spentKey := sha256.Sum256([]byte("an answer spent before the sweep looked for its files"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
+
+	pid, release := h.holdTable("media_deletions", "ACCESS EXCLUSIVE")
+	defer release()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	before := len(logs.String())
+	done := sweepInBackground(h, ctx)
+	// The lookup waits on the queue.
+	h.waitForSpends(pid, 1)
+	cancel()
+	// Ended with the queue still held: the lookup did not wait to be answered.
+	report, err := sweepEnded(t, done, 5*time.Second)
+	if !errors.Is(err, context.Canceled) || err.Error() != "sweep media: context canceled" {
+		t.Errorf("a sweep stopped looking for a file returned %v, want the stop and nothing else", err)
+	}
+	stoppedSweepPruned(t, h, &logs, before, report, SweepReport{SpentCaptchas: 1})
+}
+
+// Stopped during the credential rewrite, here while it waits to read the
+// verification tables a last time (statsHandOver), the sweep ends the rewrite
+// there and then, as it does a statement PostgreSQL is asked to cancel, and
+// prunes the spent answers before it returns the stop. The rewrite had
+// committed, so its count stands.
+func TestSweepStoppedDuringTheRewriteStillPrunesSpentCaptchas(t *testing.T) {
+	var logs syncBuffer
+	h := testServerLogging(t, nil, &logs)
+	h.app.store.statsHandOver = time.Hour
+	h.exec(`INSERT INTO verification_credentials (email_hash, credential_id_hash, label, expires_at)
+		VALUES ('\x01', '\x02', 'Interrupted College', '2033-03-03T00:00:00Z')`)
+	spentKey := sha256.Sum256([]byte("an answer spent before the rewrite was stopped"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
+
+	tables := []string{"verification_credentials", "verification_pending"}
+	files := h.relationFiles(tables...)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	before := len(logs.String())
+	done := sweepInBackground(h, ctx)
+	// Both tables in new files: the rewrite has committed and vacuumed them,
+	// and goes on to pg_statistic and then its hour's wait.
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		now := h.relationFiles(tables...)
+		if now[0] != files[0] && now[1] != files[1] {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the sweep never vacuumed the verification tables")
+		}
+	}
+	cancel()
+	report, err := sweepEnded(t, done, 5*time.Second)
+	if !errors.Is(err, context.Canceled) || !strings.HasPrefix(err.Error(), "sweep verification tables: ") ||
+		strings.Contains(err.Error(), "\n") {
+		t.Errorf("a sweep stopped during its rewrite returned %q, want the stop and nothing else", err)
+	}
+	stoppedSweepPruned(t, h, &logs, before, report, SweepReport{Credentials: 1, SpentCaptchas: 1})
+}
+
+// A stop that comes once the files and the rewrite are done, while the spent
+// answers go, finds nothing left to stop: the prune runs past it, and the
+// sweep ends as one that was not stopped would, here with no error, the spent
+// answer counted in its one record.
+func TestSweepStoppedWhileItPrunesEndsAsIfNotStopped(t *testing.T) {
+	var logs syncBuffer
+	h := testServerLogging(t, nil, &logs)
+	h.keepOtherHoldersAway()
+	h.addBoard("latestop")
+	h.exec(`UPDATE boards SET archive_days = 0 WHERE slug = 'latestop'`)
+	thread := h.createThread("latestop", "", "", "archived and due")
+	h.archiveThread("latestop", thread.ThreadNo, time.Minute)
+	spentKey := sha256.Sum256([]byte("an answer spent before the stop came late"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
+
+	pid, release := h.holdThePrune()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	before := len(logs.String())
+	done := sweepInBackground(h, ctx)
+	// The prune waits on the table as a spend does.
+	h.waitForSpends(pid, 1)
+	cancel()
+	time.Sleep(100 * time.Millisecond)
+	release()
+	report, err := sweepEnded(t, done, 10*time.Second)
+	if err != nil {
+		t.Errorf("a sweep stopped while it pruned returned %q, want no error, as one not stopped", err)
+	}
+	stoppedSweepPruned(t, h, &logs, before, report, SweepReport{Threads: 1, Posts: 1, SpentCaptchas: 1})
+}
+
+// The prune is bounded, stopped or not: one held up past its bound, by a lock
+// here, gives up within about the bound with an error saying so and leaves the
+// rows to the next sweep, and the sweep still logs its record of counts. That
+// is the sweep's part in a stopped Job writing its error and exiting before
+// Cloud Run kills it; the process's part, the close, is cmd/server's
+// (TestStoppedSweepExitsWhenTheDatabaseStopsAnswering). So the test runs both
+// ways. Unstopped, nothing cancels the sweep, and the prune still gives up at
+// its bound, as one bounded only once the sweep was stopped never would.
+// Stopped as the prune is seen waiting, the prune still waits out its bound: a
+// stop that comes during it does not end it there and then, as a prune on the
+// stopped context would.
+//
+// The bound is the prune's alone, so it is timed from when the prune is seen
+// waiting, closely enough that half or twice the bound shows: the steps before
+// the prune, among them the credential rewrite and its vacuum, which tries
+// again while something older than the rewrite holds it off (a statement still
+// running in this database, a transaction there reading from one snapshot, or a
+// transaction anywhere on the instance that had written something), take what
+// they take; the prune has ten seconds to be seen waiting, though, so each run
+// keeps away cmd/server's tests that hold a transaction open for seconds
+// (keepOtherHoldersAway). The prune sets its deadline as it starts, just before
+// it is seen waiting, which is looked for every five milliseconds, so it gives
+// up a little under its bound after it is seen; the lower side, at three
+// quarters of the bound, leaves room for a look that comes late.
+func TestSweepsPruneGivesUpAtItsBound(t *testing.T) {
+	const bound = time.Second
+	for _, tc := range []struct {
+		name    string
+		stopped bool
+	}{
+		{"unstopped", false},
+		{"stopped as it waits", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs syncBuffer
+			h := testServerLogging(t, func(cfg *Config) { cfg.spentPruneWithin = bound }, &logs)
+			h.keepOtherHoldersAway()
+			spentKey := sha256.Sum256([]byte("an answer spent behind a lock that outlasts the prune"))
+			h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+				spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
+
+			pid, release := h.holdThePrune()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			before := len(logs.String())
+			done := sweepInBackground(h, ctx)
+			h.waitForSpends(pid, 1)
+			seen := time.Now()
+			if tc.stopped {
+				cancel()
+			}
+			report, err := sweepEnded(t, done, bound+5*time.Second)
+			waited := time.Since(seen)
+			release()
+			if !errors.Is(err, context.DeadlineExceeded) || !strings.HasPrefix(err.Error(), "sweep spent captchas: ") {
+				t.Errorf("a prune held past its bound returned %v, want the prune running out of time", err)
+			}
+			if waited < bound*3/4 || waited > bound+bound/2 {
+				t.Errorf("the prune gave up %v after it was seen waiting, want about its bound of %v", waited, bound)
+			}
+			if report != (SweepReport{}) {
+				t.Errorf("sweep report = %+v, want nothing done", report)
+			}
+			lines := strings.Split(strings.TrimSpace(logs.String()[before:]), "\n")
+			if len(lines) != 1 || !strings.Contains(lines[0], `"msg":"sweep"`) || !strings.Contains(lines[0], `"spent_captchas":0`) {
+				t.Errorf("the sweep whose prune ran out of time logged %q, want its one record of counts", lines)
+			}
+			if n := h.countRows("captcha_spent"); n != 1 {
+				t.Errorf("%d spent answers left by a prune that gave up, want the one, for the next sweep", n)
+			}
+		})
+	}
+}
+
+// The bound the prune is given is five seconds, which the README promises,
+// inside the ten Cloud Run allows between SIGTERM and SIGKILL; only a test sets
+// another.
+func TestSweepsPruneIsGivenFiveSeconds(t *testing.T) {
+	if bound := (Config{}).spentPruneBound(); spentPruneTimeout != 5*time.Second || bound != spentPruneTimeout {
+		t.Errorf("the sweep's prune is given %v (spentPruneTimeout %v), want five seconds", bound, spentPruneTimeout)
+	}
+	if bound := (Config{spentPruneWithin: time.Second}).spentPruneBound(); bound != time.Second {
+		t.Errorf("a test's bound of a second gives the prune %v", bound)
+	}
+}
+
+// On a sweep stopped before its prune, the prune's bound counts from the stop,
+// not from its own start: what the stop waited for first leaves it less time,
+// or none. Here the stop finds a file in hand that takes three bounds to
+// finish, as the rewrite's cancel can take six seconds with the database not
+// answering, and the prune, given nothing, fails at once and leaves the spent
+// answer to the next sweep. Given its bound from its own start, it would run
+// on past five seconds after the stop, and the process exit past the ten
+// (TestStoppedRewriteExitsWhenTheDatabaseStopsAnswering in cmd/server).
+func TestStoppedSweepsPruneCountsFromTheStop(t *testing.T) {
+	const bound = 300 * time.Millisecond
+	h := testServer(t, func(cfg *Config) { cfg.spentPruneWithin = bound })
+	h.addBoard("slowstop")
+	h.exec(`UPDATE boards SET archive_days = 0 WHERE slug = 'slowstop'`)
+	thread := h.imageThread("slowstop", "an image whose removal outlasts the prune's bound")
+	h.archiveThread("slowstop", thread.ThreadNo, time.Minute)
+	spentKey := sha256.Sum256([]byte("an answer spent before a slow stop"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := h.app.media
+	slow := &stopInHand{Store: store, cancel: cancel, hold: 3 * bound}
+	h.app.media = slow
+	report, err := h.app.Sweep(ctx)
+	ended := time.Now()
+	h.app.media = store
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, context.DeadlineExceeded) ||
+		!strings.Contains(err.Error(), "sweep spent captchas: ") {
+		t.Errorf("a sweep whose stop waited %v for its file returned %v, want the stop and the prune given no time",
+			3*bound, err)
+	}
+	if took := ended.Sub(slow.stopped); took > 3*bound+time.Second {
+		t.Errorf("the sweep returned %v after the stop, want its file's %v and little more", took, 3*bound)
+	}
+	if report.BlobsRemoved != 1 || report.SpentCaptchas != 0 {
+		t.Errorf("sweep report = %+v, want the file in hand removed and no spent answer pruned", report)
+	}
+	if n := h.countRows("captcha_spent"); n != 1 {
+		t.Errorf("%d spent answers left, want the one, for the next sweep", n)
+	}
+}
+
+// The other side of the same bound: a sweep that has run for longer than the
+// prune's bound by the time it is stopped still gives the prune its bound from
+// the stop, not what is left of one counted from an earlier start, the
+// sweep's say, which a Job stopped past its first few seconds would have used
+// up (the rewrite alone waits a minute for the statistics). Here the sweep has
+// had its first file in hand for two bounds when the stop comes, finishes it
+// at once, and prunes the spent answer, so its error is the stop alone.
+func TestSweepStoppedLateStillPrunesSpentCaptchas(t *testing.T) {
+	const bound = time.Second
+	h := testServer(t, func(cfg *Config) { cfg.spentPruneWithin = bound })
+	h.addBoard("latestop")
+	h.exec(`UPDATE boards SET archive_days = 0 WHERE slug = 'latestop'`)
+	thread := h.imageThread("latestop", "an image in hand for longer than the prune's bound")
+	h.archiveThread("latestop", thread.ThreadNo, time.Minute)
+	spentKey := sha256.Sum256([]byte("an answer spent before a late stop"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := h.app.media
+	late := &stopInHand{Store: store, cancel: cancel, after: 2 * bound}
+	h.app.media = late
+	report, err := h.app.Sweep(ctx)
+	h.app.media = store
+	if !errors.Is(err, context.Canceled) || err.Error() != "sweep media: context canceled" {
+		t.Errorf("a sweep stopped %v into its first file returned %v, want the stop and nothing else", 2*bound, err)
+	}
+	if report.BlobsRemoved != 1 || report.SpentCaptchas != 1 {
+		t.Errorf("sweep report = %+v, want the file in hand removed and the spent answer pruned", report)
+	}
+	if n := h.countRows("captcha_spent"); n != 0 {
+		t.Errorf("%d spent answers left by a sweep stopped late, want none", n)
+	}
+}
+
+// holdThePrune locks the table spent answers are kept in against every change,
+// the sweep's prune included, in a transaction it leaves open until release
+// ends it. pid is the open transaction's backend, which the prune waits on. The
+// lock is SHARE, which, unlike ACCESS EXCLUSIVE, takes no transaction id
+// (PostgreSQL logs an ACCESS EXCLUSIVE lock for its standbys under one), and
+// between its statements the open transaction, at READ COMMITTED, holds no
+// snapshot either, so it holds nothing that keeps the vacuum after the sweep's
+// rewrite, which comes before the prune, from its job (vacuumTooSoon).
+func (h *harness) holdThePrune() (pid uint32, release func()) {
+	h.t.Helper()
+	return h.holdTable("captcha_spent", "SHARE")
+}
+
+// holdTable locks table in mode in a transaction it leaves open until release
+// ends it; in ACCESS EXCLUSIVE mode the lock holds the table against
+// everything, reads included.
+func (h *harness) holdTable(table, mode string) (pid uint32, release func()) {
+	h.t.Helper()
+	ctx := context.Background()
+	tx, err := h.app.pool.Begin(ctx)
+	if err != nil {
+		h.t.Fatalf("begin: %v", err)
+	}
+	h.t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		h.t.Fatalf("backend pid: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `LOCK TABLE `+table+` IN `+mode+` MODE`); err != nil {
+		h.t.Fatalf("hold %s: %v", table, err)
+	}
+	return pid, func() { _ = tx.Rollback(context.Background()) }
+}
+
+type sweepOutcome struct {
+	report SweepReport
+	err    error
+}
+
+// sweepInBackground starts a sweep on ctx, whose outcome sweepEnded waits for.
+func sweepInBackground(h *harness, ctx context.Context) <-chan sweepOutcome {
+	done := make(chan sweepOutcome, 1)
+	go func() {
+		report, err := h.app.Sweep(ctx)
+		done <- sweepOutcome{report, err}
+	}()
+	return done
+}
+
+// sweepEnded is the outcome of a sweep sweepInBackground started, or fails the
+// test if the sweep is still running after limit.
+func sweepEnded(t *testing.T, done <-chan sweepOutcome, limit time.Duration) (SweepReport, error) {
+	t.Helper()
+	select {
+	case outcome := <-done:
+		return outcome.report, outcome.err
+	case <-time.After(limit):
+		t.Fatalf("the sweep was still running after %v", limit)
+		return SweepReport{}, nil
+	}
+}
+
+// stoppedSweepPruned checks what a stopped sweep did: the report, the spent
+// answer gone, and one record of counts logged since before, counting it.
+func stoppedSweepPruned(t *testing.T, h *harness, logs *syncBuffer, before int, report, want SweepReport) {
+	t.Helper()
+	if report != want {
+		t.Errorf("sweep report = %+v, want %+v", report, want)
+	}
+	if n := h.countRows("captcha_spent"); n != 0 {
+		t.Errorf("%d spent captcha answers kept past their day by a stopped sweep, want none", n)
+	}
+	lines := strings.Split(strings.TrimSpace(logs.String()[before:]), "\n")
+	if len(lines) != 1 || !strings.Contains(lines[0], `"msg":"sweep"`) || !strings.Contains(lines[0], `"spent_captchas":1`) {
+		t.Errorf("the stopped sweep logged %q, want one sweep record counting the spent answer", lines)
 	}
 }
 
@@ -519,6 +1075,11 @@ func TestSweepLogsOnlyCounts(t *testing.T) {
 	// its row — the label, the expiry — reaches the log.
 	h.exec(`INSERT INTO verification_credentials (email_hash, credential_id_hash, label, expires_at)
 		VALUES ('\x01', '\x02', 'Hushed College', '2033-03-03T00:00:00Z')`)
+	// And a spent captcha answer two days past its day, which the sweep
+	// prunes and counts in the same record.
+	spentKey := sha256.Sum256([]byte("an answer long spent"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
 	lines, err := sweepLog(t)
 	if err != nil {
 		t.Fatalf("sweep: %v", err)
@@ -531,7 +1092,8 @@ func TestSweepLogsOnlyCounts(t *testing.T) {
 	delete(record, "level")
 	delete(record, "msg")
 	want := map[string]any{"threads": 1.0, "posts": 1.0, "attachments": 1.0,
-		"blobs_removed": 2.0, "blob_failures": 0.0, "blobs_missing": 0.0, "credentials_rewritten": 1.0}
+		"blobs_removed": 2.0, "blob_failures": 0.0, "blobs_missing": 0.0, "credentials_rewritten": 1.0,
+		"spent_captchas": 1.0}
 	if fmt.Sprint(record) != fmt.Sprint(want) {
 		t.Errorf("sweep record = %v, want exactly %v", record, want)
 	}
@@ -562,6 +1124,40 @@ func TestSweepLogsOnlyCounts(t *testing.T) {
 	if !strings.Contains(err.Error(), "delete refused") {
 		t.Errorf("error %q does not say why the files were not removed", err)
 	}
+}
+
+// cancellingDeletes is a media store that cancels the sweep once it has
+// deleted a file, standing in for SIGTERM arriving while the files go.
+type cancellingDeletes struct {
+	media.Store
+	cancel context.CancelFunc
+}
+
+func (s cancellingDeletes) Delete(ctx context.Context, key string) error {
+	defer s.cancel()
+	return s.Store.Delete(ctx, key)
+}
+
+// stopInHand is a media store that stops the sweep once it has had its first
+// file in hand for after, standing in for SIGTERM arriving while a file is
+// removed, and then takes hold to finish that file, which the sweep waits for
+// whatever the stop.
+type stopInHand struct {
+	media.Store
+	cancel  context.CancelFunc
+	after   time.Duration
+	hold    time.Duration
+	stopped time.Time
+}
+
+func (s *stopInHand) Get(ctx context.Context, key string) (io.ReadSeekCloser, media.Object, error) {
+	if s.stopped.IsZero() {
+		time.Sleep(s.after)
+		s.stopped = time.Now()
+		s.cancel()
+		time.Sleep(s.hold)
+	}
+	return s.Store.Get(ctx, key)
 }
 
 // refusingDeletes is a media store whose deletes always fail, standing in for
@@ -1302,11 +1898,6 @@ func (g rewriteGate) lock(mode string, granted bool) func() bool {
 	}
 }
 
-type sweepOutcome struct {
-	report SweepReport
-	err    error
-}
-
 // sweepLater runs a sweep in the background.
 func (h *harness) sweepLater() <-chan sweepOutcome {
 	done := make(chan sweepOutcome, 1)
@@ -1495,6 +2086,7 @@ func TestCredentialConfirmedDuringTheRewriteIsKeptOnce(t *testing.T) {
 func TestSweepFailsWhenTheVerificationTablesAreHeld(t *testing.T) {
 	var logs syncBuffer
 	h := testServerLogging(t, nil, &logs)
+	h.keepOtherHoldersAway()
 	h.app.store.vacuumPatience = time.Second
 	ctx := context.Background()
 	h.exec(`INSERT INTO verification_credentials (email_hash, credential_id_hash, label, expires_at)
@@ -1597,6 +2189,7 @@ func TestSweepFailsWhenTheVerificationTablesAreHeld(t *testing.T) {
 // sweep took.
 func TestSweepSaysHowLongItTriedToVacuum(t *testing.T) {
 	h := testServer(t, nil)
+	h.keepOtherHoldersAway()
 	h.app.store.vacuumPatience = 3 * time.Second
 	h.holdOpen(`SELECT count(*) FROM verification_pending`)
 
@@ -1688,6 +2281,7 @@ func TestSweepFailsWhileAnOlderTransactionCanReadTheOldRows(t *testing.T) {
 		t.Run(holder.name, func(t *testing.T) {
 			var logs syncBuffer
 			h := testServerLogging(t, nil, &logs)
+			h.keepOtherHoldersAway()
 			h.app.store.vacuumPatience = time.Second
 			ctx := context.Background()
 			h.issueDirectly(issued)
@@ -1871,7 +2465,8 @@ func TestSweepFailsWhenVacuumLeavesATableInItsFile(t *testing.T) {
 	delete(record, "level")
 	delete(record, "msg")
 	want := map[string]any{"threads": 0.0, "posts": 0.0, "attachments": 0.0,
-		"blobs_removed": 0.0, "blob_failures": 0.0, "blobs_missing": 0.0, "credentials_rewritten": 1.0}
+		"blobs_removed": 0.0, "blob_failures": 0.0, "blobs_missing": 0.0, "credentials_rewritten": 1.0,
+		"spent_captchas": 0.0}
 	if fmt.Sprint(record) != fmt.Sprint(want) {
 		t.Errorf("sweep record = %v, want exactly %v", record, want)
 	}
@@ -1934,6 +2529,7 @@ func TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile(t *testing.T) {
 // TestBadgedPostsDoNotQueueBehindVacuumsAnOlderSnapshotWouldSpoil.)
 func TestBadgedPostsDoNotQueueBehindTheSweepsVacuum(t *testing.T) {
 	h := verifyServer(t, nil)
+	h.keepOtherHoldersAway()
 	h.app.store.vacuumPatience = 3 * time.Second
 	h.addBoard("busy")
 	thread := h.createThread("busy", "", "", "posting through the sweep")
@@ -2014,6 +2610,7 @@ func TestBadgedPostsDoNotQueueBehindTheSweepsVacuum(t *testing.T) {
 // by default.
 func TestBadgedPostsDoNotQueueBehindVacuumsAnOlderSnapshotWouldSpoil(t *testing.T) {
 	h := verifyServer(t, func(cfg *Config) { cfg.DBMaxConns = defaultDBMaxConns })
+	h.keepOtherHoldersAway()
 	h.app.store.vacuumPatience = 2 * time.Second
 	h.addBoard("report")
 	thread := h.createThread("report", "", "", "posting through a long report")
@@ -2103,6 +2700,7 @@ func TestBadgedPostsDoNotQueueBehindVacuumsAnOlderSnapshotWouldSpoil(t *testing.
 // warnings whatever the pool's connections ask for.
 func TestSweepHearsVacuumsWarningsWhateverTheConnectionAsksFor(t *testing.T) {
 	h := testServer(t, func(cfg *Config) { cfg.DatabaseURL += "&client_min_messages=error" })
+	h.keepOtherHoldersAway()
 	ctx := context.Background()
 	h.exec(`INSERT INTO verification_credentials (email_hash, credential_id_hash, label, expires_at)
 		VALUES ('\x01', '\x02', 'Quiet College', date_trunc('day', now()) + interval '181 days')`)
@@ -2557,6 +3155,56 @@ func (h *harness) holdOpen(statement string) pgx.Tx {
 	return tx
 }
 
+// horizonLockID is an advisory lock that keeps two kinds of test apart: this
+// package's tests whose outcome hangs on the oldest transaction in the
+// database, and cmd/server's that keep a transaction open there for seconds.
+// The two packages' tests share the database, and go test ./... runs the
+// packages at once. A statement still running there from before a sweep's
+// credential rewrite committed holds the vacuum off, as does a transaction
+// there reading from one snapshot taken by then, or a transaction anywhere on
+// the instance that had written something by then (vacuumTooSoon), and
+// cmd/server's tests that stop a sweep process whose database has stopped
+// answering it keep one of those open for six or seven seconds
+// (TestStoppedSweepExitsWhenTheDatabaseStopsAnswering, for example). A test
+// here whose vacuum has a few seconds of patience or less, or whose deadline
+// after the vacuum is a few seconds, would fail for that, not for what it
+// checks. So each such test takes this lock exclusive (keepOtherHoldersAway),
+// and each of cmd/server's that keeps a transaction open for more than a second
+// takes it shared for as long as it does. cmd/server's tests define the same
+// value, as they define the migrations' lock; were the two to differ, nothing
+// would keep the tests apart.
+const horizonLockID = 8125437190022
+
+// keepOtherHoldersAway takes horizonLockID exclusive for the rest of the test,
+// on a connection of its own, waiting while a cmd/server test holds it shared:
+// from then until the test ends, none of those keeps a transaction open in the
+// database. It asks again every 50 milliseconds, as cmd/server's side does,
+// rather than wait in pg_advisory_lock, since a statement that waits holds a
+// snapshot from when it began, which would hold a vacuum off itself. A test
+// calls it once its harness is up and before its first sweep; the connection's
+// close gives the lock back.
+func (h *harness) keepOtherHoldersAway() {
+	h.t.Helper()
+	ctx := context.Background()
+	conn, err := pgx.ConnectConfig(ctx, h.app.pool.Config().ConnConfig)
+	if err != nil {
+		h.t.Fatalf("connect for the horizon lock: %v", err)
+	}
+	h.t.Cleanup(func() { conn.Close(context.Background()) })
+	for deadline := time.Now().Add(5 * time.Minute); ; time.Sleep(50 * time.Millisecond) {
+		var took bool
+		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, horizonLockID).Scan(&took); err != nil {
+			h.t.Fatalf("take the horizon lock: %v", err)
+		}
+		if took {
+			return
+		}
+		if time.Now().After(deadline) {
+			h.t.Fatalf("cmd/server's tests held the horizon lock for five minutes")
+		}
+	}
+}
+
 // A VACUUM ends, unless it is told to skip it, with a step across the whole
 // database: in a transaction of its own, after its run on the table has
 // committed, it updates the database's row in pg_database, and since
@@ -2586,6 +3234,7 @@ func TestVacuumDoesNotWaitForTheDatabasesRow(t *testing.T) {
 	} {
 		t.Run(statistics.name, func(t *testing.T) {
 			h := testServer(t, nil)
+			h.keepOtherHoldersAway()
 			h.app.store.statisticsVacuumCommand = statistics.command
 			h.app.store.vacuumPatience = 5 * time.Second
 			var mu sync.Mutex

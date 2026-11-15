@@ -84,6 +84,17 @@ func (c *client) upload(path string, fields map[string]string, filename string, 
 // and the credential a browser sends alongside a multipart post.
 func (c *client) uploadWithHeaders(header http.Header, path string, fields map[string]string, filename string, file []byte, out any) int {
 	c.t.Helper()
+	req := c.uploadRequest(path, fields, filename, file)
+	for k, values := range header {
+		req.Header[k] = values
+	}
+	return c.send(req, out)
+}
+
+// uploadRequest builds upload's request without sending it, for a test that
+// sends several at once.
+func (c *client) uploadRequest(path string, fields map[string]string, filename string, file []byte) *http.Request {
+	c.t.Helper()
 
 	var body bytes.Buffer
 	form := multipart.NewWriter(&body)
@@ -109,11 +120,8 @@ func (c *client) uploadWithHeaders(header http.Header, path string, fields map[s
 	if err != nil {
 		c.t.Fatalf("build request: %v", err)
 	}
-	for k, values := range header {
-		req.Header[k] = values
-	}
 	req.Header.Set("Content-Type", form.FormDataContentType())
-	return c.send(req, out)
+	return req
 }
 
 // fetch performs a GET and returns the raw response, which media tests need for
@@ -336,11 +344,12 @@ func pngClaiming(t *testing.T, w, h uint32) []byte {
 	return data
 }
 
-// A file whose header shows it cannot be used, because it is not an accepted
-// image or has too many pixels, is refused before flood control, so the poster
-// can send the text on its own at once. An image whose header is sound but
-// whose pixels do not decode is found only by decoding, after the cooldowns
-// have started, which is the one exception the README names.
+// A file whose header shows it cannot be used, such as one that is not an
+// accepted image or has too many pixels, is refused before flood control, so
+// the poster can send the text on its own at once. An image whose header is
+// sound but whose pixels do not decode is found only by decoding, after the
+// cooldowns have started: it is one of the refusals the README names as coming
+// after the cooldowns start.
 func TestImagesRefusedByTheirHeaderStartNoCooldown(t *testing.T) {
 	c := testServer(t, func(cfg *Config) {
 		cfg.TrustedProxyHops = 1
@@ -578,9 +587,9 @@ func TestUploadsSwitchedOffRefusesALargeFileUnread(t *testing.T) {
 }
 
 // GET /api/site tells a client what the posting form can offer before anyone
-// fills one in: whether images are taken at all, and the size limit behind the
-// 413. It is configuration, so it carries those two fields and nothing about
-// the caller.
+// fills one in: whether images are taken at all, the size limit behind the 413,
+// and whether posting needs the captcha. It is configuration, so it carries
+// those three fields and nothing about the caller.
 func TestSiteReportsTheUploadSettings(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -609,8 +618,8 @@ func TestSiteReportsTheUploadSettings(t *testing.T) {
 				keys = append(keys, key)
 			}
 			sort.Strings(keys)
-			if got := strings.Join(keys, ","); got != "max_upload_bytes,uploads" {
-				t.Errorf("fields = %s, want exactly max_upload_bytes,uploads", got)
+			if got := strings.Join(keys, ","); got != "captcha,max_upload_bytes,uploads" {
+				t.Errorf("fields = %s, want exactly captcha,max_upload_bytes,uploads", got)
 			}
 			var site Site
 			if err := json.Unmarshal(payload, &site); err != nil {

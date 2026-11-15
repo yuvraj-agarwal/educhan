@@ -87,12 +87,32 @@ type Config struct {
 	// MailDev allows the development sender while verification is on. It is
 	// for local work only: in production stdout is the log.
 	MailDev bool
+	// CaptchaSecret keys the captcha: the signature on every challenge, and on
+	// the key each one is made from. An empty secret switches the captcha off,
+	// so posts and code requests need none. It must be the same on every
+	// instance, since any of them may check an answer another issued, and
+	// rotating it only invalidates the challenges out at the time.
+	CaptchaSecret string
+	// CaptchaWork is the work a challenge asks of the browser at the base
+	// difficulty: the average counter its answer is at, one fewer than the
+	// attempts it takes on average. Raising it makes every post dearer for a
+	// script and slower for a person. Zero means defaultCaptchaWork.
+	CaptchaWork int
+
+	// captcha replaces the verifier CaptchaSecret selects, so a test can pass or
+	// fail every answer without solving puzzles. No setting reads it.
+	captcha captchaVerifier
 
 	// cooldownSweepEvery replaces cooldownSweepInterval, the period of the
 	// sweep that drops expired flood-control entries, so a test can watch it
 	// run without waiting a minute. No setting reads it; zero means the
 	// interval.
 	cooldownSweepEvery time.Duration
+
+	// spentPruneWithin replaces spentPruneTimeout, the bound on the sweep's
+	// prune of the spent captcha answers, so a test can run past it without
+	// waiting five seconds. No setting reads it; zero means the timeout.
+	spentPruneWithin time.Duration
 }
 
 // defaultDBMaxConns keeps one instance's pool small. The smallest Cloud SQL
@@ -137,6 +157,7 @@ func ConfigFromEnv() (Config, error) {
 		ModKey:            strings.TrimSpace(os.Getenv("EDUCHAN_MOD_KEY")),
 		VerifySecret:      strings.TrimSpace(os.Getenv("EDUCHAN_VERIFY_SECRET")),
 		VerifyDomainsFile: strings.TrimSpace(os.Getenv("EDUCHAN_VERIFY_DOMAINS")),
+		CaptchaSecret:     strings.TrimSpace(os.Getenv("EDUCHAN_CAPTCHA_SECRET")),
 	}
 
 	var err error
@@ -171,6 +192,9 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.VerifyCooldown, err = envDuration("EDUCHAN_VERIFY_COOLDOWN", defaultVerifyCooldown); err != nil {
+		return Config{}, err
+	}
+	if cfg.CaptchaWork, err = envCaptchaWork("EDUCHAN_CAPTCHA_WORK"); err != nil {
 		return Config{}, err
 	}
 	// A zero TTL would mint credentials that have already expired, which reads
@@ -263,6 +287,26 @@ func envPoolSize(key string, fallback int32) (int32, error) {
 		return 0, fmt.Errorf("%s: must be at least 1", key)
 	}
 	return int32(n), nil
+}
+
+// envCaptchaWork reads the captcha's base work, the average counter an answer
+// is at, which must be at least one (an answer at counter one, two attempts)
+// and at most maxCaptchaWork/captchaMaxScale: small enough that the base
+// puzzle stays inside the time app.js gives one, with room for a busy
+// address's puzzles to be made harder.
+func envCaptchaWork(key string) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return defaultCaptchaWork, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", key, err)
+	}
+	if n < 1 || n > maxCaptchaWork/captchaMaxScale {
+		return 0, fmt.Errorf("%s: must be between 1 and %d", key, maxCaptchaWork/captchaMaxScale)
+	}
+	return n, nil
 }
 
 // envBool reads an on/off setting that is off unless set. Anything that is not

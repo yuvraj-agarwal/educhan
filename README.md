@@ -21,8 +21,9 @@ educhan is a fast, high-signal imageboard designed for students, researchers, an
 The prototype in this repository implements the imageboard end to end: boards,
 anonymous posting with tripcodes and per-thread poster IDs, one image per post,
 a paginated board index, a catalog view, threads with quote links, optional
-institutional verification, and key-authenticated moderation. Janitor accounts,
-bans, and reports are not built yet.
+institutional verification, a self-hosted proof-of-work captcha, and
+key-authenticated moderation. Janitor accounts, bans, and reports are not built
+yet.
 
 ## Verified Anonymity
 
@@ -112,7 +113,9 @@ directions:
 - `TestCredentialHasNoEffectOffTheBadgePath` presents a valid credential to
   every other endpoint and asserts the responses are byte-identical to the same
   requests without it — including that an unbadged post carrying a credential
-  still gets no badge.
+  still gets no badge. `TestCredentialHasNoEffectOnTheCaptcha` does the same
+  for `GET /api/captcha`, whose challenges are random: one is issued the same
+  way, counted against the same address, with a credential or without.
 
 `GET /api/verify` therefore reports only whether the feature is configured. It
 cannot answer "am I verified?", because answering would mean the credential
@@ -161,10 +164,40 @@ after the sitting**, available to whoever uses the browser next, until it
 expires or someone clears it. That is why `/verify` gives **Forget this
 credential** its own block on the page rather than a quiet button in a row of
 actions, and says what forgetting costs — the server cannot show the credential
-again, so it means verifying from the start. Beside it, in every state of the
+again, so it means verifying from the start. Pressed in one educhan tab, it
+takes the badge out of every other tab open in the browser too: each sees it go
+from storage, and any posting form it shows loses the option to post with it;
+one that had it ticked, unless the badge is settled first, as by its badged post
+going through with it, says so when next pressed, rather than posting without
+it, and the press after that posts without it. Beside it, in every state of the
 page, **Forget this browser** removes the badge together with the poster key and
 the remembered name (see below), which are what would otherwise let the next
-person at a shared computer post under the same IDs and tripcode.
+person at a shared computer post under the same IDs and tripcode. A verification
+or a post still on its way when it is pressed brings none of them back,
+whichever educhan tab in the browser sent it: one still waiting on its anti-spam
+check is not sent, a post whose answer the server refused is not sent again, and
+one answered afterwards keeps nothing. Every open educhan tab also drops the
+badge and the poster key it holds; any posting form it shows, or is drawing at
+that moment, loses its Name and the option to post with the badge, without a
+word when next pressed, which would tell whoever pressed it that the browser had
+held a badge. The other tabs hear of it from the browser's storage, as the badge
+emptied there, the last of what the forget clears, by when storage, as a tab
+hearing it sees it, has had all three cleared (as measured in Chromium; other
+browsers were not measured); a tab that storage tells nothing, because it cannot
+read storage or because storage would not take the change where the button was
+pressed, hears of it through `BroadcastChannel` instead, and in a browser
+without that, does not hear of it. Where storage would not take that change but
+takes the badge's removal after it, the other tabs see the badge go from storage
+as they would after Forget this credential, and a tab that sees it before the
+`BroadcastChannel` message reaches it, or in a browser without that, starts the
+anti-spam check for a form on screen that had the badge ticked and has something
+in it (seen only with storage made to refuse the change). A tab that stored one
+of the three again before it heard, for a post or a confirmation it handled
+meanwhile, removes it when it hears from storage, but only while storage, as
+that tab sees it, still holds what that tab stored. So a badge confirmed or a
+key made in another tab since the press stays, but for one stored over that
+tab's own before the tab sees it, which goes with it: storage has no way to
+remove a value only if it is still there.
 
 A badge is a weak thing to inherit: it grants posting under an institution's
 label and nothing else, with no account, no history, and no route back to the
@@ -193,7 +226,14 @@ can and cannot work out.
   only other times in the tables; PostgreSQL keeps no sample of their values;
   and the sweep rewrites the credentials so that the transaction id PostgreSQL
   keeps on every row is the sweep's rather than the issuance's, which says of
-  a credential of the day it ran in only that it came before the sweep. A code
+  a credential of the day it ran in only that it came before the sweep. The
+  spent [captcha](#captcha) a code request leaves behind is in a table of its
+  own, which the sweep prunes but neither rewrites nor vacuums: it dates itself
+  only to a UTC calendar day (its challenge's expiry rounded up to the next UTC
+  midnight), not to the credential day, and holds nothing that points at the
+  request or the credential, though the transaction id it was written with lies
+  beside the request's own until the row is deleted, a day or so later, and in
+  the table's file after that, until its space there is written over. A code
   still in flight as the sweep ran, a sweep run after 05:00 UTC, and the day of
   a deploy that changes how expiries are counted (the first move from midnight
   to 05:00, a new `credentialDayStart` or a new `EDUCHAN_VERIFY_CREDENTIAL_TTL`)
@@ -318,8 +358,11 @@ in its TOAST table's, where a superuser or root on the machine can read them,
 and in every backup that copies those files, until the catalog is written out
 anew. On a database that ran `0015` before any `ANALYZE` of the tables, as a new
 one does, there is nothing to find; on one upgraded across `0015` with
-verification in use, step 5 below is what removes them. And the archive sweeper
-ends every run on the verification tables (`RewriteCredentials` in `store.go`):
+verification in use, step 5 below is what removes them. And each run of the
+archive sweeper, after the archived threads and their files and before the
+spent captcha answers ([The archive sweeper](#the-archive-sweeper) says when it
+leaves this to the next run), does this to the verification tables
+(`RewriteCredentials` in `store.go`):
 
 1. It deletes the codes that expired unconfirmed. A request for a code deletes
    them too, but nothing says when one will come, and until one does an
@@ -699,6 +742,7 @@ no handler and no SQL changes.
 | One credential per address | Re-verifying issues a new credential and revokes the previous one, so a mailbox is one identity however many browsers it uses |
 | Plus-addressing stripped | `ana+one@` and `ana+two@` are the same mailbox. Dots are *not* stripped: that is a Gmail convention, and applying it everywhere would fold two real people at one institution together |
 | Code request cooldown | `EDUCHAN_VERIFY_COOLDOWN`, applied per client address **and** per address hash, so neither a client can walk a list of addresses nor a mailbox be flooded from a pool of hosts |
+| Captcha | With `EDUCHAN_CAPTCHA_SECRET` set, every code request carries an answer to the [captcha](#captcha), checked before the address is parsed and spent once both cooldowns let the request through: every code that goes out has cost a puzzle of its own |
 | Five wrong codes | The pending verification is destroyed and a fresh code is the only way on, which is what makes a six-digit code safe |
 | Credential expiry | `EDUCHAN_VERIFY_CREDENTIAL_TTL`, 180 days by default. The credential is kept in `localStorage`, so this is the lifetime in practice rather than an upper bound the browser cuts short |
 
@@ -765,13 +809,13 @@ One image per post, on both thread creation and replies, **when
 image is then refused with `403` and
 `{"error":"image uploads are switched off on this server"}`, because originals
 are stored and served as uploaded: no metadata stripping and no content scanning
-yet. With uploads off a multipart post is held to the 64 KiB a JSON post may
-be, so the server stops reading an image once the body passes that, and a file
-over the size limit gets the same `403` rather than a `413`; a multipart post
-with no file, or with the empty file part a browser sends for an untouched
-input, posts as usual. `GET /api/site`
-reports the switch and the size limit as `{"uploads","max_upload_bytes"}`, so a
-client can leave the image picker off a server that would refuse what it sends.
+yet. With uploads off a multipart post is held to the 64 KiB a JSON post may be,
+so the server stops reading an image once the body passes that, and a file over
+the size limit gets the same `403` rather than a `413`; a multipart post with no
+file, or with the empty file part a browser sends for an untouched input, posts
+as usual. `GET /api/site` reports the switch and the size limit as `"uploads"`
+and `"max_upload_bytes"` (beside `"captcha"`), so a client can leave the image
+picker off a server that would refuse what it sends.
 
 - **Formats**: JPEG, PNG, WebP, and GIF, identified by magic bytes rather than by filename
   or the content type the client claims. Anything else, or an image whose header claims
@@ -824,24 +868,26 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Catalog | Every live thread on one page as excerpt tiles with thumbnails; an excerpt shows a spoiler as `[spoiler]`, never what it hides |
 | Attachments | One image per post and a per-board cap per thread, validated by magic bytes, thumbnailed at upload, served from `/media/…`; off unless switched on, and `GET /api/site` says which |
 | Verification | Optional institutional badge from an emailed code; the address is never stored and the badge cannot be linked to a post |
+| Captcha | A self-hosted proof-of-work puzzle in ALTCHA's protocol on every unbadged post and code request, solved by the browser while the post is written; off unless `EDUCHAN_CAPTCHA_SECRET` is set, and `GET /api/site` says which |
 | Moderation | Sticky, lock, and delete a post or a whole thread, plus creating and reconfiguring boards, behind a shared moderation key |
 | Archive | Threads pushed past a board's thread limit are archived rather than deleted: they leave the index and the catalog, refuse replies, and still load by number |
-| Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed, then rewrites the verification credentials so that every credential issued before the sweep carries the sweep's transaction id rather than its own ([Transaction ids, and the nightly rewrite](#transaction-ids-and-the-nightly-rewrite)); per-client cooldowns limit new threads, replies, and uploads, and forget each address within a minute of its cooldown ending while the process has CPU between requests (see Flood control for an idle Cloud Run instance) |
+| Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed, then rewrites the verification credentials so that every credential issued before the sweep carries the sweep's transaction id rather than its own ([Transaction ids, and the nightly rewrite](#transaction-ids-and-the-nightly-rewrite)), and last deletes spent captcha answers past their day; per-client cooldowns limit new threads, replies, and uploads, and they and the captcha's challenge count forget each address within a minute of its cooldown ending while the process has CPU between requests (see Flood control for an idle Cloud Run instance) |
 
 ## Front end
 
 The UI is three files served from the Go binary — `index.html`, `app.css`, `app.js` in
 `internal/app/web/` — with no build step and no framework, plus a vendored highlight.js
-and KaTeX, each fetched only when a post that needs it is on screen. `app.js` renders the
-JSON API into routes that mirror it (`/`, `/{slug}/`, `/{slug}/catalog`,
-`/{slug}/archive`, `/{slug}/thread/{no}`), so every view is a shareable link and the back
-button works. `/{slug}/post/{no}` names a post by number alone: it asks the server which
-thread the post is in and replaces itself with that thread, scrolled to the post, so Back
-does not land on it twice. Institution boards are stored as `u-{name}` and live at
-`/u/{name}/`, with the same routes beneath. The top-level words kept for pages — `verify`,
-`mod`, `u`, `rules`, `faq`, `legal`, `terms`, `privacy`, `dmca`, `report`, `archive`,
-`safety`, and the server's own `api`, `media`, `healthz`, and `lib` — are never read as
-boards.
+and KaTeX, each fetched only when a post that needs it is on screen, and ALTCHA's PBKDF2
+worker, started only by something done in or to a form that needs it (see
+[Captcha](#captcha)), never when a page is drawn. `app.js` renders the JSON API into
+routes that mirror it (`/`, `/{slug}/`, `/{slug}/catalog`, `/{slug}/archive`,
+`/{slug}/thread/{no}`), so every view is a shareable link and the back button works.
+`/{slug}/post/{no}` names a post by number alone: it asks the server which thread the
+post is in and replaces itself with that thread, scrolled to the post, so Back does not
+land on it twice. Institution boards are stored as `u-{name}` and live at `/u/{name}/`,
+with the same routes beneath. The top-level words kept for pages — `verify`, `mod`, `u`,
+`rules`, `faq`, `legal`, `terms`, `privacy`, `dmca`, `report`, `archive`, `safety`, and
+the server's own `api`, `media`, `healthz`, and `lib` — are never read as boards.
 `/verify`, `/rules`, and `/faq` are pages; a word without a page yet shows the not-found
 view.
 
@@ -869,11 +915,12 @@ view.
   and lock a thread. Boards can add their own rules under the header's **Rules**
   disclosure. `/faq` covers what educhan is, who it is for, why it asks when you were
   born, why there are no accounts or private messages, what anonymity here does and does
-  not hide, the badge, tripcodes, per-thread IDs, markup, and the bump limit, image cap,
-  and archive. Both end with the same fixed list of helplines (US, UK and Ireland, India,
-  Australia, and Find A Helpline for everyone else), which is static text: nothing works
-  out where the reader is. The footer links to both on every view; its invitation to
-  verify an address shows only on a server with verification switched on.
+  not hide, the badge, the anti-spam check, tripcodes, per-thread IDs, markup, and the
+  bump limit, image cap, and archive. Both end with the same fixed list of helplines (US,
+  UK and Ireland, India, Australia, and Find A Helpline for everyone else), which is
+  static text: nothing works out where the reader is. The footer links to both on every
+  view; its invitation to verify an address shows only on a server with verification
+  switched on.
 - **Reading**: a subject heads its thread, with the poster's name, tripcode, per-thread ID,
   time, and post number as secondary metadata; sticky, locked, archived, and bump-limit
   badges are tinted chips. Each board's archive lists the threads that have left it,
@@ -908,20 +955,21 @@ view.
   - A tag pairs with the first closing tag of its kind after it; one that never closes,
     an empty pair, or a `[spoiler]` opened inside another shows as the text that was
     typed.
-- **Posting**: labelled fields, an image picker that previews the chosen file with its name
-  and size, and drag-and-drop anywhere on the form. On a server with uploads switched off,
-  which the page learns from `GET /api/site`, the form has no image field at all and the
-  thread view leaves out the image cap; a page that missed the switch takes the image off
-  when the server refuses it, keeps the text, and the next press posts it. The picker
+- **Posting**: labelled fields, an image picker that previews the chosen file with its
+  name and size, and drag-and-drop anywhere on the form. On a server with uploads switched
+  off, which the page learns from `GET /api/site`, the form has no image field at all and
+  the thread view leaves out the image cap; a page that missed the switch takes the image
+  off when the server refuses it, keeps the text, and the next press posts it. The picker
   names the server's size limit, and a file over it is turned away when it is picked
-  rather than after the upload. A half-written reply survives
-  **Update**, image included, so refreshing a busy thread never costs a draft; if the
-  thread was archived or locked meanwhile, the text stays on the page in a read-only box
-  to copy. Following a quote link within a thread jumps to the post without reloading
-  the thread, so revealed spoilers stay revealed. Clicking a
-  post number quotes it into the reply box. With an image attached, **Spoiler image**
-  sends it hidden: readers see a neutral tile, filename included, until they click it or
-  press Enter on it, and it then expands like any other; the catalog shows the tile only.
+  rather than after the upload. A half-written reply survives **Update**, image included,
+  so refreshing a busy thread never costs a draft (a reply on its way meanwhile stays on
+  screen as it was, until it is answered); if the thread was archived or locked meanwhile,
+  the text stays on the page in a read-only box to copy. Following a quote link within a
+  thread jumps to the post without reloading the thread, so revealed spoilers stay
+  revealed. Clicking a post number quotes it into the reply box. With an image attached,
+  **Spoiler image** sends it hidden: readers see a neutral tile, filename included, until
+  they click it or press Enter on it, and it then expands like any other; the catalog
+  shows the tile only.
 - **Image cap**: the index and catalog show how many images a thread has, and on a server
   that takes images the thread view shows the count against its board's cap. A thread at the cap keeps its reply form
   with the image picker switched off and the reason beside it; if the cap is reached
@@ -965,7 +1013,7 @@ Accept-Encoding`; the fonts are compressed already. JSON from the API is not com
 
 - **Backend**: Go 1.22 standard library HTTP server, `pgx` for PostgreSQL
 - **Database**: PostgreSQL 16, versioned SQL migrations applied on startup
-- **Front end**: HTML/CSS/JS with no framework and no build step, served from the Go binary; highlight.js and KaTeX are vendored for code and maths
+- **Front end**: HTML/CSS/JS with no framework and no build step, served from the Go binary; highlight.js and KaTeX are vendored for code and maths, and ALTCHA's PBKDF2 worker for the captcha
 - **Deployment**: multi-stage Docker build onto a distroless base, built by Cloud Build into Artifact Registry; Cloud Run with Cloud SQL and Cloud Storage (see [Deployment](#deployment))
 - **Planned**: Gemini API + Cloud Vision for moderation, Cloud CDN + Cloud Armor
 
@@ -1037,6 +1085,8 @@ the build needs, and the rest of the walkthrough.
 | `EDUCHAN_VERIFY_COOLDOWN` | `60` (seconds) | Minimum interval between code requests, per client and per address |
 | `EDUCHAN_VERIFY_DOMAINS` | embedded list | Path to an allowlist file replacing the built-in one |
 | `EDUCHAN_MAIL_DEV` | off | Allow the development mail sender, which prints codes and addresses to stdout. Without it the server refuses to start with verification on and no real sender |
+| `EDUCHAN_CAPTCHA_SECRET` | empty | Keys the [captcha](#captcha): the signature on every challenge. **Unset switches the captcha off**, so posts and code requests need no answer. At least 32 bytes (`openssl rand -hex 32` makes 64), the same on every instance; rotating it only invalidates the challenges out at the time |
+| `EDUCHAN_CAPTCHA_WORK` | `1500` | Work a challenge asks of the browser: the average counter its answer is at, so about this many PBKDF2 attempts (one more on average), before an address asking fast is given harder ones; 1 to 7500. How long an attempt takes depends on the device and the browser; for a slow phone at 4 ms an attempt, which the page's timeout is sized for, the default takes six seconds on average, and above a few thousand a slow phone waits a long while before every post |
 
 ### Storage backends
 
@@ -1117,33 +1167,45 @@ boards at once. Uploads are counted across the whole server instead, because
 decoding, thumbnailing, and storing an image costs the same wherever the post
 lands. A post with an image has to clear both its posting cooldown and the
 upload cooldown; when it is refused, neither cooldown is started, so the two
-limits never compound.
+limits never compound. The cooldowns are checked and started in one step, so of
+several posts sent at the same moment from one address that need the same
+cooldown (new threads on one board, replies on one board, or images anywhere),
+at most one goes ahead, and each of the rest is refused by a cooldown that a
+post which went ahead started. None goes ahead when another post from the
+address went ahead first holding a cooldown they all need, as an image reply on
+another board holds the upload cooldown that two image threads need.
 
 A refused request answers `429` with a `Retry-After` header in seconds and a
 `retry_after` field in the body. Set a cooldown to `0` to switch it off. A
-request rejected for any other reason — an empty body, an oversized image, a
-file that is not an accepted image or whose header claims too many pixels, a
-reply to a missing, locked or archived thread or an image past a thread's cap —
-does not start a cooldown, so a typo never costs a wait. Two refusals come only
-after the cooldowns have started: an image whose header reads but whose pixels
-do not decode, which only decoding it can find, and decoding is the cost the
-upload cooldown is there for; and the loser of two replies racing for a
-thread's last image slot (see the HTTP API).
+request rejected for a reason that can be known up front — such as an empty
+body, an oversized image, a file that is not an accepted image or whose header
+claims too many pixels, a reply to a missing, locked or archived thread or an
+image past a thread's cap — is turned away before flood control and does not
+start a cooldown, so a typo never costs a wait. A refusal that can be known only
+once flood control has let a post through comes after its cooldowns have
+started, for example for an image whose header reads but whose pixels do not
+decode, which only decoding it can find, and decoding is the cost the upload
+cooldown is there for; or for a thread that changed while the reply was on its
+way, locked, archived or deleted meanwhile, or given its last image slot by
+another reply racing it (see the HTTP API). The loser of two posts racing with
+one [captcha](#captcha) answer is refused before its cooldowns start.
 
-The cooldowns are keyed on client addresses, and they are the only place the
-server holds one. A sweep runs once a minute and drops every entry whose
-cooldown has run out, so **an address is held in memory no longer than the
+The cooldowns are keyed on client addresses, and so is the [captcha](#captcha)'s
+count of challenges, which works like a one-minute cooldown; they are the only
+places the server holds one. A sweep runs once a minute and drops every entry
+whose cooldown has run out, so **an address is held in memory no longer than the
 longest cooldown that applies to it plus one minute**, counted from its last
-post (or code request, for verification's cooldown), whether or not anyone
-else posts in the meantime, **as long as the process has CPU between
-requests**. A host that gives it CPU only while it answers a request, which is
-Cloud Run's default (request-based billing), holds the sweep's timer back while
-an instance is idle. The first request to arrive after a sweep fell due runs
-it before it is handled, but until one arrives, or the instance is shut down,
-an idle instance's memory still holds the addresses it last saw. On Cloud Run
-the one-minute bound needs CPU allocated for the instance's whole life, which
-is also how it is then billed: `run.googleapis.com/cpu-throttling: "false"` on
-the revision, or `--no-cpu-throttling` on `gcloud run deploy`.
+post (or code request, for verification's cooldown, or challenge, for the
+captcha's count), whether or not anyone else posts in the meantime, **as long as
+the process has CPU between requests**. A host that gives it CPU only while it
+answers a request, which is Cloud Run's default (request-based billing), holds
+the sweep's timer back while an instance is idle. The first request to arrive
+after a sweep fell due runs it before it is handled, but until one arrives, or
+the instance is shut down, an idle instance's memory still holds the addresses
+it last saw. On Cloud Run the one-minute bound needs CPU allocated for the
+instance's whole life, which is also how it is then billed:
+`run.googleapis.com/cpu-throttling: "false"` on the revision, or
+`--no-cpu-throttling` on `gcloud run deploy`.
 
 The address itself is never written to the database or the logs. A post from a
 client that sends no poster key does store a poster ID derived from it (see
@@ -1152,9 +1214,231 @@ client that sends no poster key does store a poster ID derived from it (see
 addresses against, one thread at a time. The web client always sends a key.
 
 State is held in the process, so each instance of a horizontally scaled
-deployment enforces the cooldowns it sees. Moving to shared storage means
-replacing `cooldownLimiter` in `internal/app/ratelimit.go`, which nothing else
-depends on.
+deployment enforces the cooldowns it sees, and counts the captcha challenges it
+issues. Moving the cooldowns to shared storage means replacing `cooldownLimiter`
+in `internal/app/ratelimit.go`, which nothing else depends on; the challenge
+count is `captchaMeter` in `captcha.go`.
+
+### Captcha
+
+With `EDUCHAN_CAPTCHA_SECRET` set, a post without a badge, and every request for
+a verification code, has to carry the answer to a proof-of-work puzzle (build
+plan 2.6). educhan issues and checks the puzzles itself, in
+[ALTCHA](https://altcha.org)'s protocol: no third party sees the request, no
+script from anywhere else runs on the page, and no cookie is set.
+
+1. When focus moves into a box to write in, in a form that needs an answer,
+   however it gets there (a click or tap, Tab, quoting a post), the page asks
+   `GET /api/captcha` for a challenge, unless it already holds a good answer or
+   is solving one. Attaching an image, unticking the badge or the page taking a
+   ticked one off a form on screen with something in it (the badge gone or
+   replaced, in another tab or in this one, or refused as expired or revoked;
+   Forget this browser, where a tab hears it as that, and `/verify` loading over
+   the form start nothing, nor does a refusal of a form off the screen, while a
+   post link's lookup loads say, nor the form a redraw draws in its place, noted
+   or told of the refusal), the press then refused once to say so, a refusal
+   saying it spent the answer while its form is on screen, and a press with no
+   answer ready can start one too (the full list heads `/* Captcha */` in
+   `app.js`); drawing a page never does. A challenge is a random salt and nonce,
+   a PBKDF2-SHA-256 cost, the first half of a key, an expiry half an hour away,
+   and the server's HMAC over all of it. The server made the key by choosing a
+   counter at random, from one to just under twice the work, and deriving PBKDF2
+   over the nonce with that counter appended.
+2. ALTCHA's worker, vendored at `web/lib/altcha/pbkdf2.js`, runs in up to four
+   copies and tries counters until a key starts with that half. That is about
+   1500 attempts on average at the default work and never more than 3000, done
+   while the post is being written. How long an attempt takes depends on the
+   device and the browser; the page's two-minute timeout is sized for a slow
+   phone at 4 ms an attempt, at which the default work takes six seconds on
+   average. How much the extra copies help differs by browser too: Chromium
+   runs every copy's Web Crypto on one thread, so there the copies take turns.
+   The worker needs Web Crypto, which a browser gives only to a page on HTTPS
+   or `localhost`; anywhere else, with the captcha on, the page fetches no
+   challenge, sends no unbadged post and no code request, and says the check
+   needs a secure (https) connection.
+3. The post carries the answer, the challenge and the key it found, as
+   `"captcha"`. The server checks the signature, the expiry and an HMAC of the
+   key, at most two HMACs and never a key derivation, so a wrong answer costs it
+   no more than a right one. It looks up that the challenge is not spent yet,
+   and once flood control's first check has let the post through it records it
+   as spent, so it works once.
+
+A **badged post skips the captcha**: the credential has already cost its holder
+more than a puzzle would. Holding one is not enough; only a post that asks for
+the badge, and gets it, goes without an answer. A code request never skips it.
+There is no limit per credential: its holder posts without puzzles from any
+address, under that address's flood control.
+
+The answer is checked, the lookup included, before flood control. It is spent
+once flood control has found no cooldown to wait out, and flood control then
+checks again as it starts the post's cooldowns. So a post refused by the captcha
+starts no cooldown, and a post refused by a cooldown leaves its answer unspent
+for when it is let through, unless another post from the same address started
+that cooldown between the two checks: of several sent at once, the one let
+through starts it; those that had already passed the first check have spent
+their answers, and those that reach it afterwards leave theirs unspent. Two
+posts racing with one answer can both pass the lookup; the spend lets one
+through and refuses the other as used, with no cooldown started for it, so one
+answer sent to many boards at once starts only what the one let through starts,
+as it would alone: its board's thread or reply cooldown and, with an image, its
+address's upload cooldown, or, for a code request, its client's and its email
+address's. The page never hands one answer to two requests at once: each request
+takes its answer out of the page, so a post sent while another is on its way
+solves a puzzle of its own. A request refused for the answer itself is answered
+`403` with `"captcha": "required" | "invalid" | "expired" | "used"` beside the
+message; the page solves a fresh puzzle and sends the post once more, so the
+reader presses the button once (unless they have left the form meanwhile, or
+this browser was forgotten since the press: a request that waits for a puzzle
+goes only from a form still on screen, in a browser not forgotten since, and a
+post the forget stopped says "This browser was forgotten before the post went
+through, so nothing was posted."). A `used` answer was spent by an earlier
+request, which, like others from the same address, may have started cooldowns,
+so the resend can meet one of them; the page then says how long to wait and
+keeps the fresh answer for the next press, on the terms below. Every response
+written after a request's answer is spent carries `Educhan-Captcha: spent`,
+whatever its status, a refusal included, such as one for a cooldown another
+request started meanwhile (one from the same address or, for a code request, one
+for the same email address from anywhere), an image whose pixels fail to decode,
+a thread that filled up or was archived, locked or deleted meanwhile, or, for a
+code request, a code that could not be sent. The one exception is a spend the
+database applied but whose reply was lost: the answer is spent, though the
+response, a `500` saying the server could not check the captcha, carries no
+header. The page keeps its answer through any other refusal without that header
+(the captcha's own refusals carry none, and drop it), though only while it is
+good and until another answer takes its place, one a puzzle started meanwhile
+solves, before the refusal or after it, say, so the next press goes straight
+out; and it starts the next puzzle as soon as a refusal with the header arrives,
+while its form is on screen in a browser not forgotten since the press. A
+request that brought no response at all puts its answer back on the same terms,
+though it may have been spent: then, as after that `500`, the first request
+whose captcha check can look it up is refused as used and solves a fresh one,
+while one refused before that check, such as a reply to a thread locked
+meanwhile or an image whose header does not read, or by a lookup that fails (a
+`500` with no header), does not learn it was used and keeps it again, and one
+checked after the captcha secret was rotated is refused as invalid and solves a
+fresh one too.
+
+While a post or a code request waits for its puzzle and its answer, its form is
+held: its boxes and buttons are switched off, and look it, so what is sent is
+what the form shows, but for what a forget or a change of badge does to it
+meanwhile, such as the Name emptied or the badge box taken out, or drawn for
+another badge, switched off and unticked, while a post that still goes carries
+what was read at the press. A reader who goes to another page before the answer
+is ready sends nothing, and what they wrote is dropped with the page they left,
+never put into a form on the page they went to, even after a double click; the
+answer is put back for the next press, on the same terms, and a request that had
+already gone is not reported on that page either. A post pressed just after a
+link to another page or board, before that page is drawn, goes all the same if
+its answer is ready or it needs none, to the form's own board and thread, never
+the one being loaded, and is answered like one whose form has left the screen,
+not on the page the reader went to, unless that page carries the form (below). A
+code request pressed just after a link is answered the same way, drawing no code
+step over the page being left. A post link that leads back into the form's own
+thread (`>>>/board/N` naming a post there, which the page looks up) takes the
+form off the screen while the post is looked up and, if the page blanks
+meanwhile, until the thread is drawn again. The lookup then puts the form back
+into the thread that it draws, emptied if its post went (a thread locked or
+archived meanwhile draws no form, and keeps the text that was not sent under its
+note instead), or, if the thread will not load and the page has not blanked yet,
+leaves the page as it was, form and all, with a notice saying why. A lookup that
+fails itself (a `500`, say, or the server unreachable) draws the error in the
+page's place, as another page that will not load does, and the form goes with
+it: a post already sent is answered like one whose form has left the screen, one
+still waiting for its puzzle is not sent, and neither is said anywhere, nor is a
+notice the form was owed. A post refused, or not sent, while the form was off
+the screen is told what it would have been told on screen, such as the refusal
+or, for a post that was not sent, that nothing was posted, by whatever redraw
+brings the form back to its page, begun before the answer or after it: that
+lookup, say, or Update, the same link again or Back to the thread, pressed
+during it. It is told once, worded when it is told, for the form as it stands
+then, the text left in it say, ahead of any reason the thread did not load, with
+its button given the focus as after a refusal. A post pressed while a redraw
+that brings its form back loads, such as that lookup or the same post link
+pressed again, Update, or another page of the same board's index, before the
+page blanks, is carried as if pressed just before it began: the lookups, that
+one, the same link again or Update pressed during it, which looks the post up
+again, put the form back as above, the page blanking meanwhile if they are slow,
+while Update pressed on the thread's own address, and another page of the index,
+keep the page on screen for it. Answered on its page, a success goes to the new
+post and a refusal is said once, with the focus as on screen; answered while the
+lookup has the form off the screen, it is told as above. Either way nothing it
+sent is left in a new form to be posted twice. A press refused before anything
+is sent, an empty one say, or one refused to say the page took a ticked badge
+off, is answered on its form too, so every press made while such a redraw loads
+is, sent or not: its refusal, said at the press, stays up while the redraw loads
+and, while it is still the notice on screen, is worded again on the form the
+redraw draws, for that form as it stands, with its button given the focus if the
+focus was lost, or kept with the error after it on a page kept when the redraw
+will not load. Words that come out the same are left as they are, and words that
+no longer hold, something written since an empty press say, are taken off. A
+refusal the reader has dismissed, or that another notice has taken the place of,
+is said no more, and one whose form is not drawn again, another page, a page
+with no form, the age screen or an error drawn in its place, is taken off. After
+a refusal of the image itself (the image limit reached, or uploads switched off)
+the image is taken off, as on screen, and a page left as it was switches the
+picker off and updates the thread's counts, as on screen, as does a press of the
+form made first, unless an image has been attached since, which is left for the
+server to answer, while a thread drawn again draws both as the server now says,
+taking off with nothing more said an image attached since that its picker does
+not take, so the refusal is said once. A redraw for another page, or one the
+reader begins once the page has blanked, does not bring the form back, and what
+it was owed goes with it; a press of the form drops what it was owed too, so the
+form is told only of that press. Update draws again whatever address is in the
+address bar. Pressed meanwhile on the thread's own address, it redraws the
+thread around the same form, still held, and the post goes ahead and is answered
+there: the form is cleared and the thread shows the post when it went, and the
+form is switched back on with the reason when it was refused. If the thread will
+not load, the page stays as it was, form and all, with a notice saying why, and
+the post is answered on it just the same. Pressed during a post link's lookup,
+whose address is the post's, it looks the post up again, as above. A post
+answered after a redraw, or while one loads, success or refusal, has its image
+picker left as the redraw draws it: switched off if the thread takes no more
+images, taking off the image a refused post still held, and back on if it takes
+them again; a refusal of the image itself then switches it off. Where the image
+was taken off, any other notice about the post says so and, unless the thread
+takes no posts at all (archived, locked or gone), says why and tells a post left
+with nothing to send to write something instead. Every page of a board's index
+carries the same new-thread form, so going to another page of the index keeps a
+new thread going as Update does: the page is drawn around the held form, and the
+thread is posted from there or, if that page will not load, from the page still
+on screen, whose address goes back into the address bar, in the history entry
+the reader is on. With nothing pressed while the new page loads, that is the
+entry the link, Back or Forward led to: after a link the history then holds the
+page kept twice, so one Back press stays on it, and after Back or Forward the
+entry gone to now holds the page kept. A link pressed during the load, the same
+one again or a jump within the page, adds an entry of its own, which then holds
+the page kept, and Back from it loads the page that failed again.
+
+An address that asks for challenges faster than people post gets harder ones: up
+to 60 a minute at the base work, then twice the work for each further 60, to at
+most eight times the base, and past 300 in a minute `GET /api/captcha` answers
+`429`, which the page reports as too many checks started from the reader's
+network, with the wait, rather than as a post's cooldown. The count is kept per
+client address, which for an IPv6 address is its `/64`, as everywhere else in
+this README, in one-minute windows, in each instance's memory like flood
+control, and swept with the cooldowns (see [Flood control](#flood-control));
+behind several instances an address can ask each of them for that many. A
+challenge is not tied to the address that fetched it, which would fail a phone
+moving between networks, so the harder puzzles slow a script that asks from one
+address, not one that fetches from many. Spent challenges are kept in
+`captcha_spent`, shared by every instance so they agree on what was used, as a
+hash of the challenge's signature and its expiry rounded up to the next UTC
+midnight, so the only date a row stores is the day. Each spend deletes a batch
+of the rows past their day, and the daily [sweep](#the-archive-sweeper) the
+rest, so a row is gone a day or so after its puzzle was solved. Nothing stored
+in the table names the post or code request an answer let through, or who solved
+it. Where a row sits is another matter: its place in the table and the
+transaction that wrote it, which Postgres keeps with every row, lie beside the
+post's or the code request's until it is deleted, and stay in the table's file
+after that until its space there is written over, which the sweep does not
+hurry, so whoever reads the database files can pair the two and date the row by
+the post. That shows only that the post carried an answer, which every post
+without a badge does while the captcha is on.
+
+Proof of work slows a script down; it does not tell a person from one. It
+makes each post cost the poster's processor a moment and a bulk poster's a
+moment every time, alongside flood control, and keeps every request on
+educhan's own server.
 
 ### Running behind a proxy
 
@@ -1177,7 +1461,8 @@ Anything that does not match the declared shape falls back to the peer address:
 a chain shorter than the configured depth, or an entry that is not an IP
 address. **Set this to the real number of hops.** A value higher than the actual
 chain makes the server read an entry the client controls, which forfeits flood
-control entirely; a value lower than the chain buckets every client behind the
+control entirely and lets a client start a fresh captcha challenge count
+whenever it likes; a value lower than the chain buckets every client behind the
 proxy together.
 
 Both proxy styles work: one that appends (`proxy_add_x_forwarded_for`) and one
@@ -1188,20 +1473,21 @@ that overwrites the header with just the peer address are each a single hop.
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/healthz` | Liveness plus a database ping |
-| `GET` | `/api/site` | Posting settings — `{"uploads","max_upload_bytes"}`: whether posts may carry an image, and the largest one taken. The same answer for every caller; it reads nothing from the request |
+| `GET` | `/api/site` | Posting settings — `{"uploads","max_upload_bytes","captcha"}`: whether posts may carry an image, the largest one taken, and whether posts need a captcha answer. The same answer for every caller; it reads nothing from the request |
+| `GET` | `/api/captcha` | A captcha challenge — `{"parameters","signature"}`, ALTCHA's format; `404` when the captcha is off, `429` past 300 a minute from one address. See [Captcha](#captcha) |
 | `GET` | `/api/boards` | All boards |
 | `GET` | `/api/boards/{slug}` | One board and its limits |
 | `GET` | `/api/boards/{slug}/threads?page=N` | Index page: opening post and last replies per thread |
-| `POST` | `/api/boards/{slug}/threads` | Create a thread — `{"subject","name","body","badge","spoiler"}` |
+| `POST` | `/api/boards/{slug}/threads` | Create a thread — `{"subject","name","body","badge","spoiler","captcha"}` |
 | `GET` | `/api/boards/{slug}/catalog` | Every live thread as excerpt tiles |
 | `GET` | `/api/boards/{slug}/archive` | Archived threads, most recently archived first: `{"board","threads":[{"no","subject","excerpt","replies","created_at","archived_at"}]}`, at most 3000 |
 | `GET` | `/api/boards/{slug}/threads/{no}` | One thread with all posts, live or archived |
 | `GET` | `/api/boards/{slug}/posts/{no}` | Which thread a post is in — `{"board","no","thread_no"}`, live or archived; `404` when the board has no such post |
-| `POST` | `/api/boards/{slug}/threads/{no}/posts` | Reply — `{"name","body","sage","badge","spoiler"}` |
+| `POST` | `/api/boards/{slug}/threads/{no}/posts` | Reply — `{"name","body","sage","badge","spoiler","captcha"}` |
 | `GET` | `/api/threads/{id}` | Thread by primary key |
 | `POST` | `/api/threads/{id}/posts` | Reply by thread primary key |
 | `GET` | `/api/verify` | Whether verification is configured — `{"enabled"}`. It does not read your credential |
-| `POST` | `/api/verify/request` | Email a code — `{"email","adult"}`; `"adult"` must be `true` |
+| `POST` | `/api/verify/request` | Email a code — `{"email","adult","captcha"}`; `"adult"` must be `true` |
 | `POST` | `/api/verify/confirm` | Exchange a code for a credential — `{"code"}`; returns `{"credential","label","expires_at"}` |
 | `GET` | `/media/original/{path}` | Full-size attachment |
 | `GET` | `/media/thumb/{path}` | Thumbnail |
@@ -1238,9 +1524,17 @@ locked one `{"error":"thread is locked"}`, and one bringing an image to a thread
 at its board's image limit `{"error":"image limit reached"}`. These refusals,
 and a reply to a thread that does not exist, come before flood control and
 before the image is stored, so they start no cooldown, and a reply refused at
-the image limit posts at once when sent again without the image. (Two replies
-racing for a thread's last image slot can both get that far; the loser is
-refused inside the transaction, after its cooldowns have started.)
+the image limit posts at once when sent again without the image. A thread that
+changes after these checks have let a reply through refuses it after its
+cooldowns have started, inside the transaction: one archived, locked or deleted
+meanwhile, or one whose last image slot another reply racing it took.
+
+`"captcha"` is the answer to a challenge from `GET /api/captcha`, base64 JSON of
+`{"challenge":{"parameters","signature"},"solution":{"counter","derivedKey"}}`.
+It is needed when the captcha is on, except on a post that asks for a badge and
+gets it. [Captcha](#captcha) has its refusals, and the `Educhan-Captcha: spent`
+header on every response to a request that used one up, but for the one `500` it
+describes, after a spend whose reply from the database was lost.
 
 JSON request bodies must be `application/json`; unknown fields are rejected. The
 two posting endpoints also accept `multipart/form-data` with the same fields
@@ -1248,6 +1542,8 @@ plus an `image` file. Errors are `{"error": "..."}`, and `429` responses add
 `retry_after` plus a `Retry-After` header.
 
 ```bash
+# With EDUCHAN_CAPTCHA_SECRET unset, as it is locally, posts need no captcha
+# answer.
 curl -s localhost:8080/api/boards
 curl -s -X POST localhost:8080/api/boards/career/threads \
   -H 'Content-Type: application/json' \
@@ -1436,14 +1732,17 @@ educhan -sweep          # or, from a checkout: make sweep
 ```
 
 It loads the usual configuration, connects, applies any pending migrations,
-deletes every archived thread whose board's `archive_days` have passed — posts,
-attachment rows, and then the images and thumbnails in the media store — and
-exits. It works in batches of 100 threads, one transaction each. Each batch
-records the storage keys of its threads' files in the `media_deletions` table in
-the same transaction as it deletes the rows; once the batches are done the
-sweep removes each queued file and forgets its key. A file the store refuses to
-delete keeps its key, so the next sweep tries it again rather than leaving an
-image public with nothing left to say it exists.
+checks that the bucket answers when the media store is Cloud Storage, deletes
+every archived thread whose board's `archive_days` have passed — posts,
+attachment rows, and then the images and thumbnails in the media store — sees
+to the verification tables and the spent captcha answers (below), and exits.
+It works in batches of 100 threads, one transaction each. Each batch records the
+storage keys of its threads' files in the `media_deletions` table in the same
+transaction as it deletes the rows; once the batches are done the sweep removes
+each queued file and forgets its key. A batch that fails is rolled back, and no
+file is removed after it: every queued key waits for the next sweep. A file the
+store refuses to delete keeps its key, so the next sweep tries it again rather
+than leaving an image public with nothing left to say it exists.
 
 A file the media store does not hold also keeps its key and fails the sweep.
 Every queued key is a file the server stored, so a store without it is almost
@@ -1454,7 +1753,7 @@ fixed, the next sweep removes them. A file that really is gone for good (lost
 with a container's disk, or removed by hand) fails every sweep until its row is
 deleted from `media_deletions` by hand.
 
-Last, whatever became of the files, it deletes the verification codes that
+Then, whatever became of the files, it deletes the verification codes that
 expired unconfirmed, rewrites the verification credentials, and runs
 `VACUUM FULL` on both verification tables and, in the same passes, on the
 `pg_statistic` catalog, so that every credential issued before the sweep
@@ -1462,15 +1761,19 @@ carries the sweep's transaction id rather than its own, no abandoned code keeps
 the time it was asked for, and no sample `ANALYZE` took of the tables before
 migration `0015` stays in the catalog's files ([Transaction ids, and the nightly
 rewrite](#transaction-ids-and-the-nightly-rewrite) says why, and exactly what
-that protects). It needs no verification secret for that, but its database role
-needs two things. It must own the verification tables and `vacuum_probe`, or the
-database, which the role that ran the migrations does. And it must own the
-database, be a member of the owner's role that inherits its privileges, or be a
-superuser, because only those may vacuum `pg_statistic`: owning every table is
-not enough, and nor is a membership that does not inherit. `VACUUM FULL` skips
-a table or catalog its role may not vacuum with only a warning, so the sweep
-checks that each one moved to a new file and fails at once if not, with an error
-that says which (`TestSweepFailsWhenVacuumLeavesATableInItsFile`,
+that protects). A file the store refused to delete or did not hold does not
+keep it from that, but a batch that failed does, and so does the database
+failing while the files are removed: the sweep leaves the verification tables
+to the next run then, as it does when it is stopped (below). It needs no
+verification secret for that, but its database role needs two things. It must
+own the verification tables and `vacuum_probe`, or the database, which the role
+that ran the migrations does. And it must own the database, be a member of the
+owner's role that inherits its privileges, or be a superuser, because only
+those may vacuum `pg_statistic`: owning every table is not enough, and nor is a
+membership that does not inherit. `VACUUM FULL` skips a table or catalog its
+role may not vacuum with only a warning, so the sweep checks that each one
+moved to a new file and fails at once if not, with an error that says which
+(`TestSweepFailsWhenVacuumLeavesATableInItsFile`,
 `TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile`) — so a role that has the
 first and not the second fails every sweep. Run it as the server's role, which
 ran the migrations, and before scheduling it check that role with the
@@ -1535,17 +1838,67 @@ reports success with the old rows still in the tables' files. The run that
 succeeds still holds badged posts up for as long as it takes, once a night, and
 each holder that begins during a run costs a run more.
 
+Last, whatever happened to the threads, the files and the verification tables,
+it deletes the spent [captcha](#captcha) answers past their day, the ones no
+later post or code request came along to prune. It neither rewrites nor vacuums
+`captcha_spent`, whose rows hold nothing about anyone ([The privacy property,
+exactly](#the-privacy-property-exactly) says what they do hold). A sweep that is
+stopped once it is under way, say by the SIGTERM a Cloud Run Job gets at its
+task timeout, deletes them too: the batch it is on commits or rolls back whole,
+the file it is removing is finished while a lookup of the next one is cut short,
+a statement of the rewrite or the vacuum is cancelled by PostgreSQL and rolls
+back whole (a vacuum that had finished stays done, and the next sweep does the
+rest), the minute's wait for the statistics ends at once, and then the spent
+answers go, given what is left of five seconds from the stop. It then writes its
+error (the stop, with PostgreSQL's report of the statement it cancelled if it
+cancelled one, any files it had found missing or could not remove, and the
+prune's own failure if the prune could not finish in the time left it) and exits
+non-zero, waiting at most two seconds for its connections to close. A stop that
+finds the rewrite or the vacuum in hand with the database not answering waits up
+to three seconds for PostgreSQL to answer its cancel request and up to three
+more for pgx to send its own, which can leave the spent answers no time, and the
+error is written up to a little over six seconds after the stop. So even with
+the database not answering, the error is written and the process exits inside
+the ten seconds Cloud Run waits before it kills it, as long as the stop finds no
+file being removed when the media store or the database stops answering: the
+file in hand is finished whatever the stop, and that waits on both. A stop that
+comes once the verification tables are done, while the spent answers go, finds
+nothing left to stop: the sweep finishes, and exits as one that was not stopped.
+So does one that comes once a failure has left the rest to the next run, a
+batch's or the database's while the files are removed: the sweep exits with that
+failure, as it would have unstopped. A stop while the sweep is still starting up
+(connecting, waiting for, running or finishing migrations, checking the bucket,
+or reading the `EDUCHAN_VERIFY_DOMAINS` file) ends it before it is under way: it
+writes the stop as its error and exits non-zero with nothing deleted, the spent
+answers included. A migration the stop lands in is rolled back, unless the stop
+came as it committed: a commit once sent is waited on for up to two seconds
+after the stop, so that migration is applied first and the next is not begun.
+The migrations' lock is given back however the sweep ends, waited on for two
+seconds at most as well, and never past two seconds after the stop, so a stop as
+a migration commits waits two seconds at most for the two together. The domain
+file is read to the end whatever the stop, and the stop is looked at once it has
+been. So the error is written at once, or once that commit, the lock's release
+or the file's read is done, or, where the media store is Cloud Storage, once its
+client's credentials have been found and have fetched the token the bucket check
+goes out with, which is the auth library's to bound and not the stop's, unless
+the database stops answering while the sweep is connected to it: then the error
+waits until the connection is given up, fifteen seconds later, or seventeen if
+what went unanswered was a commit or the lock's release, which is longer than
+Cloud Run waits. A commit left unanswered is reported as failed, though the
+database may have applied it: the next start finds it recorded, or applies it.
+
 It logs one line of counts (threads, posts, attachments, files removed, failed,
-and missing, and credentials rewritten) and nothing about which boards or
-threads went or what any credential says, and exits non-zero if the database
-fails, any file could not be removed or was missing, or the rewrite or a vacuum
-— of either verification table or of `pg_statistic` — did not finish; the error
-it exits with says why, giving every reason when more than one step failed, and
-names no file (`TestSweepErrorNamesEveryStepThatFailed`).
-It also refuses to run on a database a newer release has migrated (see below).
-It needs none of the web server's secrets — the poster-ID salt, the moderation
-key, the verification secret — and, run without them, it does not warn about
-them: those warnings come from the server alone.
+and missing, credentials rewritten, and spent captchas deleted) and nothing
+about which boards or threads went or what any credential says, and exits
+non-zero if the database fails, any file could not be removed or was missing,
+the rewrite or a vacuum — of either verification table or of `pg_statistic` —
+did not finish, or the spent answers' prune did not; the error it exits with
+says why, giving every reason when more than one step failed, and names no file
+(`TestSweepErrorNamesEveryStepThatFailed`). It also refuses to run on a database
+a newer release has migrated (see below). It needs none of the web server's
+secrets — the poster-ID salt, the moderation key, the verification secret, the
+captcha secret — and, run without them, it does not warn about them: those
+warnings come from the server alone.
 
 On Google Cloud it is meant to run as a Cloud Run Job from the service's image,
 started by Cloud Scheduler: Cloud Run gives a service CPU only while it answers
@@ -1563,11 +1916,15 @@ old caveat still applies — `/tmp` is per-instance and in-memory, so an image
 uploaded to one instance answers `404` from another and is lost when the
 container stops.
 
-One thing remains per instance:
+Two things remain per instance:
 
 - **Flood control.** `cooldownLimiter` keeps its state in process memory, so N
   instances enforce the cooldowns N times over. Moving it to shared storage means
   replacing that one type, which nothing else depends on.
+- **The captcha's challenge count.** `captchaMeter` counts each address's
+  challenges in process memory too, so behind N instances an address gets N
+  times the challenges before they grow harder or are refused. Spent answers are
+  not per instance: they are in `captcha_spent`.
 
 ## Development
 
@@ -1575,8 +1932,9 @@ One thing remains per instance:
 make db-up   # local PostgreSQL for development and the integration tests
 make run     # go run ./cmd/server
 make sweep   # go run ./cmd/server -sweep, once: delete expired archived threads,
-             # and rewrite and vacuum the verification tables, which takes the
-             # database owner's privileges ("The archive sweeper" says more)
+             # rewrite and vacuum the verification tables, which takes the
+             # database owner's privileges ("The archive sweeper" says more),
+             # and delete spent captcha answers past their day
 make build   # go build ./...
 make test    # go test ./... (integration tests need PostgreSQL; they skip without it)
 make check   # gofmt check, go vet, go test
